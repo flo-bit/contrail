@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "contrail.admin.getCursor",
+  "id": "com.example.admin.getCursor",
   "defs": {
     "main": {
       "type": "query",

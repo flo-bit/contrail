@@ -51,6 +51,7 @@ export const DEFAULT_RELAYS = [
 ];
 
 export interface ContrailConfig {
+  namespace: string;
   collections: Record<string, CollectionConfig>;
   profiles?: string[];
   relays?: string[];

@@ -5,9 +5,12 @@
  * Usage: npx tsx scripts/sync.ts [base_url] [admin_secret]
  */
 
+import { config } from "../src/config";
+
 async function main() {
   const base = process.argv[2] || "http://localhost:8787";
   const secret = process.argv[3];
+  const ns = config.namespace;
 
   const headers: Record<string, string> = {};
   if (secret) {
@@ -20,7 +23,7 @@ async function main() {
   let lastRemaining = -1;
 
   while (true) {
-    const res = await fetch(`${base}/xrpc/contrail.admin.sync`, { headers });
+    const res = await fetch(`${base}/xrpc/${ns}.admin.sync`, { headers });
     const result = (await res.json()) as {
       discovered: number;
       backfilled: number;

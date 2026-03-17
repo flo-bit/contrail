@@ -19,7 +19,9 @@ export function createApp(
   app.get("/health", (c) => c.json({ status: "ok" }));
   app.get("/xrpc/_health", (c) => c.json({ status: "ok" }));
 
-  app.get("/xrpc/contrail.getProfile", async (c) => {
+  const ns = config.namespace;
+
+  app.get(`/xrpc/${ns}.getProfile`, async (c) => {
     const actor = c.req.query("actor");
     if (!actor) return c.json({ error: "actor parameter required" }, 400);
 

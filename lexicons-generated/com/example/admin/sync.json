@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "contrail.admin.sync",
+  "id": "com.example.admin.sync",
   "defs": {
     "main": {
       "type": "query",

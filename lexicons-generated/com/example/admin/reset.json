@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "contrail.admin.reset",
+  "id": "com.example.admin.reset",
   "defs": {
     "main": {
       "type": "query",

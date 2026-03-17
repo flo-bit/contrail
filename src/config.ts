@@ -1,6 +1,7 @@
 import type { ContrailConfig } from "./core/types";
 
 export const config: ContrailConfig = {
+  namespace: "rsvp.atmo",
   collections: {
     "community.lexicon.calendar.event": {
       relations: {

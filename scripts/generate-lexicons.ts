@@ -6,11 +6,12 @@
  *   - {nsid}.getUsers    — query with limit/cursor
  *   - {nsid}.getStats    — query returning collection stats
  *
- * Plus admin endpoints:
- *   - contrail.admin.getCursor
- *   - contrail.admin.getOverview
- *   - contrail.admin.discover
- *   - contrail.admin.backfill
+ * Plus namespaced endpoints:
+ *   - {namespace}.admin.getCursor
+ *   - {namespace}.admin.getOverview
+ *   - {namespace}.admin.sync
+ *   - {namespace}.admin.reset
+ *   - {namespace}.getProfile
  *
  * Usage: npx tsx scripts/generate-lexicons.ts
  */
@@ -313,13 +314,17 @@ function profileDefs() {
   };
 }
 
+// --- Namespace ---
+
+const ns = config.namespace!;
+
 // --- Admin endpoints ---
 
 console.log("Generating admin endpoints...");
 
-writeLexicon("contrail.admin.getCursor", {
+writeLexicon(`${ns}.admin.getCursor`, {
   lexicon: 1,
-  id: "contrail.admin.getCursor",
+  id: `${ns}.admin.getCursor`,
   defs: {
     main: {
       type: "query",
@@ -339,9 +344,9 @@ writeLexicon("contrail.admin.getCursor", {
   },
 });
 
-writeLexicon("contrail.admin.getOverview", {
+writeLexicon(`${ns}.admin.getOverview`, {
   lexicon: 1,
-  id: "contrail.admin.getOverview",
+  id: `${ns}.admin.getOverview`,
   defs: {
     main: {
       type: "query",
@@ -373,9 +378,9 @@ writeLexicon("contrail.admin.getOverview", {
   },
 });
 
-writeLexicon("contrail.admin.sync", {
+writeLexicon(`${ns}.admin.sync`, {
   lexicon: 1,
-  id: "contrail.admin.sync",
+  id: `${ns}.admin.sync`,
   defs: {
     main: {
       type: "query",
@@ -408,9 +413,9 @@ writeLexicon("contrail.admin.sync", {
   },
 });
 
-writeLexicon("contrail.admin.reset", {
+writeLexicon(`${ns}.admin.reset`, {
   lexicon: 1,
-  id: "contrail.admin.reset",
+  id: `${ns}.admin.reset`,
   defs: {
     main: {
       type: "query",
@@ -431,9 +436,9 @@ writeLexicon("contrail.admin.reset", {
 
 // --- getProfile endpoint ---
 
-writeLexicon("contrail.getProfile", {
+writeLexicon(`${ns}.getProfile`, {
   lexicon: 1,
-  id: "contrail.getProfile",
+  id: `${ns}.getProfile`,
   defs: {
     main: {
       type: "query",

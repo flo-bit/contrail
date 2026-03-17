@@ -24,7 +24,9 @@ export function registerAdminRoutes(
     await next();
   };
 
-  app.get("/xrpc/contrail.admin.getCursor", async (c) => {
+  const ns = config.namespace;
+
+  app.get(`/xrpc/${ns}.admin.getCursor`, async (c) => {
     const cursor = await getLastCursor(db);
     if (cursor === null) return c.json({ cursor: null });
 
@@ -36,7 +38,7 @@ export function registerAdminRoutes(
     });
   });
 
-  app.get("/xrpc/contrail.admin.getOverview", async (c) => {
+  app.get(`/xrpc/${ns}.admin.getOverview`, async (c) => {
     const result = await db
       .prepare(
         "SELECT collection, COUNT(*) as records, COUNT(DISTINCT did) as unique_users FROM records GROUP BY collection"
@@ -50,7 +52,7 @@ export function registerAdminRoutes(
     });
   });
 
-  app.get("/xrpc/contrail.admin.sync", requireAdmin, async (c) => {
+  app.get(`/xrpc/${ns}.admin.sync`, requireAdmin, async (c) => {
     const deadline = Date.now() + 25_000;
     const concurrency = parseIntParam(c.req.query("concurrency"), 25) ?? 25;
 
@@ -124,7 +126,7 @@ export function registerAdminRoutes(
     });
   });
 
-  app.get("/xrpc/contrail.admin.reset", requireAdmin, async (c) => {
+  app.get(`/xrpc/${ns}.admin.reset`, requireAdmin, async (c) => {
     const tables = ["records", "counts", "backfills", "discovery", "cursor", "identities"];
     await db.batch(tables.map((t) => db.prepare(`DELETE FROM ${t}`)));
     return c.json({ ok: true });
