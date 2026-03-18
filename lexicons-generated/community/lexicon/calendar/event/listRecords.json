@@ -26,6 +26,10 @@
             "type": "boolean",
             "description": "Include profile + identity info keyed by DID"
           },
+          "search": {
+            "type": "string",
+            "description": "Full-text search across: mode, name, status, description"
+          },
           "mode": {
             "type": "string",
             "description": "Filter by mode"

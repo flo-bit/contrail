@@ -74,6 +74,7 @@ You can override any auto-detected field by specifying `queryable` manually in c
 | `relations.*.match` | `"uri"` | Match against parent's `"uri"` or `"did"` |
 | `relations.*.groupBy` | — | Split counts by this field's value |
 | `queries` | `{}` | Custom query handlers |
+| `searchable` | auto-detected | FTS5 search fields. `string[]` = explicit fields, `false` = disabled, omitted = all non-range queryable fields |
 
 ### Profiles
 
@@ -88,6 +89,7 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 | `{collection}.listRecords` | List/filter records |
 | `{collection}.getRecord` | Get single record by URI |
 | `{namespace}.getProfile` | Get a user's profile by DID or handle |
+| `{namespace}.notifyOfUpdate` | Notify of a record change for immediate indexing |
 | `{namespace}.admin.sync` | Discover + backfill (requires `ADMIN_SECRET`) |
 | `{namespace}.admin.getCursor` | Current cursor position |
 | `{namespace}.admin.getOverview` | All collections summary |
@@ -101,37 +103,100 @@ All endpoints at `/xrpc/{nsid}.{method}`:
 |-------|---------|-------------|
 | `actor` | `?actor=did:plc:...` or `?actor=alice.bsky.social` | Filter by DID or handle (triggers on-demand backfill) |
 | `profiles` | `?profiles=true` | Include profile + identity info keyed by DID |
+| `search` | `?search=meetup` | Full-text search across searchable fields (FTS5, ranked) |
 | `{field}` | `?status=going` | Equality filter on queryable string field |
 | `{field}Min` | `?startsAtMin=2026-03-16` | Range minimum (datetime/integer fields) |
 | `{field}Max` | `?endsAtMax=2026-04-01` | Range maximum (datetime/integer fields) |
 | `{rel}CountMin` | `?rsvpsCountMin=10` | Minimum total relation count |
 | `{rel}{Group}CountMin` | `?rsvpsGoingCountMin=10` | Minimum relation count for a specific groupBy value |
-| `hydrate` | `?hydrate=rsvps:10` | Embed latest N related records per record |
+| `hydrate{Rel}` | `?hydrateRsvps=10` | Embed latest N related records (per group if grouped) |
+| `hydrate{Ref}` | `?hydrateEvent=true` | Embed the referenced record |
+| `sort` | `?sort=startsAt` | Sort by a queryable field or count (see below) |
+| `order` | `?order=asc` | Sort direction: `asc` or `desc` (default depends on field type) |
 | `limit` | `?limit=25` | Page size (1-100, default 50) |
 | `cursor` | `?cursor=...` | Pagination cursor |
 
-**Hydration** returns related records grouped by `groupBy` value:
+**Sorting** — `sort` accepts any queryable field param name or a count field:
 
 ```
-?hydrate=rsvps:5        # latest 5 per group (going, interested, etc.)
-?hydrate=rsvps:5&hydrate=followers:10   # multiple hydrations
+?sort=startsAt                 # by date (default: desc for range fields)
+?sort=name&order=asc           # by name ascending
+?sort=rsvpsCount               # by total RSVP count (default: desc)
+?sort=rsvpsGoingCount&order=asc  # by going count ascending
+```
+
+**Search** uses SQLite FTS5 for ranked full-text search. By default, all non-range queryable fields are searchable. Results are ranked by relevance (BM25) with `time_us` as tiebreaker. Supports FTS5 syntax including prefix (`meetup*`), phrases (`"rust meetup"`), and boolean (`rust OR typescript`). Combinable with all other filters.
+
+```
+?search=meetup                          # basic search
+?search=meetup&mode=online              # search + filter
+?search=rust*&sort=startsAt&order=asc   # search + sort override
+```
+
+**Hydration** embeds related or referenced records inline:
+
+```
+?hydrateRsvps=5              # latest 5 RSVPs per group (going, interested, etc.)
+?hydrateEvent=true           # embed the referenced event record
+?hydrateRsvps=5&hydrateEvent=true   # combine both
 ```
 
 ### Examples (events)
 
 ```
 # Upcoming events with 10+ going RSVPs, with RSVP records and profiles
-/xrpc/community.lexicon.calendar.event.getRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10&hydrate=rsvps:5&profiles=true
+/xrpc/community.lexicon.calendar.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10&hydrateRsvps=5&profiles=true
 
 # Events for a specific user (by handle)
-/xrpc/community.lexicon.calendar.event.getRecords?actor=alice.bsky.social&profiles=true
+/xrpc/community.lexicon.calendar.event.listRecords?actor=alice.bsky.social&profiles=true
 
 # Single event with counts, RSVPs, and profiles
-/xrpc/community.lexicon.calendar.event.getRecord?uri=at://did:plc:.../community.lexicon.calendar.event/...&hydrate=rsvps:10&profiles=true
+/xrpc/community.lexicon.calendar.event.getRecord?uri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateRsvps=10&profiles=true
 
-# RSVPs for a specific event with profiles
-/xrpc/community.lexicon.calendar.rsvp.getRecords?subjectUri=at://did:plc:.../community.lexicon.calendar.event/...&profiles=true
+# Search for events by name/description
+/xrpc/community.lexicon.calendar.event.listRecords?search=meetup&profiles=true
+
+# RSVPs for a specific event, with the referenced event embedded
+/xrpc/community.lexicon.calendar.rsvp.listRecords?subjectUri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateEvent=true&profiles=true
 ```
+
+## Notify of Updates
+
+By default, Contrail ingests from Jetstream every minute. If your app writes to a user's PDS and needs the change reflected immediately, call `notifyOfUpdate` right after the write:
+
+```ts
+// User creates an RSVP via their PDS
+const { uri } = await agent.createRecord({ ... });
+
+// Tell Contrail to fetch and index it now
+await fetch("https://your-contrail.workers.dev/xrpc/com.example.notifyOfUpdate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ uri }),
+});
+```
+
+Contrail fetches the record from the user's PDS and figures out what to do:
+
+| PDS returns | Already indexed? | Action |
+|---|---|---|
+| Record (new CID) | No | **Create** — indexes it, updates relation counts |
+| Record (new CID) | Yes | **Update** — upserts the record |
+| Record (same CID) | Yes | **Skip** — nothing changed |
+| 404 | Yes | **Delete** — removes it, decrements counts |
+| 404 | No | **No-op** |
+
+You can also batch up to 25 URIs in one request:
+
+```ts
+await fetch(".../xrpc/com.example.notifyOfUpdate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ uris: [uri1, uri2, uri3] }),
+});
+```
+
+When Jetstream later delivers the same event, the duplicate is detected by CID and skipped.
 
 ## Typesafe Client Usage
 

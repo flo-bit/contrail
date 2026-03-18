@@ -6,3 +6,5 @@ dist
 lex.config.js
 src/lexicon-types/
 src/core/queryable.generated.ts
+
+stuff/

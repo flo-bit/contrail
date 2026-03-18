@@ -44,6 +44,8 @@ export interface CollectionConfig {
   /** Forward references: fields on this collection's records that point at another collection. */
   references?: Record<string, ReferenceConfig>;
   queries?: Record<string, CustomQueryHandler>;
+  /** FTS5 search fields. string[] = explicit fields, false = disabled, omitted = auto-detect non-range queryable fields */
+  searchable?: string[] | false;
 }
 
 export const DEFAULT_PROFILES = ["app.bsky.actor.profile"];
@@ -132,6 +134,11 @@ export function validateConfig(config: ContrailConfig): void {
     for (const [, rel] of Object.entries(colConfig.relations ?? {})) {
       if (rel.field) validateFieldName(rel.field);
       if (rel.groupBy) validateFieldName(rel.groupBy);
+    }
+    if (Array.isArray(colConfig.searchable)) {
+      for (const field of colConfig.searchable) {
+        validateFieldName(field);
+      }
     }
   }
 }

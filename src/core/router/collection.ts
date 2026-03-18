@@ -110,6 +110,8 @@ export function registerCollectionRoutes(
         }
       }
 
+      const search = params.get("search") || undefined;
+
       const result = await queryRecords(db, config, {
         collection,
         did,
@@ -119,6 +121,7 @@ export function registerCollectionRoutes(
         rangeFilters,
         countFilters,
         sort,
+        search,
       });
 
       const rows = result.records;

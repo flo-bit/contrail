@@ -6,7 +6,8 @@
       "Bash(npx tsx:*)",
       "Bash(npx tsc:*)",
       "Bash(pnpm test:*)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

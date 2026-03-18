@@ -26,6 +26,10 @@
             "type": "boolean",
             "description": "Include profile + identity info keyed by DID"
           },
+          "search": {
+            "type": "string",
+            "description": "Full-text search across: status, subject.uri"
+          },
           "status": {
             "type": "string",
             "description": "Filter by status"

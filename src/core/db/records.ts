@@ -7,6 +7,7 @@ import type {
   RecordRow,
 } from "../types";
 import { getNestedValue, getRelationField } from "../types";
+import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 
 // --- Counts ---
 
@@ -71,6 +72,41 @@ function buildCountStatements(
   return statements;
 }
 
+// --- FTS ---
+
+function buildFtsStatements(
+  db: Database,
+  event: IngestEvent,
+  config: ContrailConfig
+): Statement[] {
+  const colConfig = config.collections[event.collection];
+  if (!colConfig) return [];
+
+  const fields = getSearchableFields(event.collection, colConfig);
+  if (!fields || fields.length === 0) return [];
+
+  const table = ftsTableName(event.collection);
+  const stmts: Statement[] = [];
+
+  if (event.operation === "delete") {
+    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
+  } else {
+    const record = event.record ? JSON.parse(event.record) : null;
+    if (!record) return [];
+
+    const content = buildFtsContent(record, fields);
+    if (!content) return [];
+
+    // Delete-then-insert handles both create and update
+    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
+    stmts.push(
+      db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
+    );
+  }
+
+  return stmts;
+}
+
 // --- Cursor ---
 
 export async function getLastCursor(db: Database): Promise<number | null> {
@@ -128,6 +164,7 @@ export async function applyEvents(
 
     if (config) {
       batch.push(...buildCountStatements(db, e, config));
+      batch.push(...buildFtsStatements(db, e, config));
     }
   }
 
@@ -151,6 +188,7 @@ export interface QueryOptions {
   rangeFilters?: Record<string, { min?: string; max?: string }>;
   countFilters?: Record<string, number>;
   sort?: SortOption;
+  search?: string;
 }
 
 export async function queryRecords(
@@ -167,6 +205,7 @@ export async function queryRecords(
     rangeFilters = {},
     countFilters = {},
     sort,
+    search,
   } = options;
 
   const limit = Math.min(Math.max(1, rawLimit ?? 50), 100);
@@ -218,6 +257,19 @@ export async function queryRecords(
     }
   }
 
+  // FTS search
+  let ftsJoin = "";
+  if (search) {
+    const colConfig2 = config.collections[collection];
+    const fields = colConfig2 ? getSearchableFields(collection, colConfig2) : null;
+    if (fields && fields.length > 0) {
+      const table = ftsTableName(collection);
+      ftsJoin = `JOIN ${table} fts ON fts.uri = r.uri`;
+      conditions.push("fts.content MATCH ?");
+      bindings.push(search);
+    }
+  }
+
   const colConfig = config.collections[collection];
   const relations = colConfig?.relations ?? {};
   const sortByCount = sort?.countType != null;
@@ -254,7 +306,10 @@ export async function queryRecords(
   const select = needsCounts
     ? "r.uri, r.did, r.collection, r.rkey, r.cid, r.record, r.time_us, r.indexed_at, GROUP_CONCAT(c.type || ':' || c.count) as _counts"
     : "r.uri, r.did, r.collection, r.rkey, r.cid, r.record, r.time_us, r.indexed_at";
-  const join = needsCounts ? "LEFT JOIN counts c ON c.uri = r.uri" : "";
+  const joinParts: string[] = [];
+  if (ftsJoin) joinParts.push(ftsJoin);
+  if (needsCounts) joinParts.push("LEFT JOIN counts c ON c.uri = r.uri");
+  const join = joinParts.join(" ");
   const group = needsCounts ? "GROUP BY r.uri" : "";
   const having = countHaving.length > 0 ? `HAVING ${countHaving.join(" AND ")}` : "";
 
@@ -267,6 +322,8 @@ export async function queryRecords(
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
     orderBy = `COALESCE(SUM(CASE WHEN c.type = ? THEN c.count END), 0) ${dir}, r.time_us DESC`;
     orderBindings.push(sort.countType);
+  } else if (ftsJoin) {
+    orderBy = "fts.rank, r.time_us DESC";
   } else {
     orderBy = "r.time_us DESC";
   }

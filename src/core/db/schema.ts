@@ -1,6 +1,7 @@
 import type { ContrailConfig, Database } from "../types";
 import { getRelationField } from "../types";
 import { resolvedQueryable } from "../queryable.generated";
+import { getSearchableFields, ftsTableName } from "../search";
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS records (
@@ -76,6 +77,19 @@ function buildDynamicIndexes(config: ContrailConfig): string[] {
   return indexes;
 }
 
+function buildFtsTables(config: ContrailConfig): string[] {
+  const stmts: string[] = [];
+  for (const [collection, colConfig] of Object.entries(config.collections)) {
+    const fields = getSearchableFields(collection, colConfig);
+    if (!fields || fields.length === 0) continue;
+    const table = ftsTableName(collection);
+    stmts.push(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ${table} USING fts5(uri UNINDEXED, content)`
+    );
+  }
+  return stmts;
+}
+
 const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
@@ -100,7 +114,8 @@ export async function initSchema(
     .filter((s) => s.length > 0);
 
   const indexStatements = buildDynamicIndexes(config);
-  const all = [...baseStatements, ...indexStatements];
+  const ftsStatements = buildFtsTables(config);
+  const all = [...baseStatements, ...indexStatements, ...ftsStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
   await runMigrations(db);
