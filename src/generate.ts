@@ -324,7 +324,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
 
     // --- listRecords ---
     const listParams: Record<string, any> = {
-      limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
       cursor: { type: "string" },
       actor: { type: "string", format: "at-identifier", description: "Filter by DID or handle (triggers on-demand backfill)" },
       profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },

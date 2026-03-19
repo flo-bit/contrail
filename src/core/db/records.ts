@@ -225,7 +225,7 @@ export async function queryRecords(
     search,
   } = options;
 
-  const limit = Math.min(Math.max(1, rawLimit ?? 50), 100);
+  const limit = Math.min(Math.max(1, rawLimit ?? 50), 200);
   const conditions: string[] = ["r.collection = ?"];
   const bindings: (string | number)[] = [collection];
 
