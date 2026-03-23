@@ -35,82 +35,100 @@ function getInboundRelations(
 }
 
 /**
- * Build statements that fully recount child records for affected parents.
- * Instead of +1/-1, we SELECT COUNT(*) so the count is always accurate.
- * This runs for create, update, and delete operations.
+ * Collect recount targets from a single event into a shared map.
+ * The map is keyed by `parentCollection:relationName:targetValue` to deduplicate
+ * across the entire batch — so 50 RSVPs to the same event produce one recount, not 50.
  */
-function buildCountStatements(
-  db: Database,
+function collectCountTargets(
   event: IngestEvent,
   config: ContrailConfig,
   existingRecordJson: string | null,
-): Statement[] {
+  targets: Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>
+): void {
   const inbound = getInboundRelations(config, event.collection);
-  if (inbound.length === 0) return [];
+  if (inbound.length === 0) return;
 
   const record = event.record ? JSON.parse(event.record) : null;
   const existingRecord = existingRecordJson ? JSON.parse(existingRecordJson) : null;
-
-  const statements: Statement[] = [];
-  const recountedTargets = new Set<string>();
 
   for (const { parentCollection, relationName, rel } of inbound) {
     if (rel.count === false) continue;
 
     const field = getRelationField(rel);
+
+    const values: string[] = [];
+    if (record) {
+      const t = getNestedValue(record, field);
+      if (t) values.push(t);
+    }
+    if (existingRecord) {
+      const t = getNestedValue(existingRecord, field);
+      if (t && !values.includes(t)) values.push(t);
+    }
+
+    for (const targetValue of values) {
+      const key = `${parentCollection}:${relationName}:${targetValue}`;
+      if (!targets.has(key)) {
+        targets.set(key, { parentCollection, relationName, rel, targetValue });
+      }
+    }
+  }
+}
+
+/**
+ * Build deduplicated count UPDATE statements from collected targets.
+ * One UPDATE per unique parent+relation+target, regardless of how many
+ * events in the batch affected that target.
+ */
+function buildBatchCountStatements(
+  db: Database,
+  config: ContrailConfig,
+  targets: Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>
+): Statement[] {
+  const statements: Statement[] = [];
+
+  for (const { parentCollection, relationName, rel, targetValue } of targets.values()) {
+    const field = getRelationField(rel);
     const matchColumn = rel.match === "did" ? "did" : "uri";
     const childTable = recordsTableName(rel.collection);
     const parentTable = recordsTableName(parentCollection);
 
-    // Collect target URIs/DIDs that need recounting (current + old if changed)
-    const targets: string[] = [];
-    if (record) {
-      const t = getNestedValue(record, field);
-      if (t) targets.push(t);
-    }
-    if (existingRecord) {
-      const t = getNestedValue(existingRecord, field);
-      if (t && !targets.includes(t)) targets.push(t);
-    }
+    const setClauses: string[] = [];
+    const setBindings: (string | number)[] = [];
 
-    for (const targetValue of targets) {
-      const key = `${parentCollection}:${relationName}:${targetValue}`;
-      if (recountedTargets.has(key)) continue;
-      recountedTargets.add(key);
+    const countExpr = rel.countDistinct
+      ? `COUNT(DISTINCT ${rel.countDistinct})`
+      : "COUNT(*)";
 
-      const setClauses: string[] = [];
-      const setBindings: (string | number)[] = [];
+    // Total count
+    const totalCol = countColumnName(rel.collection);
+    setClauses.push(
+      `${totalCol} = (SELECT ${countExpr} FROM ${childTable} WHERE json_extract(record, '$.${field}') = ?)`
+    );
+    setBindings.push(targetValue);
 
-      // Total count
-      const totalCol = countColumnName(rel.collection);
-      setClauses.push(
-        `${totalCol} = (SELECT COUNT(*) FROM ${childTable} WHERE json_extract(record, '$.${field}') = ?)`
-      );
-      setBindings.push(targetValue);
-
-      // Grouped counts
-      if (rel.groupBy) {
-        const mapping = (config as ResolvedContrailConfig)._resolved?.relations[parentCollection]?.[relationName];
-        if (mapping?.groups) {
-          for (const [, fullToken] of Object.entries(mapping.groups)) {
-            const groupCol = countColumnName(fullToken);
-            setClauses.push(
-              `${groupCol} = (SELECT COUNT(*) FROM ${childTable} WHERE json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
-            );
-            setBindings.push(targetValue, fullToken);
-          }
+    // Grouped counts
+    if (rel.groupBy) {
+      const mapping = (config as ResolvedContrailConfig)._resolved?.relations[parentCollection]?.[relationName];
+      if (mapping?.groups) {
+        for (const [, fullToken] of Object.entries(mapping.groups)) {
+          const groupCol = countColumnName(fullToken);
+          setClauses.push(
+            `${groupCol} = (SELECT ${countExpr} FROM ${childTable} WHERE json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
+          );
+          setBindings.push(targetValue, fullToken);
         }
       }
+    }
 
-      if (setClauses.length > 0) {
-        statements.push(
-          db
-            .prepare(
-              `UPDATE ${parentTable} SET ${setClauses.join(", ")} WHERE ${matchColumn} = ?`
-            )
-            .bind(...setBindings, targetValue)
-        );
-      }
+    if (setClauses.length > 0) {
+      statements.push(
+        db
+          .prepare(
+            `UPDATE ${parentTable} SET ${setClauses.join(", ")} WHERE ${matchColumn} = ?`
+          )
+          .bind(...setBindings, targetValue)
+      );
     }
   }
 
@@ -122,7 +140,8 @@ function buildCountStatements(
 function buildFtsStatements(
   db: Database,
   event: IngestEvent,
-  config: ContrailConfig
+  config: ContrailConfig,
+  existingMap: Map<string, ExistingRecordInfo>
 ): Statement[] {
   const colConfig = config.collections[event.collection];
   if (!colConfig) return [];
@@ -142,8 +161,10 @@ function buildFtsStatements(
     const content = buildFtsContent(record, fields);
     if (!content) return [];
 
-    // Delete-then-insert handles both create and update
-    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
+    // Only delete existing FTS row if this is an update (record already existed)
+    if (existingMap.has(event.uri)) {
+      stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
+    }
     stmts.push(
       db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
     );
@@ -277,55 +298,96 @@ export async function saveCursor(
     .run();
 }
 
+// --- Existing record lookup ---
+
+export interface ExistingRecordInfo {
+  cid: string | null;
+  record: string | null;
+}
+
+/**
+ * Look up existing records for a set of events, grouped by collection.
+ * Returns a map of uri → { cid, record }.
+ * When includeRecord is false, record will always be null (saves reading large blobs).
+ */
+export async function lookupExistingRecords(
+  db: Database,
+  events: { uri: string; collection: string }[],
+  includeRecord: boolean = true
+): Promise<Map<string, ExistingRecordInfo>> {
+  const result = new Map<string, ExistingRecordInfo>();
+  if (events.length === 0) return result;
+
+  const byCollection = new Map<string, string[]>();
+  for (const e of events) {
+    const uris = byCollection.get(e.collection) ?? [];
+    uris.push(e.uri);
+    byCollection.set(e.collection, uris);
+  }
+
+  const selectCols = includeRecord ? "uri, cid, record" : "uri, cid";
+  for (const [collection, uris] of byCollection) {
+    const table = recordsTableName(collection);
+    for (let i = 0; i < uris.length; i += 50) {
+      const chunk = uris.slice(i, i + 50);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = await db
+        .prepare(`SELECT ${selectCols} FROM ${table} WHERE uri IN (${placeholders})`)
+        .bind(...chunk)
+        .all<{ uri: string; cid: string | null; record?: string | null }>();
+      for (const row of rows.results ?? []) {
+        result.set(row.uri, {
+          cid: row.cid,
+          record: includeRecord ? (row.record ?? null) : null,
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
 // --- Events ---
 
 export async function applyEvents(
   db: Database,
   events: IngestEvent[],
   config?: ContrailConfig,
-  options?: { skipReplayDetection?: boolean; skipFeedFanout?: boolean }
+  options?: {
+    skipReplayDetection?: boolean;
+    skipFeedFanout?: boolean;
+    /** Pre-fetched existing records — skips the internal lookup when provided */
+    existing?: Map<string, ExistingRecordInfo>;
+  }
 ): Promise<void> {
   if (events.length === 0) return;
 
-  // Look up existing records for replay detection and count recounts.
-  const existingCids = new Map<string, string | null>();
-  const existingRecords = new Map<string, string | null>();
   const followCollections = config ? getFeedFollowCollections(config) : [];
   const hasCountingRelations = config ? Object.values(config.collections).some(c =>
     Object.values(c.relations ?? {}).some(r => r.count !== false)
   ) : false;
   const needRecordContent = followCollections.length > 0 || hasCountingRelations;
 
-  if (config && !options?.skipReplayDetection) {
-    // Group events by collection to query the correct tables
-    const byCollection = new Map<string, string[]>();
-    for (const e of events) {
-      const uris = byCollection.get(e.collection) ?? [];
-      uris.push(e.uri);
-      byCollection.set(e.collection, uris);
-    }
-
-    const selectCols = needRecordContent ? "uri, cid, record" : "uri, cid";
-    for (const [collection, uris] of byCollection) {
-      const table = recordsTableName(collection);
-      for (let i = 0; i < uris.length; i += 50) {
-        const chunk = uris.slice(i, i + 50);
-        const placeholders = chunk.map(() => "?").join(",");
-        const rows = await db
-          .prepare(`SELECT ${selectCols} FROM ${table} WHERE uri IN (${placeholders})`)
-          .bind(...chunk)
-          .all<{ uri: string; cid: string | null; record?: string | null }>();
-        for (const row of rows.results ?? []) {
-          existingCids.set(row.uri, row.cid);
-          if (needRecordContent && row.record) {
-            existingRecords.set(row.uri, row.record);
-          }
-        }
-      }
-    }
+  // Use pre-fetched data or look up existing records
+  let existingMap: Map<string, ExistingRecordInfo>;
+  if (options?.existing) {
+    existingMap = options.existing;
+  } else if (config && !options?.skipReplayDetection) {
+    existingMap = await lookupExistingRecords(db, events, needRecordContent);
+  } else {
+    existingMap = new Map();
   }
 
   const batch: Statement[] = [];
+
+  // Build a record-content map for feed statements (needs string values)
+  const existingRecordStrings = new Map<string, string | null>();
+  for (const [uri, info] of existingMap) {
+    existingRecordStrings.set(uri, info.record);
+  }
+
+  // Collect all count recount targets across the batch, deduplicated
+  const countTargets = new Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>();
 
   for (const e of events) {
     const table = recordsTableName(e.collection);
@@ -349,22 +411,27 @@ export async function applyEvents(
     }
 
     if (config) {
-      // Recount is idempotent — always run it for create/update/delete.
-      const existingRecordJson = existingRecords.get(e.uri) ?? null;
-      batch.push(...buildCountStatements(db, e, config, existingRecordJson));
+      // Collect count targets (deduplicated across the whole batch)
+      const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
+      collectCountTargets(e, config, existingRecordJson, countTargets);
 
       // Feed fanout still needs replay detection
-      const existing = existingCids.get(e.uri);
+      const existingInfo = existingMap.get(e.uri);
       const isReplay =
         e.operation === "delete"
-          ? existing === undefined
-          : existing === e.cid;
+          ? existingInfo === undefined
+          : existingInfo?.cid === e.cid;
 
       if (!isReplay && !options?.skipFeedFanout) {
-        batch.push(...buildFeedStatements(db, e, config, existingRecords));
+        batch.push(...buildFeedStatements(db, e, config, existingRecordStrings));
       }
-      batch.push(...buildFtsStatements(db, e, config));
+      batch.push(...buildFtsStatements(db, e, config, existingMap));
     }
+  }
+
+  // Build deduplicated count statements — one UPDATE per unique target
+  if (config) {
+    batch.push(...buildBatchCountStatements(db, config, countTargets));
   }
 
   await db.batch(batch);
@@ -447,15 +514,25 @@ export async function queryRecords(
 
   // Cursor = AT URI of last seen record. Look it up to get keyset values.
   if (cursor) {
+    // Only select the columns needed for cursor pagination
+    let cursorSelect: string;
+    if (sort?.recordField) {
+      cursorSelect = `time_us, json_extract(record, '$.${sort.recordField}') as sort_value`;
+    } else if (sort?.countType) {
+      const sortCol = countColumnName(sort.countType);
+      cursorSelect = `time_us, ${sortCol}`;
+    } else {
+      cursorSelect = "time_us";
+    }
+
     const cursorRow = await db
-      .prepare(`SELECT * FROM ${table} WHERE uri = ?`)
+      .prepare(`SELECT ${cursorSelect} FROM ${table} WHERE uri = ?`)
       .bind(cursor)
       .first<any>();
 
     if (cursorRow) {
       if (sort?.recordField) {
-        const cursorRecord = cursorRow.record ? JSON.parse(cursorRow.record) : null;
-        const sortValue = cursorRecord ? getNestedValue(cursorRecord, sort.recordField) : null;
+        const sortValue = cursorRow.sort_value;
         const field = `json_extract(r.record, '$.${sort.recordField}')`;
         const cmp = sort.direction === "desc" ? "<" : ">";
         conditions.push(`(${field} ${cmp} ? OR (${field} = ? AND r.time_us < ?))`);

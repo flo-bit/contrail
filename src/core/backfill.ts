@@ -424,14 +424,21 @@ async function insertDiscoveredDIDs(
 ): Promise<void> {
   if (dids.length === 0) return;
 
-  const stmt = db.prepare(
-    "INSERT INTO backfills (did, collection, completed) VALUES (?, ?, 0) ON CONFLICT DO NOTHING"
-  );
-
-  const batch = dids.map((did) => stmt.bind(did, collection));
-
-  for (let i = 0; i < batch.length; i += 50) {
-    await db.batch(batch.slice(i, i + 50));
+  // Use multi-row INSERT to reduce the number of statements
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < dids.length; i += CHUNK_SIZE) {
+    const chunk = dids.slice(i, i + CHUNK_SIZE);
+    const placeholders = chunk.map(() => "(?, ?, 0)").join(", ");
+    const bindings: string[] = [];
+    for (const did of chunk) {
+      bindings.push(did, collection);
+    }
+    await db
+      .prepare(
+        `INSERT INTO backfills (did, collection, completed) VALUES ${placeholders} ON CONFLICT DO NOTHING`
+      )
+      .bind(...bindings)
+      .run();
   }
 }
 

@@ -5,12 +5,18 @@ import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } fr
 import { refreshStaleIdentities } from "./identity";
 
 const BATCH_SIZE = 50;
-
-// Cache state in memory across ingest cycles (survives within the same Worker isolate)
-let cachedKnownDids: Set<string> | undefined;
-let schemaInitialized = false;
-let lastFeedPruneMs = 0;
 const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+/** Mutable state that persists across ingest cycles within the same process. */
+export interface IngestState {
+  cachedKnownDids?: Set<string>;
+  schemaInitialized: boolean;
+  lastFeedPruneMs: number;
+}
+
+export function createIngestState(): IngestState {
+  return { schemaInitialized: false, lastFeedPruneMs: 0 };
+}
 
 function getLogger(config: ContrailConfig): Logger {
   return config.logger ?? console;
@@ -98,13 +104,15 @@ export async function ingestEvents(
 export async function runIngestCycle(
   db: Database,
   config: ContrailConfig,
-  timeoutMs: number = 25_000
+  timeoutMs: number = 25_000,
+  state?: IngestState
 ): Promise<void> {
   const log = getLogger(config);
+  const s = state ?? createIngestState();
 
-  if (!schemaInitialized) {
+  if (!s.schemaInitialized) {
     await initSchema(db, config);
-    schemaInitialized = true;
+    s.schemaInitialized = true;
   }
 
   const cursor = await getLastCursor(db);
@@ -119,15 +127,15 @@ export async function runIngestCycle(
   let knownDids: Set<string> | undefined;
 
   if (dependentCollections.length > 0) {
-    if (cachedKnownDids) {
-      knownDids = cachedKnownDids;
+    if (s.cachedKnownDids) {
+      knownDids = s.cachedKnownDids;
       log.log(`Using cached known DIDs (${knownDids.size} users)`);
     } else {
       const result = await db
         .prepare("SELECT did FROM identities")
         .all<{ did: string }>();
       knownDids = new Set((result.results ?? []).map((r) => r.did));
-      cachedKnownDids = knownDids;
+      s.cachedKnownDids = knownDids;
       log.log(`Loaded ${knownDids.size} known DIDs from database`);
     }
   }
@@ -162,13 +170,13 @@ export async function runIngestCycle(
   }
 
   // Prune feed items hourly
-  if (config.feeds && Date.now() - lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
+  if (config.feeds && Date.now() - s.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
     const maxItems = Math.max(
       ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
     );
     const pruned = await pruneFeedItems(db, maxItems);
     if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
-    lastFeedPruneMs = Date.now();
+    s.lastFeedPruneMs = Date.now();
   }
 
   log.log(`Ingestion complete. Stored ${events.length} events.`);

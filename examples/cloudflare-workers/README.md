@@ -18,9 +18,11 @@ npx wrangler d1 create contrail
 
 Copy the `database_id` from the output into `wrangler.jsonc`.
 
+> **Note:** The `contrail` dependency installs from GitHub. This may take a minute on first install since it also pulls in the AT Protocol client libraries.
+
 ## Configure
 
-Edit `config.ts` to define your collections, queryable fields, relations, and references. See the [Contrail README](../../README.md) for all options.
+Edit `config.ts` to define your collections, queryable fields, relations, and references. See the [Contrail README](https://github.com/flo-bit/contrail) for all options.
 
 ## Develop
 

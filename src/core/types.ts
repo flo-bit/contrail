@@ -24,6 +24,8 @@ export interface RelationConfig {
   groupBy?: string;
   /** Enable materialized count columns on the parent. Defaults to true. */
   count?: boolean;
+  /** Count distinct values of a field (e.g. "did" for unique users) instead of total records. */
+  countDistinct?: string;
   /** Pre-resolved group mappings: shortName → full token (e.g. { going: "community.lexicon.calendar.rsvp#going" }). Auto-computed from groupBy if omitted. */
   groups?: Record<string, string>;
 }

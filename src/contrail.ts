@@ -3,7 +3,8 @@ import { resolveConfig, validateConfig } from "./core/types";
 import { initSchema } from "./core/db/schema";
 import { queryRecords } from "./core/db/records";
 import type { QueryOptions, SortOption } from "./core/db/records";
-import { runIngestCycle } from "./core/jetstream";
+import { runIngestCycle, createIngestState } from "./core/jetstream";
+import type { IngestState } from "./core/jetstream";
 import { discoverDIDs, backfillAll } from "./core/backfill";
 import type { BackfillAllOptions, BackfillProgress } from "./core/backfill";
 import { processNotifyUris } from "./core/router/notify";
@@ -16,6 +17,7 @@ export interface ContrailOptions extends ContrailConfig {
 export class Contrail {
   readonly config: ResolvedContrailConfig;
   private _db?: Database;
+  private _ingestState: IngestState = createIngestState();
 
   constructor(options: ContrailOptions) {
     const { db, ...configInput } = options;
@@ -46,7 +48,7 @@ export class Contrail {
 
   /** Run one Jetstream ingestion cycle (catches up to present, then stops). */
   async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
-    await runIngestCycle(this.getDb(db), this.config, options?.timeoutMs);
+    await runIngestCycle(this.getDb(db), this.config, options?.timeoutMs, this._ingestState);
   }
 
   /** Discover users from relays. Returns discovered DIDs. */

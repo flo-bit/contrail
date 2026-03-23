@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import type { ContrailConfig, ResolvedContrailConfig, Database, RecordRow, QueryableField, RecordSource } from "../types";
+import type { ContrailConfig, ResolvedContrailConfig, Database, RecordRow, QueryableField, RecordSource, RelationConfig } from "../types";
 import { getCollectionNames, countColumnName, recordsTableName } from "../types";
 import { queryRecords } from "../db";
 import type { SortOption } from "../db/records";
@@ -29,13 +29,16 @@ export async function runPipeline(
   const cursor = params.get("cursor") || undefined;
   const actor = params.get("actor") || params.get("did") || undefined;
   const wantProfiles = params.get("profiles") === "true";
+  const wantBackfill = params.get("backfill") === "true";
 
   let did: string | undefined;
   if (actor) {
     const resolved = await resolveActor(db, actor);
     if (!resolved) throw new Error("Could not resolve actor");
     did = resolved;
-    await backfillUser(db, did, collection, Date.now() + 10_000, config);
+    if (wantBackfill) {
+      await backfillUser(db, did, collection, Date.now() + 10_000, config);
+    }
   }
 
   const filters: Record<string, string> = {};
@@ -192,10 +195,13 @@ export function registerCollectionRoutes(
 
       const relations = colConfig.relations ?? {};
       const references = colConfig.references ?? {};
+      const relMap = (config as ResolvedContrailConfig)._resolved?.relations[collection] ?? {};
 
       const table = recordsTableName(collection);
+      const countCols = getRelationCountColumns(relations, relMap);
+      const selectCols = `uri, did, rkey, cid, record, time_us, indexed_at${countCols.length > 0 ? ", " + countCols.map(c => c.column).join(", ") : ""}`;
       const row = await db
-        .prepare(`SELECT * FROM ${table} WHERE uri = ?`)
+        .prepare(`SELECT ${selectCols} FROM ${table} WHERE uri = ?`)
         .bind(uri)
         .first<any>();
 
@@ -272,6 +278,24 @@ export function registerCollectionRoutes(
       });
     }
   }
+}
+
+function getRelationCountColumns(
+  relations: Record<string, RelationConfig>,
+  relMap: Record<string, any>
+): { column: string }[] {
+  const cols: { column: string }[] = [];
+  for (const [relName, rel] of Object.entries(relations)) {
+    if (rel.count === false) continue;
+    cols.push({ column: countColumnName(rel.collection) });
+    const mapping = relMap[relName];
+    if (mapping?.groups) {
+      for (const [, fullToken] of Object.entries(mapping.groups as Record<string, string>)) {
+        cols.push({ column: countColumnName(fullToken) });
+      }
+    }
+  }
+  return cols;
 }
 
 function extractCounts(

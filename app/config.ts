@@ -18,6 +18,7 @@ export const config: ContrailConfig = {
           collection: "community.lexicon.calendar.rsvp",
           groupBy: "status",
           count: true,
+          countDistinct: "did",
           groups: {
             interested: "community.lexicon.calendar.rsvp#interested",
             going: "community.lexicon.calendar.rsvp#going",
