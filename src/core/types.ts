@@ -22,6 +22,8 @@ export interface RelationConfig {
   field?: string;
   match?: "uri" | "did";
   groupBy?: string;
+  /** Enable materialized count columns on the parent. Defaults to true. */
+  count?: boolean;
 }
 
 /** A forward reference: this collection's records point at another collection. */

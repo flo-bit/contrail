@@ -8,6 +8,7 @@ export const config: ContrailConfig = {
         rsvps: {
           collection: "community.lexicon.calendar.rsvp",
           groupBy: "status",
+          count: true,
         },
       },
     },

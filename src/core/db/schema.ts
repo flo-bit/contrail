@@ -78,6 +78,7 @@ function buildCountColumns(config: ContrailConfig): string[] {
   for (const [collection, colConfig] of Object.entries(config.collections)) {
     const relMap = resolvedRelationsMap[collection] ?? {};
     for (const [relName, rel] of Object.entries(colConfig.relations ?? {})) {
+      if (rel.count === false) continue;
       // Total count column
       const totalCol = countColumnName(rel.collection);
       if (!addedColumns.has(totalCol)) {

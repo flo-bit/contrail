@@ -14,7 +14,7 @@ const SEARCH_CONFIG: ContrailConfig = {
         description: {},
         startsAt: { type: "range" },
       },
-      // searchable omitted → auto-detect non-range: mode, name, description
+      searchable: ["mode", "name", "description"],
     },
     "test.explicit.collection": {
       queryable: {
@@ -40,7 +40,7 @@ beforeEach(async () => {
   await initSchema(db, SEARCH_CONFIG);
 });
 
-describe("FTS auto-detect (searchable omitted)", () => {
+describe("FTS with explicit searchable fields", () => {
   const collection = "community.lexicon.calendar.event";
 
   beforeEach(async () => {

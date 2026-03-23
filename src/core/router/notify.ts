@@ -105,8 +105,7 @@ export function registerNotifyRoute(
           did: parsed.did,
           collection: parsed.collection,
           rkey: parsed.rkey,
-          // "update" skips count statements, "create" increments them.
-          // Only use "create" if the record is genuinely new.
+          // Both "update" and "create" trigger a full recount of related records.
           operation: existing ? "update" : "create",
           cid: result.cid,
           record: JSON.stringify(result.value),

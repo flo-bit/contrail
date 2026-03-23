@@ -253,13 +253,10 @@ describe("search: disabled", () => {
   });
 });
 
-describe("search: auto-detect", () => {
-  it("includes search param with non-range fields only", () => {
+describe("search: no searchable field configured", () => {
+  it("does not include search param when searchable is omitted", () => {
     const lexicons = generate(SEARCH_AUTO_CONFIG);
     const params = getParams(lexicons["com.example.post.listRecords"]);
-    expect(params.search).toBeDefined();
-    expect(params.search.description).toContain("title");
-    expect(params.search.description).toContain("body");
-    expect(params.search.description).not.toContain("score");
+    expect(params.search).toBeUndefined();
   });
 });

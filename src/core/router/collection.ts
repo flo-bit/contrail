@@ -285,6 +285,7 @@ function extractCounts(
   const counts: Record<string, number> = {};
 
   for (const [relName, rel] of Object.entries(relations)) {
+    if (rel.count === false) continue;
     const totalCol = countColumnName(rel.collection);
     const val = row[totalCol];
     if (val != null && val !== 0) counts[rel.collection] = val;
