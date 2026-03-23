@@ -130,14 +130,16 @@ export async function saveCursor(
 export async function applyEvents(
   db: Database,
   events: IngestEvent[],
-  config?: ContrailConfig
+  config?: ContrailConfig,
+  options?: { skipReplayDetection?: boolean }
 ): Promise<void> {
   if (events.length === 0) return;
 
   // Look up existing records so we can skip duplicate count updates on replayed events.
   // A create/update with the same CID is a replay; a delete for a missing URI is a replay.
+  // Can be skipped during backfill where records are known to be fresh inserts.
   const existingCids = new Map<string, string | null>();
-  if (config) {
+  if (config && !options?.skipReplayDetection) {
     const uris = events.map((e) => e.uri);
     for (let i = 0; i < uris.length; i += 50) {
       const chunk = uris.slice(i, i + 50);

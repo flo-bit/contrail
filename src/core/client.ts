@@ -86,21 +86,61 @@ export async function resolvePDS(
   return result;
 }
 
+// In-memory PDS cache + in-flight deduplication
+const pdsCache = new Map<string, string>();
+const pdsInflight = new Map<string, Promise<string | undefined>>();
+
 export async function getPDS(
   did: Did,
   db?: Database
 ): Promise<string | undefined> {
-  // Check cached PDS first
+  const mem = pdsCache.get(did);
+  if (mem) return mem;
+
+  // Deduplicate concurrent calls for the same DID
+  const inflight = pdsInflight.get(did);
+  if (inflight) return inflight;
+
+  const promise = resolvePDSCached(did, db);
+  pdsInflight.set(did, promise);
+  try {
+    return await promise;
+  } finally {
+    pdsInflight.delete(did);
+  }
+}
+
+async function resolvePDSCached(
+  did: Did,
+  db?: Database
+): Promise<string | undefined> {
   if (db) {
     const cached = await db
       .prepare("SELECT pds FROM identities WHERE did = ? AND pds IS NOT NULL")
       .bind(did)
       .first<{ pds: string }>();
-    if (cached?.pds) return cached.pds;
+    if (cached?.pds) {
+      pdsCache.set(did, cached.pds);
+      return cached.pds;
+    }
   }
 
   const resolved = await resolvePDS(did);
-  return resolved?.pds ?? undefined;
+  if (!resolved?.pds) return undefined;
+
+  pdsCache.set(did, resolved.pds);
+
+  // Persist to DB for future runs
+  if (db) {
+    await db
+      .prepare(
+        "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?) ON CONFLICT(did) DO UPDATE SET pds = excluded.pds, handle = COALESCE(excluded.handle, identities.handle), resolved_at = excluded.resolved_at"
+      )
+      .bind(did, resolved.handle, resolved.pds, Date.now())
+      .run();
+  }
+
+  return resolved.pds;
 }
 
 export async function getClient(did: Did, db?: Database): Promise<Client> {

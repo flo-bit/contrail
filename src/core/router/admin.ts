@@ -1,10 +1,7 @@
 import type { Hono, Context, Next } from "hono";
 import type { ContrailConfig, Database } from "../types";
-import { getCollectionNames } from "../types";
 import { getLastCursor } from "../db";
 import { initSchema } from "../db/schema";
-import { backfillUser, discoverDIDs } from "../backfill";
-import { parseIntParam } from "./helpers";
 
 export function registerAdminRoutes(
   app: Hono,
@@ -50,80 +47,6 @@ export function registerAdminRoutes(
     return c.json({
       total_records: collections.reduce((sum, col) => sum + col.records, 0),
       collections,
-    });
-  });
-
-  app.get(`/xrpc/${ns}.admin.sync`, requireAdmin, async (c) => {
-    const deadline = Date.now() + 25_000;
-    const concurrency = parseIntParam(c.req.query("concurrency"), 25) ?? 25;
-
-    // Phase 1: Discover DIDs from relays
-    const dids = await discoverDIDs(db, config, deadline);
-
-    const discoverableCount = getCollectionNames(config).filter(
-      (col) => config.collections[col]?.discover !== false
-    ).length;
-    const discoveryRows = await db
-      .prepare("SELECT COUNT(*) as count FROM discovery")
-      .first<{ count: number }>();
-    const pendingDiscovery = await db
-      .prepare("SELECT COUNT(*) as count FROM discovery WHERE completed = 0")
-      .first<{ count: number }>();
-    const discoveryDone =
-      (discoveryRows?.count ?? 0) >= discoverableCount &&
-      (pendingDiscovery?.count ?? 0) === 0;
-
-    // Ensure dependent collections have backfill entries for all known DIDs
-    const dependentCollections = getCollectionNames(config).filter(
-      (col) => config.collections[col]?.discover === false
-    );
-    if (dependentCollections.length > 0 && Date.now() < deadline) {
-      for (const depCol of dependentCollections) {
-        await db
-          .prepare(
-            `INSERT OR IGNORE INTO backfills (did, collection, completed)
-             SELECT i.did, ?, 0 FROM identities i
-             LEFT JOIN backfills b ON b.did = i.did AND b.collection = ?
-             WHERE b.did IS NULL`
-          )
-          .bind(depCol, depCol)
-          .run();
-      }
-    }
-
-    // Phase 2: Backfill records from PDS
-    let backfilled = 0;
-    if (Date.now() < deadline) {
-      const pending = await db
-        .prepare(
-          "SELECT did, collection FROM backfills WHERE completed = 0 LIMIT 500"
-        )
-        .all<{ did: string; collection: string }>();
-
-      const rows = pending.results ?? [];
-      for (let i = 0; i < rows.length; i += concurrency) {
-        if (Date.now() >= deadline) break;
-        const batch = rows.slice(i, i + concurrency);
-        const results = await Promise.allSettled(
-          batch.map((row) =>
-            backfillUser(db, row.did, row.collection, deadline, config)
-          )
-        );
-        for (const r of results) {
-          if (r.status === "fulfilled") backfilled += r.value;
-        }
-      }
-    }
-
-    const remaining = await db
-      .prepare("SELECT COUNT(*) as count FROM backfills WHERE completed = 0")
-      .first<{ count: number }>();
-
-    return c.json({
-      discovered: dids.length,
-      backfilled,
-      remaining: remaining?.count ?? 0,
-      done: discoveryDone && (remaining?.count ?? 0) === 0,
     });
   });
 

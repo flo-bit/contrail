@@ -11,7 +11,7 @@
 			"binding": "DB",
 			"database_name": "contrail",
 			"database_id": "29cf6e32-d0b9-4646-ac52-bfbeef085c1a",
-			"remote": true
+			"remote": false
 		}
 	],
 	"triggers": {

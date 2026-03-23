@@ -7,28 +7,6 @@ Define collections — get automatic Jetstream ingestion, PDS backfill, user dis
 
 ## Quickstart
 
-### Dev
-
-```bash
-pnpm install
-# Edit src/config.ts with your collections
-pnpm generate:pull   # pull lexicons from network, auto-detect fields, generate types
-pnpm dev:auto        # start wrangler dev with auto-ingestion, leave running while you sync
-pnpm sync            # in a different terminal, discover users + backfill records from PDS
-```
-
-### Production
-
-```bash
-npx wrangler d1 create contrail
-# Add database_id to wrangler.toml
-pnpm deploy
-# to sync in production, run it locally but set your d1 to remote, then run
-pnpm sync
-```
-
-Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialized.
-
 ## Config
 
 Edit `src/config.ts` — this is the only file you need to touch:
@@ -46,12 +24,31 @@ export const config: ContrailConfig = {
       },
     },
     "community.lexicon.calendar.rsvp": {},
-  },
-  // profiles: ["app.bsky.actor.profile"],  ← default
-  // jetstreams: [...]                       ← default: 4 Bluesky jetstream endpoints
-  // relays: [...]                           ← default: 2 Bluesky relay endpoints
+  }
 };
 ```
+
+### Dev
+
+```bash
+pnpm install
+pnpm generate:pull   # pull lexicons from network, auto-detect fields, generate types
+pnpm sync            # discover users and backfill records from PDS
+pnpm dev:auto        # start wrangler dev with auto-ingestion
+```
+
+### Production
+
+```bash
+npx wrangler d1 create contrail
+# Add database_id to wrangler.toml
+pnpm deploy
+# to sync in production, run it locally but set your d1 to remote, then run
+pnpm sync
+```
+
+Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialized.
+
 
 ### What's auto-detected from lexicons
 
