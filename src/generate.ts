@@ -601,7 +601,8 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       for (const ref of findRefsInLexicon(file)) allRefs.add(ref);
     }
     const profileNsids = config.profiles ?? ["app.bsky.actor.profile"];
-    const pullNsids = new Set([...collectionNsids, ...profileNsids]);
+    const feedFollowNsids = config.feeds ? Object.values(config.feeds).map((f) => f.follow) : [];
+    const pullNsids = new Set([...collectionNsids, ...profileNsids, ...feedFollowNsids]);
     for (const ref of allRefs) {
       if (!ref.startsWith("com.atproto.")) pullNsids.add(ref);
     }

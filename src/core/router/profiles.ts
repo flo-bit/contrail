@@ -1,4 +1,5 @@
 import type { Database, ContrailConfig, RecordRow } from "../types";
+import { recordsTableName } from "../types";
 import { resolveIdentities } from "../identity";
 import { batchedInQuery } from "./helpers";
 
@@ -46,11 +47,12 @@ export async function resolveProfiles(
     const remaining = dids.filter((d) => !result[d]);
     if (remaining.length === 0) break;
 
+    const table = recordsTableName(collection);
     const uris = remaining.map((did) => `at://${did}/${collection}/self`);
 
-    const rows = await batchedInQuery<RecordRow>(
+    const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
       db,
-      `SELECT uri, did, collection, rkey, cid, record FROM records WHERE uri IN (__IN__)`,
+      `SELECT uri, did, rkey, cid, record FROM ${table} WHERE uri IN (__IN__)`,
       [],
       uris
     );
@@ -68,7 +70,7 @@ export async function resolveProfiles(
         did: row.did,
         handle: null, // filled below
         uri: row.uri,
-        collection: row.collection,
+        collection,
         rkey: row.rkey,
         cid: row.cid,
         record,

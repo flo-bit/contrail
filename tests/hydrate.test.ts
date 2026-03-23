@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { Database, RecordRow, RelationConfig, ReferenceConfig } from "../src/core/types";
+import { recordsTableName } from "../src/core/types";
 import { parseHydrateParams, resolveHydrates, resolveReferences } from "../src/core/router/hydrate";
 import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { applyEvents } from "../src/core/db/records";
@@ -99,7 +100,7 @@ describe("resolveHydrates", () => {
     }
 
     const eventRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
@@ -129,7 +130,7 @@ describe("resolveHydrates", () => {
     }
 
     const eventRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
@@ -159,7 +160,7 @@ describe("resolveHydrates", () => {
     ]);
 
     const eventRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
@@ -196,7 +197,7 @@ describe("resolveHydrates", () => {
     ]);
 
     const rsvpRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.rsvp")} WHERE uri = ?`)
       .bind(rsvpUri)
       .first<RecordRow>();
 
@@ -242,8 +243,7 @@ describe("resolveHydrates", () => {
     ]);
 
     const rsvpRows = await db
-      .prepare("SELECT * FROM records WHERE collection = ? ORDER BY time_us DESC")
-      .bind("community.lexicon.calendar.rsvp")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.rsvp")} ORDER BY time_us DESC`)
       .all<RecordRow>();
 
     const references = TEST_CONFIG.collections["community.lexicon.calendar.rsvp"].references!;
@@ -274,7 +274,7 @@ describe("resolveHydrates", () => {
     ]);
 
     const eventRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 

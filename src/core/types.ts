@@ -203,6 +203,10 @@ export function countColumnName(type: string): string {
   return "count_" + type.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
+export function recordsTableName(collection: string): string {
+  return "records_" + collection.replace(/[^a-zA-Z0-9]/g, "_");
+}
+
 export function getCollectionNames(config: ContrailConfig): string[] {
   return Object.keys(config.collections);
 }

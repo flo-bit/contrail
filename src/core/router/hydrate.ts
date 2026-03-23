@@ -1,5 +1,5 @@
 import type { RelationConfig, ReferenceConfig, RecordRow, Database } from "../types";
-import { getNestedValue, getRelationField } from "../types";
+import { getNestedValue, getRelationField, recordsTableName } from "../types";
 import { batchedInQuery, formatRecord } from "./helpers";
 
 // --- Hydration: embed related records ---
@@ -44,13 +44,13 @@ export async function resolveHydrates(
 ): Promise<HydrateResult> {
   if (Object.keys(requested).length === 0 || records.length === 0) return {};
 
-  // Accumulate grouped results first, then flatten ungrouped ones
   const grouped: Record<string, Record<string, Record<string, any[]>>> = {};
 
   for (const [relName, hydrateLimit] of Object.entries(requested)) {
     const rel = relations[relName];
     const field = getRelationField(rel);
     const matchMode = rel.match ?? "uri";
+    const table = recordsTableName(rel.collection);
 
     const matchValues = matchMode === "did"
       ? [...new Set(records.map((r) => r.did))]
@@ -58,16 +58,15 @@ export async function resolveHydrates(
 
     if (matchValues.length === 0) continue;
 
-    // Fetch more rows than needed since the limit applies per-group, not total
-    const groupCount = rel.groupBy ? 10 : 1; // estimate; overfetch is fine
+    const groupCount = rel.groupBy ? 10 : 1;
     const maxRows = matchValues.length * hydrateLimit * groupCount;
-    const relatedRows = await batchedInQuery<RecordRow>(
+    const relatedRows = await batchedInQuery<Omit<RecordRow, "collection">>(
       db,
-      `SELECT uri, did, collection, rkey, record, time_us FROM records
-       WHERE collection = ? AND json_extract(record, '$.${field}') IN (__IN__)
+      `SELECT uri, did, rkey, record, time_us FROM ${table}
+       WHERE json_extract(record, '$.${field}') IN (__IN__)
        ORDER BY time_us DESC
        LIMIT ${maxRows}`,
-      [rel.collection],
+      [],
       matchValues
     );
 
@@ -93,13 +92,12 @@ export async function resolveHydrates(
 
         const group = grouped[targetUri][relName][groupValue];
         if (group.length < hydrateLimit) {
-          group.push(formatRecord(row));
+          group.push(formatRecord({ ...row, collection: rel.collection }));
         }
       }
     }
   }
 
-  // Convert to final shape: ungrouped relations become flat arrays
   const result: HydrateResult = {};
   for (const [uri, rels] of Object.entries(grouped)) {
     result[uri] = {};
@@ -133,8 +131,9 @@ export async function resolveReferences(
     const ref = references[refName];
     if (!ref) continue;
 
-    // Extract target URIs from our records
-    const targetMap = new Map<string, string[]>(); // targetUri → parentUris[]
+    const table = recordsTableName(ref.collection);
+
+    const targetMap = new Map<string, string[]>();
     for (const r of records) {
       const parsed = r.record ? JSON.parse(r.record) : null;
       const targetValue = parsed ? getNestedValue(parsed, ref.field) : null;
@@ -146,11 +145,11 @@ export async function resolveReferences(
     const targetUris = [...targetMap.keys()];
     if (targetUris.length === 0) continue;
 
-    const rows = await batchedInQuery<RecordRow>(
+    const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
       db,
-      `SELECT uri, did, collection, rkey, record, time_us FROM records
-       WHERE collection = ? AND uri IN (__IN__)`,
-      [ref.collection],
+      `SELECT uri, did, rkey, record, time_us FROM ${table}
+       WHERE uri IN (__IN__)`,
+      [],
       targetUris
     );
 
@@ -158,7 +157,7 @@ export async function resolveReferences(
       const parentUris = targetMap.get(row.uri) ?? [];
       for (const parentUri of parentUris) {
         if (!result[parentUri]) result[parentUri] = {};
-        result[parentUri][refName] = formatRecord(row);
+        result[parentUri][refName] = formatRecord({ ...row, collection: ref.collection });
       }
     }
   }

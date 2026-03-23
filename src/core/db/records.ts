@@ -7,7 +7,7 @@ import type {
   RecordRow,
   RecordSource,
 } from "../types";
-import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections } from "../types";
+import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections, recordsTableName } from "../types";
 import { resolvedRelationsMap } from "../queryable.generated";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 
@@ -59,7 +59,8 @@ function buildCountStatements(
 
     const field = getRelationField(rel);
     const matchColumn = rel.match === "did" ? "did" : "uri";
-    const childCollection = rel.collection;
+    const childTable = recordsTableName(rel.collection);
+    const parentTable = recordsTableName(parentCollection);
 
     // Collect target URIs/DIDs that need recounting (current + old if changed)
     const targets: string[] = [];
@@ -83,20 +84,20 @@ function buildCountStatements(
       // Total count
       const totalCol = countColumnName(rel.collection);
       setClauses.push(
-        `${totalCol} = (SELECT COUNT(*) FROM records WHERE collection = ? AND json_extract(record, '$.${field}') = ?)`
+        `${totalCol} = (SELECT COUNT(*) FROM ${childTable} WHERE json_extract(record, '$.${field}') = ?)`
       );
-      setBindings.push(childCollection, targetValue);
+      setBindings.push(targetValue);
 
       // Grouped counts
       if (rel.groupBy) {
         const mapping = (resolvedRelationsMap as Record<string, any>)[parentCollection]?.[relationName];
         if (mapping?.groups) {
-          for (const [groupValue, fullToken] of Object.entries(mapping.groups as Record<string, string>)) {
+          for (const [, fullToken] of Object.entries(mapping.groups as Record<string, string>)) {
             const groupCol = countColumnName(fullToken);
             setClauses.push(
-              `${groupCol} = (SELECT COUNT(*) FROM records WHERE collection = ? AND json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
+              `${groupCol} = (SELECT COUNT(*) FROM ${childTable} WHERE json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
             );
-            setBindings.push(childCollection, targetValue, groupValue);
+            setBindings.push(targetValue, fullToken);
           }
         }
       }
@@ -105,7 +106,7 @@ function buildCountStatements(
         statements.push(
           db
             .prepare(
-              `UPDATE records SET ${setClauses.join(", ")} WHERE ${matchColumn} = ?`
+              `UPDATE ${parentTable} SET ${setClauses.join(", ")} WHERE ${matchColumn} = ?`
             )
             .bind(...setBindings, targetValue)
         );
@@ -164,21 +165,20 @@ function buildFeedStatements(
   const stmts: Statement[] = [];
 
   for (const [, feedConfig] of Object.entries(config.feeds)) {
+    const followTable = recordsTableName(feedConfig.follow);
+
     // Target collection: fan out to followers
     if (feedConfig.targets.includes(event.collection)) {
       if (event.operation === "create" || event.operation === "update") {
-        // Insert feed items for all followers of the event creator.
-        // Follow records have: did = follower, record.subject = followed person.
         stmts.push(
           db
             .prepare(
               `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
                SELECT r.did, ?, ?, ?
-               FROM records r
-               WHERE r.collection = ?
-                 AND json_extract(r.record, '$.subject') = ?`
+               FROM ${followTable} r
+               WHERE json_extract(r.record, '$.subject') = ?`
             )
-            .bind(event.uri, event.collection, event.time_us, feedConfig.follow, event.did)
+            .bind(event.uri, event.collection, event.time_us, event.did)
         );
       } else if (event.operation === "delete") {
         stmts.push(
@@ -193,15 +193,15 @@ function buildFeedStatements(
         const record = event.record ? JSON.parse(event.record) : null;
         const subject = record?.subject;
         if (subject) {
-          // New follow: backfill recent items from the followed user
           for (const targetCol of feedConfig.targets) {
+            const targetTable = recordsTableName(targetCol);
             stmts.push(
               db
                 .prepare(
                   `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
-                   SELECT ?, r.uri, r.collection, r.time_us
-                   FROM records r
-                   WHERE r.collection = ? AND r.did = ?
+                   SELECT ?, r.uri, ?, r.time_us
+                   FROM ${targetTable} r
+                   WHERE r.did = ?
                    ORDER BY r.time_us DESC
                    LIMIT 100`
                 )
@@ -210,23 +210,23 @@ function buildFeedStatements(
           }
         }
       } else if (event.operation === "delete") {
-        // Unfollow: remove feed items from the unfollowed user.
-        // The record field is null for deletes, so we look up the existing record.
         const existingRecord = existingRecords.get(event.uri);
         if (existingRecord) {
           const parsed = JSON.parse(existingRecord);
           const subject = parsed?.subject;
           if (subject) {
-            const targetPlaceholders = feedConfig.targets.map(() => "?").join(",");
-            stmts.push(
-              db
-                .prepare(
-                  `DELETE FROM feed_items WHERE actor = ? AND uri IN (
-                     SELECT uri FROM records WHERE did = ? AND collection IN (${targetPlaceholders})
-                   )`
-                )
-                .bind(event.did, subject, ...feedConfig.targets)
-            );
+            for (const targetCol of feedConfig.targets) {
+              const targetTable = recordsTableName(targetCol);
+              stmts.push(
+                db
+                  .prepare(
+                    `DELETE FROM feed_items WHERE actor = ? AND uri IN (
+                       SELECT uri FROM ${targetTable} WHERE did = ?
+                     )`
+                  )
+                  .bind(event.did, subject)
+              );
+            }
           }
         }
       }
@@ -287,10 +287,7 @@ export async function applyEvents(
 ): Promise<void> {
   if (events.length === 0) return;
 
-  // Look up existing records so we can skip duplicate count updates on replayed events.
-  // A create/update with the same CID is a replay; a delete for a missing URI is a replay.
-  // Can be skipped during backfill where records are known to be fresh inserts.
-  // Also fetches record content for follow-delete events (needed for unfollow feed cleanup).
+  // Look up existing records for replay detection and count recounts.
   const existingCids = new Map<string, string | null>();
   const existingRecords = new Map<string, string | null>();
   const followCollections = config ? getFeedFollowCollections(config) : [];
@@ -300,40 +297,48 @@ export async function applyEvents(
   const needRecordContent = followCollections.length > 0 || hasCountingRelations;
 
   if (config && !options?.skipReplayDetection) {
-    const uris = events.map((e) => e.uri);
+    // Group events by collection to query the correct tables
+    const byCollection = new Map<string, string[]>();
+    for (const e of events) {
+      const uris = byCollection.get(e.collection) ?? [];
+      uris.push(e.uri);
+      byCollection.set(e.collection, uris);
+    }
+
     const selectCols = needRecordContent ? "uri, cid, record" : "uri, cid";
-    for (let i = 0; i < uris.length; i += 50) {
-      const chunk = uris.slice(i, i + 50);
-      const placeholders = chunk.map(() => "?").join(",");
-      const rows = await db
-        .prepare(`SELECT ${selectCols} FROM records WHERE uri IN (${placeholders})`)
-        .bind(...chunk)
-        .all<{ uri: string; cid: string | null; record?: string | null }>();
-      for (const row of rows.results ?? []) {
-        existingCids.set(row.uri, row.cid);
-        if (needRecordContent && row.record) {
-          existingRecords.set(row.uri, row.record);
+    for (const [collection, uris] of byCollection) {
+      const table = recordsTableName(collection);
+      for (let i = 0; i < uris.length; i += 50) {
+        const chunk = uris.slice(i, i + 50);
+        const placeholders = chunk.map(() => "?").join(",");
+        const rows = await db
+          .prepare(`SELECT ${selectCols} FROM ${table} WHERE uri IN (${placeholders})`)
+          .bind(...chunk)
+          .all<{ uri: string; cid: string | null; record?: string | null }>();
+        for (const row of rows.results ?? []) {
+          existingCids.set(row.uri, row.cid);
+          if (needRecordContent && row.record) {
+            existingRecords.set(row.uri, row.record);
+          }
         }
       }
     }
   }
 
-  const upsertStmt = db.prepare(
-    "INSERT INTO records (uri, did, collection, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at"
-  );
-  const deleteStmt = db.prepare("DELETE FROM records WHERE uri = ?");
-
   const batch: Statement[] = [];
 
   for (const e of events) {
+    const table = recordsTableName(e.collection);
+
     if (e.operation === "delete") {
-      batch.push(deleteStmt.bind(e.uri));
+      batch.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(e.uri));
     } else {
       batch.push(
-        upsertStmt.bind(
+        db.prepare(
+          `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`
+        ).bind(
           e.uri,
           e.did,
-          e.collection,
           e.rkey,
           e.cid,
           e.record,
@@ -345,7 +350,6 @@ export async function applyEvents(
 
     if (config) {
       // Recount is idempotent — always run it for create/update/delete.
-      // Pass existing record so deletes and updates that change the target can recount the old parent.
       const existingRecordJson = existingRecords.get(e.uri) ?? null;
       batch.push(...buildCountStatements(db, e, config, existingRecordJson));
 
@@ -390,8 +394,8 @@ function getCountColumns(config: ContrailConfig, collection: string): { type: st
 // --- Query ---
 
 export interface SortOption {
-  recordField?: string;  // json path, e.g. "startsAt" — sorts by json_extract
-  countType?: string;    // count type, e.g. collection NSID — sorts by aggregated count
+  recordField?: string;
+  countType?: string;
   direction: "asc" | "desc";
 }
 
@@ -426,9 +430,10 @@ export async function queryRecords(
     source,
   } = options;
 
+  const table = recordsTableName(collection);
   const limit = Math.min(Math.max(1, rawLimit ?? 50), 200);
-  const conditions: string[] = ["r.collection = ?"];
-  const bindings: (string | number)[] = [collection];
+  const conditions: string[] = [];
+  const bindings: (string | number)[] = [];
 
   if (source?.conditions) conditions.push(...source.conditions);
   if (source?.params) bindings.push(...source.params);
@@ -443,7 +448,7 @@ export async function queryRecords(
   // Cursor = AT URI of last seen record. Look it up to get keyset values.
   if (cursor) {
     const cursorRow = await db
-      .prepare("SELECT * FROM records WHERE uri = ?")
+      .prepare(`SELECT * FROM ${table} WHERE uri = ?`)
       .bind(cursor)
       .first<any>();
 
@@ -484,7 +489,6 @@ export async function queryRecords(
     }
   }
 
-  // Count filters — direct column comparison instead of HAVING
   for (const [type, minCount] of Object.entries(countFilters)) {
     const col = countColumnName(type);
     conditions.push(`r.${col} >= ?`);
@@ -497,20 +501,19 @@ export async function queryRecords(
     const colConfig2 = config.collections[collection];
     const fields = colConfig2 ? getSearchableFields(collection, colConfig2) : null;
     if (fields && fields.length > 0) {
-      const table = ftsTableName(collection);
-      ftsJoin = `JOIN ${table} fts ON fts.uri = r.uri`;
+      const ftsTable = ftsTableName(collection);
+      ftsJoin = `JOIN ${ftsTable} fts ON fts.uri = r.uri`;
       conditions.push("fts.content MATCH ?");
       bindings.push(search);
     }
   }
 
-  const where = conditions.join(" AND ");
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  // Select count columns directly
   const countSelect = countCols.length > 0
     ? ", " + countCols.map(({ column }) => `r.${column}`).join(", ")
     : "";
-  const select = `r.uri, r.did, r.collection, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}`;
+  const select = `r.uri, r.did, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}`;
 
   const join = [source?.joins, ftsJoin].filter(Boolean).join(" ");
 
@@ -530,7 +533,7 @@ export async function queryRecords(
 
   bindings.push(limit);
 
-  const query = `SELECT ${select} FROM records r ${join} WHERE ${where} ORDER BY ${orderBy} LIMIT ?`;
+  const query = `SELECT ${select} FROM ${table} r ${join} ${where} ORDER BY ${orderBy} LIMIT ?`;
 
   const result = await db
     .prepare(query)
@@ -541,7 +544,7 @@ export async function queryRecords(
     const rec: RecordRow & { counts?: Record<string, number> } = {
       uri: row.uri,
       did: row.did,
-      collection: row.collection,
+      collection,
       rkey: row.rkey,
       cid: row.cid,
       record: row.record,

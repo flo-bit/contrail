@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
+import { recordsTableName } from "../types";
 import { applyEvents } from "../db/records";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
@@ -89,8 +90,9 @@ export function registerNotifyRoute(
       const now = Date.now() * 1000; // microseconds
 
       // Check if this record already exists locally
+      const table = recordsTableName(parsed.collection);
       const existing = await db
-        .prepare("SELECT cid FROM records WHERE uri = ?")
+        .prepare(`SELECT cid FROM ${table} WHERE uri = ?`)
         .bind(uri)
         .first<{ cid: string | null }>();
 
@@ -116,7 +118,7 @@ export function registerNotifyRoute(
         // Record gone from PDS but exists locally — delete it.
         // We need the old record data so buildCountStatements can decrement counts.
         const existingRecord = await db
-          .prepare("SELECT record FROM records WHERE uri = ?")
+          .prepare(`SELECT record FROM ${table} WHERE uri = ?`)
           .bind(uri)
           .first<{ record: string | null }>();
 

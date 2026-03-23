@@ -12,7 +12,8 @@ describe("initSchema", () => {
       .all<{ name: string }>();
     const names = tables.results.map((t) => t.name);
 
-    expect(names).toContain("records");
+    expect(names).toContain("records_community_lexicon_calendar_event");
+    expect(names).toContain("records_community_lexicon_calendar_rsvp");
     expect(names).toContain("backfills");
     expect(names).toContain("discovery");
     expect(names).toContain("cursor");

@@ -1,7 +1,7 @@
 import type { Hono, Context, Next } from "hono";
 import type { ContrailConfig, Database } from "../types";
+import { getCollectionNames, recordsTableName } from "../types";
 import { getLastCursor } from "../db";
-import { initSchema } from "../db/schema";
 
 export function registerAdminRoutes(
   app: Hono,
@@ -37,13 +37,18 @@ export function registerAdminRoutes(
   });
 
   app.get(`/xrpc/${ns}.admin.getOverview`, async (c) => {
-    const result = await db
-      .prepare(
-        "SELECT collection, COUNT(*) as records, COUNT(DISTINCT did) as unique_users FROM records GROUP BY collection"
-      )
-      .all<{ collection: string; records: number; unique_users: number }>();
+    const collections: { collection: string; records: number; unique_users: number }[] = [];
 
-    const collections = result.results ?? [];
+    for (const collection of getCollectionNames(config)) {
+      const table = recordsTableName(collection);
+      const row = await db
+        .prepare(`SELECT COUNT(*) as records, COUNT(DISTINCT did) as unique_users FROM ${table}`)
+        .first<{ records: number; unique_users: number }>();
+      if (row) {
+        collections.push({ collection, records: row.records, unique_users: row.unique_users });
+      }
+    }
+
     return c.json({
       total_records: collections.reduce((sum, col) => sum + col.records, 0),
       collections,
@@ -51,7 +56,8 @@ export function registerAdminRoutes(
   });
 
   app.get(`/xrpc/${ns}.admin.reset`, requireAdmin, async (c) => {
-    const tables = ["records", "backfills", "discovery", "cursor", "identities"];
+    const collectionTables = getCollectionNames(config).map(recordsTableName);
+    const tables = [...collectionTables, "backfills", "discovery", "cursor", "identities"];
     await db.batch(tables.map((t) => db.prepare(`DELETE FROM ${t}`)));
     return c.json({ ok: true });
   });

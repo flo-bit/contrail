@@ -1,21 +1,9 @@
 import type { ContrailConfig, Database } from "../types";
-import { getRelationField, countColumnName } from "../types";
+import { getRelationField, countColumnName, recordsTableName } from "../types";
 import { resolvedQueryable, resolvedRelationsMap } from "../queryable.generated";
 import { getSearchableFields, ftsTableName } from "../search";
 
 const BASE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS records (
-  uri TEXT PRIMARY KEY,
-  did TEXT NOT NULL,
-  collection TEXT NOT NULL,
-  rkey TEXT NOT NULL,
-  cid TEXT,
-  record TEXT,
-  time_us INTEGER NOT NULL,
-  indexed_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_records_collection_time ON records(collection, time_us DESC);
-CREATE INDEX IF NOT EXISTS idx_records_collection_did ON records(collection, did);
 CREATE TABLE IF NOT EXISTS backfills (
   did TEXT NOT NULL,
   collection TEXT NOT NULL,
@@ -49,22 +37,46 @@ function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
+function buildCollectionTables(config: ContrailConfig): string[] {
+  const stmts: string[] = [];
+  for (const collection of Object.keys(config.collections)) {
+    const table = recordsTableName(collection);
+    stmts.push(
+      `CREATE TABLE IF NOT EXISTS ${table} (
+        uri TEXT PRIMARY KEY,
+        did TEXT NOT NULL,
+        rkey TEXT NOT NULL,
+        cid TEXT,
+        record TEXT,
+        time_us INTEGER NOT NULL,
+        indexed_at INTEGER NOT NULL
+      )`
+    );
+    stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_did ON ${table}(did)`);
+    stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_time ON ${table}(time_us DESC)`);
+  }
+  return stmts;
+}
+
 function buildDynamicIndexes(config: ContrailConfig): string[] {
   const indexes: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
+    const table = recordsTableName(collection);
     const queryable = resolvedQueryable[collection] ?? colConfig.queryable ?? {};
     for (const field of Object.keys(queryable)) {
       const idxName = `idx_${sanitizeName(collection)}_${sanitizeName(field)}`;
       indexes.push(
-        `CREATE INDEX IF NOT EXISTS ${idxName} ON records(collection, json_extract(record, '$.${field}'))`
+        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${table}(json_extract(record, '$.${field}'))`
       );
     }
 
+    // Relation field indexes go on the CHILD collection's table
     for (const [, rel] of Object.entries(colConfig.relations ?? {})) {
       const on = getRelationField(rel);
+      const childTable = recordsTableName(rel.collection);
       const idxName = `idx_${sanitizeName(rel.collection)}_${sanitizeName(on)}`;
       indexes.push(
-        `CREATE INDEX IF NOT EXISTS ${idxName} ON records(collection, json_extract(record, '$.${on}'))`
+        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${childTable}(json_extract(record, '$.${on}'))`
       );
     }
   }
@@ -73,23 +85,27 @@ function buildDynamicIndexes(config: ContrailConfig): string[] {
 
 function buildCountColumns(config: ContrailConfig): string[] {
   const stmts: string[] = [];
-  const addedColumns = new Set<string>();
+  const addedColumns = new Map<string, Set<string>>(); // table → columns
 
   for (const [collection, colConfig] of Object.entries(config.collections)) {
+    const table = recordsTableName(collection);
     const relMap = resolvedRelationsMap[collection] ?? {};
+
+    if (!addedColumns.has(table)) addedColumns.set(table, new Set());
+    const tableColumns = addedColumns.get(table)!;
+
     for (const [relName, rel] of Object.entries(colConfig.relations ?? {})) {
       if (rel.count === false) continue;
-      // Total count column
+      // Total count column — on the PARENT collection's table
       const totalCol = countColumnName(rel.collection);
-      if (!addedColumns.has(totalCol)) {
-        addedColumns.add(totalCol);
+      if (!tableColumns.has(totalCol)) {
+        tableColumns.add(totalCol);
         stmts.push(
-          `ALTER TABLE records ADD COLUMN ${totalCol} INTEGER NOT NULL DEFAULT 0`
+          `ALTER TABLE ${table} ADD COLUMN ${totalCol} INTEGER NOT NULL DEFAULT 0`
         );
       }
-      // Index for sorting by this count within the parent collection
       stmts.push(
-        `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${totalCol} ON records(collection, ${totalCol} DESC, time_us DESC)`
+        `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${totalCol} ON ${table}(${totalCol} DESC, time_us DESC)`
       );
 
       // Grouped count columns
@@ -97,14 +113,14 @@ function buildCountColumns(config: ContrailConfig): string[] {
       if (mapping) {
         for (const [, fullToken] of Object.entries(mapping.groups)) {
           const groupCol = countColumnName(fullToken);
-          if (!addedColumns.has(groupCol)) {
-            addedColumns.add(groupCol);
+          if (!tableColumns.has(groupCol)) {
+            tableColumns.add(groupCol);
             stmts.push(
-              `ALTER TABLE records ADD COLUMN ${groupCol} INTEGER NOT NULL DEFAULT 0`
+              `ALTER TABLE ${table} ADD COLUMN ${groupCol} INTEGER NOT NULL DEFAULT 0`
             );
           }
           stmts.push(
-            `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${groupCol} ON records(collection, ${groupCol} DESC, time_us DESC)`
+            `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${groupCol} ON ${table}(${groupCol} DESC, time_us DESC)`
           );
         }
       }
@@ -136,9 +152,10 @@ function buildFeedTables(config: ContrailConfig): string[] {
   // Index follow collections on subject for efficient fan-out lookups
   const followCollections = new Set(Object.values(config.feeds).map((f) => f.follow));
   for (const col of followCollections) {
-    const safe = col.replace(/[^a-zA-Z0-9]/g, "_");
+    const table = recordsTableName(col);
+    const safe = sanitizeName(col);
     stmts.push(
-      `CREATE INDEX IF NOT EXISTS idx_${safe}_subject ON records(collection, json_extract(record, '$.subject')) WHERE collection = '${col}'`
+      `CREATE INDEX IF NOT EXISTS idx_${safe}_subject ON ${table}(json_extract(record, '$.subject'))`
     );
   }
 
@@ -181,10 +198,11 @@ export async function initSchema(
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
+  const collectionStatements = buildCollectionTables(config);
   const indexStatements = buildDynamicIndexes(config);
   const ftsStatements = buildFtsTables(config);
   const feedStatements = buildFeedTables(config);
-  const all = [...baseStatements, ...indexStatements, ...ftsStatements, ...feedStatements];
+  const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...ftsStatements, ...feedStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
   await runMigrations(db);

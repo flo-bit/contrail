@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database, RecordRow, QueryableField, RecordSource } from "../types";
-import { getCollectionNames, countColumnName } from "../types";
+import { getCollectionNames, countColumnName, recordsTableName } from "../types";
 import { resolvedQueryable, resolvedRelationsMap } from "../queryable.generated";
 import { queryRecords } from "../db";
 import type { SortOption } from "../db/records";
@@ -194,16 +194,15 @@ export function registerCollectionRoutes(
       const relations = colConfig.relations ?? {};
       const references = colConfig.references ?? {};
 
+      const table = recordsTableName(collection);
       const row = await db
-        .prepare(
-          "SELECT * FROM records WHERE uri = ? AND collection = ?"
-        )
-        .bind(uri, collection)
+        .prepare(`SELECT * FROM ${table} WHERE uri = ?`)
+        .bind(uri)
         .first<any>();
 
       if (!row) return c.json({ error: "Record not found" }, 404);
 
-      const formatted = formatRecord(row);
+      const formatted = formatRecord({ ...row, collection });
       const counts = extractCounts(row, collection, relations);
       if (counts) flattenCounts(formatted, counts, collection, relations);
 

@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database, FeedConfig } from "../types";
-import { DEFAULT_FEED_MAX_ITEMS } from "../types";
+import { DEFAULT_FEED_MAX_ITEMS, recordsTableName } from "../types";
 import { resolveActor } from "../identity";
 import { backfillUser } from "../backfill";
 import { runPipeline } from "./collection";
@@ -33,22 +33,23 @@ async function maybeBackfillFeed(
   const maxItems = feedConfig.maxItems ?? DEFAULT_FEED_MAX_ITEMS;
 
   // Populate feed from existing records by followed users
+  const followTable = recordsTableName(feedConfig.follow);
   for (const targetCol of feedConfig.targets) {
+    const targetTable = recordsTableName(targetCol);
     await db
       .prepare(
         `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
-         SELECT ?, r.uri, r.collection, r.time_us
-         FROM records r
-         WHERE r.collection = ?
-           AND r.did IN (
+         SELECT ?, r.uri, ?, r.time_us
+         FROM ${targetTable} r
+         WHERE r.did IN (
              SELECT json_extract(f.record, '$.subject')
-             FROM records f
-             WHERE f.collection = ? AND f.did = ?
+             FROM ${followTable} f
+             WHERE f.did = ?
            )
          ORDER BY r.time_us DESC
          LIMIT ?`
       )
-      .bind(actor, targetCol, feedConfig.follow, actor, maxItems)
+      .bind(actor, targetCol, actor, maxItems)
       .run();
   }
 

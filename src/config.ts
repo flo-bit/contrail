@@ -4,6 +4,7 @@ export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
   collections: {
     "community.lexicon.calendar.event": {
+      searchable: ["name", "description"],
       relations: {
         rsvps: {
           collection: "community.lexicon.calendar.rsvp",

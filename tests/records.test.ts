@@ -277,11 +277,12 @@ describe("queryRecords", () => {
     expect(result.cursor).toBeUndefined();
   });
 
-  it("returns empty for unknown collection", async () => {
-    const result = await queryRecords(db, TEST_CONFIG, {
-      collection: "nonexistent.collection",
-    });
-    expect(result.records).toHaveLength(0);
+  it("throws for unknown collection (table does not exist)", async () => {
+    await expect(
+      queryRecords(db, TEST_CONFIG, {
+        collection: "nonexistent.collection",
+      })
+    ).rejects.toThrow();
   });
 
   it("filter keys are interpolated into SQL — only trusted input should be passed", async () => {
