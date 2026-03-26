@@ -9,6 +9,8 @@ import { discoverDIDs, backfillAll } from "./core/backfill";
 import type { BackfillAllOptions, BackfillProgress } from "./core/backfill";
 import { processNotifyUris } from "./core/router/notify";
 import type { NotifyResult } from "./core/router/notify";
+import { runPersistent as runPersistentIngestion } from "./core/persistent";
+import type { PersistentIngestOptions } from "./core/persistent";
 
 export interface ContrailOptions extends ContrailConfig {
   db?: Database;
@@ -49,6 +51,11 @@ export class Contrail {
   /** Run one Jetstream ingestion cycle (catches up to present, then stops). */
   async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
     await runIngestCycle(this.getDb(db), this.config, options?.timeoutMs, this._ingestState);
+  }
+
+  /** Run persistent Jetstream ingestion (long-lived, stays connected). */
+  async runPersistent(options?: Omit<PersistentIngestOptions, 'logger'>, db?: Database): Promise<void> {
+    await runPersistentIngestion(this.getDb(db), this.config, { ...options, logger: this.config.logger });
   }
 
   /** Discover users from relays. Returns discovered DIDs. */

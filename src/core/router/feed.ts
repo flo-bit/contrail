@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database, FeedConfig } from "../types";
+import { getDialect } from "../dialect";
 import { DEFAULT_FEED_MAX_ITEMS, recordsTableName } from "../types";
 import { resolveActor } from "../identity";
 import { backfillUser } from "../backfill";
@@ -38,16 +39,18 @@ async function maybeBackfillFeed(
     const targetTable = recordsTableName(targetCol);
     await db
       .prepare(
-        `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
+        getDialect(db).insertOrIgnore(
+          `INSERT INTO feed_items (actor, uri, collection, time_us)
          SELECT ?, r.uri, ?, r.time_us
          FROM ${targetTable} r
          WHERE r.did IN (
-             SELECT json_extract(f.record, '$.subject')
+             SELECT ${getDialect(db).jsonExtract('f.record', 'subject')}
              FROM ${followTable} f
              WHERE f.did = ?
            )
          ORDER BY r.time_us DESC
          LIMIT ?`
+        )
       )
       .bind(actor, targetCol, actor, maxItems)
       .run();

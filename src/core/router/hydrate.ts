@@ -1,4 +1,5 @@
 import type { RelationConfig, ReferenceConfig, RecordRow, Database } from "../types";
+import { getDialect } from "../dialect";
 import { getNestedValue, getRelationField, recordsTableName } from "../types";
 import { batchedInQuery, formatRecord } from "./helpers";
 
@@ -63,7 +64,7 @@ export async function resolveHydrates(
     const relatedRows = await batchedInQuery<Omit<RecordRow, "collection">>(
       db,
       `SELECT uri, did, rkey, record, time_us FROM ${table}
-       WHERE json_extract(record, '$.${field}') IN (__IN__)
+       WHERE ${getDialect(db).jsonExtract('record', field)} IN (__IN__)
        ORDER BY time_us DESC
        LIMIT ${maxRows}`,
       [],

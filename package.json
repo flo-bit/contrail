@@ -3,11 +3,14 @@
   "version": "0.0.2",
   "private": false,
   "type": "module",
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
-    "./sqlite": "./src/adapters/sqlite.ts"
+    "./sqlite": "./src/adapters/sqlite.ts",
+    "./postgres": "./src/adapters/postgres.ts"
   },
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
@@ -35,11 +38,21 @@
     "@atcute/lexicon-doc": "^2.1.2",
     "@cloudflare/workers-types": "^4.20250124.0",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/pg": "^8.20.0",
     "better-sqlite3": "^12.8.0",
+    "pg": "^8.20.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.0",
     "wrangler": "^4.63.0"
+  },
+  "peerDependencies": {
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   },
   "license": "MIT"
 }

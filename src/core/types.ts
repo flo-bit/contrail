@@ -1,7 +1,10 @@
+import type { SqlDialect } from "./dialect";
+
 // Database interface — D1 implements this natively
 export interface Database {
   prepare(sql: string): Statement;
   batch(stmts: Statement[]): Promise<any[]>;
+  dialect?: SqlDialect;
 }
 
 export interface Statement {

@@ -79,6 +79,20 @@ const { records, cursor } = await contrail.query(
 await contrail.ingest();
 ```
 
+### Persistent ingestion
+
+```ts
+// Long-lived Jetstream connection with automatic batching and reconnection
+const controller = new AbortController();
+await contrail.runPersistent({
+  batchSize: 50,           // flush every N events (default: 50)
+  flushIntervalMs: 5000,   // or every N ms (default: 5000)
+  signal: controller.signal,
+});
+```
+
+Call `controller.abort()` for graceful shutdown — the current batch is flushed and the cursor is saved.
+
 ### Discover users and backfill
 
 ```ts
@@ -141,7 +155,59 @@ const db = new SqliteDatabase(new Database("data.db"));
 const contrail = new Contrail({ ...config, db });
 ```
 
-## Running the example (Cloudflare Workers)
+### PostgreSQL adapter (Node.js / server)
+
+```ts
+import { createPostgresDatabase } from "contrail/postgres";
+import pg from "pg";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const db = createPostgresDatabase(pool);
+const contrail = new Contrail({ ...config, db });
+```
+
+PostgreSQL uses JSONB for record storage, tsvector generated columns for full-text search (instead of FTS5), and `BIGINT` for timestamp columns.
+
+## Testing
+
+### SQLite tests (default)
+
+```bash
+pnpm install
+pnpm test
+```
+
+All tests under `tests/` (except `postgres.test.ts`) run against an in-memory SQLite database with no external dependencies.
+
+### PostgreSQL tests
+
+PostgreSQL integration tests require a running PostgreSQL instance and a dedicated test database.
+
+```bash
+# Create a test database (one-time setup)
+createdb contrail_test
+
+# Run PostgreSQL tests
+TEST_DATABASE_URL="postgresql://user:password@localhost:5432/contrail_test" pnpm test -- tests/postgres.test.ts
+```
+
+The test suite drops and recreates Contrail tables in `beforeEach` — it will **not** touch other databases or schemas.
+
+To run both SQLite and PostgreSQL tests together:
+
+```bash
+TEST_DATABASE_URL="postgresql://user:password@localhost:5432/contrail_test" pnpm test
+```
+
+If `TEST_DATABASE_URL` is not set, PostgreSQL tests are automatically skipped.
+
+## Examples
+
+### PostgreSQL (Node.js)
+
+See [`examples/postgres/`](examples/postgres/) for a complete example with Docker Compose, persistent Jetstream ingestion, user discovery/backfill, and an HTTP API server.
+
+### Cloudflare Workers
 
 This repo includes a working example that indexes AT Protocol calendar events and RSVPs on Cloudflare Workers + D1.
 
@@ -189,7 +255,7 @@ Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialize
 | `references.*.field` | — | Field containing the target record's AT URI |
 | `queries` | `{}` | Custom query handlers (raw Response) |
 | `pipelineQueries` | `{}` | Custom query handlers that go through the standard filter/sort/hydration pipeline |
-| `searchable` | disabled | FTS5 search fields. Provide `string[]` to enable, omit to disable |
+| `searchable` | disabled | Full-text search fields. SQLite uses FTS5 virtual tables; PostgreSQL uses tsvector generated columns with GIN indexes. Provide `string[]` to enable, omit to disable |
 
 ### Top-level options
 
@@ -250,7 +316,7 @@ When using `createHandler`, all endpoints are available at `/xrpc/{nsid}.{method
 ?sort=rsvpsGoingCount&order=asc  # by going count ascending
 ```
 
-**Search** uses SQLite FTS5 for ranked full-text search. To enable, set `searchable: ["field1", "field2"]` on a collection. Supports FTS5 syntax including prefix (`meetup*`), phrases (`"rust meetup"`), and boolean (`rust OR typescript`). Combinable with all other filters.
+**Search** uses SQLite FTS5 or PostgreSQL tsvector for ranked full-text search. To enable, set `searchable: ["field1", "field2"]` on a collection. Supports FTS5 syntax including prefix (`meetup*`), phrases (`"rust meetup"`), and boolean (`rust OR typescript`). Combinable with all other filters.
 
 ```
 ?search=meetup                          # basic search

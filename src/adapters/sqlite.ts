@@ -1,5 +1,6 @@
 import BetterSqlite3 from "better-sqlite3";
 import type { Database, Statement } from "../core/types";
+import { sqliteDialect } from "../core/dialect";
 
 export function createSqliteDatabase(path: string): Database {
   const raw = new BetterSqlite3(path);
@@ -33,5 +34,6 @@ export function createSqliteDatabase(path: string): Database {
       }
       return results;
     },
+    dialect: sqliteDialect,
   };
 }

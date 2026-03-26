@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections, recordsTableName } from "../types";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
+import { ftsQueryClause, getDialect } from "../dialect";
 
 // --- Counts ---
 
@@ -103,7 +104,7 @@ function buildBatchCountStatements(
     // Total count
     const totalCol = countColumnName(rel.collection);
     setClauses.push(
-      `${totalCol} = (SELECT ${countExpr} FROM ${childTable} WHERE json_extract(record, '$.${field}') = ?)`
+      `${totalCol} = (SELECT ${countExpr} FROM ${childTable} WHERE ${getDialect(db).jsonExtract('record', field)} = ?)`
     );
     setBindings.push(targetValue);
 
@@ -114,7 +115,7 @@ function buildBatchCountStatements(
         for (const [, fullToken] of Object.entries(mapping.groups)) {
           const groupCol = countColumnName(fullToken);
           setClauses.push(
-            `${groupCol} = (SELECT ${countExpr} FROM ${childTable} WHERE json_extract(record, '$.${field}') = ? AND json_extract(record, '$.${rel.groupBy}') = ?)`
+            `${groupCol} = (SELECT ${countExpr} FROM ${childTable} WHERE ${getDialect(db).jsonExtract('record', field)} = ? AND ${getDialect(db).jsonExtract('record', rel.groupBy)} = ?)`
           );
           setBindings.push(targetValue, fullToken);
         }
@@ -143,6 +144,9 @@ function buildFtsStatements(
   config: ContrailConfig,
   existingMap: Map<string, ExistingRecordInfo>
 ): Statement[] {
+  // PostgreSQL: tsvector generated column is auto-maintained, no manual FTS sync
+  if (getDialect(db).ftsStrategy === "generated-column") return [];
+
   const colConfig = config.collections[event.collection];
   if (!colConfig) return [];
 
@@ -194,10 +198,12 @@ function buildFeedStatements(
         stmts.push(
           db
             .prepare(
-              `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
+              getDialect(db).insertOrIgnore(
+                `INSERT INTO feed_items (actor, uri, collection, time_us)
                SELECT r.did, ?, ?, ?
                FROM ${followTable} r
-               WHERE json_extract(r.record, '$.subject') = ?`
+               WHERE ${getDialect(db).jsonExtract('r.record', 'subject')} = ?`
+              )
             )
             .bind(event.uri, event.collection, event.time_us, event.did)
         );
@@ -219,12 +225,14 @@ function buildFeedStatements(
             stmts.push(
               db
                 .prepare(
-                  `INSERT OR IGNORE INTO feed_items (actor, uri, collection, time_us)
+                  getDialect(db).insertOrIgnore(
+                    `INSERT INTO feed_items (actor, uri, collection, time_us)
                    SELECT ?, r.uri, ?, r.time_us
                    FROM ${targetTable} r
                    WHERE r.did = ?
                    ORDER BY r.time_us DESC
                    LIMIT 100`
+                  )
                 )
                 .bind(event.did, targetCol, subject)
             );
@@ -265,11 +273,11 @@ export async function pruneFeedItems(
 ): Promise<number> {
   const result = await db
     .prepare(
-      `DELETE FROM feed_items WHERE rowid NOT IN (
-         SELECT rowid FROM (
-           SELECT rowid, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
+      `DELETE FROM feed_items WHERE (actor, uri) NOT IN (
+         SELECT actor, uri FROM (
+           SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
            FROM feed_items
-         ) WHERE rn <= ?
+         ) sub WHERE rn <= ?
        )`
     )
     .bind(maxItems)
@@ -517,7 +525,7 @@ export async function queryRecords(
     // Only select the columns needed for cursor pagination
     let cursorSelect: string;
     if (sort?.recordField) {
-      cursorSelect = `time_us, json_extract(record, '$.${sort.recordField}') as sort_value`;
+      cursorSelect = `time_us, ${getDialect(db).jsonExtract('record', sort.recordField)} as sort_value`;
     } else if (sort?.countType) {
       const sortCol = countColumnName(sort.countType);
       cursorSelect = `time_us, ${sortCol}`;
@@ -533,9 +541,9 @@ export async function queryRecords(
     if (cursorRow) {
       if (sort?.recordField) {
         const sortValue = cursorRow.sort_value;
-        const field = `json_extract(r.record, '$.${sort.recordField}')`;
+        const sortExpr = getDialect(db).jsonExtract('r.record', sort.recordField);
         const cmp = sort.direction === "desc" ? "<" : ">";
-        conditions.push(`(${field} ${cmp} ? OR (${field} = ? AND r.time_us < ?))`);
+        conditions.push(`(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND r.time_us < ?))`);
         bindings.push(sortValue ?? "", sortValue ?? "", cursorRow.time_us);
       } else if (sort?.countType) {
         const sortCol = countColumnName(sort.countType);
@@ -551,17 +559,17 @@ export async function queryRecords(
   }
 
   for (const [field, value] of Object.entries(filters)) {
-    conditions.push(`json_extract(r.record, '$.${field}') = ?`);
+    conditions.push(`${getDialect(db).jsonExtract('r.record', field)} = ?`);
     bindings.push(value);
   }
 
   for (const [field, range] of Object.entries(rangeFilters)) {
     if (range.min != null) {
-      conditions.push(`json_extract(r.record, '$.${field}') >= ?`);
+      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} >= ?`);
       bindings.push(range.min);
     }
     if (range.max != null) {
-      conditions.push(`json_extract(r.record, '$.${field}') <= ?`);
+      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} <= ?`);
       bindings.push(range.max);
     }
   }
@@ -574,13 +582,14 @@ export async function queryRecords(
 
   // FTS search
   let ftsJoin = "";
+  let ftsClause: ReturnType<typeof ftsQueryClause> | null = null;
   if (search) {
     const colConfig2 = config.collections[collection];
     const fields = colConfig2 ? getSearchableFields(collection, colConfig2) : null;
     if (fields && fields.length > 0) {
-      const ftsTable = ftsTableName(collection);
-      ftsJoin = `JOIN ${ftsTable} fts ON fts.uri = r.uri`;
-      conditions.push("fts.content MATCH ?");
+      ftsClause = ftsQueryClause(getDialect(db), recordsTableName(collection));
+      ftsJoin = ftsClause.join;
+      conditions.push(ftsClause.condition);
       bindings.push(search);
     }
   }
@@ -597,13 +606,17 @@ export async function queryRecords(
   let orderBy: string;
   if (sort?.recordField) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderBy = `json_extract(r.record, '$.${sort.recordField}') ${dir}, r.time_us DESC`;
+    orderBy = `${getDialect(db).jsonExtract('r.record', sort.recordField)} ${dir}, r.time_us DESC`;
   } else if (sort?.countType) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
     const sortCol = countColumnName(sort.countType);
     orderBy = `r.${sortCol} ${dir}, r.time_us DESC`;
-  } else if (ftsJoin) {
-    orderBy = "fts.rank, r.time_us DESC";
+  } else if (ftsClause) {
+    orderBy = `${ftsClause.orderExpr}, r.time_us DESC`;
+    // PG ts_rank needs the search term bound again for ORDER BY
+    if (getDialect(db).ftsStrategy === "generated-column" && search) {
+      bindings.push(search);
+    }
   } else {
     orderBy = "r.time_us DESC";
   }

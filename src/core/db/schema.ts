@@ -1,12 +1,15 @@
 import type { ContrailConfig, Database, ResolvedContrailConfig, ResolvedMaps } from "../types";
+import type { SqlDialect } from "../dialect";
+import { buildFtsSchema, getDialect } from "../dialect";
 import { getRelationField, countColumnName, recordsTableName, resolveConfig } from "../types";
-import { getSearchableFields, ftsTableName } from "../search";
+import { getSearchableFields } from "../search";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
 }
 
-const BASE_SCHEMA = `
+function buildBaseSchema(dialect: SqlDialect): string {
+  return `
 CREATE TABLE IF NOT EXISTS backfills (
   did TEXT NOT NULL,
   collection TEXT NOT NULL,
@@ -25,22 +28,23 @@ CREATE TABLE IF NOT EXISTS discovery (
 );
 CREATE TABLE IF NOT EXISTS cursor (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  time_us INTEGER NOT NULL
+  time_us ${dialect.bigintType} NOT NULL
 );
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
   pds TEXT,
-  resolved_at INTEGER NOT NULL
+  resolved_at ${dialect.bigintType} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_identities_handle ON identities(handle);
 `;
+}
 
 function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
-function buildCollectionTables(config: ContrailConfig): string[] {
+function buildCollectionTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   const stmts: string[] = [];
   for (const collection of Object.keys(config.collections)) {
     const table = recordsTableName(collection);
@@ -50,9 +54,9 @@ function buildCollectionTables(config: ContrailConfig): string[] {
         did TEXT NOT NULL,
         rkey TEXT NOT NULL,
         cid TEXT,
-        record TEXT,
-        time_us INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL
+        record ${dialect.recordColumnType},
+        time_us ${dialect.bigintType} NOT NULL,
+        indexed_at ${dialect.bigintType} NOT NULL
       )`
     );
     stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_did ON ${table}(did)`);
@@ -61,7 +65,7 @@ function buildCollectionTables(config: ContrailConfig): string[] {
   return stmts;
 }
 
-function buildDynamicIndexes(config: ContrailConfig): string[] {
+function buildDynamicIndexes(config: ContrailConfig, dialect: SqlDialect): string[] {
   const resolved = getResolved(config);
   const indexes: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
@@ -70,7 +74,7 @@ function buildDynamicIndexes(config: ContrailConfig): string[] {
     for (const field of Object.keys(queryable)) {
       const idxName = `idx_${sanitizeName(collection)}_${sanitizeName(field)}`;
       indexes.push(
-        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${table}(json_extract(record, '$.${field}'))`
+        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${table}(${dialect.indexExpression(dialect.jsonExtract('record', field))})`
       );
     }
 
@@ -80,7 +84,7 @@ function buildDynamicIndexes(config: ContrailConfig): string[] {
       const childTable = recordsTableName(rel.collection);
       const idxName = `idx_${sanitizeName(rel.collection)}_${sanitizeName(on)}`;
       indexes.push(
-        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${childTable}(json_extract(record, '$.${on}'))`
+        `CREATE INDEX IF NOT EXISTS ${idxName} ON ${childTable}(${dialect.indexExpression(dialect.jsonExtract('record', on))})`
       );
     }
   }
@@ -134,14 +138,14 @@ function buildCountColumns(config: ContrailConfig): string[] {
   return stmts;
 }
 
-function buildFeedTables(config: ContrailConfig): string[] {
+function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   if (!config.feeds || Object.keys(config.feeds).length === 0) return [];
   const stmts = [
     `CREATE TABLE IF NOT EXISTS feed_items (
       actor TEXT NOT NULL,
       uri TEXT NOT NULL,
       collection TEXT NOT NULL,
-      time_us INTEGER NOT NULL,
+      time_us ${dialect.bigintType} NOT NULL,
       PRIMARY KEY (actor, uri)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_feed_actor_coll_time ON feed_items(actor, collection, time_us DESC)`,
@@ -160,22 +164,20 @@ function buildFeedTables(config: ContrailConfig): string[] {
     const table = recordsTableName(col);
     const safe = sanitizeName(col);
     stmts.push(
-      `CREATE INDEX IF NOT EXISTS idx_${safe}_subject ON ${table}(json_extract(record, '$.subject'))`
+      `CREATE INDEX IF NOT EXISTS idx_${safe}_subject ON ${table}(${dialect.indexExpression(dialect.jsonExtract('record', 'subject'))})`
     );
   }
 
   return stmts;
 }
 
-function buildFtsTables(config: ContrailConfig): string[] {
+function buildFtsTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   const stmts: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
     const fields = getSearchableFields(collection, colConfig);
     if (!fields || fields.length === 0) continue;
-    const table = ftsTableName(collection);
-    stmts.push(
-      `CREATE VIRTUAL TABLE IF NOT EXISTS ${table} USING fts5(uri UNINDEXED, content)`
-    );
+    const table = recordsTableName(collection);
+    stmts.push(...buildFtsSchema(dialect, table, fields));
   }
   return stmts;
 }
@@ -199,14 +201,14 @@ export async function initSchema(
   db: Database,
   config: ContrailConfig
 ): Promise<void> {
-  const baseStatements = BASE_SCHEMA.split(";")
+  const dialect = getDialect(db);
+  const baseStatements = buildBaseSchema(dialect).split(";")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-
-  const collectionStatements = buildCollectionTables(config);
-  const indexStatements = buildDynamicIndexes(config);
-  const ftsStatements = buildFtsTables(config);
-  const feedStatements = buildFeedTables(config);
+  const collectionStatements = buildCollectionTables(config, dialect);
+  const indexStatements = buildDynamicIndexes(config, dialect);
+  const ftsStatements = buildFtsTables(config, dialect);
+  const feedStatements = buildFeedTables(config, dialect);
   const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...ftsStatements, ...feedStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
