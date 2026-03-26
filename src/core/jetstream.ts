@@ -1,6 +1,6 @@
 import { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
-import { getCollectionNames, getDependentCollections, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import { getDiscoverableCollections, getDependentCollections, DEFAULT_FEED_MAX_ITEMS } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
 
@@ -33,13 +33,13 @@ export async function ingestEvents(
   const deadline = Date.now() + safetyTimeoutMs;
   const collected: IngestEvent[] = [];
 
-  const collections = getCollectionNames(config);
+  const subscribedCollections = getDiscoverableCollections(config);
   const dependentCollections = new Set(getDependentCollections(config));
   const urls = config.jetstreams ?? [];
 
   const subscription = new JetstreamSubscription({
     url: urls,
-    wantedCollections: collections,
+    wantedCollections: subscribedCollections,
     ...(cursor !== null ? { cursor } : {}),
     onConnectionOpen() {
       log.log("Connected to Jetstream");
@@ -116,10 +116,10 @@ export async function runIngestCycle(
   }
 
   const cursor = await getLastCursor(db);
-  const collections = getCollectionNames(config);
+  const subscribedCollections = getDiscoverableCollections(config);
 
   log.log(
-    `Starting ingestion. Cursor: ${cursor ?? "none"}, Collections: ${collections.join(", ")}`
+    `Starting ingestion. Cursor: ${cursor ?? "none"}, Collections: ${subscribedCollections.join(", ")}`
   );
 
   // Load known DIDs for filtering dependent collections
