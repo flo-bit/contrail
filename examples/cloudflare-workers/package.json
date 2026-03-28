@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
+    "generate": "tsx generate.ts",
+    "generate:pull": "tsx generate.ts && lex-cli pull && tsx generate.ts && lex-cli pull",
     "sync": "tsx sync.ts",
     "sync:remote": "tsx sync.ts --remote"
   },
@@ -13,6 +15,8 @@
     "contrail": "github:flo-bit/contrail"
   },
   "devDependencies": {
+    "@atcute/lex-cli": "^2.5.3",
+    "@atcute/lexicon-doc": "^2.1.2",
     "@cloudflare/workers-types": "^4.20250124.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",

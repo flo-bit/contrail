@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
-    "./sqlite": "./src/adapters/sqlite.ts"
+    "./sqlite": "./src/adapters/sqlite.ts",
+    "./generate": "./src/generate.ts"
   },
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
