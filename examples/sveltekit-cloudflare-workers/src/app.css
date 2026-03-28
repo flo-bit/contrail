@@ -1,0 +1,9 @@
+@import 'tailwindcss';
+
+@plugin '@tailwindcss/forms';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@import '@foxui/core/theme.css';
+
+@source "../node_modules/@foxui";
