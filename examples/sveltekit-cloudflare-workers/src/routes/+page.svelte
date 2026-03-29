@@ -9,10 +9,11 @@
 	import { RelativeTime } from '@foxui/time';
 	import { JetstreamSubscription } from '@atcute/jetstream';
 
-	import { createTID, getDetailedProfile } from '$lib/atproto/methods';
+	import { createTID } from '$lib/atproto/methods';
 	import { putRecord } from '$lib/atproto/server/repo.remote';
 	import { emojiToNotoAnimatedWebp } from '$lib/emojis';
 	import { atProtoLoginModalState } from '$lib/atproto/ui/LoginModal.svelte';
+	import { getClient, extractProfile } from '$lib/contrail/client';
 
 	let { data } = $props();
 
@@ -32,16 +33,15 @@
 		...data.profiles
 	});
 
+	const contrailClient = getClient();
+
 	async function fetchProfile(did: string) {
 		if (profiles[did]) return;
 		try {
-			const profile = await getDetailedProfile({ did: did as import('@atcute/lexicons').Did });
-			if (!profile) return;
-			profiles[did] = {
-				handle: profile.handle,
-				displayName: profile.displayName,
-				avatar: profile.avatar
-			};
+			const res = await contrailClient.get('statusphere.app.getProfile', {
+				params: { actor: did }
+			});
+			profiles[did] = extractProfile(res.data);
 		} catch {
 			// ignore fetch errors
 		}

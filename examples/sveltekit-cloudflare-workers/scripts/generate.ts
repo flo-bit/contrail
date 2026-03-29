@@ -1,0 +1,13 @@
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { config } from '../src/lib/contrail/config';
+import { generateLexicons } from 'contrail/generate';
+
+const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+generateLexicons({
+	config,
+	rootDir: ROOT_DIR,
+	outputDir: join(ROOT_DIR, 'lexicons-generated'),
+	writeRuntimeFiles: true
+});

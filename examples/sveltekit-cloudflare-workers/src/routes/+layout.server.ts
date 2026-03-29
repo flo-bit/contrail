@@ -1,15 +1,25 @@
 import type { LayoutServerLoad } from './$types';
-import { loadProfile } from '$lib/atproto/server/profile';
+import { getServerClient } from '$lib/contrail';
+import { extractProfile } from '$lib/contrail/client';
 
 export const load: LayoutServerLoad = async ({ locals, platform }) => {
 	if (!locals.did || !locals.client) {
 		return { did: null, profile: null };
 	}
 
-	const profile = await loadProfile(locals.did, platform?.env?.PROFILE_CACHE);
+	try {
+		const client = getServerClient(platform!.env.DB);
+		const res = await client.get('statusphere.app.getProfile', {
+			params: { actor: locals.did }
+		});
 
-	return {
-		did: locals.did,
-		profile
-	};
+		if (!res.ok) return { did: locals.did, profile: null };
+
+		return {
+			did: locals.did,
+			profile: extractProfile(res.data)
+		};
+	} catch {
+		return { did: locals.did, profile: null };
+	}
 };

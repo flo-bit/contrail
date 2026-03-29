@@ -20,6 +20,9 @@ importers:
       '@foxui/time':
         specifier: ^0.8.2
         version: 0.8.2(@internationalized/date@3.10.1)(@sveltejs/kit@2.55.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.0)(vite@8.0.3(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@25.0.10)(esbuild@0.27.4)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.0)(typescript@6.0.2)(vite@8.0.3(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@25.0.10)(esbuild@0.27.4)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.0)(tailwindcss@4.2.2)
+      contrail:
+        specifier: github:flo-bit/contrail
+        version: https://codeload.github.com/flo-bit/contrail/tar.gz/ee24d4faa5d5e1515fa71398bca035b191880dbf(@atcute/identity@1.1.4)
       valibot:
         specifier: ^1.3.1
         version: 1.3.1(typescript@6.0.2)
@@ -36,6 +39,12 @@ importers:
       '@atcute/identity-resolver':
         specifier: ^1.2.2
         version: 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lex-cli':
+        specifier: ^2.5.3
+        version: 2.5.3
+      '@atcute/lexicon-doc':
+        specifier: ^2.1.2
+        version: 2.1.2
       '@atcute/lexicons':
         specifier: ^1.2.9
         version: 1.2.9
@@ -129,8 +138,20 @@ packages:
   '@atcute/bluesky@3.3.0':
     resolution: {integrity: sha512-TrLnlxuD6F/D2ZYzJ3aCiRD0yiFuhmVsd6oULNzzr8V9Xzlufg0yxkRiGmbMiF2iI508y/MFi6vzo625301c5A==, tarball: https://registry.npmjs.org/@atcute/bluesky/-/bluesky-3.3.0.tgz}
 
+  '@atcute/car@5.1.1':
+    resolution: {integrity: sha512-MeRUJNXYgAHrJZw7mMoZJb9xIqv3LZLQw90rRRAVAo8SGNdICwyqe6Bf2LGesX73QM04MBuYO6Kqhvold3TFfg==, tarball: https://registry.npmjs.org/@atcute/car/-/car-5.1.1.tgz}
+
+  '@atcute/cbor@2.3.2':
+    resolution: {integrity: sha512-xP2SORSau/VVI00x2V4BjwIkHr6EQ7l/MXEOPaa4LGYtePFc4gnD4L1yN10dT5NEuUnvGEuCh6arLB7gz1smVQ==, tarball: https://registry.npmjs.org/@atcute/cbor/-/cbor-2.3.2.tgz}
+
+  '@atcute/cid@2.4.1':
+    resolution: {integrity: sha512-bwhna69RCv7yetXudtj+2qrMPYvhhIQqvJz6YUpUS98v7OdF3X2dnye9Nig2NDrklZcuyOsu7sQo7GOykJXRLQ==, tarball: https://registry.npmjs.org/@atcute/cid/-/cid-2.4.1.tgz}
+
   '@atcute/client@4.2.1':
     resolution: {integrity: sha512-ZBFM2pW075JtgGFu5g7HHZBecrClhlcNH8GVP9Zz1aViWR+cjjBsTpeE63rJs+FCOHFYlirUyo5L8SGZ4kMINw==, tarball: https://registry.npmjs.org/@atcute/client/-/client-4.2.1.tgz}
+
+  '@atcute/crypto@2.4.1':
+    resolution: {integrity: sha512-tJ3Pi/XYcAsABKtqSlSOTKfO5YiQ4XdqlTuPS8HiRZSezOPcXBFFzAFWpSIJPURbVPFQL3LLrrK0Ea24wl5qeQ==, tarball: https://registry.npmjs.org/@atcute/crypto/-/crypto-2.4.1.tgz}
 
   '@atcute/identity-resolver@1.2.2':
     resolution: {integrity: sha512-eUh/UH4bFvuXS0X7epYCeJC/kj4rbBXfSRumLEH4smMVwNOgTo7cL/0Srty+P/qVPoZEyXdfEbS0PHJyzoXmHw==, tarball: https://registry.npmjs.org/@atcute/identity-resolver/-/identity-resolver-1.2.2.tgz}
@@ -143,8 +164,24 @@ packages:
   '@atcute/jetstream@1.1.2':
     resolution: {integrity: sha512-u6p/h2xppp7LE6W/9xErAJ6frfN60s8adZuCKtfAaaBBiiYbb1CfpzN8Uc+2qtJZNorqGvuuDb5572Jmh7yHBQ==, tarball: https://registry.npmjs.org/@atcute/jetstream/-/jetstream-1.1.2.tgz}
 
+  '@atcute/lex-cli@2.5.3':
+    resolution: {integrity: sha512-829rvezMOfRkJQRKvupNT8TWT/YYffJ2QsB80D9aPjkXSogrETZA7xZcPaMZBXg+mJaVbLO9S4ThPQmlF0L4UQ==, tarball: https://registry.npmjs.org/@atcute/lex-cli/-/lex-cli-2.5.3.tgz}
+    hasBin: true
+
+  '@atcute/lexicon-doc@2.1.2':
+    resolution: {integrity: sha512-jTLcOka7b8BIn2SnIZm2m7l6unlJ0gpgW1MnRpSqNbly/AvyRUR/GREduh/QmjT4SGasDm8vdhrM0kOSPFpDLQ==, tarball: https://registry.npmjs.org/@atcute/lexicon-doc/-/lexicon-doc-2.1.2.tgz}
+
+  '@atcute/lexicon-resolver@0.1.6':
+    resolution: {integrity: sha512-wJC/ChmpP7k+ywpOd07CMvioXjIGaFpF3bDwXLi/086LYjSWHOvtW6pyC+mqP5wLhjyH2hn4wmi77Buew1l1aw==, tarball: https://registry.npmjs.org/@atcute/lexicon-resolver/-/lexicon-resolver-0.1.6.tgz}
+    peerDependencies:
+      '@atcute/identity': ^1.1.0
+      '@atcute/identity-resolver': ^1.1.3
+
   '@atcute/lexicons@1.2.9':
     resolution: {integrity: sha512-/RRHm2Cw9o8Mcsrq0eo8fjS9okKYLGfuFwrQ0YoP/6sdSDsXshaTLJsvLlcUcaDaSJ1YFOuHIo3zr2Om2F/16g==, tarball: https://registry.npmjs.org/@atcute/lexicons/-/lexicons-1.2.9.tgz}
+
+  '@atcute/mst@1.0.0':
+    resolution: {integrity: sha512-pMce2efib+dmKtnGnIvJZitVncJkpr3AmhyfgfYllni8KzsaDGsJmuGavSVpuojAhQe+6jYwHFtpm/beiiH4uw==, tarball: https://registry.npmjs.org/@atcute/mst/-/mst-1.0.0.tgz}
 
   '@atcute/multibase@1.2.0':
     resolution: {integrity: sha512-ZK2GRra+qIYq9nNuQB52m2ul0hOmCQEtPobGfTSUxm7pF0OGEkWGkWHugFhNEDVzHzTwPxHp6VGotdZFue4lYQ==, tarball: https://registry.npmjs.org/@atcute/multibase/-/multibase-1.2.0.tgz}
@@ -161,6 +198,9 @@ packages:
   '@atcute/oauth-types@0.1.1':
     resolution: {integrity: sha512-u+3KMjse3Uc/9hDyilu1QVN7IpcnjVXgRzhddzBB8Uh6wePHNVBDdi9wQvFTVVA3zmxtMJVptXRyLLg6Ou9bqg==, tarball: https://registry.npmjs.org/@atcute/oauth-types/-/oauth-types-0.1.1.tgz}
 
+  '@atcute/repo@0.1.3':
+    resolution: {integrity: sha512-kN4gkrkQgJwI5xkVQ9zSdI8ULR47uH48EdJdjMvKAWsSDu8zKYd8ZQ6n778qa6o3WYEq02v9QVf7pzeU+3fYVA==, tarball: https://registry.npmjs.org/@atcute/repo/-/repo-0.1.3.tgz}
+
   '@atcute/tid@1.1.2':
     resolution: {integrity: sha512-bmPuOX/TOfcm/vsK9vM98spjkcx2wgd9S2PeK5oLgEr8IbNRPq7iMCAPzOL1nu5XAW3LlkOYQEbYRcw5vcQ37w==, tarball: https://registry.npmjs.org/@atcute/tid/-/tid-1.1.2.tgz}
 
@@ -175,6 +215,9 @@ packages:
 
   '@atcute/util-text@1.2.0':
     resolution: {integrity: sha512-b8WSh+Z7K601eUFFmTFj8QPKDO8Ic0VDDj63sdKzpkm+ySQKsYT5nXekViGqFVKbyKj1V5FyvZvgXad6/aI4QQ==, tarball: https://registry.npmjs.org/@atcute/util-text/-/util-text-1.2.0.tgz}
+
+  '@atcute/varint@2.0.0':
+    resolution: {integrity: sha512-CEY/oVK/nVpL4e5y3sdenLETDL6/Xu5xsE/0TupK+f0Yv8jcD60t2gD8SHROWSvUwYLdkjczLCSA7YrtnjCzWw==, tarball: https://registry.npmjs.org/@atcute/varint/-/varint-2.0.0.tgz}
 
   '@badrap/valita@0.4.6':
     resolution: {integrity: sha512-4kdqcjyxo/8RQ8ayjms47HCWZIF5981oE5nIenbfThKDxWXtEHKipAOWlflpPJzZx9y/JWYQkp18Awr7VuepFg==, tarball: https://registry.npmjs.org/@badrap/valita/-/valita-0.4.6.tgz}
@@ -819,10 +862,21 @@ packages:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
 
+  '@noble/secp256k1@3.0.0':
+    resolution: {integrity: sha512-NJBaR352KyIvj3t6sgT/+7xrNyF9Xk9QlLSIqUGVUYlsnDTAUqY8LOmwpcgEx4AMJXRITQ5XEVHD+mMaPfr3mg==, tarball: https://registry.npmjs.org/@noble/secp256k1/-/secp256k1-3.0.0.tgz}
+
   '@number-flow/svelte@0.4.0':
     resolution: {integrity: sha512-9tnowrlZlBV3IVe3Gm1V7yXSf4Ugag2k7iW45xqb04HXSa1ApEImopvGWAjJpHDvS849o+UCb0YH461Mtde9lA==, tarball: https://registry.npmjs.org/@number-flow/svelte/-/svelte-0.4.0.tgz}
     peerDependencies:
       svelte: ^4 || ^5
+
+  '@optique/core@0.6.11':
+    resolution: {integrity: sha512-GVLFihzBA1j78NFlkU5N1Lu0jRqET0k6Z66WK8VQKG/a3cxmCInVGSKMIdQG8i6pgC8wD5OizF6Y3QMztmhAxg==, tarball: https://registry.npmjs.org/@optique/core/-/core-0.6.11.tgz}
+    engines: {bun: '>=1.2.0', deno: '>=2.3.0', node: '>=20.0.0'}
+
+  '@optique/run@0.6.11':
+    resolution: {integrity: sha512-tsXBEygGSzNpFK2gjsRlXBn7FiScUeLFWIZNpoAZ8iG85Km0/3K9xgqlQAXoQ+uEZBe4XplnzyCDvmEgbyNT8w==, tarball: https://registry.npmjs.org/@optique/run/-/run-0.6.11.tgz}
+    engines: {bun: '>=1.2.0', deno: '>=2.3.0', node: '>=20.0.0'}
 
   '@oxc-project/types@0.122.0':
     resolution: {integrity: sha512-oLAl5kBpV4w69UtFZ9xqcmTi+GENWOcPF7FCrczTiBbmC0ibXxCwyvZGbO39rCVEuLGAZM84DH0pUIyyv/YJzA==, tarball: https://registry.npmjs.org/@oxc-project/types/-/types-0.122.0.tgz}
@@ -1407,6 +1461,10 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==, tarball: https://registry.npmjs.org/clsx/-/clsx-2.1.1.tgz}
     engines: {node: '>=6'}
 
+  contrail@https://codeload.github.com/flo-bit/contrail/tar.gz/ee24d4faa5d5e1515fa71398bca035b191880dbf:
+    resolution: {tarball: https://codeload.github.com/flo-bit/contrail/tar.gz/ee24d4faa5d5e1515fa71398bca035b191880dbf}
+    version: 0.0.2
+
   cookie@0.6.0:
     resolution: {integrity: sha512-U71cyTamuh1CRNCfpGY6to28lxvNwPG4Guz/EVjgf3Jmzv0vlDp1atT9eS5dDjMYHucpHbWns6Lwf3BKz6svdw==, tarball: https://registry.npmjs.org/cookie/-/cookie-0.6.0.tgz}
     engines: {node: '>= 0.6'}
@@ -1635,6 +1693,10 @@ packages:
 
   hls.js@1.6.15:
     resolution: {integrity: sha512-E3a5VwgXimGHwpRGV+WxRTKeSp2DW5DI5MWv34ulL3t5UNmyJWCQ1KmLEHbYzcfThfXG8amBL+fCYPneGHC4VA==, tarball: https://registry.npmjs.org/hls.js/-/hls.js-1.6.15.tgz}
+
+  hono@4.12.9:
+    resolution: {integrity: sha512-wy3T8Zm2bsEvxKZM5w21VdHDDcwVS1yUFFY6i8UobSsKfFceT7TOwhbhfKsDyx7tYQlmRM5FLpIuYvNFyjctiA==, tarball: https://registry.npmjs.org/hono/-/hono-4.12.9.tgz}
+    engines: {node: '>=16.9.0'}
 
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==, tarball: https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz}
@@ -2446,10 +2508,34 @@ snapshots:
       '@atcute/atproto': 3.1.10
       '@atcute/lexicons': 1.2.9
 
+  '@atcute/car@5.1.1':
+    dependencies:
+      '@atcute/cbor': 2.3.2
+      '@atcute/cid': 2.4.1
+      '@atcute/uint8array': 1.1.1
+      '@atcute/varint': 2.0.0
+
+  '@atcute/cbor@2.3.2':
+    dependencies:
+      '@atcute/cid': 2.4.1
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.1
+
+  '@atcute/cid@2.4.1':
+    dependencies:
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.1
+
   '@atcute/client@4.2.1':
     dependencies:
       '@atcute/identity': 1.1.4
       '@atcute/lexicons': 1.2.9
+
+  '@atcute/crypto@2.4.1':
+    dependencies:
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.1
+      '@noble/secp256k1': 3.0.0
 
   '@atcute/identity-resolver@1.2.2(@atcute/identity@1.1.4)':
     dependencies:
@@ -2475,12 +2561,50 @@ snapshots:
     transitivePeerDependencies:
       - react
 
+  '@atcute/lex-cli@2.5.3':
+    dependencies:
+      '@atcute/identity': 1.1.4
+      '@atcute/identity-resolver': 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lexicon-doc': 2.1.2
+      '@atcute/lexicon-resolver': 0.1.6(@atcute/identity-resolver@1.2.2(@atcute/identity@1.1.4))(@atcute/identity@1.1.4)
+      '@atcute/lexicons': 1.2.9
+      '@badrap/valita': 0.4.6
+      '@optique/core': 0.6.11
+      '@optique/run': 0.6.11
+      picocolors: 1.1.1
+      prettier: 3.8.1
+
+  '@atcute/lexicon-doc@2.1.2':
+    dependencies:
+      '@atcute/identity': 1.1.4
+      '@atcute/lexicons': 1.2.9
+      '@atcute/uint8array': 1.1.1
+      '@atcute/util-text': 1.2.0
+      '@badrap/valita': 0.4.6
+
+  '@atcute/lexicon-resolver@0.1.6(@atcute/identity-resolver@1.2.2(@atcute/identity@1.1.4))(@atcute/identity@1.1.4)':
+    dependencies:
+      '@atcute/crypto': 2.4.1
+      '@atcute/identity': 1.1.4
+      '@atcute/identity-resolver': 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lexicon-doc': 2.1.2
+      '@atcute/lexicons': 1.2.9
+      '@atcute/repo': 0.1.3
+      '@atcute/util-fetch': 1.0.5
+      '@badrap/valita': 0.4.6
+
   '@atcute/lexicons@1.2.9':
     dependencies:
       '@atcute/uint8array': 1.1.1
       '@atcute/util-text': 1.2.0
       '@standard-schema/spec': 1.1.0
       esm-env: 1.2.2
+
+  '@atcute/mst@1.0.0':
+    dependencies:
+      '@atcute/cbor': 2.3.2
+      '@atcute/cid': 2.4.1
+      '@atcute/uint8array': 1.1.1
 
   '@atcute/multibase@1.2.0':
     dependencies:
@@ -2517,6 +2641,16 @@ snapshots:
       '@atcute/oauth-keyset': 0.1.0
       '@badrap/valita': 0.4.6
 
+  '@atcute/repo@0.1.3':
+    dependencies:
+      '@atcute/car': 5.1.1
+      '@atcute/cbor': 2.3.2
+      '@atcute/cid': 2.4.1
+      '@atcute/crypto': 2.4.1
+      '@atcute/lexicons': 1.2.9
+      '@atcute/mst': 1.0.0
+      '@atcute/uint8array': 1.1.1
+
   '@atcute/tid@1.1.2':
     dependencies:
       '@atcute/time-ms': 1.3.2
@@ -2532,6 +2666,8 @@ snapshots:
   '@atcute/util-text@1.2.0':
     dependencies:
       unicode-segmenter: 0.14.5
+
+  '@atcute/varint@2.0.0': {}
 
   '@badrap/valita@0.4.6': {}
 
@@ -3033,11 +3169,19 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
+  '@noble/secp256k1@3.0.0': {}
+
   '@number-flow/svelte@0.4.0(svelte@5.55.0)':
     dependencies:
       esm-env: 1.2.2
       number-flow: 0.6.0
       svelte: 5.55.0
+
+  '@optique/core@0.6.11': {}
+
+  '@optique/run@0.6.11':
+    dependencies:
+      '@optique/core': 0.6.11
 
   '@oxc-project/types@0.122.0': {}
 
@@ -3603,6 +3747,18 @@ snapshots:
 
   clsx@2.1.1: {}
 
+  contrail@https://codeload.github.com/flo-bit/contrail/tar.gz/ee24d4faa5d5e1515fa71398bca035b191880dbf(@atcute/identity@1.1.4):
+    dependencies:
+      '@atcute/atproto': 3.1.10
+      '@atcute/client': 4.2.1
+      '@atcute/identity-resolver': 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/jetstream': 1.1.2
+      '@atcute/lexicons': 1.2.9
+      hono: 4.12.9
+    transitivePeerDependencies:
+      - '@atcute/identity'
+      - react
+
   cookie@0.6.0: {}
 
   cookie@1.1.1: {}
@@ -3870,6 +4026,8 @@ snapshots:
   highlight.js@11.11.1: {}
 
   hls.js@1.6.15: {}
+
+  hono@4.12.9: {}
 
   ignore@5.3.2: {}
 

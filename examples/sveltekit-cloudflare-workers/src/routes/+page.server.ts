@@ -1,91 +1,42 @@
-import type { Did } from '@atcute/lexicons';
-import { recentRecords } from '$lib/atproto/microcosm';
-import { loadProfile } from '$lib/atproto/server/profile';
+import { getServerClient } from '$lib/contrail';
+import { extractProfile, type Profile } from '$lib/contrail/client';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform }) => {
+export const load: PageServerLoad = async ({ platform }) => {
 	try {
-		const microcosmPromise = recentRecords<{ status: string; createdAt: string }>(
-			'xyz.statusphere.status'
-		);
+		const client = getServerClient(platform!.env.DB);
 
-		const userPromise =
-			locals.client && locals.did
-				? locals.client
-						.get('com.atproto.repo.listRecords', {
-							params: {
-								repo: locals.did,
-								collection: 'xyz.statusphere.status',
-								limit: 20
-							}
-						})
-						.catch(() => null)
-				: null;
-
-		const [microcosmRecords, userResponse] = await Promise.all([microcosmPromise, userPromise]);
-
-		const microcosmStatuses = microcosmRecords.map((r) => ({
-			did: r.did,
-			rkey: r.rkey,
-			status: r.record.status,
-			createdAt: r.record.createdAt
-		}));
-
-		// Find the oldest microcosm timestamp to use as cutoff for user records
-		const oldestMicrocosm =
-			microcosmStatuses.length > 0
-				? Math.min(...microcosmStatuses.map((s) => new Date(s.createdAt).getTime()))
-				: 0;
-
-		const userStatuses = userResponse?.ok
-			? userResponse.data.records
-					.map((r) => ({
-						did: locals.did!,
-						rkey: r.uri.split('/').pop()!,
-						status: (r.value as { status: string }).status,
-						createdAt: (r.value as { createdAt: string }).createdAt
-					}))
-					.filter((s) => new Date(s.createdAt).getTime() >= oldestMicrocosm)
-			: [];
-
-		// Merge and deduplicate by did+rkey, then sort by time descending
-		const seen = new Set<string>();
-		const merged = [...userStatuses, ...microcosmStatuses].filter((s) => {
-			const key = `${s.did}-${s.rkey}`;
-			if (seen.has(key)) return false;
-			seen.add(key);
-			return true;
+		const res = await client.get('xyz.statusphere.status.listRecords', {
+			params: { limit: 50, profiles: true, sort: 'createdAt', order: 'desc' }
 		});
 
-		merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+		if (!res.ok) return { statuses: [], profiles: {} };
 
-		// Load profiles for all unique DIDs
-		const uniqueDids = [...new Set(merged.map((s) => s.did))];
-		const profileCache = platform?.env?.PROFILE_CACHE;
-		const profileEntries = await Promise.all(
-			uniqueDids.map(async (did) => {
-				const profile = await loadProfile(did as Did, profileCache);
-				if (!profile) return null;
-				return [
-					did,
-					{
-						handle: profile.handle as string,
-						displayName: profile.displayName as string | undefined,
-						avatar: profile.avatar as string | undefined
-					}
-				] as const;
+		const records = res.data.records;
+		const statuses = records
+			.map((r) => {
+				const record = r.record as { status: string; createdAt: string };
+				return {
+					did: r.did,
+					rkey: r.rkey,
+					status: record.status,
+					createdAt: record.createdAt
+				};
 			})
-		);
-		const profiles: Record<string, { handle: string; displayName?: string; avatar?: string }> = {};
-		for (const entry of profileEntries) {
-			if (entry) profiles[entry[0]] = entry[1];
+			.filter((s) => !isNaN(new Date(s.createdAt).getTime()));
+
+		const profiles: Record<string, Profile> = {};
+		if (res.data.profiles) {
+			for (const p of res.data.profiles) {
+				profiles[p.did] = extractProfile(p);
+			}
 		}
 
-		return { statuses: merged, profiles };
+		return { statuses, profiles };
 	} catch {
 		return {
 			statuses: [] as { did: string; rkey: string; status: string; createdAt: string }[],
-			profiles: {} as Record<string, { handle: string; displayName?: string; avatar?: string }>
+			profiles: {} as Record<string, Profile>
 		};
 	}
 };

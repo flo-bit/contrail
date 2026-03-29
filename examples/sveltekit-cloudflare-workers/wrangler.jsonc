@@ -14,6 +14,16 @@
 	"vars": {
 		"OAUTH_PUBLIC_URL": "https://statusphere.atmo.tools"
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "statusphere",
+			"database_id": "REPLACE_WITH_D1_DATABASE_ID"
+		}
+	],
+	"triggers": {
+		"crons": ["*/1 * * * *"]
+	},
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_SESSIONS",

@@ -7,7 +7,7 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "generate": "tsx generate.ts",
-    "generate:pull": "tsx generate.ts && lex-cli pull && tsx generate.ts && lex-cli pull",
+    "generate:pull": "tsx generate.ts && lex-cli pull && tsx generate.ts && lex-cli pull && lex-cli generate",
     "sync": "tsx sync.ts",
     "sync:remote": "tsx sync.ts --remote"
   },

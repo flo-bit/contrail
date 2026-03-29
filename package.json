@@ -16,7 +16,7 @@
     "deploy": "wrangler deploy",
     "clean": "tsx scripts/clean.ts",
     "generate": "tsx app/generate.ts",
-    "generate:pull": "tsx app/generate.ts && lex-cli pull && tsx app/generate.ts && lex-cli pull",
+    "generate:pull": "tsx app/generate.ts && lex-cli pull && tsx app/generate.ts && lex-cli pull && lex-cli generate",
     "typecheck": "tsc --noEmit",
     "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",
     "sync": "tsx app/sync.ts",
