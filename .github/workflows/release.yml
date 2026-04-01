@@ -28,6 +28,10 @@ jobs:
         with:
           node-version: 22.14
           cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install npm with OIDC support
+        run: npm install -g npm@11.5.1
 
       - name: Install dependencies
         run: pnpm install
