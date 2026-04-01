@@ -26,11 +26,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14
           cache: 'pnpm'
-
-      - name: Install latest npm (for trusted publishing)
-        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install
