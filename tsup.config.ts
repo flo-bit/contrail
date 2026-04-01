@@ -6,11 +6,12 @@ export default defineConfig({
     "src/server.ts",
     "src/generate.ts",
     "src/adapters/sqlite.ts",
+    "src/adapters/postgres.ts",
   ],
   format: ["esm"],
   dts: true,
   sourcemap: true,
   clean: true,
   tsconfig: "tsconfig.build.json",
-  external: ["node:sqlite"],
+  external: ["node:sqlite", "pg"],
 });

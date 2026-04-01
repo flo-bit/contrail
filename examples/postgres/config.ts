@@ -1,4 +1,4 @@
-import type { ContrailConfig } from "contrail";
+import type { ContrailConfig } from "@atmo-dev/contrail";
 
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",

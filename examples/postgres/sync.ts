@@ -8,8 +8,8 @@
  *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" npx tsx sync.ts
  */
 import pg from "pg";
-import { Contrail } from "contrail";
-import { createPostgresDatabase } from "contrail/postgres";
+import { Contrail } from "@atmo-dev/contrail";
+import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import { config } from "./config";
 
 const DATABASE_URL =

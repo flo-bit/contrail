@@ -6,9 +6,9 @@
  */
 import pg from "pg";
 import { createServer } from "node:http";
-import { Contrail } from "contrail";
-import { createHandler } from "contrail/server";
-import { createPostgresDatabase } from "contrail/postgres";
+import { Contrail } from "@atmo-dev/contrail";
+import { createHandler } from "@atmo-dev/contrail/server";
+import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import { config } from "./config";
 
 const DATABASE_URL =

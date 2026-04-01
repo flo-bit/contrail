@@ -9,7 +9,7 @@
     "serve": "tsx serve.ts"
   },
   "dependencies": {
-    "contrail": "github:flo-bit/contrail",
+    "@atmo-dev/contrail": "^0.0.5",
     "pg": "^8.20.0"
   },
   "devDependencies": {
