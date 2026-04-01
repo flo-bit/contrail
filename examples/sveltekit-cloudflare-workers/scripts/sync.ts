@@ -5,7 +5,7 @@
  *   pnpm sync           # local D1
  *   pnpm sync:remote    # prod D1
  */
-import { Contrail } from 'contrail';
+import { Contrail } from '@atmo-dev/contrail';
 import { config } from '../src/lib/contrail/config';
 import { getPlatformProxy } from 'wrangler';
 

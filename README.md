@@ -8,13 +8,13 @@ A library for indexing AT Protocol records. Define collections — get automatic
 ## Install
 
 ```bash
-npm install github:flo-bit/contrail
+npm install @atmo-dev/contrail
 ```
 
 ## Usage
 
 ```ts
-import { Contrail } from "contrail";
+import { Contrail } from "@atmo-dev/contrail";
 
 const contrail = new Contrail({
   namespace: "com.example",
@@ -107,7 +107,7 @@ await contrail.notify([uri1, uri2, uri3]);
 Mount the full XRPC API in any framework:
 
 ```ts
-import { createHandler } from "contrail/server";
+import { createHandler } from "@atmo-dev/contrail/server";
 
 const handle = createHandler(contrail);
 // handle: (Request, db?) => Promise<Response>
@@ -134,7 +134,7 @@ export default {
 ### SQLite adapter (Node.js / local dev)
 
 ```ts
-import { SqliteDatabase } from "contrail/sqlite";
+import { SqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import Database from "better-sqlite3";
 
 const db = new SqliteDatabase(new Database("data.db"));

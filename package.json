@@ -1,16 +1,45 @@
 {
-  "name": "contrail",
-  "version": "0.0.2",
-  "private": false,
+  "name": "@atmo-dev/contrail",
+  "version": "0.0.4",
+  "description": "Index AT Protocol records with typed XRPC endpoints. Cloudflare Workers + D1, SvelteKit, Node.js.",
   "type": "module",
-  "files": ["src"],
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./server": "./src/server.ts",
-    "./sqlite": "./src/adapters/sqlite.ts",
-    "./generate": "./src/generate.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./sqlite": {
+      "types": "./dist/adapters/sqlite.d.ts",
+      "import": "./dist/adapters/sqlite.js"
+    },
+    "./generate": {
+      "types": "./dist/generate.d.ts",
+      "import": "./dist/generate.js"
+    }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git"
+  },
+  "keywords": [
+    "atproto",
+    "bluesky",
+    "cloudflare",
+    "d1",
+    "indexer",
+    "xrpc"
+  ],
   "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "pnpm build",
     "dev": "wrangler dev --test-scheduled",
     "dev:auto": "tsx scripts/dev.ts",
     "deploy": "wrangler deploy",
@@ -36,7 +65,9 @@
     "@atcute/lexicon-doc": "^2.1.2",
     "@cloudflare/workers-types": "^4.20250124.0",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.5.0",
     "better-sqlite3": "^12.8.0",
+    "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.0",

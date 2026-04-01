@@ -16,7 +16,7 @@ Dev mode uses a loopback OAuth client — no keys or Cloudflare setup needed.
 Define which AT Protocol collections to index in `src/lib/contrail/config.ts`:
 
 ```ts
-import type { ContrailConfig } from 'contrail';
+import type { ContrailConfig } from '@atmo-dev/contrail';
 
 export const config: ContrailConfig = {
   namespace: 'statusphere.app',

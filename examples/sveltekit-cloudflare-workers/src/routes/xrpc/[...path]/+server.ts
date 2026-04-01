@@ -1,4 +1,4 @@
-import { createHandler } from 'contrail/server';
+import { createHandler } from '@atmo-dev/contrail/server';
 import { contrail, ensureInit } from '$lib/contrail';
 import type { RequestHandler } from './$types';
 

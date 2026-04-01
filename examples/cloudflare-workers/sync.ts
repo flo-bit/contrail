@@ -5,7 +5,7 @@
  *   npx tsx sync.ts           # local D1
  *   npx tsx sync.ts --remote  # prod D1
  */
-import { Contrail } from "contrail";
+import { Contrail } from "@atmo-dev/contrail";
 import { config } from "./config";
 import { getPlatformProxy } from "wrangler";
 

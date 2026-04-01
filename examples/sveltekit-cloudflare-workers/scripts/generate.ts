@@ -1,7 +1,7 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../src/lib/contrail/config';
-import { generateLexicons } from 'contrail/generate';
+import { generateLexicons } from '@atmo-dev/contrail/generate';
 
 const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 

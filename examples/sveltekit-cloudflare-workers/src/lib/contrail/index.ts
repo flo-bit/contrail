@@ -1,5 +1,5 @@
-import { Contrail } from 'contrail';
-import { createHandler } from 'contrail/server';
+import { Contrail } from '@atmo-dev/contrail';
+import { createHandler } from '@atmo-dev/contrail/server';
 import { Client } from '@atcute/client';
 import { config } from './config';
 
