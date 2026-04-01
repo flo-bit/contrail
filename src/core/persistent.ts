@@ -175,11 +175,18 @@ async function streamAndFlush(
       // Race the next event against abort signal
       let result: IteratorResult<any>;
       if (signal) {
-        const abortPromise = new Promise<IteratorResult<any>>((resolve) => {
-          const handler = () => resolve({ value: undefined, done: true });
-          signal.addEventListener("abort", handler, { once: true });
-        });
-        result = await Promise.race([iterator.next(), abortPromise]);
+        const nextPromise = iterator.next();
+        if (signal.aborted) {
+          result = { value: undefined, done: true };
+        } else {
+          let abortHandler: () => void;
+          const abortPromise = new Promise<IteratorResult<any>>((resolve) => {
+            abortHandler = () => resolve({ value: undefined, done: true });
+            signal.addEventListener("abort", abortHandler, { once: true });
+          });
+          result = await Promise.race([nextPromise, abortPromise]);
+          signal.removeEventListener("abort", abortHandler!);
+        }
       } else {
         result = await iterator.next();
       }

@@ -3,6 +3,14 @@ export function getDialect(db: { dialect?: SqlDialect }): SqlDialect {
   return db.dialect ?? sqliteDialect;
 }
 
+const SAFE_FIELD = /^[a-zA-Z0-9_.]+$/;
+
+function assertSafeField(field: string): void {
+  if (!SAFE_FIELD.test(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+}
+
 export interface SqlDialect {
   /** json_extract(col, '$.field') or col->>'field' */
   jsonExtract(column: string, field: string): string;
@@ -19,9 +27,6 @@ export interface SqlDialect {
   /** FTS strategy: 'virtual-table' (SQLite FTS5) or 'generated-column' (PG tsvector) */
   readonly ftsStrategy: "virtual-table" | "generated-column";
 
-  /** Placeholder for parameterized queries: ? (SQLite) or $N (PostgreSQL) */
-  placeholder(index: number): string;
-
   /** INTEGER type name — same on both, but PostgreSQL may want BIGINT for time_us */
   readonly integerType: string;
 
@@ -34,6 +39,7 @@ export interface SqlDialect {
 
 export const sqliteDialect: SqlDialect = {
   jsonExtract(column: string, field: string): string {
+    assertSafeField(field);
     return `json_extract(${column}, '$.${field}')`;
   },
 
@@ -43,11 +49,6 @@ export const sqliteDialect: SqlDialect = {
 
   recordColumnType: "TEXT",
   ftsStrategy: "virtual-table",
-
-  placeholder(_index: number): string {
-    return "?";
-  },
-
   integerType: "INTEGER",
   bigintType: "INTEGER",
 
@@ -58,6 +59,7 @@ export const sqliteDialect: SqlDialect = {
 
 export const postgresDialect: SqlDialect = {
   jsonExtract(column: string, field: string): string {
+    assertSafeField(field);
     const parts = field.split(".");
     if (parts.length === 1) {
       return `${column}->>'${parts[0]}'`;
@@ -73,11 +75,6 @@ export const postgresDialect: SqlDialect = {
 
   recordColumnType: "JSONB",
   ftsStrategy: "generated-column",
-
-  placeholder(index: number): string {
-    return `$${index}`;
-  },
-
   integerType: "INTEGER",
   bigintType: "BIGINT",
 

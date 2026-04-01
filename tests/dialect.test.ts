@@ -36,10 +36,6 @@ describe("sqliteDialect", () => {
     expect(sqliteDialect.ftsStrategy).toBe("virtual-table");
   });
 
-  it("uses ? placeholders", () => {
-    expect(sqliteDialect.placeholder(1)).toBe("?");
-    expect(sqliteDialect.placeholder(5)).toBe("?");
-  });
 });
 
 describe("Database.dialect", () => {
@@ -90,10 +86,6 @@ describe("postgresDialect", () => {
     expect(postgresDialect.ftsStrategy).toBe("generated-column");
   });
 
-  it("uses $N placeholders", () => {
-    expect(postgresDialect.placeholder(1)).toBe("$1");
-    expect(postgresDialect.placeholder(3)).toBe("$3");
-  });
 });
 
 describe("indexExpression", () => {

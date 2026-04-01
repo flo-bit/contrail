@@ -8,21 +8,37 @@ interface PgStatement extends Statement {
   _runOn(client: pg.PoolClient): Promise<any>;
 }
 
+/** Column names known to be BIGINT — PostgreSQL returns these as strings */
+const BIGINT_COLUMNS = new Set(["time_us", "indexed_at", "resolved_at"]);
+
 function normalizeRow(row: any): any {
-  if (row && typeof row.record === "object" && row.record !== null) {
+  if (!row) return row;
+  if (typeof row.record === "object" && row.record !== null) {
     row.record = JSON.stringify(row.record);
   }
-  // PostgreSQL returns BIGINT as string — coerce numeric fields back to number
-  if (row && typeof row.time_us === "string") row.time_us = Number(row.time_us);
-  if (row && typeof row.indexed_at === "string") row.indexed_at = Number(row.indexed_at);
-  if (row && typeof row.resolved_at === "string") row.resolved_at = Number(row.resolved_at);
+  for (const col of BIGINT_COLUMNS) {
+    if (typeof row[col] === "string") row[col] = Number(row[col]);
+  }
   return row;
 }
 
 export function createPostgresDatabase(pool: pg.Pool): Database {
   function rewritePlaceholders(sql: string): string {
     let idx = 0;
-    return sql.replace(/\?/g, () => `$${++idx}`);
+    let inString = false;
+    let result = "";
+    for (let i = 0; i < sql.length; i++) {
+      const ch = sql[i];
+      if (ch === "'" && sql[i - 1] !== "\\") {
+        inString = !inString;
+        result += ch;
+      } else if (ch === "?" && !inString) {
+        result += `$${++idx}`;
+      } else {
+        result += ch;
+      }
+    }
+    return result;
   }
 
   function wrapStatement(sql: string, boundValues: any[] = []): PgStatement {
