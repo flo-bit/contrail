@@ -234,7 +234,9 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
   }
 
   function profileDefs() {
-    const profiles = config.profiles ?? ["app.bsky.actor.profile"];
+    const profiles: string[] = (config.profiles ?? ["app.bsky.actor.profile"]).map(
+      (p) => (typeof p === "string" ? p : p.collection)
+    );
     const extraDefs: Record<string, any> = {};
     const objectRefs: string[] = [];
     for (const col of profiles) {
@@ -290,7 +292,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
 
   writeLexicon(`${ns}.getProfile`, {
     lexicon: 1, id: `${ns}.getProfile`,
-    defs: { main: { type: "query", description: "Get a user's profile by DID or handle", parameters: { type: "params", required: ["actor"], properties: { actor: { type: "string", format: "at-identifier", description: "DID or handle of the user" } } }, output: { encoding: "application/json", schema: { type: "ref", ref: "#profileEntry" } } }, ...profileDefs() },
+    defs: { main: { type: "query", description: "Get a user's profiles by DID or handle", parameters: { type: "params", required: ["actor"], properties: { actor: { type: "string", format: "at-identifier", description: "DID or handle of the user" } } }, output: { encoding: "application/json", schema: { type: "object", required: ["profiles"], properties: { profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } }, ...profileDefs() },
   });
 
   writeLexicon(`${ns}.notifyOfUpdate`, {
@@ -591,7 +593,9 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     for (const file of pulledFiles) {
       for (const ref of findRefsInLexicon(file)) allRefs.add(ref);
     }
-    const profileNsids = config.profiles ?? ["app.bsky.actor.profile"];
+    const profileNsids: string[] = (config.profiles ?? ["app.bsky.actor.profile"]).map(
+      (p) => (typeof p === "string" ? p : p.collection)
+    );
     const feedFollowNsids = config.feeds ? Object.values(config.feeds).map((f) => f.follow) : [];
     const pullNsids = new Set([...collectionNsids, ...profileNsids, ...feedFollowNsids]);
     for (const ref of allRefs) {

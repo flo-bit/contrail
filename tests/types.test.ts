@@ -138,7 +138,7 @@ describe("resolveConfig", () => {
       collections: {},
       profiles: ["custom.profile"],
     });
-    expect(resolved.profiles).toEqual(["custom.profile"]);
+    expect(resolved.profiles).toEqual([{ collection: "custom.profile" }]);
     expect(resolved.collections["custom.profile"]).toEqual({ discover: false });
     expect(resolved.collections["app.bsky.actor.profile"]).toBeUndefined();
   });

@@ -1,5 +1,5 @@
-import type { Database, ContrailConfig, RecordRow } from "../types";
-import { recordsTableName } from "../types";
+import type { Database, ContrailConfig, RecordRow, ProfileConfig } from "../types";
+import { recordsTableName, normalizeProfileConfig } from "../types";
 import { resolveIdentities } from "../identity";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
@@ -37,20 +37,20 @@ export async function resolveProfiles(
   db: Database,
   config: ContrailConfig,
   dids: string[]
-): Promise<Record<string, ProfileEntry>> {
+): Promise<Record<string, ProfileEntry[]>> {
   if (dids.length === 0 || !config.profiles || config.profiles.length === 0) {
     return {};
   }
 
-  const result: Record<string, ProfileEntry> = {};
+  const profileConfigs = config.profiles.map(normalizeProfileConfig);
+  const result: Record<string, ProfileEntry[]> = {};
 
-  // Batch-lookup profile records for each configured profile collection (first match wins)
-  for (const collection of config.profiles) {
-    const remaining = dids.filter((d) => !result[d]);
-    if (remaining.length === 0) break;
-
+  // Batch-lookup profile records for each configured profile collection
+  for (const pc of profileConfigs) {
+    const { collection, rkey: configRkey } = pc;
+    const rkey = configRkey ?? "self";
     const table = recordsTableName(collection);
-    const uris = remaining.map((did) => `at://${did}/${collection}/self`);
+    const uris = dids.map((did) => `at://${did}/${collection}/${rkey}`);
 
     const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
       db,
@@ -68,7 +68,8 @@ export async function resolveProfiles(
           record = row.record;
         }
       }
-      result[row.did] = {
+      if (!result[row.did]) result[row.did] = [];
+      result[row.did].push({
         did: row.did,
         handle: null, // filled below
         uri: row.uri,
@@ -76,7 +77,7 @@ export async function resolveProfiles(
         rkey: row.rkey,
         cid: row.cid,
         record,
-      };
+      });
     }
   }
 
@@ -85,10 +86,11 @@ export async function resolveProfiles(
 
   // Fetch missing profile records from PDS on demand
   const missingDids = dids.filter((d) => !result[d]);
-  if (missingDids.length > 0 && config.profiles && config.profiles.length > 0) {
+  if (missingDids.length > 0 && profileConfigs.length > 0) {
     const fetched = await fetchMissingProfiles(db, config, missingDids);
-    for (const [did, entry] of Object.entries(fetched)) {
-      result[did] = entry;
+    for (const [did, entries] of Object.entries(fetched)) {
+      if (!result[did]) result[did] = [];
+      result[did].push(...entries);
     }
   }
 
@@ -98,9 +100,11 @@ export async function resolveProfiles(
     const handle = identity?.handle ?? null;
 
     if (result[did]) {
-      result[did].handle = handle;
+      for (const entry of result[did]) {
+        entry.handle = handle;
+      }
     } else {
-      result[did] = { did, handle };
+      result[did] = [{ did, handle }];
     }
   }
 
@@ -109,59 +113,65 @@ export async function resolveProfiles(
 
 /**
  * Fetch profile records from PDS for DIDs not yet in the index.
- * Fetches in parallel, indexes the results into D1 for future requests.
+ * Fetches in parallel across all configured profile collections,
+ * indexes the results into D1 for future requests.
  */
 async function fetchMissingProfiles(
   db: Database,
   config: ContrailConfig,
   dids: string[]
-): Promise<Record<string, ProfileEntry>> {
-  const result: Record<string, ProfileEntry> = {};
-  const collection = config.profiles![0];
-  const table = recordsTableName(collection);
+): Promise<Record<string, ProfileEntry[]>> {
+  const result: Record<string, ProfileEntry[]> = {};
+  const profileConfigs = config.profiles!.map(normalizeProfileConfig);
 
   await Promise.all(
-    dids.map(async (did) => {
-      try {
-        const pds = await getPDS(did as Did, db);
-        if (!pds) return;
+    dids.flatMap((did) =>
+      profileConfigs.map(async (pc) => {
+        const { collection, rkey: configRkey } = pc;
+        const rkey = configRkey ?? "self";
+        const table = recordsTableName(collection);
+        try {
+          const pds = await getPDS(did as Did, db);
+          if (!pds) return;
 
-        const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);
-        url.searchParams.set("repo", did);
-        url.searchParams.set("collection", collection);
-        url.searchParams.set("rkey", "self");
+          const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);
+          url.searchParams.set("repo", did);
+          url.searchParams.set("collection", collection);
+          url.searchParams.set("rkey", rkey);
 
-        const res = await fetch(url.toString());
-        if (!res.ok) return;
+          const res = await fetch(url.toString());
+          if (!res.ok) return;
 
-        const data = (await res.json()) as { uri?: string; value?: unknown; cid?: string };
-        if (!data.value || !data.cid) return;
+          const data = (await res.json()) as { uri?: string; value?: unknown; cid?: string };
+          if (!data.value || !data.cid) return;
 
-        const uri = data.uri ?? `at://${did}/${collection}/self`;
-        const record = data.value;
-        const cid = data.cid;
+          const uri = data.uri ?? `at://${did}/${collection}/${rkey}`;
+          const record = data.value;
+          const cid = data.cid;
 
-        // Index into D1 for future requests
-        await db
-          .prepare(
-            `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, indexed_at = excluded.indexed_at`
-          )
-          .bind(uri, did, "self", cid, JSON.stringify(record), Date.now() * 1000, Date.now())
-          .run();
+          // Index into D1 for future requests
+          await db
+            .prepare(
+              `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, indexed_at = excluded.indexed_at`
+            )
+            .bind(uri, did, rkey, cid, JSON.stringify(record), Date.now() * 1000, Date.now())
+            .run();
 
-        result[did] = {
-          did,
-          handle: null,
-          uri,
-          collection,
-          rkey: "self",
-          cid,
-          record,
-        };
-      } catch {
-        // Skip failures silently
-      }
-    })
+          if (!result[did]) result[did] = [];
+          result[did].push({
+            did,
+            handle: null,
+            uri,
+            collection,
+            rkey,
+            cid,
+            record,
+          });
+        } catch {
+          // Skip failures silently
+        }
+      })
+    )
   );
 
   return result;

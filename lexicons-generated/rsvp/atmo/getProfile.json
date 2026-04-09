@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get a user's profile by DID or handle",
+      "description": "Get a user's profiles by DID or handle",
       "parameters": {
         "type": "params",
         "required": [
@@ -21,8 +21,19 @@
       "output": {
         "encoding": "application/json",
         "schema": {
-          "type": "ref",
-          "ref": "#profileEntry"
+          "type": "object",
+          "required": [
+            "profiles"
+          ],
+          "properties": {
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
         }
       }
     },
@@ -54,8 +65,11 @@
           "type": "string"
         },
         "record": {
-          "type": "ref",
-          "ref": "#appBskyActorProfile"
+          "type": "union",
+          "refs": [
+            "#appBskyActorProfile",
+            "#siteStandardPublication"
+          ]
         }
       }
     },
@@ -119,6 +133,50 @@
         "joinedViaStarterPack": {
           "ref": "com.atproto.repo.strongRef",
           "type": "ref"
+        }
+      }
+    },
+    "siteStandardPublication": {
+      "type": "object",
+      "required": [
+        "url",
+        "name"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base publication url (ex: https://standard.site). The canonical document URL is formed by combining this value with the document path."
+        },
+        "icon": {
+          "type": "blob",
+          "accept": [
+            "image/*"
+          ],
+          "maxSize": 1000000,
+          "description": "Square image to identify the publication. Should be at least 256x256."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 5000,
+          "description": "Name of the publication.",
+          "maxGraphemes": 500
+        },
+        "basicTheme": {
+          "ref": "site.standard.theme.basic",
+          "type": "ref",
+          "description": "Simplified publication theme for tools and apps to utilize when displaying content."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 30000,
+          "description": "Brief description of the publication.",
+          "maxGraphemes": 3000
+        },
+        "preferences": {
+          "ref": "#preferences",
+          "type": "ref",
+          "description": "Object containing platform specific preferences (with a few shared properties)."
         }
       }
     }

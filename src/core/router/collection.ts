@@ -164,7 +164,7 @@ export async function runPipeline(
   return {
     records: formattedRecords,
     cursor: result.cursor,
-    ...(profileMap ? { profiles: Object.values(profileMap) } : {}),
+    ...(profileMap ? { profiles: Object.values(profileMap).flat() } : {}),
   };
 }
 
@@ -247,7 +247,7 @@ export function registerCollectionRoutes(
 
       return c.json({
         ...formatted,
-        ...(profileMap ? { profiles: Object.values(profileMap) } : {}),
+        ...(profileMap ? { profiles: Object.values(profileMap).flat() } : {}),
       });
     });
 

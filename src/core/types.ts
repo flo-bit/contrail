@@ -79,7 +79,21 @@ export interface CollectionConfig {
   searchable?: string[] | false;
 }
 
-export const DEFAULT_PROFILES = ["app.bsky.actor.profile"];
+export interface ProfileConfig {
+  collection: string;
+  rkey?: string; // defaults to "self"
+}
+
+export const DEFAULT_PROFILES: ProfileConfig[] = [
+  { collection: "app.bsky.actor.profile" },
+];
+
+/** Normalize a profiles config entry (string or object) into ProfileConfig. */
+export function normalizeProfileConfig(
+  p: string | ProfileConfig
+): ProfileConfig {
+  return typeof p === "string" ? { collection: p } : p;
+}
 
 export const DEFAULT_JETSTREAMS = [
   "wss://jetstream1.us-east.bsky.network",
@@ -101,7 +115,7 @@ export interface Logger {
 export interface ContrailConfig {
   namespace: string;
   collections: Record<string, CollectionConfig>;
-  profiles?: string[];
+  profiles?: (string | ProfileConfig)[];
   relays?: string[];
   jetstreams?: string[];
   feeds?: Record<string, FeedConfig>;
@@ -131,11 +145,13 @@ export interface ResolvedContrailConfig extends ContrailConfig {
  * Resolve config: apply defaults, auto-add profile collections, compute queryable maps.
  */
 export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
-  const profiles = config.profiles ?? DEFAULT_PROFILES;
+  const profiles = (config.profiles ?? DEFAULT_PROFILES).map(
+    normalizeProfileConfig
+  );
   const collections = { ...config.collections };
-  for (const col of profiles) {
-    if (!collections[col]) {
-      collections[col] = { discover: false };
+  for (const p of profiles) {
+    if (!collections[p.collection]) {
+      collections[p.collection] = { discover: false };
     }
   }
 

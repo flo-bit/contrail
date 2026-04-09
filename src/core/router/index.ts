@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Database, ContrailConfig } from "../types";
+import { normalizeProfileConfig } from "../types";
 import { registerAdminRoutes } from "./admin";
 import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
@@ -30,16 +31,16 @@ export function createApp(
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
 
     // Ensure profile records are backfilled
-    const profiles = config.profiles ?? ["app.bsky.actor.profile"];
-    for (const collection of profiles) {
-      await backfillUser(db, did, collection, Date.now() + 10_000, config);
+    const profileConfigs = (config.profiles ?? []).map(normalizeProfileConfig);
+    for (const pc of profileConfigs) {
+      await backfillUser(db, did, pc.collection, Date.now() + 10_000, config);
     }
 
     const profileMap = await resolveProfiles(db, config, [did]);
-    const profile = profileMap[did];
-    if (!profile) return c.json({ error: "Profile not found" }, 404);
+    const profiles = profileMap[did];
+    if (!profiles || profiles.length === 0) return c.json({ error: "Profile not found" }, 404);
 
-    return c.json(profile);
+    return c.json({ profiles });
   });
 
   registerAdminRoutes(app, db, config);
