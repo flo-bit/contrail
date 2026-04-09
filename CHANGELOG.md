@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.0.8
+
+### Patch Changes
+
+- e2a5e77: update profiles
+
 ## 0.0.7
 
 ### Patch Changes
