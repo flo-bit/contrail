@@ -28,6 +28,10 @@
           },
           "rkey": {
             "type": "string"
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token. When supplied, replaces JWT auth for this read."
           }
         }
       },

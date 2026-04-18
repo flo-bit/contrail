@@ -17,6 +17,16 @@
               "type": "string",
               "format": "at-uri"
             },
+            "kind": {
+              "type": "string",
+              "knownValues": [
+                "join",
+                "read",
+                "read-join"
+              ],
+              "default": "join",
+              "description": "join: redeem to become a member. read: bearer-only read access, no membership. read-join: anonymous read + signed-in redeem to join."
+            },
             "perms": {
               "type": "string",
               "knownValues": [
@@ -32,7 +42,7 @@
             "maxUses": {
               "type": "integer",
               "minimum": 1,
-              "description": "Omit for unlimited uses."
+              "description": "Caps join redemptions only — read-token reads are unlimited. Omit for unlimited joins."
             },
             "note": {
               "type": "string",

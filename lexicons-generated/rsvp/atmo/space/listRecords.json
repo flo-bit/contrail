@@ -33,6 +33,10 @@
             "minimum": 1,
             "maximum": 200,
             "default": 50
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token. When supplied, replaces JWT auth for this read."
           }
         }
       },

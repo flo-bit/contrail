@@ -23,7 +23,11 @@
           "spaceUri": {
             "type": "string",
             "format": "at-uri",
-            "description": "If set, fetch from this permissioned space (requires service-auth JWT)."
+            "description": "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token)."
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied."
           },
           "hydrateRsvps": {
             "type": "integer",

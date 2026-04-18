@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "rsvp.atmo.space.admin.removeMember",
+  "id": "rsvp.atmo.space.addMember",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Remove a member from a space. Owner only. Cannot remove the owner.",
+      "description": "Add a member to a space. Caller must be the space owner.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -21,6 +21,14 @@
             "did": {
               "type": "string",
               "format": "did"
+            },
+            "perms": {
+              "type": "string",
+              "knownValues": [
+                "read",
+                "write"
+              ],
+              "default": "write"
             }
           }
         }
@@ -45,9 +53,6 @@
         },
         {
           "name": "Forbidden"
-        },
-        {
-          "name": "InvalidRequest"
         }
       ]
     }

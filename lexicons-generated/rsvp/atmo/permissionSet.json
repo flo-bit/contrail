@@ -10,7 +10,7 @@
         {
           "type": "permission",
           "resource": "rpc",
-          "inheritAud": true,
+          "aud": "*",
           "lxm": [
             "rsvp.atmo.event.getRecord",
             "rsvp.atmo.event.listRecords",
@@ -20,9 +20,8 @@
             "rsvp.atmo.notifyOfUpdate",
             "rsvp.atmo.rsvp.getRecord",
             "rsvp.atmo.rsvp.listRecords",
-            "rsvp.atmo.space.admin.addMember",
-            "rsvp.atmo.space.admin.createSpace",
-            "rsvp.atmo.space.admin.removeMember",
+            "rsvp.atmo.space.addMember",
+            "rsvp.atmo.space.createSpace",
             "rsvp.atmo.space.deleteRecord",
             "rsvp.atmo.space.getRecord",
             "rsvp.atmo.space.getSpace",
@@ -30,10 +29,14 @@
             "rsvp.atmo.space.invite.list",
             "rsvp.atmo.space.invite.redeem",
             "rsvp.atmo.space.invite.revoke",
+            "rsvp.atmo.space.leaveSpace",
             "rsvp.atmo.space.listMembers",
             "rsvp.atmo.space.listRecords",
             "rsvp.atmo.space.listSpaces",
-            "rsvp.atmo.space.putRecord"
+            "rsvp.atmo.space.putRecord",
+            "rsvp.atmo.space.removeMember",
+            "rsvp.atmo.space.transferOwnership",
+            "rsvp.atmo.space.whoami"
           ]
         }
       ]

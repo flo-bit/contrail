@@ -145,6 +145,7 @@
       "required": [
         "tokenHash",
         "spaceUri",
+        "kind",
         "perms",
         "usedCount",
         "createdBy",
@@ -157,6 +158,14 @@
         "spaceUri": {
           "type": "string",
           "format": "at-uri"
+        },
+        "kind": {
+          "type": "string",
+          "knownValues": [
+            "join",
+            "read",
+            "read-join"
+          ]
         },
         "perms": {
           "type": "string",
