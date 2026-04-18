@@ -14,18 +14,22 @@ import type { PersistentIngestOptions } from "./core/persistent";
 
 export interface ContrailOptions extends ContrailConfig {
   db?: Database;
+  /** Optional separate DB for permissioned spaces tables. Defaults to `db`. */
+  spacesDb?: Database;
 }
 
 export class Contrail {
   readonly config: ResolvedContrailConfig;
   private _db?: Database;
+  private _spacesDb?: Database;
   private _ingestState: IngestState = createIngestState();
 
   constructor(options: ContrailOptions) {
-    const { db, ...configInput } = options;
+    const { db, spacesDb, ...configInput } = options;
     this.config = resolveConfig(configInput);
     validateConfig(this.config);
     this._db = db;
+    this._spacesDb = spacesDb;
   }
 
   private getDb(db?: Database): Database {
@@ -34,9 +38,17 @@ export class Contrail {
     return d;
   }
 
-  /** Initialize the database schema. Must be called before other operations. */
-  async init(db?: Database): Promise<void> {
-    await initSchema(this.getDb(db), this.config);
+  /** Returns the configured spaces DB (or the main DB if not separately configured). */
+  getSpacesDb(db?: Database, spacesDb?: Database): Database {
+    return spacesDb ?? this._spacesDb ?? this.getDb(db);
+  }
+
+  /** Initialize the database schema. Must be called before other operations.
+   *  If a separate spacesDb is configured, its tables are initialized on it. */
+  async init(db?: Database, spacesDb?: Database): Promise<void> {
+    const main = this.getDb(db);
+    const spaces = spacesDb ?? this._spacesDb;
+    await initSchema(main, this.config, { spacesDb: spaces });
   }
 
   /** Query records from a collection. */

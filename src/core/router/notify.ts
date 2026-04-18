@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
+import { shortNameForNsid } from "../types";
 import { applyEvents, lookupExistingRecords } from "../db/records";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
@@ -60,7 +61,8 @@ export async function processNotifyUris(
       errors.push(`invalid AT URI: ${uri}`);
       continue;
     }
-    if (!config.collections[parsed.collection]) {
+    // `parsed.collection` is an NSID; look up the matching short name.
+    if (!shortNameForNsid(config, parsed.collection)) {
       errors.push(`collection not tracked: ${parsed.collection}`);
       continue;
     }
@@ -71,7 +73,8 @@ export async function processNotifyUris(
   const existing = await lookupExistingRecords(
     db,
     validUris.map(({ uri, parsed }) => ({ uri, collection: parsed.collection })),
-    true
+    true,
+    config
   );
 
   for (const { uri, parsed } of validUris) {

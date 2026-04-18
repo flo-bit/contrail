@@ -5,7 +5,8 @@
   "type": "module",
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "spaces-lexicon-templates/**/*.json"
   ],
   "exports": {
     ".": {
@@ -27,7 +28,12 @@
     "./generate": {
       "types": "./dist/generate.d.ts",
       "import": "./dist/generate.js"
-    }
+    },
+    "./publish": {
+      "types": "./dist/publish.d.ts",
+      "import": "./dist/publish.js"
+    },
+    "./spaces-lexicon-templates/*.json": "./spaces-lexicon-templates/*.json"
   },
   "repository": {
     "type": "git",
@@ -50,6 +56,7 @@
     "clean": "tsx scripts/clean.ts",
     "generate": "tsx app/generate.ts",
     "generate:pull": "tsx app/generate.ts && lex-cli pull && tsx app/generate.ts && lex-cli pull && lex-cli generate",
+    "publish-lexicons": "tsx scripts/publish-lexicons.ts",
     "typecheck": "tsc --noEmit",
     "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",
     "sync": "tsx app/sync.ts",
@@ -59,9 +66,11 @@
   "dependencies": {
     "@atcute/atproto": "^3.1.10",
     "@atcute/client": "^4.2.1",
+    "@atcute/identity": "^1.1.4",
     "@atcute/identity-resolver": "^1.2.2",
     "@atcute/jetstream": "^1.0.2",
-    "@atcute/lexicons": "^1.2.7",
+    "@atcute/lexicons": "^1.2.9",
+    "@atcute/xrpc-server": "^0.1.12",
     "hono": "^4.12.8"
   },
   "devDependencies": {

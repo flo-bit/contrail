@@ -1,0 +1,56 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.deleteRecord",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Delete a record from a space. Callers can delete their own records; the space owner can delete any record (via a separate admin path).",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "collection",
+            "rkey"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import type { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
-import { getCollectionNames, getDependentCollections, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
 import { createIngestState } from "./jetstream";
@@ -39,7 +39,7 @@ export async function runPersistent(
   }
 
   // Load known DIDs for dependent collection filtering
-  const dependentCollections = new Set(getDependentCollections(config));
+  const dependentCollections: Set<string> = new Set(getDependentNsids(config));
   let knownDids: Set<string> | undefined;
   if (dependentCollections.size > 0) {
     const result = await db
@@ -50,7 +50,7 @@ export async function runPersistent(
     log.log(`Loaded ${knownDids.size} known DIDs from database`);
   }
 
-  const collections = getCollectionNames(config);
+  const collections = getCollectionNsids(config);
   let reconnectAttempts = 0;
 
   while (!signal?.aborted) {

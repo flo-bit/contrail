@@ -47,9 +47,9 @@ export async function resolveProfiles(
 
   // Batch-lookup profile records for each configured profile collection
   for (const pc of profileConfigs) {
-    const { collection, rkey: configRkey } = pc;
+    const { collection, rkey: configRkey, shortName } = pc;
     const rkey = configRkey ?? "self";
-    const table = recordsTableName(collection);
+    const table = recordsTableName(shortName ?? collection);
     const uris = dids.map((did) => `at://${did}/${collection}/${rkey}`);
 
     const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
@@ -127,9 +127,9 @@ async function fetchMissingProfiles(
   await Promise.all(
     dids.flatMap((did) =>
       profileConfigs.map(async (pc) => {
-        const { collection, rkey: configRkey } = pc;
+        const { collection, rkey: configRkey, shortName } = pc;
         const rkey = configRkey ?? "self";
-        const table = recordsTableName(collection);
+        const table = recordsTableName(shortName ?? collection);
         try {
           const pds = await getPDS(did as Did, db);
           if (!pds) return;

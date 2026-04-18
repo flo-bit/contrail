@@ -1,7 +1,8 @@
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { Database, ResolvedContrailConfig } from "../src/core/types";
+import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/core/types";
 import { resolveConfig } from "../src/core/types";
 import { initSchema } from "../src/core/db/schema";
+import { applyEvents as coreApplyEvents, type ExistingRecordInfo } from "../src/core/db/records";
 
 export function createTestDb(): Database {
   return createSqliteDatabase(":memory:");
@@ -10,7 +11,8 @@ export function createTestDb(): Database {
 export const TEST_CONFIG: ResolvedContrailConfig = resolveConfig({
   namespace: "com.example",
   collections: {
-    "community.lexicon.calendar.event": {
+    event: {
+      collection: "community.lexicon.calendar.event",
       queryable: {
         mode: {},
         name: {},
@@ -18,7 +20,7 @@ export const TEST_CONFIG: ResolvedContrailConfig = resolveConfig({
       },
       relations: {
         rsvps: {
-          collection: "community.lexicon.calendar.rsvp",
+          collection: "rsvp",
           groupBy: "status",
           groups: {
             interested: "community.lexicon.calendar.rsvp#interested",
@@ -28,10 +30,11 @@ export const TEST_CONFIG: ResolvedContrailConfig = resolveConfig({
         },
       },
     },
-    "community.lexicon.calendar.rsvp": {
+    rsvp: {
+      collection: "community.lexicon.calendar.rsvp",
       references: {
         event: {
-          collection: "community.lexicon.calendar.event",
+          collection: "event",
           field: "subject.uri",
         },
       },
@@ -43,6 +46,19 @@ export async function createTestDbWithSchema(): Promise<Database> {
   const db = createTestDb();
   await initSchema(db, TEST_CONFIG);
   return db;
+}
+
+/** Apply events with TEST_CONFIG baked in — avoids each test having to pass it. */
+export function applyEvents(
+  db: Database,
+  events: IngestEvent[],
+  options?: {
+    skipReplayDetection?: boolean;
+    skipFeedFanout?: boolean;
+    existing?: Map<string, ExistingRecordInfo>;
+  }
+): Promise<void> {
+  return coreApplyEvents(db, events, TEST_CONFIG, options);
 }
 
 export function makeEvent(overrides: Partial<{

@@ -1,0 +1,55 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.removeMember",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Remove a member from a space. Owner only. Cannot remove the owner.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "did"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "did": {
+              "type": "string",
+              "format": "did"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "InvalidRequest"
+        }
+      ]
+    }
+  }
+}

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { Database } from "../src/core/types";
-import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { parseAtUri } from "../src/core/router/notify";
 import { createApp } from "../src/core/router/index";
-import { applyEvents, queryRecords } from "../src/core/db/records";
+import { queryRecords } from "../src/core/db/records";
 import type { Hono } from "hono";
 
 const NOTIFY_CONFIG = { ...TEST_CONFIG, notify: true };
@@ -175,7 +175,7 @@ describe("POST notifyOfUpdate", () => {
     // Pre-populate a record
     await applyEvents(db, [
       makeEvent({ uri, did, rkey: "evt1", record: { name: "Old" } }),
-    ]);
+    ], TEST_CONFIG);
 
     await seedIdentity(did, "https://pds.example.com");
     mockFetch({}); // PDS returns 404 for everything
@@ -287,7 +287,7 @@ describe("POST notifyOfUpdate", () => {
     });
     expect(result.records).toHaveLength(1);
     expect(
-      result.records[0].counts?.["community.lexicon.calendar.rsvp"]
+      result.records[0].counts?.["rsvp"]
     ).toBe(1);
   });
 
@@ -321,7 +321,7 @@ describe("POST notifyOfUpdate", () => {
     let result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
-    expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"]).toBe(1);
+    expect(result.records[0].counts?.["rsvp"]).toBe(1);
 
     // Now notify with the same RSVP (same CID) — should be a no-op
     await seedIdentity(did, "https://pds.example.com");
@@ -343,7 +343,7 @@ describe("POST notifyOfUpdate", () => {
     result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
-    expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"]).toBe(1);
+    expect(result.records[0].counts?.["rsvp"]).toBe(1);
   });
 
   it("uses update (not create) when record exists with different CID", async () => {
@@ -400,7 +400,7 @@ describe("POST notifyOfUpdate", () => {
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
-    expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"]).toBe(1);
+    expect(result.records[0].counts?.["rsvp"]).toBe(1);
   });
 
   it("does nothing when record not on PDS and not local", async () => {
@@ -449,7 +449,7 @@ describe("POST notifyOfUpdate", () => {
     let result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
-    expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"]).toBe(1);
+    expect(result.records[0].counts?.["rsvp"]).toBe(1);
 
     // Notify with RSVP URI — PDS returns 404 (deleted)
     await seedIdentity(did, "https://pds.example.com");
@@ -468,6 +468,6 @@ describe("POST notifyOfUpdate", () => {
     result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
-    expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"] ?? 0).toBe(0);
+    expect(result.records[0].counts?.["rsvp"] ?? 0).toBe(0);
   });
 });

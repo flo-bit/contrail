@@ -6,7 +6,7 @@ export const load: PageServerLoad = async ({ platform }) => {
 	try {
 		const client = getServerClient(platform!.env.DB);
 
-		const res = await client.get('xyz.statusphere.status.listRecords', {
+		const res = await client.get('statusphere.app.status.listRecords', {
 			params: { limit: 50, profiles: true, sort: 'createdAt', order: 'desc' }
 		});
 

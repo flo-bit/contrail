@@ -1,0 +1,334 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.rsvp.listRecords",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Query community.lexicon.calendar.rsvp records with filters",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "format": "at-identifier",
+            "description": "Filter by DID or handle (triggers on-demand backfill)"
+          },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include profile + identity info keyed by DID"
+          },
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token)."
+          },
+          "byUser": {
+            "type": "string",
+            "format": "did",
+            "description": "Only used with spaceUri — filter to records authored by this DID."
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied."
+          },
+          "status": {
+            "type": "string",
+            "description": "Filter by status"
+          },
+          "subjectUri": {
+            "type": "string",
+            "description": "Filter by subject.uri"
+          },
+          "hydrateEvent": {
+            "type": "boolean",
+            "description": "Embed the referenced event record"
+          },
+          "sort": {
+            "type": "string",
+            "knownValues": [
+              "status",
+              "subjectUri"
+            ],
+            "description": "Field to sort by (default: time_us)"
+          },
+          "order": {
+            "type": "string",
+            "knownValues": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction (default: desc for dates/numbers/counts, asc for strings)"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "records"
+          ],
+          "properties": {
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#record"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "uri",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.rsvp#main"
+        },
+        "time_us": {
+          "type": "integer"
+        },
+        "space": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "Present when the record was read from a permissioned space; its value is the space URI."
+        },
+        "event": {
+          "type": "ref",
+          "ref": "#refEventRecord"
+        }
+      }
+    },
+    "refEventRecord": {
+      "type": "object",
+      "required": [
+        "uri",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.event#main"
+        },
+        "time_us": {
+          "type": "integer"
+        },
+        "space": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "Present when the record was read from a permissioned space."
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "union",
+          "refs": [
+            "#appBskyActorProfile",
+            "#siteStandardPublication"
+          ]
+        }
+      }
+    },
+    "appBskyActorProfile": {
+      "type": "object",
+      "properties": {
+        "avatar": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Small image to be displayed next to posts from account. AKA, 'profile picture'"
+        },
+        "banner": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Larger horizontal image to display behind profile view."
+        },
+        "labels": {
+          "refs": [
+            "com.atproto.label.defs#selfLabels"
+          ],
+          "type": "union",
+          "description": "Self-label values, specific to the Bluesky application, on the overall account."
+        },
+        "website": {
+          "type": "string",
+          "format": "uri"
+        },
+        "pronouns": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Free-form pronouns text.",
+          "maxGraphemes": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "pinnedPost": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2560,
+          "description": "Free-form profile description text.",
+          "maxGraphemes": 256
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 640,
+          "maxGraphemes": 64
+        },
+        "joinedViaStarterPack": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        }
+      }
+    },
+    "siteStandardPublication": {
+      "type": "object",
+      "required": [
+        "url",
+        "name"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base publication url (ex: https://standard.site). The canonical document URL is formed by combining this value with the document path."
+        },
+        "icon": {
+          "type": "blob",
+          "accept": [
+            "image/*"
+          ],
+          "maxSize": 1000000,
+          "description": "Square image to identify the publication. Should be at least 256x256."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 5000,
+          "description": "Name of the publication.",
+          "maxGraphemes": 500
+        },
+        "basicTheme": {
+          "ref": "site.standard.theme.basic",
+          "type": "ref",
+          "description": "Simplified publication theme for tools and apps to utilize when displaying content."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 30000,
+          "description": "Brief description of the publication.",
+          "maxGraphemes": 3000
+        },
+        "preferences": {
+          "ref": "#preferences",
+          "type": "ref",
+          "description": "Object containing platform specific preferences (with a few shared properties)."
+        }
+      }
+    }
+  }
+}

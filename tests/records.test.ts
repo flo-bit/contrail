@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { Database } from "../src/core/types";
-import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import { applyEvents, queryRecords, getLastCursor, saveCursor } from "../src/core/db/records";
+import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { queryRecords, getLastCursor, saveCursor } from "../src/core/db/records";
 
 let db: Database;
 
@@ -97,7 +97,7 @@ describe("applyEvents", () => {
     });
     expect(result.records).toHaveLength(1);
     expect(result.records[0].counts).toBeDefined();
-    expect(result.records[0].counts!["community.lexicon.calendar.rsvp"]).toBe(1);
+    expect(result.records[0].counts!["rsvp"]).toBe(1);
   });
 
   it("decrements counts on delete", async () => {

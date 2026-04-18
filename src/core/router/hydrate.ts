@@ -1,7 +1,25 @@
-import type { RelationConfig, ReferenceConfig, RecordRow, Database } from "../types";
+import type { RelationConfig, ReferenceConfig, RecordRow, Database, ContrailConfig } from "../types";
 import { getDialect } from "../dialect";
-import { getNestedValue, getRelationField, recordsTableName } from "../types";
+import {
+  getNestedValue,
+  getRelationField,
+  recordsTableName,
+  spacesRecordsTableName,
+  nsidForShortName,
+} from "../types";
 import { batchedInQuery, formatRecord } from "./helpers";
+
+/** Group rows by their origin: public (undefined key) or a specific spaceUri. */
+function groupBySource<T extends { _space?: string }>(rows: T[]): Map<string | undefined, T[]> {
+  const groups = new Map<string | undefined, T[]>();
+  for (const r of rows) {
+    const key = r._space;
+    const g = groups.get(key);
+    if (g) g.push(r);
+    else groups.set(key, [r]);
+  }
+  return groups;
+}
 
 // --- Hydration: embed related records ---
 
@@ -41,59 +59,81 @@ export async function resolveHydrates(
   db: Database,
   relations: Record<string, RelationConfig>,
   requested: Record<string, number>,
-  records: RecordRow[]
+  records: RecordRow[],
+  config?: ContrailConfig
 ): Promise<HydrateResult> {
   if (Object.keys(requested).length === 0 || records.length === 0) return {};
 
   const grouped: Record<string, Record<string, Record<string, any[]>>> = {};
 
+  const sourceGroups = groupBySource(records);
+
   for (const [relName, hydrateLimit] of Object.entries(requested)) {
     const rel = relations[relName];
     const field = getRelationField(rel);
     const matchMode = rel.match ?? "uri";
-    const table = recordsTableName(rel.collection);
 
-    const matchValues = matchMode === "did"
-      ? [...new Set(records.map((r) => r.did))]
-      : records.map((r) => r.uri);
+    for (const [sourceSpace, sourceRecords] of sourceGroups) {
+      const matchValues = matchMode === "did"
+        ? [...new Set(sourceRecords.map((r) => r.did))]
+        : sourceRecords.map((r) => r.uri);
 
-    if (matchValues.length === 0) continue;
+      if (matchValues.length === 0) continue;
 
-    const groupCount = rel.groupBy ? 10 : 1;
-    const maxRows = matchValues.length * hydrateLimit * groupCount;
-    const relatedRows = await batchedInQuery<Omit<RecordRow, "collection">>(
-      db,
-      `SELECT uri, did, rkey, record, time_us FROM ${table}
-       WHERE ${getDialect(db).jsonExtract('record', field)} IN (__IN__)
-       ORDER BY time_us DESC
-       LIMIT ${maxRows}`,
-      [],
-      matchValues
-    );
+      const groupCount = rel.groupBy ? 10 : 1;
+      const maxRows = matchValues.length * hydrateLimit * groupCount;
 
-    for (const row of relatedRows) {
-      const record = row.record ? JSON.parse(row.record) : null;
-      const matchedValue = getNestedValue(record, field);
-      if (!matchedValue) continue;
+      const table = sourceSpace
+        ? spacesRecordsTableName(rel.collection)
+        : recordsTableName(rel.collection);
+      const where = sourceSpace
+        ? `space_uri = ? AND ${getDialect(db).jsonExtract('record', field)} IN (__IN__)`
+        : `${getDialect(db).jsonExtract('record', field)} IN (__IN__)`;
+      const prefix = sourceSpace ? [sourceSpace] : [];
 
-      const parentUris = matchMode === "did"
-        ? records.filter((r) => r.did === matchedValue).map((r) => r.uri)
-        : [matchedValue];
+      const relatedRows = await batchedInQuery<Omit<RecordRow, "collection">>(
+        db,
+        `SELECT uri, did, rkey, record, time_us FROM ${table}
+         WHERE ${where}
+         ORDER BY time_us DESC
+         LIMIT ${maxRows}`,
+        prefix,
+        matchValues
+      );
 
-      const groupValue = rel.groupBy
-        ? String(getNestedValue(record, rel.groupBy) ?? "other")
-        : "_flat";
+      for (const row of relatedRows) {
+        const record = row.record ? JSON.parse(row.record) : null;
+        const matchedValue = getNestedValue(record, field);
+        if (!matchedValue) continue;
 
-      for (const parentUri of parentUris) {
-        const targetUri = matchMode === "did" ? parentUri : matchedValue;
+        const parentUris = matchMode === "did"
+          ? sourceRecords.filter((r) => r.did === matchedValue).map((r) => r.uri)
+          : [matchedValue];
 
-        if (!grouped[targetUri]) grouped[targetUri] = {};
-        if (!grouped[targetUri][relName]) grouped[targetUri][relName] = {};
-        if (!grouped[targetUri][relName][groupValue]) grouped[targetUri][relName][groupValue] = [];
+        const groupValue = rel.groupBy
+          ? String(getNestedValue(record, rel.groupBy) ?? "other")
+          : "_flat";
 
-        const group = grouped[targetUri][relName][groupValue];
-        if (group.length < hydrateLimit) {
-          group.push(formatRecord({ ...row, collection: rel.collection }));
+        for (const parentUri of parentUris) {
+          const targetUri = matchMode === "did" ? parentUri : matchedValue;
+
+          if (!grouped[targetUri]) grouped[targetUri] = {};
+          if (!grouped[targetUri][relName]) grouped[targetUri][relName] = {};
+          if (!grouped[targetUri][relName][groupValue]) grouped[targetUri][relName][groupValue] = [];
+
+          const group = grouped[targetUri][relName][groupValue];
+          if (group.length < hydrateLimit) {
+            const childNsid = config
+              ? nsidForShortName(config, rel.collection) ?? rel.collection
+              : rel.collection;
+            group.push(
+              formatRecord({
+                ...(row as any),
+                collection: childNsid,
+                ...(sourceSpace ? { _space: sourceSpace } : {}),
+              } as RecordRow)
+            );
+          }
         }
       }
     }
@@ -122,43 +162,59 @@ export async function resolveReferences(
   db: Database,
   references: Record<string, ReferenceConfig>,
   requested: Set<string>,
-  records: RecordRow[]
+  records: RecordRow[],
+  config?: ContrailConfig
 ): Promise<ReferenceResult> {
   if (requested.size === 0 || records.length === 0) return {};
 
   const result: ReferenceResult = {};
 
+  const sourceGroups = groupBySource(records);
+
   for (const refName of requested) {
     const ref = references[refName];
     if (!ref) continue;
 
-    const table = recordsTableName(ref.collection);
+    const refNsid = config
+      ? nsidForShortName(config, ref.collection) ?? ref.collection
+      : ref.collection;
 
-    const targetMap = new Map<string, string[]>();
-    for (const r of records) {
-      const parsed = r.record ? JSON.parse(r.record) : null;
-      const targetValue = parsed ? getNestedValue(parsed, ref.field) : null;
-      if (!targetValue) continue;
-      if (!targetMap.has(targetValue)) targetMap.set(targetValue, []);
-      targetMap.get(targetValue)!.push(r.uri);
-    }
+    for (const [sourceSpace, sourceRecords] of sourceGroups) {
+      const targetMap = new Map<string, string[]>();
+      for (const r of sourceRecords) {
+        const parsed = r.record ? JSON.parse(r.record) : null;
+        const targetValue = parsed ? getNestedValue(parsed, ref.field) : null;
+        if (!targetValue) continue;
+        if (!targetMap.has(targetValue)) targetMap.set(targetValue, []);
+        targetMap.get(targetValue)!.push(r.uri);
+      }
 
-    const targetUris = [...targetMap.keys()];
-    if (targetUris.length === 0) continue;
+      const targetUris = [...targetMap.keys()];
+      if (targetUris.length === 0) continue;
 
-    const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
-      db,
-      `SELECT uri, did, rkey, record, time_us FROM ${table}
-       WHERE uri IN (__IN__)`,
-      [],
-      targetUris
-    );
+      const table = sourceSpace
+        ? spacesRecordsTableName(ref.collection)
+        : recordsTableName(ref.collection);
+      const where = sourceSpace ? `space_uri = ? AND uri IN (__IN__)` : `uri IN (__IN__)`;
+      const prefix = sourceSpace ? [sourceSpace] : [];
 
-    for (const row of rows) {
-      const parentUris = targetMap.get(row.uri) ?? [];
-      for (const parentUri of parentUris) {
-        if (!result[parentUri]) result[parentUri] = {};
-        result[parentUri][refName] = formatRecord({ ...row, collection: ref.collection });
+      const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
+        db,
+        `SELECT uri, did, rkey, record, time_us FROM ${table} WHERE ${where}`,
+        prefix,
+        targetUris
+      );
+
+      for (const row of rows) {
+        const parentUris = targetMap.get(row.uri) ?? [];
+        for (const parentUri of parentUris) {
+          if (!result[parentUri]) result[parentUri] = {};
+          result[parentUri][refName] = formatRecord({
+            ...(row as any),
+            collection: refNsid,
+            ...(sourceSpace ? { _space: sourceSpace } : {}),
+          } as RecordRow);
+        }
       }
     }
   }

@@ -6,13 +6,33 @@ import { registerAdminRoutes } from "./admin";
 import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
+import { registerSpacesRoutes } from "../spaces/router";
+import type { SpacesRoutesOptions } from "../spaces/router";
+import { buildVerifier } from "../spaces/auth";
+import { HostedAdapter } from "../spaces/adapter";
+import type { StorageAdapter } from "../spaces/types";
+import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
 
+export interface SpacesContext {
+  adapter: StorageAdapter;
+  verifier: ServiceJwtVerifier;
+}
+
+export interface CreateAppOptions {
+  spaces?: SpacesRoutesOptions;
+  /** Separate DB for the spaces tables. Defaults to `db`. */
+  spacesDb?: Database;
+  /** Full spaces context override (escape hatch for tests). */
+  spacesCtx?: SpacesContext | null;
+}
+
 export function createApp(
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  options: CreateAppOptions = {}
 ): Hono {
   const app = new Hono();
   app.use("*", cors());
@@ -33,7 +53,10 @@ export function createApp(
     // Ensure profile records are backfilled
     const profileConfigs = (config.profiles ?? []).map(normalizeProfileConfig);
     for (const pc of profileConfigs) {
-      await backfillUser(db, did, pc.collection, Date.now() + 10_000, config);
+      await backfillUser(db, did, pc.collection, Date.now() + 3_000, config, {
+        maxRetries: 0,
+        requestTimeout: 3_000,
+      });
     }
 
     const profileMap = await resolveProfiles(db, config, [did]);
@@ -43,10 +66,24 @@ export function createApp(
     return c.json({ profiles });
   });
 
+  // Shared spaces context — verifier + adapter — reused by both the per-collection
+  // routes (for `?spaceUri=...` dispatch) and the `<ns>.space.*` routes.
+  const spacesDb = options.spacesDb ?? db;
+  const spacesCtx: SpacesContext | null =
+    options.spacesCtx !== undefined
+      ? options.spacesCtx
+      : config.spaces
+        ? {
+            adapter: options.spaces?.adapter ?? new HostedAdapter(spacesDb, config),
+            verifier: buildVerifier(config.spaces),
+          }
+        : null;
+
   registerAdminRoutes(app, db, config);
-  registerCollectionRoutes(app, db, config);
+  registerCollectionRoutes(app, db, config, spacesCtx);
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
+  registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx);
 
   return app;
 }

@@ -1,0 +1,57 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.transferOwnership",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Transfer space ownership to another DID. Caller must be the current owner. The new owner must already be a write member of the space. The previous owner becomes a regular write member.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "newOwnerDid"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "newOwnerDid": {
+              "type": "string",
+              "format": "did"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "space"
+          ],
+          "properties": {
+            "space": {
+              "type": "ref",
+              "ref": "rsvp.atmo.space.defs#spaceView"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "InvalidRequest",
+          "description": "Raised if the new owner is not a write member of the space."
+        }
+      ]
+    }
+  }
+}

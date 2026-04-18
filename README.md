@@ -3,7 +3,7 @@
 > [!WARNING]
 > Work in progress! Pre-alpha, expect breaking changes.
 
-A library for indexing AT Protocol records. Define collections — get automatic Jetstream ingestion, PDS backfill, user discovery, and typed XRPC endpoints. Works with Cloudflare Workers + D1, SvelteKit, Node.js, or any JavaScript runtime.
+A library for indexing AT Protocol records. Define collections — get automatic Jetstream ingestion, PDS backfill, user discovery, typed XRPC endpoints, and (opt-in) permissioned spaces for private records. Works with Cloudflare Workers + D1, SvelteKit, Node.js, or any JavaScript runtime.
 
 ## Install
 
@@ -20,7 +20,8 @@ const contrail = new Contrail({
   namespace: "com.example",
   db, // any Database-compatible instance (D1, SQLite, etc.)
   collections: {
-    "community.lexicon.calendar.event": {
+    event: {                                         // short name → URL path + table suffix
+      collection: "community.lexicon.calendar.event", // full NSID of the record type
       queryable: {
         mode: {},                        // string → equality filter (?mode=online)
         name: {},                        // string → equality filter (?name=...)
@@ -30,7 +31,7 @@ const contrail = new Contrail({
       searchable: ["name", "description"],
       relations: {
         rsvps: {
-          collection: "community.lexicon.calendar.rsvp",
+          collection: "rsvp",            // short name of the child collection
           groupBy: "status",
           count: true,
           groups: {
@@ -41,14 +42,15 @@ const contrail = new Contrail({
         },
       },
     },
-    "community.lexicon.calendar.rsvp": {
+    rsvp: {
+      collection: "community.lexicon.calendar.rsvp",
       queryable: {
         status: {},
         "subject.uri": {},
       },
       references: {
         event: {
-          collection: "community.lexicon.calendar.event",
+          collection: "event",          // short name of the referenced collection
           field: "subject.uri",
         },
       },
@@ -63,10 +65,10 @@ await contrail.init();
 
 ```ts
 const { records, cursor } = await contrail.query(
-  "community.lexicon.calendar.event",
+  "event",                        // short name you declared in `collections`
   {
     filters: { mode: "in-person" },
-    sort: { countType: "community.lexicon.calendar.rsvp", direction: "desc" },
+    sort: { countType: "rsvp", direction: "desc" },
     limit: 20,
   }
 );
@@ -219,11 +221,14 @@ Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialize
 | `relations.*.groups` | — | Group value mappings (e.g. `{ going: "collection#going" }`) |
 | `relations.*.count` | `true` | Enable materialized count columns on the parent |
 | `references` | `{}` | Forward references to other collections for hydration |
-| `references.*.collection` | — | Target collection NSID |
+| `references.*.collection` | — | Short name of the target collection (key in `collections`) |
 | `references.*.field` | — | Field containing the target record's AT URI |
 | `queries` | `{}` | Custom query handlers (raw Response) |
 | `pipelineQueries` | `{}` | Custom query handlers that go through the standard filter/sort/hydration pipeline |
 | `searchable` | disabled | Full-text search fields. SQLite uses FTS5 virtual tables; PostgreSQL uses tsvector generated columns with GIN indexes. Provide `string[]` to enable, omit to disable |
+| `collection` | — | Full NSID of the record type this short-name entry indexes (required) |
+| `methods` | `["listRecords", "getRecord"]` | XRPC methods to emit for this collection |
+| `allowInSpaces` | `true` | When spaces are enabled, emit a parallel `spaces_records_<short>` table |
 
 ### Top-level options
 
@@ -235,6 +240,8 @@ Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialize
 | `relays` | Bluesky relays | Relay URLs for user discovery |
 | `jetstreams` | Bluesky Jetstream | Jetstream URLs for real-time ingestion |
 | `feeds` | — | Personalized feed configurations |
+| `notify` | off | Expose `notifyOfUpdate`. `true` = open, string = `Authorization: Bearer <string>` required |
+| `spaces` | — | Permissioned-spaces configuration. See [PERMISSIONED_DATA.md](./PERMISSIONED_DATA.md) |
 | `logger` | `console` | Logger instance (`{ log, warn, error }`) |
 
 ### Profiles
@@ -243,16 +250,18 @@ Ingestion runs automatically via cron (`*/1 * * * *`). Schema is auto-initialize
 
 ## XRPC API
 
-When using `createHandler`, all endpoints are available at `/xrpc/{nsid}.{method}`:
+When using `createHandler`, all endpoints live under the deployment's own namespace at `/xrpc/{namespace}.{...}`:
 
 | Endpoint | Description |
 |----------|-------------|
-| `{collection}.listRecords` | List/filter records |
-| `{collection}.getRecord` | Get single record by URI |
+| `{namespace}.{short}.listRecords` | List/filter records in a collection (keyed by its short name) |
+| `{namespace}.{short}.getRecord` | Get single record by URI |
 | `{namespace}.getProfile` | Get a user's profile by DID or handle |
 | `{namespace}.notifyOfUpdate` | Notify of a record change for immediate indexing |
 | `{namespace}.getCursor` | Current cursor position |
 | `{namespace}.getOverview` | All collections summary |
+| `{namespace}.permissionSet` | OAuth permission-set bundling every method above (auto-generated) |
+| `{namespace}.space.*` | Spaces admin, invite, member, record XRPCs (when `spaces` is enabled) |
 
 ### Query parameters
 
@@ -304,19 +313,19 @@ When using `createHandler`, all endpoints are available at `/xrpc/{nsid}.{method
 
 ```
 # Upcoming events with 10+ going RSVPs, with RSVP records and profiles
-/xrpc/community.lexicon.calendar.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10&hydrateRsvps=5&profiles=true
+/xrpc/com.example.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10&hydrateRsvps=5&profiles=true
 
 # Events for a specific user (by handle)
-/xrpc/community.lexicon.calendar.event.listRecords?actor=alice.bsky.social&profiles=true
+/xrpc/com.example.event.listRecords?actor=alice.bsky.social&profiles=true
 
 # Single event with counts, RSVPs, and profiles
-/xrpc/community.lexicon.calendar.event.getRecord?uri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateRsvps=10&profiles=true
+/xrpc/com.example.event.getRecord?uri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateRsvps=10&profiles=true
 
 # Search for events by name/description
-/xrpc/community.lexicon.calendar.event.listRecords?search=meetup&profiles=true
+/xrpc/com.example.event.listRecords?search=meetup&profiles=true
 
 # RSVPs for a specific event, with the referenced event embedded
-/xrpc/community.lexicon.calendar.rsvp.listRecords?subjectUri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateEvent=true&profiles=true
+/xrpc/com.example.rsvp.listRecords?subjectUri=at://did:plc:.../community.lexicon.calendar.event/...&hydrateEvent=true&profiles=true
 ```
 
 ## Notify of Updates
@@ -346,6 +355,36 @@ Contrail fetches the record from the user's PDS and figures out what to do:
 | 404 | No | **No-op** |
 
 When Jetstream later delivers the same event, the duplicate is detected by CID and skipped.
+
+## Permissioned Data
+
+Contrail ships an opt-in permissioned-spaces subsystem: an auth-gated store for records that can't live on public PDSes — private events, invite-only groups, members-only chat. Set `config.spaces` and contrail exposes the space XRPCs at `{namespace}.space.*` alongside your public indexer:
+
+```ts
+const contrail = new Contrail({
+  namespace: "com.example",
+  collections: { /* ... */ },
+  spaces: {
+    type: "com.example.event.space",   // NSID classifying the kind of space
+    serviceDid: "did:web:example.com", // your deployment's DID
+    // `resolver` is optional — defaults to a composite did:plc + did:web resolver.
+  },
+});
+```
+
+Each collection you declare also gets a parallel `spaces_records_<short>` table (opt out per-collection via `allowInSpaces: false`). Auth uses atproto service-auth JWTs via `@atcute/xrpc-server`. Access is a simple `read` / `write` permission per member — the space owner is implicit write. Invites are first-class (generated token, hashed-at-rest, expiry + max-uses + revocation).
+
+**Unified `listRecords`.** The per-collection `listRecords` endpoint accepts three call shapes:
+
+| Call | Returns |
+| --- | --- |
+| No auth, no `spaceUri` | Public records only |
+| `?spaceUri=…` + service-auth JWT | Records from that one space (ACL-gated) |
+| Service-auth JWT, no `spaceUri` | Public records **unioned** with records from every space the caller is a member of |
+
+The union path runs the public and per-space queries in parallel and merges with a shared keyset cursor, so filters, sorts (`time`, record-field, count), hydration, and references all work across sources. Records from a space carry a `space: <spaceUri>` field in the response.
+
+Full design, migration story, and known limits: [PERMISSIONED_DATA.md](./PERMISSIONED_DATA.md).
 
 ## Typesafe Client Usage
 
@@ -395,7 +434,7 @@ import { Client } from "@atcute/client";
 
 const rpc = new Client({ handler: simpleFetchHandler({ service: /* your contrail url */ }) });
 
-const response = await rpc.get("community.lexicon.calendar.event.getRecords", {
+const response = await rpc.get("com.example.rsvp.listRecords", {
   params: { status: "going", limit: 10 }, // typed params
 });
 

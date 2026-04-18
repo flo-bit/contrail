@@ -7,7 +7,10 @@
       "Bash(npx tsc:*)",
       "Bash(pnpm test:*)",
       "Bash(npx vitest:*)",
-      "Bash(npm test:*)"
+      "Bash(npm test:*)",
+      "Bash(npx lex-cli:*)",
+      "Bash(pnpm vitest:*)",
+      "WebFetch(domain:flo-bit.dev)"
     ]
   }
 }

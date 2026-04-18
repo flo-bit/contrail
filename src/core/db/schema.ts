@@ -1,8 +1,16 @@
 import type { ContrailConfig, Database, ResolvedContrailConfig, ResolvedMaps } from "../types";
 import type { SqlDialect } from "../dialect";
 import { buildFtsSchema, getDialect } from "../dialect";
-import { getRelationField, countColumnName, recordsTableName, resolveConfig } from "../types";
+import {
+  getRelationField,
+  countColumnName,
+  groupedCountColumnName,
+  recordsTableName,
+  spacesRecordsTableName,
+  resolveConfig,
+} from "../types";
 import { getSearchableFields } from "../search";
+import { buildSpacesBaseSchema } from "../spaces/schema";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
@@ -44,45 +52,94 @@ function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
-function buildCollectionTables(config: ContrailConfig, dialect: SqlDialect): string[] {
+interface BuilderOpts {
+  /** Emit tables for the spaces variant (spaces_records_<short> with space_uri column). */
+  forSpaces?: boolean;
+}
+
+function tableFor(shortName: string, opts: BuilderOpts): string {
+  return opts.forSpaces ? spacesRecordsTableName(shortName) : recordsTableName(shortName);
+}
+
+function namePrefix(opts: BuilderOpts): string {
+  return opts.forSpaces ? "sp_" : "";
+}
+
+export function buildCollectionTables(
+  config: ContrailConfig,
+  dialect: SqlDialect,
+  opts: BuilderOpts = {}
+): string[] {
   const stmts: string[] = [];
-  for (const collection of Object.keys(config.collections)) {
-    const table = recordsTableName(collection);
-    stmts.push(
-      `CREATE TABLE IF NOT EXISTS ${table} (
-        uri TEXT PRIMARY KEY,
-        did TEXT NOT NULL,
-        rkey TEXT NOT NULL,
-        cid TEXT,
-        record ${dialect.recordColumnType},
-        time_us ${dialect.bigintType} NOT NULL,
-        indexed_at ${dialect.bigintType} NOT NULL
-      )`
-    );
-    stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_did ON ${table}(did)`);
-    stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_time ON ${table}(time_us DESC)`);
+  for (const [shortName, colConfig] of Object.entries(config.collections)) {
+    if (opts.forSpaces && colConfig.allowInSpaces === false) continue;
+    const table = tableFor(shortName, opts);
+    const np = namePrefix(opts);
+    if (opts.forSpaces) {
+      stmts.push(
+        `CREATE TABLE IF NOT EXISTS ${table} (
+          space_uri TEXT NOT NULL,
+          uri TEXT NOT NULL,
+          did TEXT NOT NULL,
+          rkey TEXT NOT NULL,
+          cid TEXT,
+          record ${dialect.recordColumnType},
+          time_us ${dialect.bigintType} NOT NULL,
+          indexed_at ${dialect.bigintType} NOT NULL,
+          PRIMARY KEY (space_uri, did, rkey)
+        )`
+      );
+      stmts.push(
+        `CREATE INDEX IF NOT EXISTS idx_${np}${sanitizeName(shortName)}_space_time ON ${table}(space_uri, time_us DESC)`
+      );
+      stmts.push(
+        `CREATE INDEX IF NOT EXISTS idx_${np}${sanitizeName(shortName)}_space_did ON ${table}(space_uri, did)`
+      );
+    } else {
+      stmts.push(
+        `CREATE TABLE IF NOT EXISTS ${table} (
+          uri TEXT PRIMARY KEY,
+          did TEXT NOT NULL,
+          rkey TEXT NOT NULL,
+          cid TEXT,
+          record ${dialect.recordColumnType},
+          time_us ${dialect.bigintType} NOT NULL,
+          indexed_at ${dialect.bigintType} NOT NULL
+        )`
+      );
+      stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(shortName)}_did ON ${table}(did)`);
+      stmts.push(`CREATE INDEX IF NOT EXISTS idx_${sanitizeName(shortName)}_time ON ${table}(time_us DESC)`);
+    }
   }
   return stmts;
 }
 
-function buildDynamicIndexes(config: ContrailConfig, dialect: SqlDialect): string[] {
+export function buildDynamicIndexes(
+  config: ContrailConfig,
+  dialect: SqlDialect,
+  opts: BuilderOpts = {}
+): string[] {
   const resolved = getResolved(config);
   const indexes: string[] = [];
+  const np = namePrefix(opts);
   for (const [collection, colConfig] of Object.entries(config.collections)) {
-    const table = recordsTableName(collection);
+    if (opts.forSpaces && colConfig.allowInSpaces === false) continue;
+    const table = tableFor(collection, opts);
     const queryable = resolved.queryable[collection] ?? colConfig.queryable ?? {};
     for (const field of Object.keys(queryable)) {
-      const idxName = `idx_${sanitizeName(collection)}_${sanitizeName(field)}`;
+      const idxName = `idx_${np}${sanitizeName(collection)}_${sanitizeName(field)}`;
       indexes.push(
         `CREATE INDEX IF NOT EXISTS ${idxName} ON ${table}(${dialect.indexExpression(dialect.jsonExtract('record', field))})`
       );
     }
 
-    // Relation field indexes go on the CHILD collection's table
     for (const [, rel] of Object.entries(colConfig.relations ?? {})) {
+      const childShort = rel.collection;
+      const childConfig = config.collections[childShort];
+      if (opts.forSpaces && childConfig?.allowInSpaces === false) continue;
       const on = getRelationField(rel);
-      const childTable = recordsTableName(rel.collection);
-      const idxName = `idx_${sanitizeName(rel.collection)}_${sanitizeName(on)}`;
+      const childTable = tableFor(childShort, opts);
+      const idxName = `idx_${np}${sanitizeName(childShort)}_${sanitizeName(on)}`;
       indexes.push(
         `CREATE INDEX IF NOT EXISTS ${idxName} ON ${childTable}(${dialect.indexExpression(dialect.jsonExtract('record', on))})`
       );
@@ -91,13 +148,15 @@ function buildDynamicIndexes(config: ContrailConfig, dialect: SqlDialect): strin
   return indexes;
 }
 
-function buildCountColumns(config: ContrailConfig): string[] {
+export function buildCountColumns(config: ContrailConfig, opts: BuilderOpts = {}): string[] {
   const resolved = getResolved(config);
   const stmts: string[] = [];
-  const addedColumns = new Map<string, Set<string>>(); // table → columns
+  const addedColumns = new Map<string, Set<string>>();
+  const np = namePrefix(opts);
 
   for (const [collection, colConfig] of Object.entries(config.collections)) {
-    const table = recordsTableName(collection);
+    if (opts.forSpaces && colConfig.allowInSpaces === false) continue;
+    const table = tableFor(collection, opts);
     const relMap = resolved.relations[collection] ?? {};
 
     if (!addedColumns.has(table)) addedColumns.set(table, new Set());
@@ -105,7 +164,7 @@ function buildCountColumns(config: ContrailConfig): string[] {
 
     for (const [relName, rel] of Object.entries(colConfig.relations ?? {})) {
       if (rel.count === false) continue;
-      // Total count column — on the PARENT collection's table
+      if (opts.forSpaces && config.collections[rel.collection]?.allowInSpaces === false) continue;
       const totalCol = countColumnName(rel.collection);
       if (!tableColumns.has(totalCol)) {
         tableColumns.add(totalCol);
@@ -114,14 +173,13 @@ function buildCountColumns(config: ContrailConfig): string[] {
         );
       }
       stmts.push(
-        `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${totalCol} ON ${table}(${totalCol} DESC, time_us DESC)`
+        `CREATE INDEX IF NOT EXISTS idx_${np}${sanitizeName(collection)}_${totalCol} ON ${table}(${totalCol} DESC, time_us DESC)`
       );
 
-      // Grouped count columns
       const mapping = relMap[relName];
       if (mapping) {
-        for (const [, fullToken] of Object.entries(mapping.groups)) {
-          const groupCol = countColumnName(fullToken);
+        for (const groupKey of Object.keys(mapping.groups)) {
+          const groupCol = groupedCountColumnName(rel.collection, groupKey);
           if (!tableColumns.has(groupCol)) {
             tableColumns.add(groupCol);
             stmts.push(
@@ -129,7 +187,7 @@ function buildCountColumns(config: ContrailConfig): string[] {
             );
           }
           stmts.push(
-            `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${groupCol} ON ${table}(${groupCol} DESC, time_us DESC)`
+            `CREATE INDEX IF NOT EXISTS idx_${np}${sanitizeName(collection)}_${groupCol} ON ${table}(${groupCol} DESC, time_us DESC)`
           );
         }
       }
@@ -158,7 +216,6 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] 
     )`,
   ];
 
-  // Index follow collections on subject for efficient fan-out lookups
   const followCollections = new Set(Object.values(config.feeds).map((f) => f.follow));
   for (const col of followCollections) {
     const table = recordsTableName(col);
@@ -171,12 +228,17 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] 
   return stmts;
 }
 
-function buildFtsTables(config: ContrailConfig, dialect: SqlDialect): string[] {
+export function buildFtsTables(
+  config: ContrailConfig,
+  dialect: SqlDialect,
+  opts: BuilderOpts = {}
+): string[] {
   const stmts: string[] = [];
   for (const [collection, colConfig] of Object.entries(config.collections)) {
+    if (opts.forSpaces && colConfig.allowInSpaces === false) continue;
     const fields = getSearchableFields(collection, colConfig);
     if (!fields || fields.length === 0) continue;
-    const table = recordsTableName(collection);
+    const table = tableFor(collection, opts);
     stmts.push(...buildFtsSchema(dialect, table, fields));
   }
   return stmts;
@@ -185,6 +247,7 @@ function buildFtsTables(config: ContrailConfig, dialect: SqlDialect): string[] {
 const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
+  "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
 ];
 
 async function runMigrations(db: Database): Promise<void> {
@@ -197,9 +260,34 @@ async function runMigrations(db: Database): Promise<void> {
   }
 }
 
+export interface InitSchemaOptions {
+  /** Separate DB for the spaces tables. Defaults to the main `db`. */
+  spacesDb?: Database;
+}
+
+async function applySpacesSchema(
+  target: Database,
+  config: ContrailConfig,
+  dialect: SqlDialect
+): Promise<void> {
+  const base = buildSpacesBaseSchema(dialect);
+  const perCollection = buildCollectionTables(config, dialect, { forSpaces: true });
+  const indexes = buildDynamicIndexes(config, dialect, { forSpaces: true });
+  await target.batch([...base, ...perCollection, ...indexes].map((s) => target.prepare(s)));
+
+  const ftsStmts = buildFtsTables(config, dialect, { forSpaces: true });
+  for (const stmt of ftsStmts) {
+    try { await target.prepare(stmt).run(); } catch { /* FTS5 unavailable */ }
+  }
+  for (const stmt of buildCountColumns(config, { forSpaces: true })) {
+    try { await target.prepare(stmt).run(); } catch { /* already exists */ }
+  }
+}
+
 export async function initSchema(
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  options: InitSchemaOptions = {}
 ): Promise<void> {
   const dialect = getDialect(db);
   const baseStatements = buildBaseSchema(dialect).split(";")
@@ -209,9 +297,17 @@ export async function initSchema(
   const indexStatements = buildDynamicIndexes(config, dialect);
   const ftsStatements = buildFtsTables(config, dialect);
   const feedStatements = buildFeedTables(config, dialect);
+
+  const spacesDb = options.spacesDb;
+  const spacesSharesMainDb = !spacesDb || spacesDb === db;
+
   const all = [...baseStatements, ...collectionStatements, ...indexStatements, ...feedStatements];
 
   await db.batch(all.map((s) => db.prepare(s)));
+
+  if (config.spaces) {
+    await applySpacesSchema(spacesSharesMainDb ? db : spacesDb!, config, dialect);
+  }
 
   // FTS5 may not be available (e.g. node:sqlite) — skip gracefully
   for (const stmt of ftsStatements) {

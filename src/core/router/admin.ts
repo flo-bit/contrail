@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database } from "../types";
-import { getCollectionNames, recordsTableName } from "../types";
+import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../types";
 import { getLastCursor } from "../db";
 
 export function registerAdminRoutes(
@@ -25,13 +25,14 @@ export function registerAdminRoutes(
   app.get(`/xrpc/${ns}.getOverview`, async (c) => {
     const collections: { collection: string; records: number; unique_users: number }[] = [];
 
-    for (const collection of getCollectionNames(config)) {
-      const table = recordsTableName(collection);
+    for (const short of getCollectionShortNames(config)) {
+      const table = recordsTableName(short);
+      const nsid = nsidForShortName(config, short) ?? short;
       const row = await db
         .prepare(`SELECT COUNT(*) as records, COUNT(DISTINCT did) as unique_users FROM ${table}`)
         .first<{ records: number; unique_users: number }>();
       if (row) {
-        collections.push({ collection, records: row.records, unique_users: row.unique_users });
+        collections.push({ collection: nsid, records: row.records, unique_users: row.unique_users });
       }
     }
 

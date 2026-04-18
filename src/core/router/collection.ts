@@ -1,7 +1,14 @@
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { ContrailConfig, ResolvedContrailConfig, Database, RecordRow, QueryableField, RecordSource, RelationConfig } from "../types";
-import { getCollectionNames, countColumnName, recordsTableName } from "../types";
-import { queryRecords } from "../db";
+import {
+  getCollectionShortNames,
+  countColumnName,
+  groupedCountColumnName,
+  recordsTableName,
+  nsidForShortName,
+  getCollectionMethods,
+} from "../types";
+import { queryRecords, queryAcrossSources } from "../db";
 import type { SortOption } from "../db/records";
 import { backfillUser } from "../backfill";
 import { resolveHydrates, resolveReferences, parseHydrateParams } from "./hydrate";
@@ -9,13 +16,19 @@ import { resolveProfiles, collectDids } from "./profiles";
 import { resolveActor } from "../identity";
 import type { FormattedRecord } from "./helpers";
 import { formatRecord, parseIntParam, fieldToParam } from "./helpers";
+import { verifyServiceAuthRequest, extractInviteToken, checkInviteReadGrant } from "../spaces/auth";
+import { checkAccess } from "../spaces/acl";
+import { hashInviteToken } from "../spaces/invite-token";
+import type { SpacesContext } from ".";
+import type { Nsid } from "@atcute/lexicons";
 
 export async function runPipeline(
   db: Database,
   config: ContrailConfig,
   collection: string,
   params: URLSearchParams,
-  source?: RecordSource
+  source?: RecordSource,
+  spaceUris?: string[]
 ): Promise<{ records: FormattedRecord[]; cursor?: string; profiles?: any[] }> {
   const colConfig = config.collections[collection];
   if (!colConfig) throw new Error(`Unknown collection: ${collection}`);
@@ -29,16 +42,18 @@ export async function runPipeline(
   const cursor = params.get("cursor") || undefined;
   const actor = params.get("actor") || params.get("did") || undefined;
   const wantProfiles = params.get("profiles") === "true";
-  const wantBackfill = params.get("backfill") === "true";
 
   let did: string | undefined;
   if (actor) {
     const resolved = await resolveActor(db, actor);
     if (!resolved) throw new Error("Could not resolve actor");
     did = resolved;
-    if (wantBackfill) {
-      await backfillUser(db, did, collection, Date.now() + 10_000, config);
-    }
+    // backfillUser expects the record NSID (for PDS calls), not the short name.
+    const nsid = nsidForShortName(config, collection) ?? collection;
+    await backfillUser(db, did, nsid, Date.now() + 3_000, config, {
+      maxRetries: 0,
+      requestTimeout: 3_000,
+    });
   }
 
   const filters: Record<string, string> = {};
@@ -109,8 +124,9 @@ export async function runPipeline(
   }
 
   const search = params.get("search") || undefined;
+  const spaceUri = params.get("spaceUri") || undefined;
 
-  const result = await queryRecords(db, config, {
+  const queryOpts = {
     collection,
     did,
     limit,
@@ -121,7 +137,11 @@ export async function runPipeline(
     sort,
     search,
     source,
-  });
+    spaceUri,
+  };
+  const result = spaceUris && spaceUris.length > 0 && !spaceUri
+    ? await queryAcrossSources(db, config, queryOpts, spaceUris)
+    : await queryRecords(db, config, queryOpts);
 
   const rows = result.records;
   const hydrateRequested = parseHydrateParams(params, relations, references);
@@ -129,13 +149,15 @@ export async function runPipeline(
     db,
     relations,
     hydrateRequested.relations,
-    rows
+    rows,
+    config
   );
   const refs = await resolveReferences(
     db,
     references,
     hydrateRequested.references,
-    rows
+    rows,
+    config
   );
 
   const formattedRecords: FormattedRecord[] = rows.map((row) => {
@@ -171,27 +193,163 @@ export async function runPipeline(
 export function registerCollectionRoutes(
   app: Hono,
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  spacesCtx?: SpacesContext | null
 ): void {
-  for (const collection of getCollectionNames(config)) {
-    const colConfig = config.collections[collection];
+  const ns = config.namespace;
 
-    app.get(`/xrpc/${collection}.listRecords`, async (c) => {
-      const params = new URL(c.req.url).searchParams;
-      try {
-        const result = await runPipeline(db, config, collection, params);
-        return c.json(result);
-      } catch (e: any) {
-        if (e.message === "Could not resolve actor") {
-          return c.json({ error: e.message }, 400);
+  /** When a per-collection endpoint receives `?spaceUri=...`, verify the JWT,
+   *  resolve membership, run the space ACL, and return the caller DID if allowed.
+   *  Returns null if the spaces subsystem isn't available; the handler should
+   *  then treat the spaceUri as invalid.
+   *  Throws by returning a Response (caller checks via `instanceof Response`). */
+  async function gateSpaceAccess(
+    c: Context,
+    spaceUri: string,
+    op: "read"
+  ): Promise<Response | { callerDid?: string; clientId?: string; viaInviteToken?: boolean }> {
+    if (!spacesCtx) {
+      return c.json(
+        { error: "InvalidRequest", message: "spaces not configured on this service" },
+        501
+      );
+    }
+
+    // Read-token path: anonymous bearer access via `?inviteToken=...` (or
+    // `Authorization: Bearer atmo-invite:<token>`). Token must exist, be
+    // unexpired/unrevoked, scoped to this space, and have a kind that grants
+    // read (`read` or `read-join`). Token kind cannot grant write — caller must
+    // separately redeem to become a member for any non-read op.
+    if (op === "read") {
+      const rawToken = extractInviteToken(c.req.raw);
+      if (rawToken) {
+        const ok = await checkInviteReadGrant(
+          spacesCtx.adapter,
+          rawToken,
+          spaceUri,
+          hashInviteToken
+        );
+        if (ok) {
+          const space = await spacesCtx.adapter.getSpace(spaceUri);
+          if (!space) return c.json({ error: "NotFound" }, 404);
+          return { viaInviteToken: true };
         }
-        throw e;
+        return c.json(
+          { error: "Forbidden", reason: "invalid-invite-token" },
+          403
+        );
       }
-    });
+    }
 
-    app.get(`/xrpc/${collection}.getRecord`, async (c) => {
+    const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
+    const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
+    if (!auth) {
+      return c.json(
+        { error: "AuthRequired", message: "spaceUri requires a valid service-auth JWT or read-grant invite token" },
+        401
+      );
+    }
+    const space = await spacesCtx.adapter.getSpace(spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    const member = await spacesCtx.adapter.getMember(spaceUri, auth.issuer);
+    const result = checkAccess({
+      op,
+      space,
+      callerDid: auth.issuer,
+      member,
+      clientId: auth.clientId,
+    });
+    if (!result.allow) {
+      return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    }
+    return { callerDid: auth.issuer, clientId: auth.clientId };
+  }
+
+  for (const collection of getCollectionShortNames(config)) {
+    const colConfig = config.collections[collection];
+    const methods = getCollectionMethods(colConfig);
+
+    if (methods.includes("listRecords")) {
+      app.get(`/xrpc/${ns}.${collection}.listRecords`, async (c) => {
+        const params = new URL(c.req.url).searchParams;
+        const spaceUri = params.get("spaceUri") || undefined;
+
+        if (spaceUri) {
+          const gated = await gateSpaceAccess(c, spaceUri, "read");
+          if (gated instanceof Response) return gated;
+          // ACL passed — dispatch directly to the spaces adapter.
+          const nsid = colConfig.collection;
+          const list = await spacesCtx!.adapter.listRecords(spaceUri, nsid, {
+            byUser: params.get("byUser") ?? undefined,
+            cursor: params.get("cursor") ?? undefined,
+            limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+          });
+          return c.json(list);
+        }
+
+        // Union path: when Authorization is present, verify the JWT and fold
+        // in records from spaces the caller is a member of.
+        let spaceUris: string[] | undefined;
+        if (spacesCtx && c.req.header("Authorization")) {
+          const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
+          const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
+          if (!auth) {
+            return c.json(
+              { error: "AuthRequired", message: "invalid service-auth JWT" },
+              401
+            );
+          }
+          const { spaces } = await spacesCtx.adapter.listSpaces({
+            memberDid: auth.issuer,
+            limit: 200,
+          });
+          spaceUris = spaces.map((s) => s.uri);
+        }
+
+        try {
+          const result = await runPipeline(db, config, collection, params, undefined, spaceUris);
+          return c.json(result);
+        } catch (e: any) {
+          if (e.message === "Could not resolve actor") {
+            return c.json({ error: e.message }, 400);
+          }
+          throw e;
+        }
+      });
+    }
+
+    if (!methods.includes("getRecord")) {
+      // Skip getRecord + custom queries unless listRecords-only was explicitly requested.
+      for (const [queryName, handler] of Object.entries(colConfig.queries ?? {})) {
+        app.get(`/xrpc/${ns}.${collection}.${queryName}`, async (c) => {
+          const params = new URL(c.req.url).searchParams;
+          return handler(db, params, config);
+        });
+      }
+      continue;
+    }
+
+    app.get(`/xrpc/${ns}.${collection}.getRecord`, async (c) => {
       const uri = c.req.query("uri");
       if (!uri) return c.json({ error: "uri parameter required" }, 400);
+
+      // Spaces path — `?spaceUri=` routes to the per-space store + ACL gate.
+      const spaceUri = c.req.query("spaceUri") || undefined;
+      if (spaceUri) {
+        const gated = await gateSpaceAccess(c, spaceUri, "read");
+        if (gated instanceof Response) return gated;
+
+        // Parse author + rkey from the record uri `at://<did>/<collection>/<rkey>`
+        const m = uri.match(/^at:\/\/([^/]+)\/[^/]+\/([^/]+)$/);
+        if (!m) return c.json({ error: "InvalidRequest", message: "uri must be at://<did>/<collection>/<rkey>" }, 400);
+        const authorDid = m[1];
+        const rkey = m[2];
+
+        const nsid = colConfig.collection;
+        const record = await spacesCtx!.adapter.getRecord(spaceUri, nsid, authorDid, rkey);
+        if (!record) return c.json({ error: "NotFound" }, 404);
+        return c.json({ record });
+      }
 
       const relations = colConfig.relations ?? {};
       const references = colConfig.references ?? {};
@@ -207,7 +365,8 @@ export function registerCollectionRoutes(
 
       if (!row) return c.json({ error: "Record not found" }, 404);
 
-      const formatted = formatRecord({ ...row, collection });
+      const nsid = nsidForShortName(config, collection) ?? collection;
+      const formatted = formatRecord({ ...row, collection: nsid });
       const counts = extractCounts(row, relations);
       if (counts) flattenCounts(formatted, counts, relations);
 
@@ -219,13 +378,15 @@ export function registerCollectionRoutes(
         db,
         relations,
         hydrateRequested.relations,
-        [row]
+        [row],
+        config
       );
       const refs = await resolveReferences(
         db,
         references,
         hydrateRequested.references,
-        [row]
+        [row],
+        config
       );
       const h = hydrates[row.uri];
       if (h) {
@@ -254,7 +415,7 @@ export function registerCollectionRoutes(
     for (const [queryName, handler] of Object.entries(
       colConfig.queries ?? {}
     )) {
-      app.get(`/xrpc/${collection}.${queryName}`, async (c) => {
+      app.get(`/xrpc/${ns}.${collection}.${queryName}`, async (c) => {
         const params = new URL(c.req.url).searchParams;
         return handler(db, params, config);
       });
@@ -263,7 +424,7 @@ export function registerCollectionRoutes(
     for (const [queryName, handler] of Object.entries(
       colConfig.pipelineQueries ?? {}
     )) {
-      app.get(`/xrpc/${collection}.${queryName}`, async (c) => {
+      app.get(`/xrpc/${ns}.${collection}.${queryName}`, async (c) => {
         const params = new URL(c.req.url).searchParams;
         try {
           const source = await handler(db, params, config);
@@ -290,8 +451,8 @@ function getRelationCountColumns(
     cols.push({ column: countColumnName(rel.collection) });
     const mapping = relMap[relName];
     if (mapping?.groups) {
-      for (const [, fullToken] of Object.entries(mapping.groups as Record<string, string>)) {
-        cols.push({ column: countColumnName(fullToken) });
+      for (const groupKey of Object.keys(mapping.groups as Record<string, string>)) {
+        cols.push({ column: groupedCountColumnName(rel.collection, groupKey) });
       }
     }
   }
@@ -311,8 +472,8 @@ function extractCounts(
     if (val != null && val !== 0) counts[rel.collection] = val;
 
     if (rel.groups) {
-      for (const [, fullToken] of Object.entries(rel.groups as Record<string, string>)) {
-        const groupCol = countColumnName(fullToken);
+      for (const [groupKey, fullToken] of Object.entries(rel.groups as Record<string, string>)) {
+        const groupCol = groupedCountColumnName(rel.collection, groupKey);
         const gval = row[groupCol];
         if (gval != null && gval !== 0) counts[fullToken] = gval;
       }

@@ -38,19 +38,19 @@ Your XRPC API is now available at `http://localhost:8787`:
 
 ```
 # List events sorted by RSVP count
-/xrpc/community.lexicon.calendar.event.listRecords?sort=rsvpsCount
+/xrpc/rsvp.atmo.event.listRecords?sort=rsvpsCount
 
 # Upcoming events with 10+ going RSVPs
-/xrpc/community.lexicon.calendar.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10
+/xrpc/rsvp.atmo.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10
 
 # Single event with hydrated RSVPs and profiles
-/xrpc/community.lexicon.calendar.event.getRecord?uri=at://...&hydrateRsvps=10&profiles=true
+/xrpc/rsvp.atmo.event.getRecord?uri=at://...&hydrateRsvps=10&profiles=true
 
 # Search events
-/xrpc/community.lexicon.calendar.event.listRecords?search=meetup
+/xrpc/rsvp.atmo.event.listRecords?search=meetup
 
 # RSVPs for a specific event
-/xrpc/community.lexicon.calendar.rsvp.listRecords?subjectUri=at://...
+/xrpc/rsvp.atmo.rsvp.listRecords?subjectUri=at://...
 ```
 
 ## Deploy

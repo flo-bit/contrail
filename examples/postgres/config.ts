@@ -3,7 +3,8 @@ import type { ContrailConfig } from "@atmo-dev/contrail";
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
   collections: {
-    "community.lexicon.calendar.event": {
+    event: {
+      collection: "community.lexicon.calendar.event",
       queryable: {
         mode: {},
         name: {},
@@ -15,7 +16,7 @@ export const config: ContrailConfig = {
       searchable: ["name", "description"],
       relations: {
         rsvps: {
-          collection: "community.lexicon.calendar.rsvp",
+          collection: "rsvp",
           groupBy: "status",
           count: true,
           groups: {
@@ -26,14 +27,15 @@ export const config: ContrailConfig = {
         },
       },
     },
-    "community.lexicon.calendar.rsvp": {
+    rsvp: {
+      collection: "community.lexicon.calendar.rsvp",
       queryable: {
         status: {},
         "subject.uri": {},
       },
       references: {
         event: {
-          collection: "community.lexicon.calendar.event",
+          collection: "event",
           field: "subject.uri",
         },
       },

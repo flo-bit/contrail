@@ -5,9 +5,10 @@ import {
   getNestedValue,
   getRelationField,
   resolveConfig,
-  getCollectionNames,
-  getDiscoverableCollections,
-  getDependentCollections,
+  getCollectionShortNames,
+  getDiscoverableShortNames,
+  getDependentShortNames,
+  getCollectionNsids,
 } from "../src/core/types";
 
 describe("validateFieldName", () => {
@@ -39,12 +40,17 @@ describe("validateConfig", () => {
   it("passes for valid config", () => {
     expect(() =>
       validateConfig({
+        namespace: "test",
         collections: {
-          "test.collection": {
+          col: {
+            collection: "test.collection",
             queryable: { name: {}, startsAt: { type: "range" } },
             relations: {
-              items: { collection: "test.item", field: "subject.uri", groupBy: "status" },
+              items: { collection: "item", field: "subject.uri", groupBy: "status" },
             },
+          },
+          item: {
+            collection: "test.item",
           },
         },
       })
@@ -54,8 +60,9 @@ describe("validateConfig", () => {
   it("rejects invalid queryable field names", () => {
     expect(() =>
       validateConfig({
+        namespace: "test",
         collections: {
-          "test.col": { queryable: { "bad field": {} } },
+          col: { collection: "test.col", queryable: { "bad field": {} } },
         },
       })
     ).toThrow("Invalid field name");
@@ -64,12 +71,15 @@ describe("validateConfig", () => {
   it("rejects invalid relation field", () => {
     expect(() =>
       validateConfig({
+        namespace: "test",
         collections: {
-          "test.col": {
+          col: {
+            collection: "test.col",
             relations: {
-              r: { collection: "test.other", field: "bad field" },
+              r: { collection: "other", field: "bad field" },
             },
           },
+          other: { collection: "test.other" },
         },
       })
     ).toThrow("Invalid field name");
@@ -78,15 +88,34 @@ describe("validateConfig", () => {
   it("rejects invalid groupBy", () => {
     expect(() =>
       validateConfig({
+        namespace: "test",
         collections: {
-          "test.col": {
+          col: {
+            collection: "test.col",
             relations: {
-              r: { collection: "test.other", groupBy: "bad;field" },
+              r: { collection: "other", groupBy: "bad;field" },
+            },
+          },
+          other: { collection: "test.other" },
+        },
+      })
+    ).toThrow("Invalid field name");
+  });
+
+  it("rejects relation to unknown collection short name", () => {
+    expect(() =>
+      validateConfig({
+        namespace: "test",
+        collections: {
+          col: {
+            collection: "test.col",
+            relations: {
+              r: { collection: "missing" },
             },
           },
         },
       })
-    ).toThrow("Invalid field name");
+    ).toThrow("references unknown collection");
   });
 });
 
@@ -121,61 +150,90 @@ describe("getRelationField", () => {
 });
 
 describe("resolveConfig", () => {
-  it("adds default profile collection", () => {
-    const resolved = resolveConfig({ collections: { "test.col": {} } });
-    expect(resolved.collections["app.bsky.actor.profile"]).toEqual({ discover: false });
+  it("adds default profile collection (keyed by short name `profile`)", () => {
+    const resolved = resolveConfig({
+      namespace: "test",
+      collections: { col: { collection: "test.col" } },
+    });
+    expect(resolved.collections["profile"]).toBeDefined();
+    expect(resolved.collections["profile"].collection).toBe("app.bsky.actor.profile");
+    expect(resolved.collections["profile"].discover).toBe(false);
   });
 
-  it("does not overwrite existing profile collection config", () => {
+  it("does not overwrite existing profile entry", () => {
     const resolved = resolveConfig({
-      collections: { "app.bsky.actor.profile": { queryable: { displayName: {} } } },
+      namespace: "test",
+      collections: {
+        profile: { collection: "app.bsky.actor.profile", queryable: { displayName: {} } },
+      },
     });
-    expect(resolved.collections["app.bsky.actor.profile"].queryable).toEqual({ displayName: {} });
+    expect(resolved.collections["profile"].queryable).toEqual({ displayName: {} });
   });
 
   it("uses custom profiles", () => {
     const resolved = resolveConfig({
+      namespace: "test",
       collections: {},
       profiles: ["custom.profile"],
     });
-    expect(resolved.profiles).toEqual([{ collection: "custom.profile" }]);
-    expect(resolved.collections["custom.profile"]).toEqual({ discover: false });
-    expect(resolved.collections["app.bsky.actor.profile"]).toBeUndefined();
+    expect(resolved.profiles?.[0].collection).toBe("custom.profile");
+    expect(resolved.collections["profile"]).toBeDefined();
+    expect(resolved.collections["profile"].collection).toBe("custom.profile");
   });
 
   it("applies default jetstreams and relays", () => {
-    const resolved = resolveConfig({ collections: {} });
+    const resolved = resolveConfig({ namespace: "test", collections: {} });
     expect(resolved.jetstreams).toHaveLength(4);
     expect(resolved.relays).toHaveLength(1);
   });
+
+  it("builds nsidToShort reverse map", () => {
+    const resolved = resolveConfig({
+      namespace: "test",
+      collections: {
+        event: { collection: "test.event" },
+        rsvp: { collection: "test.rsvp" },
+      },
+    });
+    expect(resolved._resolved.nsidToShort["test.event"]).toBe("event");
+    expect(resolved._resolved.nsidToShort["test.rsvp"]).toBe("rsvp");
+  });
 });
 
-describe("getCollectionNames / getDiscoverableCollections / getDependentCollections", () => {
+describe("collection lookup helpers", () => {
   const config = resolveConfig({
+    namespace: "test",
     collections: {
-      "test.main": {},
-      "test.dep": { discover: false },
+      main: { collection: "test.main" },
+      dep: { collection: "test.dep", discover: false },
     },
   });
 
-  it("getCollectionNames returns all collections", () => {
-    const names = getCollectionNames(config);
-    expect(names).toContain("test.main");
-    expect(names).toContain("test.dep");
-    expect(names).toContain("app.bsky.actor.profile");
+  it("getCollectionShortNames returns all short names (including auto-added profile)", () => {
+    const names = getCollectionShortNames(config);
+    expect(names).toContain("main");
+    expect(names).toContain("dep");
+    expect(names).toContain("profile");
   });
 
-  it("getDiscoverableCollections excludes discover:false", () => {
-    const discoverable = getDiscoverableCollections(config);
-    expect(discoverable).toContain("test.main");
-    expect(discoverable).not.toContain("test.dep");
-    expect(discoverable).not.toContain("app.bsky.actor.profile");
+  it("getCollectionNsids returns all record NSIDs", () => {
+    const nsids = getCollectionNsids(config);
+    expect(nsids).toContain("test.main");
+    expect(nsids).toContain("test.dep");
+    expect(nsids).toContain("app.bsky.actor.profile");
   });
 
-  it("getDependentCollections returns discover:false", () => {
-    const dependent = getDependentCollections(config);
-    expect(dependent).toContain("test.dep");
-    expect(dependent).toContain("app.bsky.actor.profile");
-    expect(dependent).not.toContain("test.main");
+  it("getDiscoverableShortNames excludes discover:false", () => {
+    const discoverable = getDiscoverableShortNames(config);
+    expect(discoverable).toContain("main");
+    expect(discoverable).not.toContain("dep");
+    expect(discoverable).not.toContain("profile");
+  });
+
+  it("getDependentShortNames returns discover:false", () => {
+    const dependent = getDependentShortNames(config);
+    expect(dependent).toContain("dep");
+    expect(dependent).toContain("profile");
+    expect(dependent).not.toContain("main");
   });
 });

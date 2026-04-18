@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get a user's profile by DID or handle",
+      "description": "Get a user's profiles by DID or handle",
       "parameters": {
         "type": "params",
         "required": [
@@ -21,8 +21,19 @@
       "output": {
         "encoding": "application/json",
         "schema": {
-          "type": "ref",
-          "ref": "#profileEntry"
+          "type": "object",
+          "required": [
+            "profiles"
+          ],
+          "properties": {
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
         }
       }
     },

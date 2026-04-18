@@ -1,0 +1,26 @@
+{
+  "lexicon": 1,
+  "id": "statusphere.app.permissionSet",
+  "defs": {
+    "main": {
+      "type": "permission-set",
+      "title": "statusphere.app",
+      "description": "All XRPC methods exposed by the statusphere.app service.",
+      "permissions": [
+        {
+          "type": "permission",
+          "resource": "rpc",
+          "inheritAud": true,
+          "lxm": [
+            "statusphere.app.getCursor",
+            "statusphere.app.getOverview",
+            "statusphere.app.getProfile",
+            "statusphere.app.notifyOfUpdate",
+            "statusphere.app.status.getRecord",
+            "statusphere.app.status.listRecords"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -3,15 +3,15 @@ import type { Database, RecordRow, RelationConfig, ReferenceConfig } from "../sr
 import { recordsTableName } from "../src/core/types";
 import { parseHydrateParams, resolveHydrates, resolveReferences } from "../src/core/router/hydrate";
 import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import { applyEvents } from "../src/core/db/records";
+import { applyEvents } from "./helpers";
 
 describe("parseHydrateParams", () => {
   const relations: Record<string, RelationConfig> = {
-    rsvps: { collection: "community.lexicon.calendar.rsvp", groupBy: "status" },
+    rsvps: { collection: "rsvp", groupBy: "status" },
     comments: { collection: "test.comment" },
   };
   const references: Record<string, ReferenceConfig> = {
-    event: { collection: "community.lexicon.calendar.event", field: "subject.uri" },
+    event: { collection: "event", field: "subject.uri" },
   };
 
   it("parses valid relation hydrate params", () => {
@@ -74,7 +74,7 @@ describe("resolveHydrates", () => {
   });
 
   it("returns empty when no records", async () => {
-    const relations = TEST_CONFIG.collections["community.lexicon.calendar.event"].relations!;
+    const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 5 }, []);
     expect(result).toEqual({});
   });
@@ -91,7 +91,7 @@ describe("resolveHydrates", () => {
         makeEvent({
           uri: `at://did:plc:user${i}/community.lexicon.calendar.rsvp/r${i}`,
           did: `did:plc:user${i}`,
-          collection: "community.lexicon.calendar.rsvp",
+          collection: "rsvp",
           rkey: `r${i}`,
           record: { subject: { uri: eventUri }, status: "going" },
           time_us: 2000 + i,
@@ -100,11 +100,11 @@ describe("resolveHydrates", () => {
     }
 
     const eventRow = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
+      .prepare(`SELECT * FROM ${recordsTableName("event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
-    const relations = TEST_CONFIG.collections["community.lexicon.calendar.event"].relations!;
+    const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 10 }, [eventRow!]);
 
     expect(result[eventUri]).toBeDefined();
@@ -121,7 +121,7 @@ describe("resolveHydrates", () => {
         makeEvent({
           uri: `at://did:plc:user${i}/community.lexicon.calendar.rsvp/r${i}`,
           did: `did:plc:user${i}`,
-          collection: "community.lexicon.calendar.rsvp",
+          collection: "rsvp",
           rkey: `r${i}`,
           record: { subject: { uri: eventUri }, status: "going" },
           time_us: 2000 + i,
@@ -130,11 +130,11 @@ describe("resolveHydrates", () => {
     }
 
     const eventRow = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
+      .prepare(`SELECT * FROM ${recordsTableName("event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
-    const relations = TEST_CONFIG.collections["community.lexicon.calendar.event"].relations!;
+    const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 2 }, [eventRow!]);
 
     expect(result[eventUri].rsvps["going"].length).toBeLessThanOrEqual(2);
@@ -152,7 +152,7 @@ describe("resolveHydrates", () => {
       makeEvent({
         uri: `at://did:plc:other/community.lexicon.calendar.rsvp/r1`,
         did: "did:plc:other",
-        collection: "community.lexicon.calendar.rsvp",
+        collection: "rsvp",
         rkey: "r1",
         record: { author: did, status: "going" },
         time_us: 2000,
@@ -160,13 +160,13 @@ describe("resolveHydrates", () => {
     ]);
 
     const eventRow = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
+      .prepare(`SELECT * FROM ${recordsTableName("event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
     // match: "did" means matchValues are parent DIDs, and field points to where the DID is stored
     const relations: Record<string, RelationConfig> = {
-      rsvps: { collection: "community.lexicon.calendar.rsvp", match: "did", field: "author", groupBy: "status" },
+      rsvps: { collection: "rsvp", match: "did", field: "author", groupBy: "status" },
     };
     const result = await resolveHydrates(db, relations, { rsvps: 10 }, [eventRow!]);
 
@@ -189,7 +189,7 @@ describe("resolveHydrates", () => {
       makeEvent({
         uri: rsvpUri,
         did: "did:plc:user1",
-        collection: "community.lexicon.calendar.rsvp",
+        collection: "rsvp",
         rkey: "r1",
         record: { subject: { uri: eventUri }, status: "going" },
         time_us: 2000,
@@ -197,11 +197,11 @@ describe("resolveHydrates", () => {
     ]);
 
     const rsvpRow = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.rsvp")} WHERE uri = ?`)
+      .prepare(`SELECT * FROM ${recordsTableName("rsvp")} WHERE uri = ?`)
       .bind(rsvpUri)
       .first<RecordRow>();
 
-    const references = TEST_CONFIG.collections["community.lexicon.calendar.rsvp"].references!;
+    const references = TEST_CONFIG.collections["rsvp"].references!;
     const result = await resolveReferences(db, references, new Set(["event"]), [rsvpRow!]);
 
     expect(result[rsvpUri]).toBeDefined();
@@ -227,7 +227,7 @@ describe("resolveHydrates", () => {
       makeEvent({
         uri: rsvpUri1,
         did: "did:plc:user1",
-        collection: "community.lexicon.calendar.rsvp",
+        collection: "rsvp",
         rkey: "r1",
         record: { subject: { uri: eventUri1 }, status: "going" },
         time_us: 2000,
@@ -235,7 +235,7 @@ describe("resolveHydrates", () => {
       makeEvent({
         uri: rsvpUri2,
         did: "did:plc:user2",
-        collection: "community.lexicon.calendar.rsvp",
+        collection: "rsvp",
         rkey: "r2",
         record: { subject: { uri: eventUri2 }, status: "interested" },
         time_us: 2001,
@@ -243,10 +243,10 @@ describe("resolveHydrates", () => {
     ]);
 
     const rsvpRows = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.rsvp")} ORDER BY time_us DESC`)
+      .prepare(`SELECT * FROM ${recordsTableName("rsvp")} ORDER BY time_us DESC`)
       .all<RecordRow>();
 
-    const references = TEST_CONFIG.collections["community.lexicon.calendar.rsvp"].references!;
+    const references = TEST_CONFIG.collections["rsvp"].references!;
     const result = await resolveReferences(db, references, new Set(["event"]), rsvpRows.results!);
 
     // Each RSVP should have its event resolved
@@ -266,7 +266,7 @@ describe("resolveHydrates", () => {
       makeEvent({
         uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/r1",
         did: "did:plc:user1",
-        collection: "community.lexicon.calendar.rsvp",
+        collection: "rsvp",
         rkey: "r1",
         record: { subject: { uri: eventUri } },
         time_us: 2000,
@@ -274,11 +274,11 @@ describe("resolveHydrates", () => {
     ]);
 
     const eventRow = await db
-      .prepare(`SELECT * FROM ${recordsTableName("community.lexicon.calendar.event")} WHERE uri = ?`)
+      .prepare(`SELECT * FROM ${recordsTableName("event")} WHERE uri = ?`)
       .bind(eventUri)
       .first<RecordRow>();
 
-    const relations = TEST_CONFIG.collections["community.lexicon.calendar.event"].relations!;
+    const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 10 }, [eventRow!]);
 
     expect(result[eventUri].rsvps).toBeDefined();

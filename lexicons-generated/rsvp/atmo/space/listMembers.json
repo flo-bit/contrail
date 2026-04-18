@@ -1,0 +1,48 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.listMembers",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List members of a space. Caller must be a member or the owner.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "members"
+          ],
+          "properties": {
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "rsvp.atmo.space.defs#memberView"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

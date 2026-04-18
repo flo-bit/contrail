@@ -1,0 +1,74 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.listRecords",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List records of a given collection within a space. Access is governed by the space's collection policy.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri",
+          "collection"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "collection": {
+            "type": "string",
+            "format": "nsid"
+          },
+          "byUser": {
+            "type": "string",
+            "format": "did",
+            "description": "Only return records authored by this DID."
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token. When supplied, replaces JWT auth for this read."
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "records"
+          ],
+          "properties": {
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "rsvp.atmo.space.defs#recordView"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

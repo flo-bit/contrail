@@ -28,6 +28,7 @@ export function formatRecord(row: RecordRow): FormattedRecord {
     cid: row.cid,
     record,
     time_us: row.time_us,
+    ...(row._space ? { space: row._space } : {}),
   };
 }
 

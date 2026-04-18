@@ -1,0 +1,49 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.getSpace",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get metadata for a single space. Caller must be a member, the owner, or hold a read-grant invite token.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token. When supplied, replaces JWT auth for this read."
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "space"
+          ],
+          "properties": {
+            "space": {
+              "type": "ref",
+              "ref": "rsvp.atmo.space.defs#spaceView"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

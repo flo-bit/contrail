@@ -21,7 +21,8 @@ import type { ContrailConfig } from '@atmo-dev/contrail';
 export const config: ContrailConfig = {
   namespace: 'statusphere.app',
   collections: {
-    'xyz.statusphere.status': {
+    status: {                                  // short name → URL path segment
+      collection: 'xyz.statusphere.status',    // full NSID of the record type
       queryable: {
         status: {},                    // equality filter (?status=...)
         createdAt: { type: 'range' }   // range filter (?createdAtMin=...&createdAtMax=...)
@@ -59,7 +60,7 @@ npx wrangler deploy
 
 ```ts
 const client = getClient(platform!.env.DB);
-const res = await client.get('xyz.statusphere.status.listRecords', {
+const res = await client.get('statusphere.app.status.listRecords', {
   params: { limit: 50, profiles: true }  // typed params
 });
 res.data.records  // typed response

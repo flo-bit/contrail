@@ -8,26 +8,38 @@ import type {
   RecordRow,
   RecordSource,
 } from "../types";
-import { getNestedValue, getRelationField, countColumnName, getFeedFollowCollections, recordsTableName } from "../types";
+import {
+  getNestedValue,
+  getRelationField,
+  countColumnName,
+  groupedCountColumnName,
+  getFeedFollowShortNames,
+  recordsTableName,
+  spacesRecordsTableName,
+  shortNameForNsid,
+  nsidForShortName,
+} from "../types";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 import { ftsQueryClause, getDialect } from "../dialect";
 
 // --- Counts ---
 
 interface InboundRelation {
+  /** Short name of the parent collection. */
   parentCollection: string;
   relationName: string;
   rel: RelationConfig;
 }
 
+/** Find relations that target the given short-named child collection. */
 function getInboundRelations(
   config: ContrailConfig,
-  foreignCollection: string
+  childShortName: string
 ): InboundRelation[] {
   const results: InboundRelation[] = [];
   for (const [colName, colConfig] of Object.entries(config.collections)) {
     for (const [relName, rel] of Object.entries(colConfig.relations ?? {})) {
-      if (rel.collection === foreignCollection) {
+      if (rel.collection === childShortName) {
         results.push({ parentCollection: colName, relationName: relName, rel });
       }
     }
@@ -46,7 +58,9 @@ function collectCountTargets(
   existingRecordJson: string | null,
   targets: Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>
 ): void {
-  const inbound = getInboundRelations(config, event.collection);
+  const childShort = shortNameForNsid(config, event.collection);
+  if (!childShort) return;
+  const inbound = getInboundRelations(config, childShort);
   if (inbound.length === 0) return;
 
   const record = event.record ? JSON.parse(event.record) : null;
@@ -108,12 +122,13 @@ function buildBatchCountStatements(
     );
     setBindings.push(targetValue);
 
-    // Grouped counts
+    // Grouped counts — column names are `count_<child-short>_<group-key>`; match
+    // against the group's full token value in the record.
     if (rel.groupBy) {
       const mapping = (config as ResolvedContrailConfig)._resolved?.relations[parentCollection]?.[relationName];
       if (mapping?.groups) {
-        for (const [, fullToken] of Object.entries(mapping.groups)) {
-          const groupCol = countColumnName(fullToken);
+        for (const [groupKey, fullToken] of Object.entries(mapping.groups)) {
+          const groupCol = groupedCountColumnName(rel.collection, groupKey);
           setClauses.push(
             `${groupCol} = (SELECT ${countExpr} FROM ${childTable} WHERE ${getDialect(db).jsonExtract('record', field)} = ? AND ${getDialect(db).jsonExtract('record', rel.groupBy)} = ?)`
           );
@@ -147,13 +162,15 @@ function buildFtsStatements(
   // PostgreSQL: tsvector generated column is auto-maintained, no manual FTS sync
   if (getDialect(db).ftsStrategy === "generated-column") return [];
 
-  const colConfig = config.collections[event.collection];
+  const short = shortNameForNsid(config, event.collection);
+  if (!short) return [];
+  const colConfig = config.collections[short];
   if (!colConfig) return [];
 
-  const fields = getSearchableFields(event.collection, colConfig);
+  const fields = getSearchableFields(short, colConfig);
   if (!fields || fields.length === 0) return [];
 
-  const table = ftsTableName(event.collection);
+  const table = ftsTableName(short);
   const stmts: Statement[] = [];
 
   if (event.operation === "delete") {
@@ -189,11 +206,14 @@ function buildFeedStatements(
 
   const stmts: Statement[] = [];
 
+  const eventShort = shortNameForNsid(config, event.collection);
+  if (!eventShort) return [];
+
   for (const [, feedConfig] of Object.entries(config.feeds)) {
     const followTable = recordsTableName(feedConfig.follow);
 
     // Target collection: fan out to followers
-    if (feedConfig.targets.includes(event.collection)) {
+    if (feedConfig.targets.includes(eventShort)) {
       if (event.operation === "create" || event.operation === "update") {
         stmts.push(
           db
@@ -215,13 +235,14 @@ function buildFeedStatements(
     }
 
     // Follow collection: handle follow/unfollow
-    if (event.collection === feedConfig.follow) {
+    if (eventShort === feedConfig.follow) {
       if (event.operation === "create") {
         const record = event.record ? JSON.parse(event.record) : null;
         const subject = record?.subject;
         if (subject) {
-          for (const targetCol of feedConfig.targets) {
-            const targetTable = recordsTableName(targetCol);
+          for (const targetShort of feedConfig.targets) {
+            const targetTable = recordsTableName(targetShort);
+            const targetNsid = nsidForShortName(config, targetShort) ?? targetShort;
             stmts.push(
               db
                 .prepare(
@@ -234,7 +255,7 @@ function buildFeedStatements(
                    LIMIT 100`
                   )
                 )
-                .bind(event.did, targetCol, subject)
+                .bind(event.did, targetNsid, subject)
             );
           }
         }
@@ -244,8 +265,8 @@ function buildFeedStatements(
           const parsed = JSON.parse(existingRecord);
           const subject = parsed?.subject;
           if (subject) {
-            for (const targetCol of feedConfig.targets) {
-              const targetTable = recordsTableName(targetCol);
+            for (const targetShort of feedConfig.targets) {
+              const targetTable = recordsTableName(targetShort);
               stmts.push(
                 db
                   .prepare(
@@ -321,21 +342,25 @@ export interface ExistingRecordInfo {
 export async function lookupExistingRecords(
   db: Database,
   events: { uri: string; collection: string }[],
-  includeRecord: boolean = true
+  includeRecord: boolean = true,
+  config?: ContrailConfig
 ): Promise<Map<string, ExistingRecordInfo>> {
   const result = new Map<string, ExistingRecordInfo>();
   if (events.length === 0) return result;
 
-  const byCollection = new Map<string, string[]>();
+  // Group by short name (config lookup); skip events for collections not in our config.
+  const byShort = new Map<string, string[]>();
   for (const e of events) {
-    const uris = byCollection.get(e.collection) ?? [];
+    const short = config ? shortNameForNsid(config, e.collection) : e.collection;
+    if (!short) continue;
+    const uris = byShort.get(short) ?? [];
     uris.push(e.uri);
-    byCollection.set(e.collection, uris);
+    byShort.set(short, uris);
   }
 
   const selectCols = includeRecord ? "uri, cid, record" : "uri, cid";
-  for (const [collection, uris] of byCollection) {
-    const table = recordsTableName(collection);
+  for (const [short, uris] of byShort) {
+    const table = recordsTableName(short);
     for (let i = 0; i < uris.length; i += 50) {
       const chunk = uris.slice(i, i + 50);
       const placeholders = chunk.map(() => "?").join(",");
@@ -370,7 +395,7 @@ export async function applyEvents(
 ): Promise<void> {
   if (events.length === 0) return;
 
-  const followCollections = config ? getFeedFollowCollections(config) : [];
+  const followCollections = config ? getFeedFollowShortNames(config) : [];
   const hasCountingRelations = config ? Object.values(config.collections).some(c =>
     Object.values(c.relations ?? {}).some(r => r.count !== false)
   ) : false;
@@ -381,7 +406,7 @@ export async function applyEvents(
   if (options?.existing) {
     existingMap = options.existing;
   } else if (config && !options?.skipReplayDetection) {
-    existingMap = await lookupExistingRecords(db, events, needRecordContent);
+    existingMap = await lookupExistingRecords(db, events, needRecordContent, config);
   } else {
     existingMap = new Map();
   }
@@ -398,7 +423,13 @@ export async function applyEvents(
   const countTargets = new Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>();
 
   for (const e of events) {
-    const table = recordsTableName(e.collection);
+    // Event's collection is an NSID. Look up the short name from config.
+    // If no config or not found, treat collection string as-is (for tests that pre-populate tables).
+    const short = config
+      ? shortNameForNsid(config, e.collection) ?? (config.collections[e.collection] ? e.collection : null)
+      : e.collection;
+    if (!short) continue; // unknown collection — skip silently
+    const table = recordsTableName(short);
 
     if (e.operation === "delete") {
       batch.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(e.uri));
@@ -447,23 +478,47 @@ export async function applyEvents(
 
 // --- Count columns ---
 
-function getCountColumns(config: ContrailConfig, collection: string): { type: string; column: string }[] {
-  const colConfig = config.collections[collection];
+/** Count column descriptor. `type` is the identifier returned in API responses and
+ *  accepted in countFilters — we keep the full record token for grouped counts so
+ *  callers pass e.g. "community.lexicon.calendar.rsvp#going" and filter/hydrate by it. */
+function getCountColumns(
+  config: ContrailConfig,
+  shortName: string
+): { type: string; column: string }[] {
+  const colConfig = config.collections[shortName];
   if (!colConfig?.relations) return [];
   const columns: { type: string; column: string }[] = [];
-  const relMap = (config as ResolvedContrailConfig)._resolved?.relations[collection] ?? {};
+  const relMap = (config as ResolvedContrailConfig)._resolved?.relations[shortName] ?? {};
 
   for (const [relName, rel] of Object.entries(colConfig.relations)) {
     if (rel.count === false) continue;
+    // Total: identifier is the child's short name; column is `count_<child-short>`.
     columns.push({ type: rel.collection, column: countColumnName(rel.collection) });
     const mapping = relMap[relName];
     if (mapping) {
-      for (const [, fullToken] of Object.entries(mapping.groups)) {
-        columns.push({ type: fullToken, column: countColumnName(fullToken) });
+      for (const [groupKey, fullToken] of Object.entries(mapping.groups)) {
+        // Grouped: identifier is the full record token (stable across deployments);
+        // column is `count_<child-short>_<group-key>`.
+        columns.push({
+          type: fullToken,
+          column: groupedCountColumnName(rel.collection, groupKey),
+        });
       }
     }
   }
   return columns;
+}
+
+/** For a given "count type" (short name or full group token), return the DB column. */
+function countColumnForType(
+  config: ContrailConfig,
+  shortName: string,
+  type: string
+): string | null {
+  for (const col of getCountColumns(config, shortName)) {
+    if (col.type === type) return col.column;
+  }
+  return null;
 }
 
 // --- Query ---
@@ -472,6 +527,36 @@ export interface SortOption {
   recordField?: string;
   countType?: string;
   direction: "asc" | "desc";
+}
+
+/** Opaque keyset cursor. `t` is the tiebreaker (time_us of the last row),
+ *  `v` is the sort-key value (string for record fields, number for counts),
+ *  `k` identifies the sort so we can reject mismatched cursors. */
+interface CursorPayload {
+  t: number;
+  v?: string | number;
+  k: "time" | string; // "time" | `field:<name>` | `count:<type>`
+}
+
+function sortKind(sort?: SortOption): "time" | string {
+  if (sort?.recordField) return `field:${sort.recordField}`;
+  if (sort?.countType) return `count:${sort.countType}`;
+  return "time";
+}
+
+function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string): CursorPayload | null {
+  try {
+    const json = Buffer.from(cursor, "base64url").toString("utf8");
+    const p = JSON.parse(json);
+    if (typeof p?.t !== "number" || typeof p?.k !== "string") return null;
+    return p as CursorPayload;
+  } catch {
+    return null;
+  }
 }
 
 export interface QueryOptions {
@@ -485,6 +570,9 @@ export interface QueryOptions {
   sort?: SortOption;
   search?: string;
   source?: RecordSource;
+  /** When set, query the per-space table (`spaces_records_<short>`) instead of the
+   *  public `records_<short>` table, scoped to rows where `space_uri = ?`. */
+  spaceUri?: string;
 }
 
 export async function queryRecords(
@@ -493,7 +581,7 @@ export async function queryRecords(
   options: QueryOptions
 ): Promise<{ records: (RecordRow & { counts?: Record<string, number> })[]; cursor?: string }> {
   const {
-    collection,
+    collection: collectionInput,
     did,
     limit: rawLimit,
     cursor,
@@ -503,12 +591,24 @@ export async function queryRecords(
     sort,
     search,
     source,
+    spaceUri,
   } = options;
 
-  const table = recordsTableName(collection);
+  // Accept either the short name (canonical) or the full NSID for convenience.
+  const collection =
+    config.collections[collectionInput]
+      ? collectionInput
+      : shortNameForNsid(config, collectionInput) ?? collectionInput;
+
+  const table = spaceUri ? spacesRecordsTableName(collection) : recordsTableName(collection);
   const limit = Math.min(Math.max(1, rawLimit ?? 50), 200);
   const conditions: string[] = [];
   const bindings: (string | number)[] = [];
+
+  if (spaceUri) {
+    conditions.push("r.space_uri = ?");
+    bindings.push(spaceUri);
+  }
 
   if (source?.conditions) conditions.push(...source.conditions);
   if (source?.params) bindings.push(...source.params);
@@ -520,40 +620,28 @@ export async function queryRecords(
     bindings.push(did);
   }
 
-  // Cursor = AT URI of last seen record. Look it up to get keyset values.
+  // Opaque keyset cursor encoding { t, v?, k }. Silently ignored if it doesn't
+  // match the current sort — callers shouldn't mix sort params with stale cursors.
+  const expectedKind = sortKind(sort);
   if (cursor) {
-    // Only select the columns needed for cursor pagination
-    let cursorSelect: string;
-    if (sort?.recordField) {
-      cursorSelect = `time_us, ${getDialect(db).jsonExtract('record', sort.recordField)} as sort_value`;
-    } else if (sort?.countType) {
-      const sortCol = countColumnName(sort.countType);
-      cursorSelect = `time_us, ${sortCol}`;
-    } else {
-      cursorSelect = "time_us";
-    }
-
-    const cursorRow = await db
-      .prepare(`SELECT ${cursorSelect} FROM ${table} WHERE uri = ?`)
-      .bind(cursor)
-      .first<any>();
-
-    if (cursorRow) {
+    const payload = decodeCursor(cursor);
+    if (payload && payload.k === expectedKind) {
       if (sort?.recordField) {
-        const sortValue = cursorRow.sort_value;
         const sortExpr = getDialect(db).jsonExtract('r.record', sort.recordField);
         const cmp = sort.direction === "desc" ? "<" : ">";
         conditions.push(`(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND r.time_us < ?))`);
-        bindings.push(sortValue ?? "", sortValue ?? "", cursorRow.time_us);
+        const v = payload.v ?? "";
+        bindings.push(v as string | number, v as string | number, payload.t);
       } else if (sort?.countType) {
-        const sortCol = countColumnName(sort.countType);
-        const countValue = cursorRow[sortCol] ?? 0;
+        const sortCol = countColumnForType(config, collection, sort.countType);
+        if (!sortCol) throw new Error(`Unknown countType: ${sort.countType}`);
         const cmp = sort.direction === "desc" ? "<" : ">";
         conditions.push(`(r.${sortCol} ${cmp} ? OR (r.${sortCol} = ? AND r.time_us < ?))`);
-        bindings.push(countValue, countValue, cursorRow.time_us);
+        const v = Number(payload.v ?? 0);
+        bindings.push(v, v, payload.t);
       } else {
         conditions.push("r.time_us < ?");
-        bindings.push(cursorRow.time_us);
+        bindings.push(payload.t);
       }
     }
   }
@@ -575,21 +663,24 @@ export async function queryRecords(
   }
 
   for (const [type, minCount] of Object.entries(countFilters)) {
-    const col = countColumnName(type);
+    const col = countColumnForType(config, collection, type);
+    if (!col) continue; // unknown count type — skip filter
     conditions.push(`r.${col} >= ?`);
     bindings.push(minCount);
   }
 
-  // FTS search
+  // FTS search. Not supported in space mode yet (would need composite keying
+  // because the same at-URI can appear in multiple spaces).
   let ftsJoin = "";
   let ftsClause: ReturnType<typeof ftsQueryClause> | null = null;
-  if (search) {
+  if (search && !spaceUri) {
     const colConfig2 = config.collections[collection];
     const fields = colConfig2 ? getSearchableFields(collection, colConfig2) : null;
     if (fields && fields.length > 0) {
       ftsClause = ftsQueryClause(getDialect(db), recordsTableName(collection));
       ftsJoin = ftsClause.join;
       conditions.push(ftsClause.condition);
+      // SECURITY: `search` is user input bound as a parameter, not interpolated.
       bindings.push(search);
     }
   }
@@ -609,7 +700,8 @@ export async function queryRecords(
     orderBy = `${getDialect(db).jsonExtract('r.record', sort.recordField)} ${dir}, r.time_us DESC`;
   } else if (sort?.countType) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    const sortCol = countColumnName(sort.countType);
+    const sortCol = countColumnForType(config, collection, sort.countType);
+    if (!sortCol) throw new Error(`Unknown countType: ${sort.countType}`);
     orderBy = `r.${sortCol} ${dir}, r.time_us DESC`;
   } else if (ftsClause) {
     orderBy = `${ftsClause.orderExpr}, r.time_us DESC`;
@@ -630,16 +722,18 @@ export async function queryRecords(
     .bind(...bindings)
     .all<any>();
 
+  const nsid = nsidForShortName(config, collection) ?? collection;
   const records = (result.results ?? []).map((row: any) => {
     const rec: RecordRow & { counts?: Record<string, number> } = {
       uri: row.uri,
       did: row.did,
-      collection,
+      collection: nsid,
       rkey: row.rkey,
       cid: row.cid,
       record: row.record,
       time_us: row.time_us,
       indexed_at: row.indexed_at,
+      ...(spaceUri ? { _space: spaceUri } : {}),
     };
     if (countCols.length > 0) {
       const counts: Record<string, number> = {};
@@ -654,10 +748,88 @@ export async function queryRecords(
 
   const nextCursor =
     records.length === limit
-      ? records[records.length - 1].uri
+      ? buildCursor(records[records.length - 1], sort, expectedKind)
       : undefined;
 
   return { records, cursor: nextCursor };
+}
+
+/** Build an opaque keyset cursor from the last row of a page. */
+function buildCursor(
+  row: RecordRow & { counts?: Record<string, number> },
+  sort: SortOption | undefined,
+  kind: string
+): string {
+  const t = Number(row.time_us);
+  if (sort?.recordField) {
+    const parsed = row.record ? JSON.parse(row.record) : null;
+    const v = parsed ? getNestedValue(parsed, sort.recordField) : undefined;
+    return encodeCursor({ t, v: v == null ? "" : String(v), k: kind });
+  }
+  if (sort?.countType) {
+    const v = row.counts?.[sort.countType] ?? 0;
+    return encodeCursor({ t, v, k: kind });
+  }
+  return encodeCursor({ t, k: kind });
+}
+
+/** Compare two rows according to the active sort order. Returns negative if
+ *  `a` should come before `b`, positive otherwise. Matches the SQL ORDER BY. */
+function compareRows(
+  a: RecordRow & { counts?: Record<string, number> },
+  b: RecordRow & { counts?: Record<string, number> },
+  sort: SortOption | undefined
+): number {
+  const timeCmp = Number(b.time_us) - Number(a.time_us); // time_us DESC
+  if (sort?.recordField) {
+    const ar = a.record ? JSON.parse(a.record) : null;
+    const br = b.record ? JSON.parse(b.record) : null;
+    const av = ar ? getNestedValue(ar, sort.recordField) : undefined;
+    const bv = br ? getNestedValue(br, sort.recordField) : undefined;
+    const dir = sort.direction === "desc" ? -1 : 1;
+    const cmp = (av === bv ? 0 : (av! < bv! ? -1 : 1)) * dir;
+    return cmp !== 0 ? cmp : timeCmp;
+  }
+  if (sort?.countType) {
+    const av = a.counts?.[sort.countType] ?? 0;
+    const bv = b.counts?.[sort.countType] ?? 0;
+    const dir = sort.direction === "desc" ? -1 : 1;
+    const cmp = (av === bv ? 0 : (av < bv ? -1 : 1)) * dir;
+    return cmp !== 0 ? cmp : timeCmp;
+  }
+  return timeCmp;
+}
+
+/** Run a listRecords query across the public table and a set of per-space tables
+ *  in parallel, then merge according to the active sort order. The cursor is a
+ *  shared keyset cursor — every sub-query applies the same `WHERE` keyset, so
+ *  pagination is consistent across sources. */
+export async function queryAcrossSources(
+  db: Database,
+  config: ContrailConfig,
+  options: QueryOptions,
+  spaceUris: string[]
+): Promise<{ records: (RecordRow & { counts?: Record<string, number> })[]; cursor?: string }> {
+  if (spaceUris.length === 0) {
+    return queryRecords(db, config, options);
+  }
+  const limit = Math.min(Math.max(1, options.limit ?? 50), 200);
+  const perSourceLimit = limit; // each source fetches up to `limit`; we trim after merge
+
+  const tasks: Promise<{ records: (RecordRow & { counts?: Record<string, number> })[] }>[] = [
+    queryRecords(db, config, { ...options, limit: perSourceLimit }),
+  ];
+  for (const spaceUri of spaceUris) {
+    tasks.push(queryRecords(db, config, { ...options, spaceUri, limit: perSourceLimit }));
+  }
+  const results = await Promise.all(tasks);
+  const merged = results.flatMap((r) => r.records);
+  merged.sort((a, b) => compareRows(a, b, options.sort));
+  const trimmed = merged.slice(0, limit);
+  const kind = sortKind(options.sort);
+  const cursor =
+    trimmed.length === limit ? buildCursor(trimmed[trimmed.length - 1], options.sort, kind) : undefined;
+  return { records: trimmed, cursor };
 }
 
 // --- Users ---

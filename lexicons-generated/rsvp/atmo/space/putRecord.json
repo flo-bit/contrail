@@ -1,0 +1,68 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.putRecord",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Write a record into a space. The author is always the JWT issuer. If rkey is omitted, a TID is generated.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "collection",
+            "record"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            },
+            "record": {
+              "type": "unknown"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "rkey",
+            "authorDid",
+            "createdAt"
+          ],
+          "properties": {
+            "rkey": {
+              "type": "string"
+            },
+            "authorDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "createdAt": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

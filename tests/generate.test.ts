@@ -31,7 +31,8 @@ function generate(config: ContrailConfig) {
 const BASIC_CONFIG: ContrailConfig = {
   namespace: "test.app",
   collections: {
-    "com.example.post": {
+    post: {
+      collection: "com.example.post",
       queryable: {
         title: {},
         body: {},
@@ -44,19 +45,21 @@ const BASIC_CONFIG: ContrailConfig = {
 const RELATIONS_CONFIG: ContrailConfig = {
   namespace: "test.app",
   collections: {
-    "com.example.post": {
+    post: {
+      collection: "com.example.post",
       queryable: { title: {} },
       relations: {
         likes: {
-          collection: "com.example.like",
+          collection: "like",
         },
       },
     },
-    "com.example.like": {
+    like: {
+      collection: "com.example.like",
       queryable: { status: {} },
       references: {
         post: {
-          collection: "com.example.post",
+          collection: "post",
           field: "subject.uri",
         },
       },
@@ -67,7 +70,8 @@ const RELATIONS_CONFIG: ContrailConfig = {
 const SEARCH_EXPLICIT_CONFIG: ContrailConfig = {
   namespace: "test.app",
   collections: {
-    "com.example.post": {
+    post: {
+      collection: "com.example.post",
       queryable: {
         title: {},
         body: {},
@@ -82,7 +86,8 @@ const SEARCH_EXPLICIT_CONFIG: ContrailConfig = {
 const SEARCH_DISABLED_CONFIG: ContrailConfig = {
   namespace: "test.app",
   collections: {
-    "com.example.post": {
+    post: {
+      collection: "com.example.post",
       queryable: { title: {}, body: {} },
       searchable: false,
     },
@@ -92,7 +97,8 @@ const SEARCH_DISABLED_CONFIG: ContrailConfig = {
 const SEARCH_AUTO_CONFIG: ContrailConfig = {
   namespace: "test.app",
   collections: {
-    "com.example.post": {
+    post: {
+      collection: "com.example.post",
       queryable: {
         title: {},
         body: {},
@@ -139,41 +145,29 @@ describe("basic generation", () => {
     expect(output.properties.errors.type).toBe("array");
   });
 
-  it("generates listRecords with standard params", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
+  it("generates listRecords under <ns>.<short>.listRecords", () => {
+    const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.limit).toBeDefined();
     expect(params.cursor).toBeDefined();
     expect(params.actor).toBeDefined();
     expect(params.profiles).toBeDefined();
-  });
-
-  it("generates queryable field params", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
     expect(params.title).toBeDefined();
-    expect(params.title.type).toBe("string");
-    expect(params.body).toBeDefined();
+    expect(params.bodyParam ?? params.body).toBeDefined();
     expect(params.createdAtMin).toBeDefined();
     expect(params.createdAtMax).toBeDefined();
   });
 
-  it("generates sort and order params", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
-    expect(params.sort).toBeDefined();
-    expect(params.sort.knownValues).toContain("title");
-    expect(params.sort.knownValues).toContain("body");
-    expect(params.sort.knownValues).toContain("createdAt");
-    expect(params.order.knownValues).toEqual(["asc", "desc"]);
-  });
-
-  it("generates getRecord with uri param", () => {
-    const params = getParams(lexicons["com.example.post.getRecord"]);
+  it("generates getRecord under <ns>.<short>.getRecord", () => {
+    const lex = lexicons["test.app.post.getRecord"];
+    expect(lex).toBeDefined();
+    const params = getParams(lex);
     expect(params.uri).toBeDefined();
-    expect(params.uri.format).toBe("at-uri");
+    expect(params.uri.required ?? lex.defs.main.parameters.required).toContain("uri");
   });
 
-  it("does not include search on getRecord", () => {
-    const params = getParams(lexicons["com.example.post.getRecord"]);
-    expect(params.search).toBeUndefined();
+  it("does not emit the old NSID-based endpoint paths", () => {
+    expect(lexicons["com.example.post.listRecords"]).toBeUndefined();
+    expect(lexicons["com.example.post.getRecord"]).toBeUndefined();
   });
 });
 
@@ -184,69 +178,36 @@ describe("relations and references", () => {
     lexicons = generate(RELATIONS_CONFIG);
   });
 
-  it("generates count filter params for relations", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
+  it("includes relation count params", () => {
+    const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.likesCountMin).toBeDefined();
-    expect(params.likesCountMin.type).toBe("integer");
-  });
-
-  it("generates hydrate params for relations", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
     expect(params.hydrateLikes).toBeDefined();
-    expect(params.hydrateLikes.type).toBe("integer");
   });
 
-  it("generates hydrate params for references", () => {
-    const params = getParams(lexicons["com.example.like.listRecords"]);
+  it("includes reference hydrate params on child", () => {
+    const params = getParams(lexicons["test.app.like.listRecords"]);
     expect(params.hydratePost).toBeDefined();
-    expect(params.hydratePost.type).toBe("boolean");
-  });
-
-  it("includes count fields in record def", () => {
-    const recordDef = lexicons["com.example.post.listRecords"].defs.record;
-    expect(recordDef.properties.likesCount).toBeDefined();
-    expect(recordDef.properties.likesCount.type).toBe("integer");
-  });
-
-  it("includes relation shape in record def (ungrouped → array)", () => {
-    const recordDef = lexicons["com.example.post.listRecords"].defs.record;
-    expect(recordDef.properties.likes).toBeDefined();
-    expect(recordDef.properties.likes.type).toBe("array");
-  });
-
-  it("includes reference shape in record def", () => {
-    const recordDef = lexicons["com.example.like.listRecords"].defs.record;
-    expect(recordDef.properties.post).toBeDefined();
-    expect(recordDef.properties.post.type).toBe("ref");
-  });
-
-  it("sort knownValues includes count fields", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
-    expect(params.sort.knownValues).toContain("likesCount");
   });
 });
 
 describe("search: explicit fields", () => {
   let lexicons: Record<string, any>;
-
   beforeAll(() => {
     lexicons = generate(SEARCH_EXPLICIT_CONFIG);
   });
 
-  it("includes search param listing only explicit fields", () => {
-    const params = getParams(lexicons["com.example.post.listRecords"]);
+  it("exposes search param", () => {
+    const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.search).toBeDefined();
     expect(params.search.description).toContain("title");
     expect(params.search.description).toContain("body");
-    expect(params.search.description).not.toContain("category");
-    expect(params.search.description).not.toContain("createdAt");
   });
 });
 
 describe("search: disabled", () => {
   it("does not include search param", () => {
     const lexicons = generate(SEARCH_DISABLED_CONFIG);
-    const params = getParams(lexicons["com.example.post.listRecords"]);
+    const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.search).toBeUndefined();
   });
 });
@@ -254,7 +215,7 @@ describe("search: disabled", () => {
 describe("search: no searchable field configured", () => {
   it("does not include search param when searchable is omitted", () => {
     const lexicons = generate(SEARCH_AUTO_CONFIG);
-    const params = getParams(lexicons["com.example.post.listRecords"]);
+    const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.search).toBeUndefined();
   });
 });

@@ -27,6 +27,28 @@ function fieldToParam(field: string): string {
   return field.replace(/\.(\w)/g, (_, c) => c.toUpperCase());
 }
 
+/** Locate the shipped space-template directory. Works in contrail's own repo
+ *  and in downstream projects that depend on @atmo-dev/contrail. */
+function findSpaceTemplatesDir(rootDir: string): string | null {
+  const candidates = [
+    join(rootDir, "spaces-lexicon-templates"),
+    join(rootDir, "node_modules/@atmo-dev/contrail/spaces-lexicon-templates"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** Yield all JSON files under a directory (recursive). */
+function* walkJson(dir: string): Generator<string> {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) yield* walkJson(full);
+    else if (entry.isFile() && entry.name.endsWith(".json")) yield full;
+  }
+}
+
 interface QueryableField {
   type?: "range";
 }
@@ -153,6 +175,15 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       cid: { type: "string" },
       record: collectionRef ? { type: "ref", ref: collectionRef } : { type: "unknown" },
       time_us: { type: "integer" },
+      ...(config.spaces
+        ? {
+            space: {
+              type: "string",
+              format: "at-uri",
+              description: "Present when the record was read from a permissioned space; its value is the space URI.",
+            },
+          }
+        : {}),
     };
     if (countFields) {
       for (const cf of countFields) {
@@ -195,6 +226,15 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           cid: { type: "string" },
           record: relCollectionRef ? { type: "ref", ref: relCollectionRef } : { type: "unknown" },
           time_us: { type: "integer" },
+          ...(config.spaces
+            ? {
+                space: {
+                  type: "string",
+                  format: "at-uri",
+                  description: "Present when the record was read from a permissioned space.",
+                },
+              }
+            : {}),
         },
       };
       if (rd.groupBy && Object.keys(rd.groups).length > 0) {
@@ -227,6 +267,15 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           cid: { type: "string" },
           record: refCollectionRef ? { type: "ref", ref: refCollectionRef } : { type: "unknown" },
           time_us: { type: "integer" },
+          ...(config.spaces
+            ? {
+                space: {
+                  type: "string",
+                  format: "at-uri",
+                  description: "Present when the record was read from a permissioned space.",
+                },
+              }
+            : {}),
         },
       };
     }
@@ -306,13 +355,17 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     log("Generating feed endpoint...");
 
     const feedNames = Object.keys(config.feeds);
+    // feedConfig.targets are short names; expose NSIDs in the lexicon since the
+    // `collection` param filters by the record's NSID at the wire level.
     const allTargets = [...new Set(Object.values(config.feeds).flatMap((f) => f.targets))];
+    const allTargetNsids = allTargets
+      .map((t) => config.collections[t]?.collection)
+      .filter((n): n is string => !!n);
 
-    // Merge queryable fields, relations, and references from all target collections
     const feedParams: Record<string, any> = {
       feed: { type: "string", knownValues: feedNames, description: "Feed name" },
       actor: { type: "string", format: "at-identifier", description: "DID or handle of the requesting user" },
-      collection: { type: "string", knownValues: allTargets, description: "Filter by target collection (defaults to first target)" },
+      collection: { type: "string", knownValues: allTargetNsids, description: "Filter by target collection (defaults to first target)" },
       limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
       cursor: { type: "string" },
       profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
@@ -326,8 +379,9 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     for (const targetCol of allTargets) {
       const targetConfig = config.collections[targetCol];
       if (!targetConfig) continue;
+      const targetNsid = targetConfig.collection;
 
-      const autoDetected = detectQueryableFields(targetCol);
+      const autoDetected = detectQueryableFields(targetNsid);
       const manual = targetConfig.queryable ?? {};
       const merged = { ...autoDetected, ...manual };
 
@@ -363,13 +417,14 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         }
 
         if (rel.groupBy) {
-          const knownValues = getKnownValues(rel.collection, rel.groupBy);
+          const relNsid = config.collections[rel.collection]?.collection ?? rel.collection;
+          const knownValues = getKnownValues(relNsid, rel.groupBy);
           for (const token of knownValues) {
-            const shortName = tokenShortName(token);
-            const paramName = `${relName}${cap(shortName)}CountMin`;
+            const gShort = tokenShortName(token);
+            const paramName = `${relName}${cap(gShort)}CountMin`;
             if (!feedParams[paramName]) {
-              feedParams[paramName] = { type: "integer", description: `Minimum ${relName} count where ${rel.groupBy} = ${shortName}` };
-              feedSortableValues.push(`${relName}${cap(shortName)}Count`);
+              feedParams[paramName] = { type: "integer", description: `Minimum ${relName} count where ${rel.groupBy} = ${gShort}` };
+              feedSortableValues.push(`${relName}${cap(gShort)}Count`);
             }
           }
         }
@@ -397,8 +452,9 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     for (const targetCol of allTargets) {
       const targetConfig = config.collections[targetCol];
       if (!targetConfig) continue;
+      const targetNsid = targetConfig.collection;
 
-      const collectionRef = getCollectionLexiconRef(targetCol);
+      const collectionRef = getCollectionLexiconRef(targetNsid);
 
       const countFields: CountField[] = [];
       const relationDefs: RelationDef[] = [];
@@ -406,19 +462,21 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
 
       for (const [relName, rel] of Object.entries(targetConfig.relations ?? {})) {
         countFields.push({ name: `${relName}Count`, description: `Total ${relName} count` });
+        const relNsid = config.collections[rel.collection]?.collection ?? rel.collection;
         const groupMapping: Record<string, string> = {};
         if (rel.groupBy) {
-          for (const token of getKnownValues(rel.collection, rel.groupBy)) {
-            const shortName = tokenShortName(token);
-            groupMapping[shortName] = token;
-            countFields.push({ name: `${relName}${cap(shortName)}Count`, description: `${relName} count where ${rel.groupBy} = ${shortName}` });
+          for (const token of getKnownValues(relNsid, rel.groupBy)) {
+            const gShort = tokenShortName(token);
+            groupMapping[gShort] = token;
+            countFields.push({ name: `${relName}${cap(gShort)}Count`, description: `${relName} count where ${rel.groupBy} = ${gShort}` });
           }
         }
-        relationDefs.push({ relName, collection: rel.collection, groupBy: rel.groupBy, groups: groupMapping });
+        relationDefs.push({ relName, collection: relNsid, groupBy: rel.groupBy, groups: groupMapping });
       }
 
       for (const [refName, ref] of Object.entries(targetConfig.references ?? {})) {
-        referenceDefs.push({ refName, collection: ref.collection });
+        const refNsid = config.collections[ref.collection]?.collection ?? ref.collection;
+        referenceDefs.push({ refName, collection: refNsid });
       }
 
       const defName = `feedRecord_${targetCol.replace(/[^a-zA-Z0-9]/g, "_")}`;
@@ -469,13 +527,14 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
   const resolvedQueryableMap: Record<string, Record<string, { type?: "range" }>> = {};
   const resolvedRelationsMap: Record<string, Record<string, { collection: string; groupBy: string; groups: Record<string, string> }>> = {};
 
-  for (const [collection, colConfig] of Object.entries(config.collections)) {
+  for (const [shortName, colConfig] of Object.entries(config.collections)) {
+    const collection = colConfig.collection; // full NSID for lexicon refs
     const collectionRef = getCollectionLexiconRef(collection);
 
     const autoDetected = detectQueryableFields(collection);
     const manual = colConfig.queryable ?? {};
     const merged = { ...autoDetected, ...manual };
-    resolvedQueryableMap[collection] = merged;
+    resolvedQueryableMap[shortName] = merged;
 
     // --- listRecords ---
     const listParams: Record<string, any> = {
@@ -483,6 +542,24 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       cursor: { type: "string" },
       actor: { type: "string", format: "at-identifier", description: "Filter by DID or handle (triggers on-demand backfill)" },
       profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
+      ...(config.spaces
+        ? {
+            spaceUri: {
+              type: "string",
+              format: "at-uri",
+              description: "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token).",
+            },
+            byUser: {
+              type: "string",
+              format: "did",
+              description: "Only used with spaceUri — filter to records authored by this DID.",
+            },
+            inviteToken: {
+              type: "string",
+              description: "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied.",
+            },
+          }
+        : {}),
     };
 
     // Search param
@@ -512,25 +589,27 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       listParams[`${relName}CountMin`] = { type: "integer", description: `Minimum total ${relName} count` };
       listParams[`hydrate${cap(relName)}`] = { type: "integer", minimum: 1, maximum: 50, description: `Number of ${relName} records to embed per record` };
 
+      const relNsid = config.collections[rel.collection]?.collection ?? rel.collection;
       const groupMapping: Record<string, string> = {};
       if (rel.groupBy) {
-        const knownValues = getKnownValues(rel.collection, rel.groupBy);
+        const knownValues = getKnownValues(relNsid, rel.groupBy);
         for (const token of knownValues) {
-          const shortName = tokenShortName(token);
-          groupMapping[shortName] = token;
-          countFields.push({ name: `${relName}${cap(shortName)}Count`, description: `${relName} count where ${rel.groupBy} = ${shortName}` });
-          listParams[`${relName}${cap(shortName)}CountMin`] = { type: "integer", description: `Minimum ${relName} count where ${rel.groupBy} = ${shortName}` };
+          const gShort = tokenShortName(token);
+          groupMapping[gShort] = token;
+          countFields.push({ name: `${relName}${cap(gShort)}Count`, description: `${relName} count where ${rel.groupBy} = ${gShort}` });
+          listParams[`${relName}${cap(gShort)}CountMin`] = { type: "integer", description: `Minimum ${relName} count where ${rel.groupBy} = ${gShort}` };
         }
-        if (!resolvedRelationsMap[collection]) resolvedRelationsMap[collection] = {};
-        resolvedRelationsMap[collection][relName] = { collection: rel.collection, groupBy: rel.groupBy, groups: groupMapping };
+        if (!resolvedRelationsMap[shortName]) resolvedRelationsMap[shortName] = {};
+        resolvedRelationsMap[shortName][relName] = { collection: rel.collection, groupBy: rel.groupBy, groups: groupMapping };
       }
 
-      relationDefs.push({ relName, collection: rel.collection, groupBy: rel.groupBy, groups: groupMapping });
+      relationDefs.push({ relName, collection: relNsid, groupBy: rel.groupBy, groups: groupMapping });
     }
 
     const referenceDefs: ReferenceDef[] = [];
     for (const [refName, ref] of Object.entries(colConfig.references ?? {})) {
-      referenceDefs.push({ refName, collection: ref.collection });
+      const refNsid = config.collections[ref.collection]?.collection ?? ref.collection;
+      referenceDefs.push({ refName, collection: refNsid });
     }
     for (const refName of Object.keys(colConfig.references ?? {})) {
       listParams[`hydrate${cap(refName)}`] = { type: "boolean", description: `Embed the referenced ${refName} record` };
@@ -547,19 +626,35 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     const hydrateDefs = buildHydrateDefs(relationDefs);
     const refDefs = buildReferenceDefs(referenceDefs);
 
-    writeLexicon(`${collection}.listRecords`, {
-      lexicon: 1, id: `${collection}.listRecords`,
-      defs: {
-        main: { type: "query", description: `Query ${collection} records with filters`, parameters: { type: "params", properties: listParams }, output: { encoding: "application/json", schema: { type: "object", required: ["records"], properties: { records: { type: "array", items: { type: "ref", ref: "#record" } }, cursor: { type: "string" }, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
-        record: buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs),
-        ...hydrateDefs, ...refDefs, ...profileDefs(),
-      },
-    });
+    const methods = colConfig.methods ?? ["listRecords", "getRecord"];
+    if (methods.includes("listRecords")) {
+      writeLexicon(`${ns}.${shortName}.listRecords`, {
+        lexicon: 1, id: `${ns}.${shortName}.listRecords`,
+        defs: {
+          main: { type: "query", description: `Query ${collection} records with filters`, parameters: { type: "params", properties: listParams }, output: { encoding: "application/json", schema: { type: "object", required: ["records"], properties: { records: { type: "array", items: { type: "ref", ref: "#record" } }, cursor: { type: "string" }, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
+          record: buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs),
+          ...hydrateDefs, ...refDefs, ...profileDefs(),
+        },
+      });
+    }
 
     // --- getRecord ---
     const getParams: Record<string, any> = {
       uri: { type: "string", format: "at-uri", description: "AT URI of the record" },
       profiles: { type: "boolean", description: "Include profile + identity info keyed by DID" },
+      ...(config.spaces
+        ? {
+            spaceUri: {
+              type: "string",
+              format: "at-uri",
+              description: "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token).",
+            },
+            inviteToken: {
+              type: "string",
+              description: "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied.",
+            },
+          }
+        : {}),
     };
     for (const rd of relationDefs) {
       getParams[`hydrate${cap(rd.relName)}`] = { type: "integer", minimum: 1, maximum: 50, description: `Number of ${rd.relName} records to embed` };
@@ -568,26 +663,136 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       getParams[`hydrate${cap(refName)}`] = { type: "boolean", description: `Embed the referenced ${refName} record` };
     }
 
-    writeLexicon(`${collection}.getRecord`, {
-      lexicon: 1, id: `${collection}.getRecord`,
-      defs: {
-        main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "did", "collection", "rkey", "time_us"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
-        ...hydrateDefs, ...refDefs, ...profileDefs(),
-      },
-    });
+    if (methods.includes("getRecord")) {
+      writeLexicon(`${ns}.${shortName}.getRecord`, {
+        lexicon: 1, id: `${ns}.${shortName}.getRecord`,
+        defs: {
+          main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "did", "collection", "rkey", "time_us"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
+          ...hydrateDefs, ...refDefs, ...profileDefs(),
+        },
+      });
+    }
 
     for (const queryName of Object.keys(colConfig.queries ?? {})) {
-      writeLexicon(`${collection}.${queryName}`, {
-        lexicon: 1, id: `${collection}.${queryName}`,
+      writeLexicon(`${ns}.${shortName}.${queryName}`, {
+        lexicon: 1, id: `${ns}.${shortName}.${queryName}`,
         defs: { main: { type: "query", description: `Custom query: ${queryName}`, output: { encoding: "application/json", schema: { type: "object", properties: {} } } } },
       });
     }
   }
 
+  // --- Spaces: instantiate library templates under <ns>.space.* ---
+
+  if (config.spaces) {
+    log("Generating space endpoints...");
+    const templatesDir = findSpaceTemplatesDir(rootDir);
+    if (!templatesDir) {
+      log("  (space templates not found — skipping)");
+    } else {
+      const templateIdRe = /^tools\.atmo\.space(\.[A-Za-z0-9.]+)?$/;
+      const idReplace = (id: string) =>
+        id.startsWith("tools.atmo.space") ? id.replace(/^tools\.atmo\.space/, `${ns}.space`) : id;
+
+      const rewriteRefs = (obj: any): any => {
+        if (Array.isArray(obj)) return obj.map(rewriteRefs);
+        if (obj && typeof obj === "object") {
+          const out: any = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.space")) {
+              out[k] = v.replace(/^tools\.atmo\.space/, `${ns}.space`);
+            } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
+              out[k] = idReplace(v);
+            } else {
+              out[k] = rewriteRefs(v);
+            }
+          }
+          return out;
+        }
+        return obj;
+      };
+
+      for (const file of walkJson(templatesDir)) {
+        const doc = JSON.parse(readFileSync(file, "utf-8"));
+        if (typeof doc.id !== "string" || !templateIdRe.test(doc.id)) continue;
+        const newId = idReplace(doc.id);
+        const rewritten = rewriteRefs({ ...doc, id: newId });
+        writeLexicon(newId, rewritten);
+      }
+    }
+  }
+
+  // --- Permission set ---
+  // Permission-set lexicons (https://atproto.com/guides/permission-sets) can
+  // only reference NSIDs under the same namespace as the set itself, which
+  // matches what we emit here: everything under `<ns>.*`.
+
+  {
+    log("Generating permission set...");
+    const methodNsids: string[] = [];
+    for (const [nsid, doc] of Object.entries(generated)) {
+      const mainType = (doc as any)?.defs?.main?.type;
+      if (mainType === "query" || mainType === "procedure") {
+        methodNsids.push(nsid);
+      }
+    }
+    methodNsids.sort();
+
+    const psConfig = config.permissionSet ?? {};
+
+    // Permission-set lexicons can only reference NSIDs under their own namespace.
+    // Validate `additional` entries before we emit and produce an invalid schema.
+    const nsPrefix = `${ns}.`;
+    for (const [i, perm] of (psConfig.additional ?? []).entries()) {
+      const p = perm as { resource?: string; lxm?: string[]; collection?: string[] };
+      const offending: string[] = [];
+      for (const nsid of p.lxm ?? []) {
+        if (nsid !== ns && !nsid.startsWith(nsPrefix)) offending.push(nsid);
+      }
+      for (const nsid of p.collection ?? []) {
+        if (nsid !== ns && !nsid.startsWith(nsPrefix)) offending.push(nsid);
+      }
+      if (offending.length > 0) {
+        throw new Error(
+          `permissionSet.additional[${i}] (${p.resource}) references NSIDs outside '${ns}': ` +
+            offending.join(", ") +
+            `. Permission-set lexicons can only reference NSIDs in their own namespace — ` +
+            `declare those as standalone scopes in your OAuth client config instead.`
+        );
+      }
+    }
+
+    writeLexicon(`${ns}.permissionSet`, {
+      lexicon: 1,
+      id: `${ns}.permissionSet`,
+      defs: {
+        main: {
+          type: "permission-set",
+          title: psConfig.title ?? ns,
+          description:
+            psConfig.description ?? `All XRPC methods exposed by the ${ns} service.`,
+          permissions: [
+            {
+              type: "permission",
+              resource: "rpc",
+              // `aud: "*"` grants the user consent to call these methods on
+              // *any* service DID — so one consent covers dev (tunnel DID) and
+              // prod (published DID) without re-consenting. `inheritAud: true`
+              // would be correct if the include: scope carried an aud param,
+              // but consent UIs drop `?aud=*` on include: lines in practice.
+              aud: "*",
+              lxm: methodNsids,
+            },
+            ...(psConfig.additional ?? []),
+          ],
+        },
+      },
+    });
+  }
+
   // --- Runtime files (only when called from script) ---
   if (options.writeRuntimeFiles) {
     // lex.config.js
-    const collectionNsids = Object.keys(config.collections);
+    const collectionNsids = Object.values(config.collections).map((c) => c.collection);
     const pulledFiles = [...scanLexiconsDir(lexiconDirs), ...scanLexiconsDir([])].flat();
     const allRefs = new Set<string>();
     for (const file of pulledFiles) {

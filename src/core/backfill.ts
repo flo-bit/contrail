@@ -3,8 +3,8 @@ import { isDid, isNsid } from "@atcute/lexicons/syntax";
 
 import type { Client } from "@atcute/client";
 import type { ContrailConfig, Database, IngestEvent } from "./types";
-import { getDiscoverableCollections, getDependentCollections, DEFAULT_RELAYS } from "./types";
-import { applyEvents } from "./db";
+import { getDiscoverableNsids, getDependentNsids, DEFAULT_RELAYS } from "./types";
+import { applyEvents, getLastCursor, saveCursor } from "./db";
 import { getClient, getPDS } from "./client";
 
 const PAGE_SIZE = 100;
@@ -47,9 +47,9 @@ async function markFailed(
 ): Promise<void> {
   await db
     .prepare(
-      "UPDATE backfills SET retries = retries + 1, last_error = ?, completed = CASE WHEN retries + 1 >= ? THEN 1 ELSE completed END WHERE did = ? AND collection = ?"
+      "UPDATE backfills SET retries = retries + 1, last_error = ? WHERE did = ? AND collection = ?"
     )
-    .bind(error, MAX_RETRIES, did, collection)
+    .bind(error, did, collection)
     .run();
 }
 
@@ -227,11 +227,23 @@ export async function backfillAll(
   const concurrency = options?.concurrency ?? 100;
   let totalBackfilled = 0;
 
+  // Anchor the jetstream cursor to now if it hasn't been set yet, so records
+  // emitted during backfill are replayed once jetstream starts.
+  if ((await getLastCursor(db)) === null) {
+    await saveCursor(db, Date.now() * 1000);
+  }
+
+  // Reset retries so users that hit the cap in a prior run get another chance.
+  await db
+    .prepare("UPDATE backfills SET retries = 0 WHERE completed = 0")
+    .run();
+
   while (true) {
     const pending = await db
       .prepare(
-        "SELECT did, collection FROM backfills WHERE completed = 0 ORDER BY did"
+        "SELECT did, collection FROM backfills WHERE completed = 0 AND retries < ? ORDER BY did"
       )
+      .bind(MAX_RETRIES)
       .all<{ did: string; collection: string }>();
 
     const rows = pending.results ?? [];
@@ -462,7 +474,7 @@ export async function discoverDIDs(
   config: ContrailConfig,
   deadline: number
 ): Promise<string[]> {
-  const collections = getDiscoverableCollections(config);
+  const collections = getDiscoverableNsids(config);
   const relays = config.relays ?? DEFAULT_RELAYS;
   if (relays.length === 0 || collections.length === 0) return [];
 
@@ -498,7 +510,7 @@ export async function discoverDIDs(
     await insertDiscoveredDIDs(db, dids, collection);
     discovered.push(...dids);
 
-    for (const depCollection of getDependentCollections(config)) {
+    for (const depCollection of getDependentNsids(config)) {
       await insertDiscoveredDIDs(db, dids, depCollection);
     }
 
