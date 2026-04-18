@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.1.0
+
+### Minor Changes
+
+- 247d1fc: add permissioned data stuff, change endpoints, add lexicon publishing
+
 ## 0.0.8
 
 ### Patch Changes
