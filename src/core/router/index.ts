@@ -53,7 +53,10 @@ export function createApp(
     // Ensure profile records are backfilled
     const profileConfigs = (config.profiles ?? []).map(normalizeProfileConfig);
     for (const pc of profileConfigs) {
-      await backfillUser(db, did, pc.collection, Date.now() + 10_000, config);
+      await backfillUser(db, did, pc.collection, Date.now() + 3_000, config, {
+        maxRetries: 0,
+        requestTimeout: 3_000,
+      });
     }
 
     const profileMap = await resolveProfiles(db, config, [did]);

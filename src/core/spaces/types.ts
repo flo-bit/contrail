@@ -121,6 +121,9 @@ export interface StorageAdapter {
   listSpaces(options: ListSpacesOptions): Promise<{ spaces: SpaceRow[]; cursor?: string }>;
   deleteSpace(spaceUri: string): Promise<void>;
   updateSpaceAppPolicy(spaceUri: string, appPolicy: AppPolicy): Promise<void>;
+  /** Update ownerDid of a space. Membership rows are not touched; callers are
+   *  responsible for ensuring the new owner is already a write member. */
+  transferOwnership(spaceUri: string, newOwnerDid: string): Promise<SpaceRow | null>;
 
   // Members
   addMember(spaceUri: string, did: string, perms: MemberPerm, addedBy: string | null): Promise<void>;

@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "tools.atmo.space.admin.removeMember",
+  "id": "tools.atmo.space.addMember",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Remove a member from a space. Owner only. Cannot remove the owner.",
+      "description": "Add a member to a space. Caller must be the space owner.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -12,7 +12,8 @@
           "required": ["spaceUri", "did"],
           "properties": {
             "spaceUri": { "type": "string", "format": "at-uri" },
-            "did":      { "type": "string", "format": "did" }
+            "did":      { "type": "string", "format": "did" },
+            "perms":    { "type": "string", "knownValues": ["read", "write"], "default": "write" }
           }
         }
       },
@@ -28,8 +29,7 @@
       },
       "errors": [
         { "name": "NotFound" },
-        { "name": "Forbidden" },
-        { "name": "InvalidRequest" }
+        { "name": "Forbidden" }
       ]
     }
   }

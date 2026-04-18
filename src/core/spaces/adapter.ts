@@ -23,6 +23,7 @@ import type {
   StorageAdapter,
   StoredRecord,
 } from "./types";
+import { buildRecordUri } from "./uri";
 
 function parseJson<T>(value: unknown): T | null {
   if (value == null) return null;
@@ -195,6 +196,14 @@ export class HostedAdapter implements StorageAdapter {
       .run();
   }
 
+  async transferOwnership(spaceUri: string, newOwnerDid: string): Promise<SpaceRow | null> {
+    await this.db
+      .prepare(`UPDATE spaces SET owner_did = ? WHERE uri = ? AND deleted_at IS NULL`)
+      .bind(newOwnerDid, spaceUri)
+      .run();
+    return this.getSpace(spaceUri);
+  }
+
   async updateSpaceAppPolicy(spaceUri: string, appPolicy: AppPolicy): Promise<void> {
     await this.db
       .prepare(`UPDATE spaces SET app_policy = ? WHERE uri = ?`)
@@ -325,7 +334,7 @@ export class HostedAdapter implements StorageAdapter {
 
   async putRecord(record: StoredRecord): Promise<void> {
     const table = this.tableFor(record.collection);
-    const uri = `at://${record.authorDid}/${record.collection}/${record.rkey}`;
+    const uri = buildRecordUri(record.authorDid, record.collection, record.rkey);
 
     const childShort = this.config ? shortNameForNsid(this.config, record.collection) : null;
     const prev = childShort

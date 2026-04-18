@@ -42,18 +42,18 @@ export async function runPipeline(
   const cursor = params.get("cursor") || undefined;
   const actor = params.get("actor") || params.get("did") || undefined;
   const wantProfiles = params.get("profiles") === "true";
-  const wantBackfill = params.get("backfill") === "true";
 
   let did: string | undefined;
   if (actor) {
     const resolved = await resolveActor(db, actor);
     if (!resolved) throw new Error("Could not resolve actor");
     did = resolved;
-    if (wantBackfill) {
-      // backfillUser expects the record NSID (for PDS calls), not the short name.
-      const nsid = nsidForShortName(config, collection) ?? collection;
-      await backfillUser(db, did, nsid, Date.now() + 10_000, config);
-    }
+    // backfillUser expects the record NSID (for PDS calls), not the short name.
+    const nsid = nsidForShortName(config, collection) ?? collection;
+    await backfillUser(db, did, nsid, Date.now() + 3_000, config, {
+      maxRetries: 0,
+      requestTimeout: 3_000,
+    });
   }
 
   const filters: Record<string, string> = {};

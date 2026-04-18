@@ -21,7 +21,10 @@ async function maybeBackfillFeed(
   if (status?.completed) return;
 
   // Ensure the user's follow records are backfilled first
-  await backfillUser(db, actor, feedConfig.follow, Date.now() + 15_000, config);
+  await backfillUser(db, actor, feedConfig.follow, Date.now() + 3_000, config, {
+    maxRetries: 0,
+    requestTimeout: 3_000,
+  });
 
   // Mark as in-progress (idempotent)
   await db

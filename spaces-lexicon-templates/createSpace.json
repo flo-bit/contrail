@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "tools.atmo.space.admin.createSpace",
+  "id": "tools.atmo.space.createSpace",
   "defs": {
     "main": {
       "type": "procedure",

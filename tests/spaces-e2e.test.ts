@@ -90,7 +90,7 @@ describe("spaces e2e", () => {
     app = await makeApp();
 
     // Alice creates a space
-    const res = await call(app, "POST", "/xrpc/test.spaces.space.admin.createSpace", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.createSpace", ALICE, {
       key: "birthday-2026",
     });
     expect(res.status).toBe(200);
@@ -133,7 +133,7 @@ describe("spaces e2e", () => {
   });
 
   it("owner adds Bob as member", async () => {
-    const res = await call(app, "POST", "/xrpc/test.spaces.space.admin.addMember", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.addMember", ALICE, {
       spaceUri,
       did: BOB,
       perms: "write",
@@ -222,7 +222,7 @@ describe("spaces e2e", () => {
 
     // End-to-end works: createSpace, putRecord, listRecords
     const create = await splitApp.fetch(
-      new Request("http://localhost/xrpc/test.spaces.space.admin.createSpace", {
+      new Request("http://localhost/xrpc/test.spaces.space.createSpace", {
         method: "POST",
         headers: { "X-Test-Did": ALICE, "Content-Type": "application/json" },
         body: JSON.stringify({ key: "split-test" }),

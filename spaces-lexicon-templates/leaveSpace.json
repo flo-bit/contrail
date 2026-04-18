@@ -1,19 +1,17 @@
 {
   "lexicon": 1,
-  "id": "tools.atmo.space.admin.addMember",
+  "id": "tools.atmo.space.leaveSpace",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Add a member to a space. Caller must be the space owner.",
+      "description": "Remove the caller from a space's member list. The owner cannot leave — they must transferOwnership first.",
       "input": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["spaceUri", "did"],
+          "required": ["spaceUri"],
           "properties": {
-            "spaceUri": { "type": "string", "format": "at-uri" },
-            "did":      { "type": "string", "format": "did" },
-            "perms":    { "type": "string", "knownValues": ["read", "write"], "default": "write" }
+            "spaceUri": { "type": "string", "format": "at-uri" }
           }
         }
       },
@@ -29,7 +27,7 @@
       },
       "errors": [
         { "name": "NotFound" },
-        { "name": "Forbidden" }
+        { "name": "InvalidRequest", "description": "Raised if the caller is the space owner." }
       ]
     }
   }

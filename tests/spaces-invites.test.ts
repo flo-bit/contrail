@@ -77,7 +77,7 @@ describe("invite e2e", () => {
     await initSchema(db, resolved);
     app = createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
 
-    const res = await call(app, "POST", "/xrpc/test.spaces.space.admin.createSpace", ALICE, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.space.createSpace", ALICE, {
       key: "party",
     });
     spaceUri = ((await res.json()) as any).space.uri;
