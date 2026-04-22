@@ -1,5 +1,6 @@
 import type { Database } from "../types";
 import type { DidDocumentResolver } from "@atcute/identity-resolver";
+import type { BlobAdapter } from "./blob-adapter";
 
 export type AppPolicyMode = "allow" | "deny";
 
@@ -7,6 +8,22 @@ export interface AppPolicy {
   mode: AppPolicyMode;
   apps: string[];
 }
+
+export interface SpacesBlobsConfig {
+  /** Bytes backend (R2, S3, in-memory, …). */
+  adapter: BlobAdapter;
+  /** Max blob size in bytes. Defaults to 2 MiB. */
+  maxSize?: number;
+  /** MIME allowlist. If set, only these content types are accepted. */
+  accept?: string[];
+  /** Orphan blobs (those with no referencing record) are kept this long before
+   *  GC can delete them, to allow upload-then-putRecord flows.
+   *  Defaults to 24 hours. */
+  gcOrphanAfterMs?: number;
+}
+
+export const DEFAULT_BLOB_MAX_SIZE = 2 * 1024 * 1024;
+export const DEFAULT_BLOB_GC_ORPHAN_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export interface SpacesConfig {
   /** NSID that identifies the kind of space this service hosts, e.g. "tools.atmo.event.space". */
@@ -18,6 +35,8 @@ export interface SpacesConfig {
   /** DID document resolver for service-auth JWT verification.
    *  Defaults to a composite PLC + did:web resolver if omitted. */
   resolver?: DidDocumentResolver;
+  /** Blob-upload backend. When omitted, blob XRPCs are not exposed. */
+  blobs?: SpacesBlobsConfig;
 }
 
 export interface SpaceRow {
@@ -106,6 +125,26 @@ export interface RedeemInviteResult {
   spaceUri: string;
 }
 
+export interface BlobMetaRow {
+  spaceUri: string;
+  cid: string;
+  mimeType: string;
+  size: number;
+  authorDid: string;
+  createdAt: number;
+}
+
+export interface ListBlobsOptions {
+  byUser?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListBlobsResult {
+  blobs: BlobMetaRow[];
+  cursor?: string;
+}
+
 export interface StorageAdapter {
   // Space lifecycle
   createSpace(space: Omit<SpaceRow, "createdAt" | "deletedAt">): Promise<SpaceRow>;
@@ -144,6 +183,15 @@ export interface StorageAdapter {
   listRecords(spaceUri: string, collection: string, options?: ListOptions): Promise<ListResult>;
   deleteRecord(spaceUri: string, collection: string, authorDid: string, rkey: string): Promise<void>;
   listCollections(spaceUri: string, options?: { byUser?: string }): Promise<CollectionCount[]>;
+
+  // Blobs (metadata only; bytes live on BlobAdapter)
+  putBlobMeta(row: BlobMetaRow): Promise<void>;
+  getBlobMeta(spaceUri: string, cid: string): Promise<BlobMetaRow | null>;
+  listBlobMeta(spaceUri: string, options?: ListBlobsOptions): Promise<ListBlobsResult>;
+  deleteBlobMeta(spaceUri: string, cid: string): Promise<void>;
+  /** Find blob rows older than `cutoff` whose CIDs are not referenced in any
+   *  record JSON in this space. Capped at `limit` to bound a single GC pass. */
+  findOrphanBlobs(spaceUri: string, cutoff: number, limit: number): Promise<BlobMetaRow[]>;
 }
 
 export interface AdapterContext {

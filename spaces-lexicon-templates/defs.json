@@ -47,6 +47,17 @@
         "apps": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "blobInfo": {
+      "type": "object",
+      "required": ["cid", "mimeType", "size", "authorDid", "createdAt"],
+      "properties": {
+        "cid":       { "type": "string", "format": "cid" },
+        "mimeType":  { "type": "string" },
+        "size":      { "type": "integer" },
+        "authorDid": { "type": "string", "format": "did" },
+        "createdAt": { "type": "integer" }
+      }
+    },
     "inviteView": {
       "type": "object",
       "required": ["tokenHash", "spaceUri", "kind", "usedCount", "createdBy", "createdAt"],

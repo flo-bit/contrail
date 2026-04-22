@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.getBlob",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Read a blob from a space. Requires read access via a service-auth JWT or a read-grant invite token.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri",
+          "cid"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "cid": {
+            "type": "string",
+            "format": "cid"
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token for anonymous bearer access."
+          }
+        }
+      },
+      "output": {
+        "encoding": "*/*"
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

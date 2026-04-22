@@ -13,7 +13,17 @@ import {
 import { nextTid } from "./tid";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
 import { buildSpaceUri } from "./uri";
-import type { InviteKind, InviteRow, SpaceRow, SpacesConfig, StorageAdapter } from "./types";
+import {
+  DEFAULT_BLOB_MAX_SIZE,
+  type InviteKind,
+  type InviteRow,
+  type SpaceRow,
+  type SpacesConfig,
+  type StorageAdapter,
+} from "./types";
+import { blobKey } from "./blob-adapter";
+import { collectBlobCids } from "./blob-refs";
+import { create as createCid, toString as cidToString } from "@atcute/cid";
 import type { Did } from "@atcute/lexicons";
 
 export interface SpacesRoutesOptions {
@@ -230,6 +240,27 @@ export function registerSpacesRoutes(
     });
     if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
 
+    // Validate that every blob referenced by this record has already been
+    // uploaded into this space. This mirrors how PDSes require uploadBlob
+    // before putRecord, and prevents forging refs to blobs the caller never
+    // actually claimed.
+    if (spacesConfig.blobs) {
+      const cids = collectBlobCids(body.record);
+      for (const cid of cids) {
+        const meta = await adapter.getBlobMeta(body.spaceUri, cid);
+        if (!meta) {
+          return c.json(
+            {
+              error: "InvalidRequest",
+              reason: "unknown-blob-ref",
+              message: `Record references blob ${cid} that has not been uploaded to this space.`,
+            },
+            400
+          );
+        }
+      }
+    }
+
     const rkey = body.rkey ?? nextTid();
     const now = Date.now();
     await adapter.putRecord({
@@ -269,6 +300,154 @@ export function registerSpacesRoutes(
     await adapter.deleteRecord(body.spaceUri, body.collection, sa.issuer, body.rkey);
     return c.json({ ok: true });
   });
+
+  // Blobs (only registered when a blob adapter is configured)
+  if (spacesConfig.blobs) {
+    const blobsCfg = spacesConfig.blobs;
+    const blobAdapter = blobsCfg.adapter;
+    const maxSize = blobsCfg.maxSize ?? DEFAULT_BLOB_MAX_SIZE;
+    const accept = blobsCfg.accept;
+
+    app.post(`/xrpc/${SPACE}.uploadBlob`, auth, async (c) => {
+      const sa = getAuth(c);
+      const spaceUri = c.req.query("spaceUri");
+      if (!spaceUri) {
+        return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+      }
+      const space = await adapter.getSpace(spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
+
+      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const aclResult = checkAccess({
+        op: "write",
+        space,
+        callerDid: sa.issuer,
+        member,
+        clientId: sa.clientId,
+      });
+      if (!aclResult.allow) {
+        return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+      }
+
+      const mimeType = c.req.header("content-type") ?? "application/octet-stream";
+      if (accept && !accept.includes(mimeType)) {
+        return c.json(
+          { error: "InvalidMimeType", message: `MIME type ${mimeType} is not accepted.` },
+          400
+        );
+      }
+
+      const declaredLen = c.req.header("content-length");
+      if (declaredLen && Number(declaredLen) > maxSize) {
+        return c.json(
+          { error: "BlobTooLarge", message: `Blob exceeds max size of ${maxSize} bytes.` },
+          413
+        );
+      }
+
+      const buf = await c.req.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      if (bytes.byteLength > maxSize) {
+        return c.json(
+          { error: "BlobTooLarge", message: `Blob exceeds max size of ${maxSize} bytes.` },
+          413
+        );
+      }
+
+      const cid = await createCid(0x55, bytes);
+      const cidString = cidToString(cid);
+      const key = await blobKey(spaceUri, cidString);
+
+      await blobAdapter.put(key, bytes, { mimeType, size: bytes.byteLength });
+      await adapter.putBlobMeta({
+        spaceUri,
+        cid: cidString,
+        mimeType,
+        size: bytes.byteLength,
+        authorDid: sa.issuer,
+        createdAt: Date.now(),
+      });
+
+      return c.json({
+        blob: {
+          $type: "blob",
+          ref: { $link: cidString },
+          mimeType,
+          size: bytes.byteLength,
+        },
+      });
+    });
+
+    app.get(`/xrpc/${SPACE}.getBlob`, readAuth, async (c) => {
+      const spaceUri = c.req.query("spaceUri");
+      const cid = c.req.query("cid");
+      if (!spaceUri || !cid) {
+        return c.json({ error: "InvalidRequest", message: "spaceUri and cid required" }, 400);
+      }
+      const space = await adapter.getSpace(spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
+
+      const authz = await authorizeRead(c, spaceUri);
+      if (authz instanceof Response) return authz;
+
+      if (authz.via === "jwt") {
+        const sa = authz.sa;
+        const member = await adapter.getMember(spaceUri, sa.issuer);
+        const aclResult = checkAccess({
+          op: "read",
+          space,
+          callerDid: sa.issuer,
+          member,
+          clientId: sa.clientId,
+        });
+        if (!aclResult.allow) {
+          return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+        }
+      }
+
+      const meta = await adapter.getBlobMeta(spaceUri, cid);
+      if (!meta) return c.json({ error: "NotFound" }, 404);
+      const key = await blobKey(spaceUri, cid);
+      const bytes = await blobAdapter.get(key);
+      if (!bytes) return c.json({ error: "NotFound" }, 404);
+
+      return new Response(bytes, {
+        headers: {
+          "content-type": meta.mimeType,
+          "content-length": String(meta.size),
+        },
+      });
+    });
+
+    app.get(`/xrpc/${SPACE}.listBlobs`, auth, async (c) => {
+      const sa = getAuth(c);
+      const spaceUri = c.req.query("spaceUri");
+      if (!spaceUri) {
+        return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+      }
+      const space = await adapter.getSpace(spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
+
+      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const aclResult = checkAccess({
+        op: "read",
+        space,
+        callerDid: sa.issuer,
+        member,
+        clientId: sa.clientId,
+      });
+      if (!aclResult.allow) {
+        return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+      }
+
+      const result = await adapter.listBlobMeta(spaceUri, {
+        byUser: c.req.query("byUser") ?? undefined,
+        cursor: c.req.query("cursor") ?? undefined,
+        limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
+      });
+      return c.json(result);
+    });
+  }
 
   // Space management (owner-gated)
   app.post(`/xrpc/${SPACE}.createSpace`, auth, async (c) => {

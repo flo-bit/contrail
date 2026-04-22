@@ -10,10 +10,13 @@ import {
 import { getDialect } from "../dialect";
 import type {
   AppPolicy,
+  BlobMetaRow,
   CollectionCount,
   CreateInviteInput,
   InviteKind,
   InviteRow,
+  ListBlobsOptions,
+  ListBlobsResult,
   ListOptions,
   ListResult,
   ListSpacesOptions,
@@ -60,6 +63,17 @@ function mapMemberRow(row: any): SpaceMemberRow {
     did: row.did,
     addedAt: toNum(row.added_at),
     addedBy: row.added_by ?? null,
+  };
+}
+
+function mapBlobMetaRow(row: any): BlobMetaRow {
+  return {
+    spaceUri: row.space_uri,
+    cid: row.cid,
+    mimeType: row.mime_type,
+    size: Number(row.size),
+    authorDid: row.author_did,
+    createdAt: toNum(row.created_at),
   };
 }
 
@@ -600,5 +614,115 @@ export class HostedAdapter implements StorageAdapter {
       }
     }
     return results;
+  }
+
+  async putBlobMeta(row: BlobMetaRow): Promise<void> {
+    const sql = `INSERT INTO spaces_blobs (space_uri, cid, mime_type, size, author_did, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (space_uri, cid) DO NOTHING`;
+    await this.db
+      .prepare(sql)
+      .bind(row.spaceUri, row.cid, row.mimeType, row.size, row.authorDid, row.createdAt)
+      .run();
+  }
+
+  async getBlobMeta(spaceUri: string, cid: string): Promise<BlobMetaRow | null> {
+    const r = await this.db
+      .prepare(`SELECT * FROM spaces_blobs WHERE space_uri = ? AND cid = ?`)
+      .bind(spaceUri, cid)
+      .first<any>();
+    return r ? mapBlobMetaRow(r) : null;
+  }
+
+  async listBlobMeta(
+    spaceUri: string,
+    options: ListBlobsOptions = {}
+  ): Promise<ListBlobsResult> {
+    const limit = Math.min(options.limit ?? 50, 200);
+    const clauses: string[] = ["space_uri = ?"];
+    const params: any[] = [spaceUri];
+    if (options.byUser) {
+      clauses.push("author_did = ?");
+      params.push(options.byUser);
+    }
+    if (options.cursor) {
+      clauses.push("created_at < ?");
+      params.push(Number(options.cursor));
+    }
+    const sql = `SELECT * FROM spaces_blobs
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT ?`;
+    params.push(limit + 1);
+    const { results } = await this.db.prepare(sql).bind(...params).all<any>();
+    const blobs = results.map(mapBlobMetaRow);
+    let cursor: string | undefined;
+    if (blobs.length > limit) {
+      const next = blobs.pop()!;
+      cursor = String(next.createdAt);
+    }
+    return { blobs, cursor };
+  }
+
+  async deleteBlobMeta(spaceUri: string, cid: string): Promise<void> {
+    await this.db
+      .prepare(`DELETE FROM spaces_blobs WHERE space_uri = ? AND cid = ?`)
+      .bind(spaceUri, cid)
+      .run();
+  }
+
+  async findOrphanBlobs(
+    spaceUri: string,
+    cutoff: number,
+    limit: number
+  ): Promise<BlobMetaRow[]> {
+    if (!this.config) return [];
+    // Gather candidate blobs older than cutoff, then filter out any whose CID
+    // appears in any record JSON in this space. We use a cheap substring probe
+    // (LIKE) per collection — false positives are OK because an orphan that
+    // survives GC just gets collected next cycle; false negatives (deleting
+    // a referenced blob) would be a bug, and substring search over the full
+    // CID is safe enough for that.
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM spaces_blobs
+         WHERE space_uri = ? AND created_at < ?
+         ORDER BY created_at ASC
+         LIMIT ?`
+      )
+      .bind(spaceUri, cutoff, limit)
+      .all<any>();
+    const candidates = results.map(mapBlobMetaRow);
+    if (candidates.length === 0) return [];
+
+    const tables: string[] = [];
+    for (const [short, colConfig] of Object.entries(this.config.collections)) {
+      if (colConfig.allowInSpaces === false) continue;
+      tables.push(spacesRecordsTableName(short));
+    }
+
+    const orphans: BlobMetaRow[] = [];
+    for (const blob of candidates) {
+      let referenced = false;
+      const pattern = `%${blob.cid}%`;
+      for (const table of tables) {
+        try {
+          const row = await this.db
+            .prepare(
+              `SELECT 1 FROM ${table} WHERE space_uri = ? AND record LIKE ? LIMIT 1`
+            )
+            .bind(spaceUri, pattern)
+            .first<any>();
+          if (row) {
+            referenced = true;
+            break;
+          }
+        } catch {
+          // table missing — ignore
+        }
+      }
+      if (!referenced) orphans.push(blob);
+    }
+    return orphans;
   }
 }

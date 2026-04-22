@@ -34,6 +34,18 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_spaces_members_did ON spaces_members(did)`,
 
+    `CREATE TABLE IF NOT EXISTS spaces_blobs (
+      space_uri  TEXT NOT NULL,
+      cid        TEXT NOT NULL,
+      mime_type  TEXT NOT NULL,
+      size       INTEGER NOT NULL,
+      author_did TEXT NOT NULL,
+      created_at ${dialect.bigintType} NOT NULL,
+      PRIMARY KEY (space_uri, cid)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_blobs_author ON spaces_blobs(space_uri, author_did)`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_blobs_created ON spaces_blobs(space_uri, created_at)`,
+
     `CREATE TABLE IF NOT EXISTS spaces_invites (
       token_hash TEXT PRIMARY KEY,
       space_uri TEXT NOT NULL,
