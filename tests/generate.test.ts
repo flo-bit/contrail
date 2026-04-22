@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { join } from "path";
-import { generateLexicons } from "../src/generate";
+import { generateLexicons, extractXrpcMethods, listXrpcMethods } from "../src/generate";
 import type { ContrailConfig } from "../src/core/types";
 
 const ROOT_DIR = join(__dirname, "..");
@@ -217,5 +217,41 @@ describe("search: no searchable field configured", () => {
     const lexicons = generate(SEARCH_AUTO_CONFIG);
     const params = getParams(lexicons["test.app.post.listRecords"]);
     expect(params.search).toBeUndefined();
+  });
+});
+
+describe("extractXrpcMethods / listXrpcMethods", () => {
+  it("extracts only queries and procedures from a generated lexicon map", () => {
+    const lexicons = generate(BASIC_CONFIG);
+    const methods = extractXrpcMethods(lexicons);
+    // Sorted; includes admin + profile + listRecords/getRecord for the collection.
+    expect(methods).toEqual([...methods].sort());
+    expect(methods).toContain("test.app.post.listRecords");
+    expect(methods).toContain("test.app.post.getRecord");
+    expect(methods).toContain("test.app.getProfile");
+    // Does not include non-method defs (e.g. `defs`, records, permission-set).
+    expect(methods).not.toContain("test.app.permissionSet");
+  });
+
+  it("listXrpcMethods matches the permissionSet lxm list for the same config", () => {
+    const methods = listXrpcMethods(BASIC_CONFIG, { rootDir: ROOT_DIR, lexiconDirs: [] });
+    const lexicons = generate(BASIC_CONFIG);
+    const ps = (lexicons["test.app.permissionSet"] as any).defs.main.permissions[0];
+    expect(ps.lxm).toEqual(methods);
+  });
+
+  it("includes realtime + community + spaces endpoints when those modules are enabled", () => {
+    const config: ContrailConfig = {
+      namespace: "test.comm",
+      collections: { message: { collection: "app.event.message" } },
+      spaces: { type: "tools.atmo.event.space", serviceDid: "did:web:test.example#svc" },
+      community: { masterKey: new Uint8Array(32).fill(1) },
+      realtime: { ticketSecret: new Uint8Array(32).fill(2) },
+    };
+    const methods = listXrpcMethods(config, { rootDir: ROOT_DIR, lexiconDirs: [] });
+    expect(methods).toContain("test.comm.space.createSpace");
+    expect(methods).toContain("test.comm.community.adopt");
+    expect(methods).toContain("test.comm.realtime.ticket");
+    expect(methods).toContain("test.comm.realtime.subscribe");
   });
 });

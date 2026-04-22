@@ -9,6 +9,38 @@ import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync
 import { join } from "path";
 import type { ContrailConfig } from "./core/types";
 
+/** Return the sorted list of XRPC method NSIDs (queries + procedures) in a
+ *  generated lexicon set — the same list that ends up in `<ns>.permissionSet`'s
+ *  `lxm`. Use when the permission set isn't published yet and you need the
+ *  scoped method list inline (e.g. in an OAuth client config).
+ *
+ *  Filters `defs.main.type === "query" | "procedure"`. Sorted alphabetically
+ *  so the output is stable across runs. */
+export function extractXrpcMethods(generated: Record<string, object>): string[] {
+  const methods: string[] = [];
+  for (const [nsid, doc] of Object.entries(generated)) {
+    const mainType = (doc as { defs?: { main?: { type?: string } } })?.defs?.main?.type;
+    if (mainType === "query" || mainType === "procedure") methods.push(nsid);
+  }
+  return methods.sort();
+}
+
+/** Generate lexicons in-memory and return the sorted method NSID list.
+ *  Convenience wrapper over `generateLexicons` + `extractXrpcMethods` for
+ *  callers that don't care about the full lexicon map. */
+export function listXrpcMethods(
+  config: ContrailConfig,
+  options: { rootDir: string; lexiconDirs?: string[] }
+): string[] {
+  const generated = generateLexicons({
+    config,
+    rootDir: options.rootDir,
+    lexiconDirs: options.lexiconDirs,
+    quiet: true,
+  });
+  return extractXrpcMethods(generated);
+}
+
 export interface GenerateOptions {
   config: ContrailConfig;
   /** Root project directory (for finding lexicon source files). */
