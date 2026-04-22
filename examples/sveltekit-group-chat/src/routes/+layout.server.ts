@@ -1,6 +1,11 @@
 import type { LayoutServerLoad } from './$types';
-import { getServerClient } from '$lib/contrail';
-import { extractProfile } from '$lib/contrail/client';
+import { dispatch } from '$lib/contrail';
+
+interface Profile {
+	handle?: string;
+	displayName?: string;
+	avatar?: string;
+}
 
 export const load: LayoutServerLoad = async ({ locals, platform }) => {
 	if (!locals.did || !locals.client) {
@@ -8,17 +13,26 @@ export const load: LayoutServerLoad = async ({ locals, platform }) => {
 	}
 
 	try {
-		const client = getServerClient(platform!.env.DB);
-		const res = await client.get('statusphere.app.getProfile', {
-			params: { actor: locals.did }
-		});
-
+		// tools.atmo.chat.getProfile is unauthenticated.
+		const req = new Request(
+			`http://localhost/xrpc/tools.atmo.chat.getProfile?actor=${encodeURIComponent(locals.did)}`
+		);
+		const res = await dispatch(req, platform!.env);
 		if (!res.ok) return { did: locals.did, profile: null };
-
-		return {
-			did: locals.did,
-			profile: extractProfile(res.data)
+		const data = (await res.json()) as {
+			profiles?: Array<{
+				did: string;
+				handle?: string | null;
+				record?: { displayName?: string; avatar?: string };
+			}>;
 		};
+		const entry = data.profiles?.[0];
+		const profile: Profile = {
+			handle: entry?.handle ?? undefined,
+			displayName: entry?.record?.displayName,
+			avatar: entry?.record?.avatar
+		};
+		return { did: locals.did, profile };
 	} catch {
 		return { did: locals.did, profile: null };
 	}

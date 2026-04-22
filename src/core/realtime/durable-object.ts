@@ -15,6 +15,21 @@
  *                         the DO trusts anything that reaches it. */
 
 import type { PubSub, RealtimeEvent } from "./types";
+import { translateForQuery, type TranslatedEnvelope } from "./query-filter";
+type TranslatedEvent = TranslatedEnvelope;
+
+/** Query spec attached to a WS subscriber, used to filter events before
+ *  delivery. Shape matches what the Worker's `watchRecords` handler builds;
+ *  forwarded to the DO via trusted internal headers on the WS upgrade. */
+export interface SubscriberQuerySpec {
+  /** NSID of the primary collection the client is watching. */
+  collection: string;
+  /** Space URI this subscription is scoped to. Events outside are dropped. */
+  spaceUri: string;
+  /** Hydrated relations. Keyed by relName — value is the child collection
+   *  NSID and the field on the child record that references the parent. */
+  hydrate?: Record<string, { childCollection: string; matchField: string }>;
+}
 
 // ---- Minimal structural typings so we don't depend on @cloudflare/workers-types
 // at the library level. Callers on Workers will have proper types.
@@ -72,6 +87,36 @@ export class DurableObjectPubSub implements PubSub {
         return pullIterator(stub, signal);
       },
     };
+  }
+
+  /** Forward an incoming browser WS upgrade (or SSE GET) through to the DO
+   *  that owns this topic, attaching a query-filter spec that the DO will use
+   *  to decide what to deliver. The Worker must verify auth + spec validity
+   *  before calling this — the DO trusts the headers. */
+  async forwardSubscribe(
+    topic: string,
+    request: Request,
+    opts: {
+      did?: string;
+      querySpec?: SubscriberQuerySpec;
+      /** Unix ms. DO replays any buffered event with ts > sinceTs before
+       *  going live — closes the snapshot→WS race window on the client. */
+      sinceTs?: number;
+    } = {}
+  ): Promise<Response> {
+    const headers = new Headers(request.headers);
+    if (opts.querySpec) {
+      headers.set("X-Contrail-Query-Spec", JSON.stringify(opts.querySpec));
+    }
+    const url = new URL("https://do/subscribe");
+    if (opts.did) url.searchParams.set("did", opts.did);
+    if (opts.sinceTs && opts.sinceTs > 0) {
+      url.searchParams.set("sinceTs", String(opts.sinceTs));
+    }
+    return this.stub(topic).fetch(url.toString(), {
+      method: "GET",
+      headers
+    });
   }
 }
 
@@ -150,11 +195,31 @@ function pullIterator(
  *  This class intentionally avoids the `DurableObject` base class so we don't
  *  have to depend on @cloudflare/workers-types at the library level — users
  *  wire it up directly in their Worker entry. */
+/** Rolling buffer of recent events, used to close the snapshot→WS race:
+ *  when a new subscriber connects with `?sinceTs=X`, replay any buffered
+ *  event with `event.ts > X` before going live. Bounded by count + age so
+ *  memory stays small. */
+const RECENT_BUFFER_MS = 15_000;
+const RECENT_BUFFER_MAX = 500;
+
 export class RealtimePubSubDO {
+  private readonly recentEvents: RealtimeEvent[] = [];
+
   constructor(
     protected readonly state: DurableObjectState,
     _env?: unknown
   ) {}
+
+  private pushRecent(event: RealtimeEvent): void {
+    this.recentEvents.push(event);
+    const cutoff = Date.now() - RECENT_BUFFER_MS;
+    while (
+      this.recentEvents.length > RECENT_BUFFER_MAX ||
+      (this.recentEvents.length > 0 && this.recentEvents[0]!.ts < cutoff)
+    ) {
+      this.recentEvents.shift();
+    }
+  }
 
   /** Worker entry delegates `fetch` to this method. */
   async fetch(request: Request): Promise<Response> {
@@ -171,35 +236,79 @@ export class RealtimePubSubDO {
     }
     if (request.method === "GET" && url.pathname === "/subscribe") {
       const did = url.searchParams.get("did") ?? undefined;
+      const sinceTsRaw = url.searchParams.get("sinceTs");
+      const sinceTs = sinceTsRaw ? Number(sinceTsRaw) : 0;
+      // Optional query-filter spec, forwarded by the Worker after it has
+      // verified the caller's auth + access. Parsed once here; the parsed
+      // object is serialized into the WS attachment so the DO can filter
+      // events on publish without re-parsing.
+      let querySpec: SubscriberQuerySpec | undefined;
+      const rawSpec = request.headers.get("X-Contrail-Query-Spec");
+      if (rawSpec) {
+        try {
+          querySpec = JSON.parse(rawSpec) as SubscriberQuerySpec;
+        } catch {
+          return new Response(
+            JSON.stringify({ error: "InvalidRequest", message: "bad X-Contrail-Query-Spec" }),
+            { status: 400 }
+          );
+        }
+      }
+
       if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
         const Pair = (globalThis as unknown as { WebSocketPair?: any }).WebSocketPair;
         if (!Pair) return new Response("websockets require Workers", { status: 426 });
         const pair = new Pair();
-        this.acceptWebSocketSubscriber(pair[1], did);
+        this.acceptWebSocketSubscriber(pair[1], did, querySpec);
+        if (sinceTs > 0) this.replayRecentTo(pair[1], sinceTs);
         return new Response(null, {
           status: 101,
-          // @ts-expect-error Workers-specific init field
+          // Workers-specific init field
           webSocket: pair[0],
-        });
+        } as ResponseInit & { webSocket: unknown });
       }
-      return this.openSseResponse(did);
+      return this.openSseResponse(did, querySpec, sinceTs);
     }
     return new Response("not found", { status: 404 });
   }
 
   /** Fan-out an event to every connected subscriber (WS + SSE).
-   *  Public so tests + advanced callers can skip the HTTP layer. */
+   *  Public so tests + advanced callers can skip the HTTP layer.
+   *
+   *  If a subscriber has attached a `querySpec`, we translate the raw event
+   *  into 0–1 watchRecords-shaped events (record.created, record.deleted,
+   *  hydration.added, hydration.removed) and deliver only those. Otherwise
+   *  the raw event is delivered as-is (topic-firehose behaviour for the
+   *  `realtime.subscribe` endpoint). */
   publishEvent(event: RealtimeEvent): void {
-    const payload = JSON.stringify(event);
-    const frame = `event: ${event.kind}\ndata: ${payload}\n\n`;
+    // Buffer first so a subscriber connecting mid-publish (race-window
+    // replay) can pick up this event too once they provide their sinceTs.
+    this.pushRecent(event);
+
+    const rawPayload = JSON.stringify(event);
+    const rawFrame = `event: ${event.kind}\ndata: ${rawPayload}\n\n`;
 
     for (const ws of this.state.getWebSockets()) {
-      try {
-        ws.send(payload);
-      } catch {
-        /* ignore — socket may be closing */
-      }
       const attachment = getAttachment(ws);
+
+      if (attachment?.querySpec) {
+        const translated = translateForQuery(event, attachment);
+        if (translated) this.writeSubscriberState(ws, attachment, translated);
+        for (const msg of translated ?? []) {
+          try {
+            ws.send(JSON.stringify(msg));
+          } catch {
+            /* ignore */
+          }
+        }
+      } else {
+        try {
+          ws.send(rawPayload);
+        } catch {
+          /* ignore */
+        }
+      }
+
       if (
         event.kind === "member.removed" &&
         attachment?.did &&
@@ -212,12 +321,28 @@ export class RealtimePubSubDO {
         }
       }
     }
+
     for (const entry of this.sseControllers) {
-      try {
-        entry.controller.enqueue(this.encoder.encode(frame));
-      } catch {
-        /* drop; cleanup happens on the subscribe-side */
+      if (entry.querySpec) {
+        const translated = translateForQuery(event, entry);
+        if (translated) this.writeSubscriberStateForSse(entry, translated);
+        for (const msg of translated ?? []) {
+          try {
+            entry.controller.enqueue(
+              this.encoder.encode(`event: ${msg.kind}\ndata: ${JSON.stringify(msg.data)}\n\n`)
+            );
+          } catch {
+            /* drop */
+          }
+        }
+      } else {
+        try {
+          entry.controller.enqueue(this.encoder.encode(rawFrame));
+        } catch {
+          /* drop; cleanup happens on the subscribe-side */
+        }
       }
+
       if (
         event.kind === "member.removed" &&
         entry.did &&
@@ -232,20 +357,44 @@ export class RealtimePubSubDO {
     }
   }
 
-  /** Register a server-side WebSocket as a subscriber. Wires the DID attachment. */
-  acceptWebSocketSubscriber(serverWs: any, did?: string): void {
+  /** Register a server-side WebSocket as a subscriber. Wires the DID +
+   *  optional query spec into the hibernation attachment so this DO can
+   *  filter and route events after going to sleep. */
+  acceptWebSocketSubscriber(
+    serverWs: any,
+    did?: string,
+    querySpec?: SubscriberQuerySpec
+  ): void {
     this.state.acceptWebSocket(serverWs, did ? [did] : undefined);
-    if (did) setAttachment(serverWs, { did });
+    if (did || querySpec) {
+      setAttachment(serverWs, {
+        did,
+        querySpec,
+        parentUris: [],
+        childToParent: {}
+      });
+    }
   }
 
   /** Open an SSE subscriber; returns the streaming Response. */
-  openSseResponse(did?: string): Response {
+  openSseResponse(
+    did?: string,
+    querySpec?: SubscriberQuerySpec,
+    sinceTs = 0
+  ): Response {
     let entry: SseEntry;
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
-        entry = { controller, did };
+        entry = {
+          controller,
+          did,
+          querySpec,
+          parentUris: new Set(),
+          childToParent: new Map()
+        };
         this.sseControllers.add(entry);
         controller.enqueue(this.encoder.encode(`: open\n\n`));
+        if (sinceTs > 0) this.replayRecentToSse(entry, sinceTs);
       },
       cancel: () => {
         this.sseControllers.delete(entry);
@@ -261,6 +410,119 @@ export class RealtimePubSubDO {
     });
   }
 
+  /** Replay buffered events with ts > sinceTs through this subscriber's
+   *  query-spec filter. Called once, synchronously, on WS connect. */
+  private replayRecentTo(ws: any, sinceTs: number): void {
+    const attachment = getAttachment(ws);
+    for (const event of this.recentEvents) {
+      if (event.ts <= sinceTs) continue;
+      if (attachment?.querySpec) {
+        const translated = translateForQuery(event, attachment);
+        if (translated) this.writeSubscriberState(ws, attachment, translated);
+        for (const msg of translated ?? []) {
+          try {
+            ws.send(JSON.stringify(msg));
+          } catch {
+            /* ignore */
+          }
+        }
+      } else {
+        try {
+          ws.send(JSON.stringify(event));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  private replayRecentToSse(entry: SseEntry, sinceTs: number): void {
+    for (const event of this.recentEvents) {
+      if (event.ts <= sinceTs) continue;
+      if (entry.querySpec) {
+        const translated = translateForQuery(event, entry);
+        if (translated) this.writeSubscriberStateForSse(entry, translated);
+        for (const msg of translated ?? []) {
+          try {
+            entry.controller.enqueue(
+              this.encoder.encode(`event: ${msg.kind}\ndata: ${JSON.stringify(msg.data)}\n\n`)
+            );
+          } catch {
+            /* drop */
+          }
+        }
+      } else {
+        try {
+          entry.controller.enqueue(
+            this.encoder.encode(`event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)
+          );
+        } catch {
+          /* drop */
+        }
+      }
+    }
+  }
+
+  /** Update the persisted WS attachment state after we've decided which
+   *  events to forward. Keeps the parent/child tracking tables warm across
+   *  hibernation. */
+  private writeSubscriberState(
+    ws: any,
+    attachment: WsAttachment,
+    translated: TranslatedEvent[]
+  ): void {
+    let dirty = false;
+    for (const msg of translated) {
+      if (msg.kind === "record.created" && msg.data.record?.uri) {
+        attachment.parentUris = Array.from(
+          new Set([...(attachment.parentUris ?? []), msg.data.record.uri])
+        );
+        dirty = true;
+      } else if (msg.kind === "record.deleted" && msg.data.uri) {
+        const before = attachment.parentUris ?? [];
+        attachment.parentUris = before.filter((u) => u !== msg.data.uri);
+        if (attachment.parentUris.length !== before.length) dirty = true;
+      } else if (msg.kind === "hydration.added" && msg.data.child?.rkey) {
+        attachment.childToParent = {
+          ...(attachment.childToParent ?? {}),
+          [msg.data.child.rkey]: {
+            parentUri: msg.data.parentUri,
+            relName: msg.data.relation
+          }
+        };
+        dirty = true;
+      } else if (msg.kind === "hydration.removed" && msg.data.childRkey) {
+        const next = { ...(attachment.childToParent ?? {}) };
+        if (next[msg.data.childRkey]) {
+          delete next[msg.data.childRkey];
+          attachment.childToParent = next;
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) setAttachment(ws, attachment);
+  }
+
+  private writeSubscriberStateForSse(
+    entry: SseEntry,
+    translated: TranslatedEvent[]
+  ): void {
+    for (const msg of translated) {
+      if (msg.kind === "record.created" && msg.data.record?.uri) {
+        entry.parentUris?.add(msg.data.record.uri);
+      } else if (msg.kind === "record.deleted" && msg.data.uri) {
+        entry.parentUris?.delete(msg.data.uri);
+      } else if (msg.kind === "hydration.added" && msg.data.child?.rkey) {
+        entry.childToParent?.set(msg.data.child.rkey, {
+          parentUri: msg.data.parentUri,
+          relName: msg.data.relation
+        });
+      } else if (msg.kind === "hydration.removed" && msg.data.childRkey) {
+        entry.childToParent?.delete(msg.data.childRkey);
+      }
+    }
+  }
+
   private readonly sseControllers = new Set<SseEntry>();
   private readonly encoder = new TextEncoder();
 }
@@ -268,10 +530,18 @@ export class RealtimePubSubDO {
 interface SseEntry {
   controller: ReadableStreamDefaultController<Uint8Array>;
   did: string | undefined;
+  querySpec?: SubscriberQuerySpec;
+  parentUris?: Set<string>;
+  childToParent?: Map<string, { parentUri: string; relName: string }>;
 }
 
 interface WsAttachment {
   did?: string;
+  querySpec?: SubscriberQuerySpec;
+  /** URIs of primary records currently in this subscriber's result set. */
+  parentUris?: string[];
+  /** childRkey → parent info, for routing child delete events. */
+  childToParent?: Record<string, { parentUri: string; relName: string }>;
 }
 
 function setAttachment(ws: any, attachment: WsAttachment): void {
@@ -292,3 +562,6 @@ function getAttachment(ws: any): WsAttachment | null {
   }
   return (ws.__attachment as WsAttachment | undefined) ?? null;
 }
+
+// Query-spec filtering lives in ./query-filter so the Worker can reuse it for
+// non-DO (InMemoryPubSub) watchRecords paths without bundling the whole DO.

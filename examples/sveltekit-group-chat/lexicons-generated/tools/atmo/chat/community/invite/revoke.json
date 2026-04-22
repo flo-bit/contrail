@@ -1,0 +1,46 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.community.invite.revoke",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Revoke an invite. Caller must be the invite's creator or have manager+ on the target space.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "tokenHash"
+          ],
+          "properties": {
+            "tokenHash": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

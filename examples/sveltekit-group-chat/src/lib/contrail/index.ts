@@ -1,31 +1,128 @@
-import { Contrail } from '@atmo-dev/contrail';
+import {
+	Contrail,
+	DurableObjectPubSub,
+	InMemoryPubSub,
+	MemoryBlobAdapter,
+	R2BlobAdapter,
+	type BlobAdapter,
+	type ContrailConfig,
+	type DurableObjectNamespace,
+	type PubSub,
+	type R2BucketLike
+} from '@atmo-dev/contrail';
 import { createHandler } from '@atmo-dev/contrail/server';
 import { Client } from '@atcute/client';
-import { config } from './config';
+import { baseConfig } from './config';
+import { getSignedCookieFromRequest } from '$lib/atproto/server/signed-cookie';
 
-export const contrail = new Contrail(config);
+type Env = App.Platform['env'];
 
-let initialized = false;
-
-export async function ensureInit(db: D1Database) {
-	if (!initialized) {
-		await contrail.init(db);
-		initialized = true;
-	}
+interface Bundle {
+	contrail: Contrail;
+	handle: (req: Request, db?: unknown) => unknown;
+	ready: Promise<void>;
 }
 
-const handle = createHandler(contrail);
+let cached: { env: Env; bundle: Bundle } | null = null;
 
-/**
- * Server-side: fully typed @atcute/client that routes through contrail in-process.
- * No HTTP roundtrip — calls createHandler directly.
- */
-export function getServerClient(db: D1Database) {
+function build(env: Env): Bundle {
+	const devAuth = env.DEV_AUTH === '1';
+
+	// In dev the DO class isn't wired (vite runs the worker directly, skipping
+	// the post-build re-export), so fall back to InMemoryPubSub. Single-isolate
+	// is fine for one-user dev; production uses the DO so publishes fan out
+	// across isolates.
+	const pubsub: PubSub = devAuth
+		? new InMemoryPubSub()
+		: new DurableObjectPubSub(env.REALTIME as DurableObjectNamespace);
+
+	// Blob storage: in dev, an in-isolate memory adapter (bytes reset on
+	// restart). In prod, bind an R2 bucket as `env.BLOBS` and it'll be used.
+	const blobAdapter: BlobAdapter = env.BLOBS
+		? new R2BlobAdapter(env.BLOBS as R2BucketLike)
+		: new MemoryBlobAdapter();
+
+	const config: ContrailConfig = {
+		...baseConfig,
+		spaces: {
+			type: 'tools.atmo.chat.space',
+			serviceDid: env.SERVICE_DID,
+			blobs: {
+				adapter: blobAdapter,
+				maxSize: 2 * 1024 * 1024,
+				accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+			},
+			// Dev-only bypass: trust the HMAC-signed `did` cookie the OAuth flow
+			// sets, in lieu of a service-auth JWT. bsky.social rejects
+			// `getServiceAuth` for loopback clients, so without this the demo
+			// would need a tunnel. NEVER set DEV_AUTH=1 in prod.
+			authOverride: devAuth
+				? (req: Request) => {
+						// Accept either the HMAC-signed session cookie (from the
+						// browser via /xrpc/...) or an X-Dev-Did header (from the
+						// server-side remote helpers, which construct synthetic
+						// requests and already trust the session themselves).
+						const headerDid = req.headers.get('x-dev-did');
+						const did = headerDid ?? getSignedCookieFromRequest(req, 'did');
+						if (!did) return null;
+						return {
+							issuer: did,
+							audience: env.SERVICE_DID
+						};
+					}
+				: undefined
+		},
+		community: {
+			masterKey: env.COMMUNITY_MASTER_KEY,
+			serviceDid: env.SERVICE_DID
+		},
+		realtime: {
+			ticketSecret: env.REALTIME_TICKET_SECRET,
+			pubsub
+		}
+	};
+
+	const contrail = new Contrail(config);
+	const handle = createHandler(contrail);
+	const ready = contrail.init(env.DB);
+
+	return { contrail, handle: handle as Bundle['handle'], ready };
+}
+
+function getBundle(env: Env): Bundle {
+	if (cached && cached.env === env) return cached.bundle;
+	const bundle = build(env);
+	cached = { env, bundle };
+	return bundle;
+}
+
+/** Get the shared contrail instance, bound to this worker's env. */
+export async function getContrail(env: Env): Promise<Contrail> {
+	const b = getBundle(env);
+	await b.ready;
+	return b.contrail;
+}
+
+/** Dispatch a Request through contrail's XRPC handler. */
+export async function dispatch(req: Request, env: Env): Promise<Response> {
+	const b = getBundle(env);
+	await b.ready;
+	return (await b.handle(req, env.DB)) as Response;
+}
+
+/** Server-side typed @atcute client that routes through contrail in-process.
+ *  When `asDid` is set, every request carries an Authorization header identifying
+ *  the caller — this is used only for server-originated bootstrap calls (e.g. the
+ *  community mint flow) where we already have the user's DID from the OAuth session
+ *  but want to bypass the atproto PDS round-trip. For normal user actions, route
+ *  through the user's OAuth client instead. */
+export function getServerClient(env: Env): Client {
 	return new Client({
 		handler: async (pathname, init) => {
-			await ensureInit(db);
+			const b = getBundle(env);
+			await b.ready;
 			const url = new URL(pathname, 'http://localhost');
-			return handle(new Request(url, init), db) as Promise<Response>;
+			return (await b.handle(new Request(url, init), env.DB)) as Response;
 		}
 	});
 }

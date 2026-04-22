@@ -25,6 +25,10 @@ import {
   RESERVED_KEYS,
 } from "./types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
+import {
+  generateInviteToken,
+  hashInviteToken,
+} from "../spaces/invite-token";
 
 export interface CommunityRoutesOptions {
   /** Override auth middleware for tests. */
@@ -970,6 +974,166 @@ export function registerCommunityRoutes(
       identifier,
     });
     return c.json({ ok: true });
+  });
+
+  // ==========================================================================
+  // Invites — pre-signed grants for community-owned spaces. Admin/manager
+  // creates; any authenticated user with the raw token redeems once.
+  // ==========================================================================
+
+  app.post(`/xrpc/${NS}.invite.create`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | {
+          spaceUri?: string;
+          accessLevel?: string;
+          expiresAt?: number;
+          maxUses?: number;
+          note?: string;
+        }
+      | null;
+    if (!body?.spaceUri || !body.accessLevel) {
+      return c.json(
+        { error: "InvalidRequest", message: "spaceUri and accessLevel required" },
+        400
+      );
+    }
+    if (!isAccessLevel(body.accessLevel)) {
+      return c.json({ error: "InvalidRequest", message: "invalid accessLevel" }, 400);
+    }
+    const space = await spaces.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    const communityRow = await community.getCommunity(space.ownerDid);
+    if (!communityRow) {
+      return c.json({ error: "InvalidRequest", reason: "not-community-owned" }, 400);
+    }
+
+    // Caller must have at least manager on the target space, and cannot create
+    // an invite that confers a higher level than their own.
+    const callerLevel = await resolveEffectiveLevel(community, body.spaceUri, sa.issuer);
+    if (!callerLevel || rankOf(callerLevel) < rankOf("manager")) {
+      return c.json({ error: "Forbidden", reason: "manager-required" }, 403);
+    }
+    if (rankOf(body.accessLevel) > rankOf(callerLevel)) {
+      return c.json({ error: "Forbidden", reason: "cannot-grant-higher-than-self" }, 403);
+    }
+
+    const token = generateInviteToken();
+    const tokenHash = await hashInviteToken(token);
+
+    const row = await community.createInvite({
+      spaceUri: body.spaceUri,
+      tokenHash,
+      accessLevel: body.accessLevel,
+      createdBy: sa.issuer,
+      expiresAt: body.expiresAt ?? null,
+      maxUses: body.maxUses ?? null,
+      note: body.note ?? null,
+    });
+
+    // Raw token only returned once. tokenHash is the stable ID for list/revoke.
+    return c.json({
+      token,
+      tokenHash,
+      spaceUri: row.spaceUri,
+      accessLevel: row.accessLevel,
+      expiresAt: row.expiresAt,
+      maxUses: row.maxUses,
+      createdAt: row.createdAt,
+    });
+  });
+
+  app.get(`/xrpc/${NS}.invite.list`, auth, async (c) => {
+    const sa = getAuth(c);
+    const spaceUri = c.req.query("spaceUri");
+    const includeRevoked = c.req.query("includeRevoked") === "true";
+    if (!spaceUri) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    }
+    const space = await spaces.getSpace(spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+
+    const callerLevel = await resolveEffectiveLevel(community, spaceUri, sa.issuer);
+    if (!callerLevel || rankOf(callerLevel) < rankOf("manager")) {
+      return c.json({ error: "Forbidden", reason: "manager-required" }, 403);
+    }
+
+    const rows = await community.listInvites(spaceUri, { includeRevoked });
+    return c.json({
+      invites: rows.map((r) => ({
+        tokenHash: r.tokenHash,
+        spaceUri: r.spaceUri,
+        accessLevel: r.accessLevel,
+        createdBy: r.createdBy,
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+        maxUses: r.maxUses,
+        usedCount: r.usedCount,
+        revokedAt: r.revokedAt,
+        note: r.note,
+      })),
+    });
+  });
+
+  app.post(`/xrpc/${NS}.invite.revoke`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { tokenHash?: string }
+      | null;
+    if (!body?.tokenHash) {
+      return c.json({ error: "InvalidRequest", message: "tokenHash required" }, 400);
+    }
+    const invite = await community.getInvite(body.tokenHash);
+    if (!invite) return c.json({ error: "NotFound" }, 404);
+
+    // Revoker: either the invite's creator, or manager+ on the target space.
+    let allowed = invite.createdBy === sa.issuer;
+    if (!allowed) {
+      const level = await resolveEffectiveLevel(community, invite.spaceUri, sa.issuer);
+      allowed = !!level && rankOf(level) >= rankOf("manager");
+    }
+    if (!allowed) {
+      return c.json({ error: "Forbidden", reason: "creator-or-manager-required" }, 403);
+    }
+    await community.revokeInvite(body.tokenHash);
+    return c.json({ ok: true });
+  });
+
+  app.post(`/xrpc/${NS}.invite.redeem`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as { token?: string } | null;
+    if (!body?.token) {
+      return c.json({ error: "InvalidRequest", message: "token required" }, 400);
+    }
+    const tokenHash = await hashInviteToken(body.token);
+
+    // Atomic consume — returns null if the token is expired/revoked/exhausted.
+    const invite = await community.redeemInvite(tokenHash, Date.now());
+    if (!invite) {
+      return c.json({ error: "InvalidToken", reason: "token-invalid-or-exhausted" }, 410);
+    }
+
+    const space = await spaces.getSpace(invite.spaceUri);
+    if (!space) {
+      return c.json({ error: "NotFound", reason: "space-not-found" }, 404);
+    }
+
+    // The token itself is the authorization: the creator (who had manager+)
+    // pre-signed "anyone with this token gets level X on this space". Grant
+    // directly, attributing to the creator so audit trails make sense.
+    await community.grant({
+      spaceUri: invite.spaceUri,
+      subjectDid: sa.issuer,
+      accessLevel: invite.accessLevel,
+      grantedBy: invite.createdBy,
+    });
+    await reconcile(community, spaces, invite.spaceUri, invite.createdBy);
+
+    return c.json({
+      spaceUri: invite.spaceUri,
+      accessLevel: invite.accessLevel,
+      communityDid: space.ownerDid,
+    });
   });
 }
 

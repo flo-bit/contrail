@@ -1,76 +1,116 @@
-# sveltekit + contrail + atproto OAuth
+# sveltekit-group-chat
 
-A sveltekit example app on cloudflare workers with self-hosted atproto record indexing via [contrail](https://github.com/flo-bit/contrail), fully typed queries, and OAuth authentication.
+A Discord-like demo built on top of [contrail](https://github.com/flo-bit/contrail) — SvelteKit + Cloudflare Workers + D1, OAuth, spaces, communities, and realtime (SSE).
+
+## What this exercises
+
+- **`community`** — mint a fresh `did:plc` per server, tiered access levels (member / manager / admin / owner), space → space delegation.
+- **`spaces`** — permissioned per-channel record tables, membership pushed in by the community reconciler.
+- **`realtime`** — single SSE connection subscribed to `community:<did>`, fanning out per-channel events with unread dots derived client-side.
+- Three record collections — `tools.atmo.chat.server`, `tools.atmo.chat.channel`, `tools.atmo.chat.message` — with unified `listRecords` for "every server / channel I can see" in one call.
 
 ## Setup
 
 ```sh
 pnpm install
+cp .env.example .env
+# fill in COMMUNITY_MASTER_KEY and REALTIME_TICKET_SECRET with
+#   openssl rand -base64 32
+pnpm generate:pull    # emits lexicons + src/lib/atproto/generated-methods.ts
 pnpm dev
 ```
 
-Dev mode uses a loopback OAuth client — no keys or Cloudflare setup needed.
+Re-run `pnpm generate` whenever you add/remove collections or toggle contrail
+modules in `src/lib/contrail/config.ts`: the OAuth scope list is derived from
+it, so the consent screen only asks for permissions you actually use.
 
-## Config
+Dev mode uses a loopback OAuth client — no Cloudflare setup needed. The realtime Durable Object runs locally via miniflare.
 
-Define which AT Protocol collections to index in `src/lib/contrail/config.ts`:
+### Auth in dev vs prod
 
-```ts
-import type { ContrailConfig } from '@atmo-dev/contrail';
+Contrail normally auths every write with an atproto **service-auth JWT**. The browser delegates minting those JWTs to the SvelteKit worker, which calls `com.atproto.server.getServiceAuth` on the user's PDS.
 
-export const config: ContrailConfig = {
-  namespace: 'statusphere.app',
-  collections: {
-    status: {                                  // short name → URL path segment
-      collection: 'xyz.statusphere.status',    // full NSID of the record type
-      queryable: {
-        status: {},                    // equality filter (?status=...)
-        createdAt: { type: 'range' }   // range filter (?createdAtMin=...&createdAtMax=...)
-      }
-    }
-  }
-};
+bsky.social **refuses** that call for loopback OAuth clients, so out of the box a plain `pnpm dev` couldn't talk to contrail without a [cloudflared tunnel](#with-a-tunnel).
+
+To skip the tunnel this example ships a **dev auth bypass** gated on `DEV_AUTH=1` in `.env`:
+
+- Contrail's auth middleware trusts the HMAC-signed `did` session cookie the OAuth flow already sets, and uses its DID as the authenticated caller.
+- The cookie is HMAC-signed with `COOKIE_SECRET`, so only this worker can mint a valid one.
+- All access-level checks (admin+, manager+, etc.) still apply — the bypass only replaces the JWT step.
+
+**Never set `DEV_AUTH=1` in production** — that would make the cookie the sole auth signal for third-party clients.
+
+### With a tunnel
+
+If you want to exercise the real JWT path in dev, run a tunnel and drop `DEV_AUTH`:
+
+```sh
+pnpm tunnel            # prints https://xxx.trycloudflare.com
+# in .env: set OAUTH_PUBLIC_URL to the tunnel URL and remove DEV_AUTH
+pnpm dev
+# open the tunnel URL (not localhost)
 ```
 
-After changing the config, run `pnpm generate:pull` to regenerate lexicons and types.
+## How the pieces connect
 
-Run `pnpm sync` to backfill existing records from the network.
+```
+┌────────────┐   service-auth JWT   ┌─────────────────┐   contrail XRPCs   ┌───────────┐
+│  browser   │ ─────────────────► │ SvelteKit worker │ ─────────────────► │ contrail  │
+└────────────┘                      └─────────────────┘                    └───────────┘
+     │                                       │                                   │
+     │ EventSource /xrpc/.../realtime.subscribe?ticket=... ◄──────── realtime DO │
+     └───────────────────────────────────────────────────────────────────────────┘
+```
 
-Wrangler bindings (`wrangler.jsonc`):
+- The browser can't mint service-auth JWTs itself — it delegates to the SvelteKit worker, which uses the user's OAuth session to call `com.atproto.server.getServiceAuth` on their PDS. The resulting JWT is scoped to one `lxm`.
+- Realtime tickets are minted the same way, then the browser holds an `EventSource` open against the subscribe endpoint.
 
-- **D1** (`DB`) — contrail's database
-- **KV** (`OAUTH_SESSIONS`, `OAUTH_STATES`) — OAuth session storage
-- **Vars** — `CRON_SECRET`, `OAUTH_PUBLIC_URL`, `CLIENT_ASSERTION_KEY`, `COOKIE_SECRET`
+## Data model
+
+| Record | Lives in | Author |
+|---|---|---|
+| `tools.atmo.chat.server` | community's `members` space, rkey `self` | community DID (via `community.space.putRecord`) |
+| `tools.atmo.chat.channel` | channel's own space, rkey `self` | community DID |
+| `tools.atmo.chat.message` | channel's own space, rkey = TID | user DID |
+
+Only admins (`admin+` in the target space) can write the server and channel records, and the community DID is the author. Reads filter by `actor=<communityDid>` so spoof records from random members are silently ignored.
+
+## Feature map
+
+| Route | What it does |
+|---|---|
+| `/` | "My servers" — unified `server.listRecords` over every space I'm in |
+| `/new` | Mint community, bootstrap `members` role-space, write server record, show recovery key once |
+| `/c/[communityDid]` | Redirects to the first channel you can see |
+| `/c/[communityDid]/[channelKey]` | Chat view — messages via `space.listRecords` + realtime |
+| `/c/[communityDid]/settings/members` | Add, promote, demote, revoke members |
+
+## Private channels
+
+New-channel modal offers a visibility toggle:
+
+- **Public** — grants the `members` role-space `member` access on the new channel. Reconciler fans out to everyone.
+- **Private** — grants each picked DID directly. Also grants `members` (so they can see the server header) but not automatic access to other channels.
 
 ## Deploy
 
 ```sh
-npx wrangler d1 create statusphere
-# Add database_id to wrangler.jsonc
+npx wrangler d1 create group-chat
+# add the database_id to wrangler.jsonc
+npx wrangler secret put COMMUNITY_MASTER_KEY
+npx wrangler secret put REALTIME_TICKET_SECRET
 
 pnpm build
 npx wrangler deploy
 ```
 
-## How it works
+## Known gaps
 
-**Contrail** indexes AT Protocol records into D1 via Jetstream (cron, every minute). When a user posts, `contrail.notify()` indexes it immediately.
+This is a demo. It deliberately skips:
 
-**Typed queries** use `@atcute/client` with an in-process handler — full type safety, zero HTTP overhead:
-
-```ts
-const client = getClient(platform!.env.DB);
-const res = await client.get('statusphere.app.status.listRecords', {
-  params: { limit: 50, profiles: true }  // typed params
-});
-res.data.records  // typed response
-```
-
-Types are generated from contrail's config via `pnpm generate:pull`, which produces lexicon JSON and TypeScript types that register with `@atcute/client`.
-
-**Scheduled ingestion** works around SvelteKit's lack of `scheduled` export support ([sveltejs/kit#4841](https://github.com/sveltejs/kit/issues/4841)) by appending a handler post-build that self-calls `/api/cron`.
-
-**OAuth** uses `@atcute/oauth-node-client` with KV-backed sessions and HMAC-signed cookies.
+- **`adopt` mode** — only `mint` is wired up.
+- **`$publishers`** / community-authored public posts.
+- Threads, reactions, image uploads, rich text, typing indicators.
 
 ## License
 

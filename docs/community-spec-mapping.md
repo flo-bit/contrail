@@ -36,7 +36,7 @@ permissioned-data spec with no knowledge of access levels or delegation.
 | Owner                                       | `owner`; only meaningful in `$admin` for owner-management           | ✅        | Post's level 8                                                                                           |
 | Push model for membership lists             | Reconciler writes `spaces_members` after each change                | ➕        | Post doesn't specify a sync direction; push keeps spaces read-path zero-overhead                         |
 | Cross-community / cross-arbiter delegation  | _same-contrail only_                                                | ❌        | v1 constraint. Private-membership federation is deferred — see [community.md § Deferred work]            |
-| Invites as a separate service               | _not implemented_                                                   | ❌        | Post proposes an optional add-on; contrail has spaces invites to draw from when this lands              |
+| Invites as a separate service               | `community.invite.*` (create/list/revoke/redeem)                    | ➕        | Built-in — tokens pre-sign a grant, redeemer gets the encoded access level. SHA-256 at rest, atomic redeem. |
 | Writing records under the arbiter's account | `community.space.putRecord` (in-space) + `community.putRecord` (public) | ✅    | In-space: `admin+`. Public: `member+` in `$publishers` — routes through adopted community's PDS          |
 | Public membership-list flag                 | _none_                                                              | ❌        | Post allows spaces to expose membership publicly. Ruled out for cross-instance federation (privacy)      |
 | Space credential (from arbiter)             | _none_                                                              | ⚠️        | Covered by the spaces module's service-auth story, not the community module                              |
@@ -63,6 +63,9 @@ membership is user-controlled or community-controlled.
 ### Membership
 - `community.space.grant` · `community.space.revoke` · `community.space.setAccessLevel`
 - `community.space.listMembers` (`?flatten=true` for the resolved DID list) · `community.space.resync`
+
+### Invites
+- `community.invite.create` · `community.invite.list` · `community.invite.revoke` · `community.invite.redeem`
 
 ### Publishing
 - `community.putRecord` · `community.deleteRecord` (public records via the community's PDS; adopted only)

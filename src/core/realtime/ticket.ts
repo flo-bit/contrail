@@ -18,6 +18,16 @@ export interface TicketPayload {
   exp: number;
   /** Unix ms — useful for debugging; ignored on verify. */
   iat: number;
+  /** Optional: query-scoped watchRecords spec this ticket authorizes. Present
+   *  when the ticket was minted from a watchRecords handshake. The server
+   *  trusts the signed spec on upgrade and forwards it to the DO. */
+  querySpec?: TicketQuerySpec;
+}
+
+export interface TicketQuerySpec {
+  collection: string;
+  spaceUri: string;
+  hydrate?: Record<string, { childCollection: string; matchField: string }>;
 }
 
 function normalizeSecret(secret: Uint8Array | string): Uint8Array {
@@ -107,13 +117,19 @@ export class TicketSigner {
     );
   }
 
-  async sign(input: { topics: string[]; did: string; ttlMs: number }): Promise<string> {
+  async sign(input: {
+    topics: string[];
+    did: string;
+    ttlMs: number;
+    querySpec?: TicketQuerySpec;
+  }): Promise<string> {
     const now = Date.now();
     const payload: TicketPayload = {
       topics: input.topics,
       did: input.did,
       exp: now + input.ttlMs,
       iat: now,
+      ...(input.querySpec ? { querySpec: input.querySpec } : {}),
     };
     const payloadPart = b64urlFromString(JSON.stringify(payload));
     const sig = await crypto.subtle.sign(

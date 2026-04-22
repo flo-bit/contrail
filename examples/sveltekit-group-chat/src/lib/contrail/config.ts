@@ -1,12 +1,29 @@
 import type { ContrailConfig } from '@atmo-dev/contrail';
 
-export const config: ContrailConfig = {
-	namespace: 'statusphere.app',
+/** Env-independent contrail config. Spaces/community/realtime are enabled per-request
+ *  from `getContrail(env)` in `./index.ts`, since those modules need bindings or secrets
+ *  that live on `platform.env`. */
+export const namespace = 'tools.atmo.chat';
+
+export const baseConfig: ContrailConfig = {
+	namespace,
 	collections: {
-		status: {
-			collection: 'xyz.statusphere.status',
+		server: {
+			collection: 'tools.atmo.chat.server',
 			queryable: {
-				status: {},
+				communityDid: {}
+			}
+		},
+		channel: {
+			collection: 'tools.atmo.chat.channel',
+			queryable: {
+				communityDid: {},
+				visibility: {}
+			}
+		},
+		message: {
+			collection: 'tools.atmo.chat.message',
+			queryable: {
 				createdAt: { type: 'range' }
 			}
 		}

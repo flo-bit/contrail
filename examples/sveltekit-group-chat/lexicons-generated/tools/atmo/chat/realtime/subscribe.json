@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.realtime.subscribe",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Open a streaming subscription. Responds with Server-Sent Events by default, or upgrades to WebSocket when the request carries `Upgrade: websocket`. Auth via `?ticket=` (browser) or `Authorization: Bearer <JWT>` (server-side). The stream closes with a final `member.removed` event if the caller loses access mid-stream.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "description": "Subscription ticket from `.ticket`. Required if no Authorization header."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Optional: restrict the stream to a single topic (must be in the ticket). Required on the JWT path."
+          },
+          "collection": {
+            "type": "string",
+            "format": "nsid",
+            "description": "Optional: drop `record.*` events whose collection doesn't match."
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "NotFound"
+        }
+      ]
+    }
+  }
+}

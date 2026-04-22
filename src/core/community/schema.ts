@@ -30,6 +30,20 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
     `CREATE INDEX IF NOT EXISTS idx_cal_subject ON community_access_levels(subject)`,
     `CREATE INDEX IF NOT EXISTS idx_cal_subject_space ON community_access_levels(subject)
       WHERE subject_kind = 'space'`,
+
+    `CREATE TABLE IF NOT EXISTS community_invites (
+      token_hash TEXT PRIMARY KEY NOT NULL,
+      space_uri TEXT NOT NULL,
+      access_level TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at ${dialect.bigintType} NOT NULL,
+      expires_at ${dialect.bigintType},
+      max_uses INTEGER,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      revoked_at ${dialect.bigintType},
+      note TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_community_invites_space ON community_invites(space_uri, created_at DESC)`,
   ];
 }
 

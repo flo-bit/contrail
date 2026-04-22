@@ -1,0 +1,57 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.space.listBlobs",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List blob metadata for a space. Members only.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "byUser": {
+            "type": "string",
+            "format": "did",
+            "description": "Only blobs uploaded by this DID."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "blobs"
+          ],
+          "properties": {
+            "blobs": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "tools.atmo.chat.space.defs#blobInfo"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

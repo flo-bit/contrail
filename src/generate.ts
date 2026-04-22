@@ -690,6 +690,40 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           ...hydrateDefs, ...refDefs, ...profileDefs(),
         },
       });
+
+      // watchRecords — realtime subscription over the same query shape.
+      // Only emitted when realtime is configured. SSE-only (subscription
+      // lexicon doesn't cleanly model custom event framing, so we describe it
+      // as a query with a streaming output and document the event kinds.)
+      if (config.realtime) {
+        writeLexicon(`${ns}.${shortName}.watchRecords`, {
+          lexicon: 1,
+          id: `${ns}.${shortName}.watchRecords`,
+          defs: {
+            main: {
+              type: "query",
+              description:
+                `Subscribe to a live ${collection} query. Returns Server-Sent Events: ` +
+                `\`snapshot.start\`, \`snapshot.record\` (N of), \`snapshot.end\`, ` +
+                `then \`record.created\` / \`record.deleted\` as records enter/leave the result, ` +
+                `plus a final \`member.removed\` if the caller loses access mid-stream. ` +
+                `v1 requires spaceUri; cross-space watch is deferred.`,
+              parameters: { type: "params", properties: listParams },
+              output: {
+                encoding: "text/event-stream",
+                schema: { type: "object", properties: {} },
+              },
+              errors: [
+                { name: "InvalidRequest" },
+                { name: "AuthRequired" },
+                { name: "Forbidden" },
+                { name: "NotFound" },
+                { name: "NotSupported" },
+              ],
+            },
+          },
+        });
+      }
     }
 
     // --- getRecord ---

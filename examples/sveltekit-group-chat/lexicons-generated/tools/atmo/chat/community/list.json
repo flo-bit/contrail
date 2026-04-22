@@ -1,0 +1,38 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.community.list",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List communities where the actor has any access level in any community-owned space. Defaults to the JWT issuer when `actor` is omitted.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "actor": {
+            "type": "string",
+            "format": "did",
+            "description": "DID to query (defaults to the JWT issuer)."
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "communities"
+          ],
+          "properties": {
+            "communities": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "tools.atmo.chat.community.defs#communityView"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

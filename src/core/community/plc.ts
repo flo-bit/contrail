@@ -48,6 +48,12 @@ export function jwkToDidKey(jwk: JsonWebKey): string {
   return "did:key:z" + base58btcEncode(combined);
 }
 
+/** Order of the P-256 curve (n). */
+const P256_N = BigInt(
+  "0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551"
+);
+const P256_N_HALF = P256_N >> 1n;
+
 async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "jwk",
@@ -56,12 +62,44 @@ async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uin
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    key,
-    bytes as BufferSource
+  const sig = new Uint8Array(
+    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes as BufferSource)
   );
-  return new Uint8Array(sig);
+  // Web Crypto returns IEEE P1363 form: r || s (32 bytes each for P-256).
+  // atproto/PLC (and most modern ECDSA consumers) require low-S — i.e.
+  // s must be in the lower half of the curve order. Flip high-S signatures
+  // by replacing s with n - s. This yields an equivalent valid signature.
+  return normalizeLowS(sig);
+}
+
+function normalizeLowS(sig: Uint8Array): Uint8Array {
+  if (sig.length !== 64) return sig; // not a P-256 P1363 sig — don't touch
+  const r = sig.slice(0, 32);
+  const sBytes = sig.slice(32);
+  const s = bytesToBigInt(sBytes);
+  if (s <= P256_N_HALF) return sig;
+  const sLow = P256_N - s;
+  const sLowBytes = bigIntToBytes(sLow, 32);
+  const out = new Uint8Array(64);
+  out.set(r, 0);
+  out.set(sLowBytes, 32);
+  return out;
+}
+
+function bytesToBigInt(b: Uint8Array): bigint {
+  let v = 0n;
+  for (const byte of b) v = (v << 8n) | BigInt(byte);
+  return v;
+}
+
+function bigIntToBytes(v: bigint, length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  let x = v;
+  for (let i = length - 1; i >= 0; i--) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
 }
 
 // ============================================================================

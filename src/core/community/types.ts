@@ -59,6 +59,32 @@ export interface AccessLevelRow {
   grantedAt: number;
 }
 
+/** A pre-signed grant for a community-owned space. An admin/manager creates
+ *  one; anyone with the raw token can redeem it once to get the specified
+ *  access level. Storage keeps only the SHA-256 of the token. */
+export interface CommunityInviteRow {
+  tokenHash: string;
+  spaceUri: string;
+  accessLevel: AccessLevel;
+  createdBy: string;
+  createdAt: number;
+  expiresAt: number | null;
+  maxUses: number | null;
+  usedCount: number;
+  revokedAt: number | null;
+  note: string | null;
+}
+
+export interface CreateCommunityInviteInput {
+  spaceUri: string;
+  tokenHash: string;
+  accessLevel: AccessLevel;
+  createdBy: string;
+  expiresAt: number | null;
+  maxUses: number | null;
+  note: string | null;
+}
+
 /** Key prefix for reserved community-owned spaces. */
 export const RESERVED_KEYS = ["$admin", "$publishers"] as const;
 export type ReservedKey = (typeof RESERVED_KEYS)[number];

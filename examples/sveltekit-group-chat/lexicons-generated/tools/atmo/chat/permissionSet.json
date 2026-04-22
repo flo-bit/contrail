@@ -1,0 +1,73 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.permissionSet",
+  "defs": {
+    "main": {
+      "type": "permission-set",
+      "title": "tools.atmo.chat",
+      "description": "All XRPC methods exposed by the tools.atmo.chat service.",
+      "permissions": [
+        {
+          "type": "permission",
+          "resource": "rpc",
+          "aud": "*",
+          "lxm": [
+            "tools.atmo.chat.channel.getRecord",
+            "tools.atmo.chat.channel.listRecords",
+            "tools.atmo.chat.community.adopt",
+            "tools.atmo.chat.community.delete",
+            "tools.atmo.chat.community.deleteRecord",
+            "tools.atmo.chat.community.getHealth",
+            "tools.atmo.chat.community.invite.create",
+            "tools.atmo.chat.community.invite.list",
+            "tools.atmo.chat.community.invite.redeem",
+            "tools.atmo.chat.community.invite.revoke",
+            "tools.atmo.chat.community.list",
+            "tools.atmo.chat.community.mint",
+            "tools.atmo.chat.community.putRecord",
+            "tools.atmo.chat.community.reauth",
+            "tools.atmo.chat.community.space.create",
+            "tools.atmo.chat.community.space.delete",
+            "tools.atmo.chat.community.space.deleteRecord",
+            "tools.atmo.chat.community.space.grant",
+            "tools.atmo.chat.community.space.listMembers",
+            "tools.atmo.chat.community.space.putRecord",
+            "tools.atmo.chat.community.space.resync",
+            "tools.atmo.chat.community.space.revoke",
+            "tools.atmo.chat.community.space.setAccessLevel",
+            "tools.atmo.chat.community.whoami",
+            "tools.atmo.chat.getCursor",
+            "tools.atmo.chat.getOverview",
+            "tools.atmo.chat.getProfile",
+            "tools.atmo.chat.message.getRecord",
+            "tools.atmo.chat.message.listRecords",
+            "tools.atmo.chat.notifyOfUpdate",
+            "tools.atmo.chat.realtime.subscribe",
+            "tools.atmo.chat.realtime.ticket",
+            "tools.atmo.chat.server.getRecord",
+            "tools.atmo.chat.server.listRecords",
+            "tools.atmo.chat.space.addMember",
+            "tools.atmo.chat.space.createSpace",
+            "tools.atmo.chat.space.deleteRecord",
+            "tools.atmo.chat.space.getBlob",
+            "tools.atmo.chat.space.getRecord",
+            "tools.atmo.chat.space.getSpace",
+            "tools.atmo.chat.space.invite.create",
+            "tools.atmo.chat.space.invite.list",
+            "tools.atmo.chat.space.invite.redeem",
+            "tools.atmo.chat.space.invite.revoke",
+            "tools.atmo.chat.space.leaveSpace",
+            "tools.atmo.chat.space.listBlobs",
+            "tools.atmo.chat.space.listMembers",
+            "tools.atmo.chat.space.listRecords",
+            "tools.atmo.chat.space.listSpaces",
+            "tools.atmo.chat.space.putRecord",
+            "tools.atmo.chat.space.removeMember",
+            "tools.atmo.chat.space.uploadBlob",
+            "tools.atmo.chat.space.whoami"
+          ]
+        }
+      ]
+    }
+  }
+}

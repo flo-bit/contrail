@@ -1,3 +1,6 @@
+packages:
+  - "examples/sveltekit-group-chat"
+
 ignoredBuiltDependencies:
   - esbuild
   - sharp

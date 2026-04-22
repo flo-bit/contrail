@@ -1,0 +1,58 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.community.space.listMembers",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List members of a community-owned space. By default returns the raw access-level rows; with `flatten=true` returns the flattened DID list (delegated memberships resolved).",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "flatten": {
+            "type": "boolean",
+            "description": "If true, return the flat DID list instead of raw rows."
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "tools.atmo.chat.community.defs#memberRow"
+              },
+              "description": "Present when flatten=false."
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "tools.atmo.chat.community.defs#flatMember"
+              },
+              "description": "Present when flatten=true."
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

@@ -35,6 +35,7 @@ export type {
   SpacesConfig,
   AppPolicy,
   AppPolicyMode,
+  AuthOverrideResult,
   SpaceRow,
   SpaceMemberRow,
   StoredRecord,
@@ -50,6 +51,13 @@ export type {
 export { HostedAdapter } from "./core/spaces/adapter";
 export { nextTid } from "./core/spaces/tid";
 export { generateInviteToken, hashInviteToken } from "./core/spaces/invite-token";
+export {
+  MemoryBlobAdapter,
+  R2BlobAdapter,
+  blobKey,
+} from "./core/spaces/blob-adapter";
+export type { BlobAdapter, BlobUploadMeta, R2BucketLike } from "./core/spaces/blob-adapter";
+export type { SpacesBlobsConfig, BlobMetaRow } from "./core/spaces/types";
 
 // Realtime
 export type {
@@ -72,4 +80,37 @@ export {
   collectionTopic,
   communityTopic,
   spaceTopic,
+  registerRealtimeRoutes,
 } from "./core/realtime";
+export type {
+  DurableObjectId,
+  DurableObjectNamespace,
+  DurableObjectStub,
+  DurableObjectState,
+} from "./core/realtime/durable-object";
+
+// Community
+export {
+  CommunityAdapter,
+  CredentialCipher,
+  registerCommunityRoutes,
+  ACCESS_LEVELS,
+  RESERVED_KEYS,
+  isAccessLevel,
+  isReservedKey,
+  rankOf,
+  resolveEffectiveLevel,
+  flattenEffectiveMembers,
+  wouldCycle,
+  reconcile,
+} from "./core/community";
+export type {
+  CommunityConfig,
+  CommunityMode,
+  CommunityRow,
+  CommunityInviteRow,
+  CreateCommunityInviteInput,
+  AccessLevel,
+  AccessLevelRow,
+  ReservedKey,
+} from "./core/community";

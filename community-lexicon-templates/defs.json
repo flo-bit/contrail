@@ -55,6 +55,22 @@
         "did":     { "type": "string", "format": "did" },
         "addedAt": { "type": "integer" }
       }
+    },
+    "inviteView": {
+      "type": "object",
+      "required": ["tokenHash", "spaceUri", "accessLevel", "createdBy", "createdAt", "usedCount"],
+      "properties": {
+        "tokenHash":   { "type": "string", "description": "SHA-256 of the raw token. Stable id for list/revoke; never grants access on its own." },
+        "spaceUri":    { "type": "string", "format": "at-uri" },
+        "accessLevel": { "type": "ref", "ref": "#accessLevel" },
+        "createdBy":   { "type": "string", "format": "did" },
+        "createdAt":   { "type": "integer" },
+        "expiresAt":   { "type": "integer", "description": "Unix ms. Omitted for no expiry." },
+        "maxUses":     { "type": "integer", "description": "Omitted for unlimited." },
+        "usedCount":   { "type": "integer" },
+        "revokedAt":   { "type": "integer", "description": "Unix ms. Omitted if not revoked." },
+        "note":        { "type": "string" }
+      }
     }
   }
 }

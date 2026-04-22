@@ -2,7 +2,7 @@ import { error } from '@sveltejs/kit';
 import { command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 import { collections } from '../settings';
-import { contrail, ensureInit } from '$lib/contrail';
+import { getContrail } from '$lib/contrail';
 
 // Validate collection format and check against allowed list from settings
 const collectionSchema = v.pipe(
@@ -35,10 +35,9 @@ export const putRecord = command(
 
 		// Immediately index the new/updated record in contrail
 		const { platform } = getRequestEvent();
-		const db = platform?.env?.DB;
-		if (db) {
-			await ensureInit(db);
-			await contrail.notify(response.data.uri, db).catch(() => {});
+		if (platform?.env) {
+			const contrail = await getContrail(platform.env);
+			await contrail.notify(response.data.uri, platform.env.DB).catch(() => {});
 		}
 
 		return response.data;

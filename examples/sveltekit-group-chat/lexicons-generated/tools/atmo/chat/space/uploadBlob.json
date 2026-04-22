@@ -1,0 +1,50 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.space.uploadBlob",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Upload a blob into a space. Returns a standard atproto BlobRef that records in this space can then reference. The record will be rejected at putRecord time if it references a blob that was not uploaded to the same space.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          }
+        }
+      },
+      "input": {
+        "encoding": "*/*"
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "blob"
+          ],
+          "properties": {
+            "blob": {
+              "type": "blob"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "BlobTooLarge"
+        },
+        {
+          "name": "InvalidMimeType"
+        }
+      ]
+    }
+  }
+}

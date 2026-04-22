@@ -37,6 +37,24 @@ export interface SpacesConfig {
   resolver?: DidDocumentResolver;
   /** Blob-upload backend. When omitted, blob XRPCs are not exposed. */
   blobs?: SpacesBlobsConfig;
+  /** Dev-only auth bypass. Runs BEFORE JWT verification. If it returns
+   *  non-null claims, those are used as the authenticated caller and the
+   *  JWT check is skipped. Intended for local development where bsky.social
+   *  rejects `getServiceAuth` for loopback OAuth clients; pair with a
+   *  signed-cookie session check so only your own browser can trigger it.
+   *  Never set in production. */
+  authOverride?: (
+    req: Request
+  ) => Promise<AuthOverrideResult | null> | AuthOverrideResult | null;
+}
+
+/** Claims returned by an `authOverride`. Matches the ServiceAuth shape the
+ *  normal JWT path attaches to the request. */
+export interface AuthOverrideResult {
+  issuer: string;
+  audience?: string;
+  lxm?: string;
+  clientId?: string;
 }
 
 export interface SpaceRow {

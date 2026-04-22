@@ -55,6 +55,11 @@ export function wrapWithPublishing(
     getRecord: inner.getRecord.bind(inner),
     listRecords: inner.listRecords.bind(inner),
     listCollections: inner.listCollections.bind(inner),
+    putBlobMeta: inner.putBlobMeta.bind(inner),
+    getBlobMeta: inner.getBlobMeta.bind(inner),
+    listBlobMeta: inner.listBlobMeta.bind(inner),
+    deleteBlobMeta: inner.deleteBlobMeta.bind(inner),
+    findOrphanBlobs: inner.findOrphanBlobs.bind(inner),
 
     async addMember(spaceUri, did, addedBy) {
       await inner.addMember(spaceUri, did, addedBy);

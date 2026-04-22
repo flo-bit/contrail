@@ -1,5 +1,5 @@
 {
-	"name": "svelte-cloudflare-statusphere",
+	"name": "sveltekit-group-chat",
 	"private": true,
 	"version": "0.1.0",
 	"type": "module",
@@ -59,7 +59,7 @@
 	"license": "MIT",
 	"dependencies": {
 		"@atcute/jetstream": "^1.1.2",
-		"@atmo-dev/contrail": "^0.1.1",
+		"@atmo-dev/contrail": "workspace:*",
 		"@foxui/core": "^0.9.1",
 		"@foxui/social": "^0.8.10",
 		"@foxui/time": "^0.8.5",

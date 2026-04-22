@@ -3,6 +3,7 @@
 import type { OAuthSession } from '@atcute/oauth-node-client';
 import type { Client } from '@atcute/client';
 import type { Did } from '@atcute/lexicons';
+import type { DurableObjectNamespace } from '@atmo-dev/contrail';
 
 declare global {
 	namespace App {
@@ -24,6 +25,12 @@ declare global {
 				PROFILE_CACHE?: KVNamespace;
 				DB: D1Database;
 				CRON_SECRET: string;
+				COMMUNITY_MASTER_KEY: string;
+				REALTIME_TICKET_SECRET: string;
+				SERVICE_DID: string;
+				DEV_AUTH?: string;
+				REALTIME: DurableObjectNamespace;
+				BLOBS?: R2Bucket;
 			};
 		}
 	}

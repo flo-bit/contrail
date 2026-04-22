@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import './lexicon-types'; // register XRPCQueries/XRPCProcedures augmentations
 import { restoreSession } from '$lib/atproto/server/session';
 
 export const handle: Handle = async ({ event, resolve }) => {

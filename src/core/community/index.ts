@@ -5,8 +5,10 @@ export type {
   AccessLevel,
   AccessLevelRow,
   CommunityConfig,
+  CommunityInviteRow,
   CommunityMode,
   CommunityRow,
+  CreateCommunityInviteInput,
   ReservedKey,
 } from "./types";
 export {

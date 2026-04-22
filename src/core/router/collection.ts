@@ -21,6 +21,210 @@ import { checkAccess } from "../spaces/acl";
 import { hashInviteToken } from "../spaces/invite-token";
 import type { SpacesContext } from ".";
 import type { Nsid } from "@atcute/lexicons";
+import type { RealtimeEvent } from "../realtime/types";
+import { sseResponse } from "../realtime/sse";
+import { spaceTopic } from "../realtime/types";
+import type { SubscriberQuerySpec } from "../realtime/durable-object";
+import { DurableObjectPubSub } from "../realtime/durable-object";
+import { TicketSigner, type TicketQuerySpec } from "../realtime/ticket";
+import { parseHydrateParams } from "./hydrate";
+import { getRelationField, getNestedValue, nsidForShortName } from "../types";
+
+/** Shared implementation of the watchRecords snapshot+live loop. Called by
+ *  both transport branches (SSE and Worker-terminated WS). The caller owns
+ *  the actual socket/stream and provides a `send(kind, data)` closure. */
+async function runQueryStream(opts: {
+  send: (kind: string, data: unknown) => void;
+  abort: AbortController;
+  spaceUri: string;
+  callerDid: string | undefined;
+  params: URLSearchParams;
+  db: Database;
+  config: ContrailConfig;
+  collection: string;
+  colNsid: string;
+  pubsub: import("../realtime/types").PubSub;
+  relations: Record<string, import("../types").RelationConfig>;
+  references: Record<string, import("../types").ReferenceConfig>;
+  childCollectionMap: Map<
+    string,
+    { relName: string; matchField: string; matchMode: "uri" | "did" }
+  >;
+}): Promise<void> {
+  const {
+    send,
+    abort,
+    spaceUri,
+    callerDid,
+    params,
+    db,
+    config,
+    collection,
+    colNsid,
+    pubsub,
+    relations,
+    references,
+    childCollectionMap
+  } = opts;
+
+  const hydrateSpec = parseHydrateParams(params, relations, references);
+  const trackHydration = Object.keys(hydrateSpec.relations).length > 0;
+  const parentUris = new Set<string>();
+  const parentDids = new Set<string>();
+  const childToParent = new Map<string, { parentUri: string; relName: string }>();
+
+  const primaryUri = (payload: { authorDid: string; collection: string; rkey: string }) =>
+    `at://${payload.authorDid}/${payload.collection}/${payload.rkey}`;
+
+  const handleChildEvent = (event: RealtimeEvent) => {
+    if (!trackHydration) return;
+    if (event.kind !== "record.created" && event.kind !== "record.deleted") return;
+    const meta = childCollectionMap.get(event.payload.collection);
+    if (!meta) return;
+    if (!(hydrateSpec.relations as Record<string, number>)[meta.relName]) return;
+    if (event.payload.spaceUri !== spaceUri) return;
+
+    if (event.kind === "record.created") {
+      const matched = getNestedValue(event.payload.record, meta.matchField);
+      if (matched == null) return;
+      const parent =
+        meta.matchMode === "did"
+          ? parentDids.has(String(matched))
+            ? `at://${String(matched)}/${colNsid}/_`
+            : null
+          : parentUris.has(String(matched))
+            ? String(matched)
+            : null;
+      if (!parent) return;
+      childToParent.set(event.payload.rkey, {
+        parentUri: parent,
+        relName: meta.relName
+      });
+      send("hydration.added", {
+        parentUri: parent,
+        relation: meta.relName,
+        child: {
+          uri: primaryUri(event.payload),
+          did: event.payload.authorDid,
+          rkey: event.payload.rkey,
+          collection: event.payload.collection,
+          cid: event.payload.cid,
+          record: event.payload.record,
+          _space: spaceUri
+        }
+      });
+    } else {
+      const info = childToParent.get(event.payload.rkey);
+      if (!info) return;
+      childToParent.delete(event.payload.rkey);
+      send("hydration.removed", {
+        parentUri: info.parentUri,
+        relation: info.relName,
+        childRkey: event.payload.rkey,
+        childDid: event.payload.authorDid
+      });
+    }
+  };
+
+  const handleLive = (event: RealtimeEvent) => {
+    if (abort.signal.aborted) return;
+    if (event.kind === "member.removed" && event.payload.did === callerDid) {
+      send("member.removed", event.payload);
+      abort.abort();
+      return;
+    }
+    if (event.kind !== "record.created" && event.kind !== "record.deleted") return;
+    if (event.payload.spaceUri !== spaceUri) return;
+
+    if (event.payload.collection !== colNsid) {
+      handleChildEvent(event);
+      return;
+    }
+
+    const nowUs = event.ts * 1000;
+    const uri = primaryUri(event.payload);
+    if (event.kind === "record.created") {
+      parentUris.add(uri);
+      parentDids.add(event.payload.authorDid);
+      send("record.created", {
+        record: {
+          uri,
+          did: event.payload.authorDid,
+          rkey: event.payload.rkey,
+          collection: event.payload.collection,
+          cid: event.payload.cid,
+          record: event.payload.record,
+          time_us: nowUs,
+          indexed_at: event.ts,
+          _space: spaceUri
+        }
+      });
+    } else {
+      parentUris.delete(uri);
+      send("record.deleted", {
+        uri,
+        did: event.payload.authorDid,
+        rkey: event.payload.rkey
+      });
+    }
+  };
+
+  const topic = spaceTopic(spaceUri);
+  const iter = pubsub.subscribe(topic, abort.signal);
+
+  const buffered: RealtimeEvent[] = [];
+  let snapshotDone = false;
+
+  const pump = (async () => {
+    try {
+      for await (const event of iter) {
+        if (abort.signal.aborted) break;
+        if (!snapshotDone) buffered.push(event);
+        else handleLive(event);
+      }
+    } catch {
+      /* aborted or errored */
+    }
+  })();
+
+  try {
+    send("snapshot.start", { spaceUri, collection: colNsid });
+    const result = await runPipeline(db, config, collection, params, undefined, [spaceUri]);
+    for (const record of result.records) {
+      if (abort.signal.aborted) break;
+      if (typeof record.uri === "string") parentUris.add(record.uri);
+      if (typeof record.did === "string") parentDids.add(record.did);
+      for (const [relName] of Object.entries(hydrateSpec.relations)) {
+        const hydratedGroups = (record as Record<string, unknown>)[relName];
+        if (!hydratedGroups) continue;
+        const flat: Array<{ rkey?: string }> = Array.isArray(hydratedGroups)
+          ? (hydratedGroups as Array<{ rkey?: string }>)
+          : (Object.values(hydratedGroups as Record<string, unknown>).flat() as Array<{
+              rkey?: string;
+            }>);
+        for (const child of flat) {
+          if (child?.rkey) {
+            childToParent.set(child.rkey, {
+              parentUri: record.uri as string,
+              relName
+            });
+          }
+        }
+      }
+      send("snapshot.record", { record });
+    }
+    send("snapshot.end", { cursor: result.cursor });
+    snapshotDone = true;
+    for (const event of buffered) handleLive(event);
+  } catch (err) {
+    send("error", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+    abort.abort();
+  }
+
+  await pump.catch(() => {});
+}
 
 export async function runPipeline(
   db: Database,
@@ -194,9 +398,11 @@ export function registerCollectionRoutes(
   app: Hono,
   db: Database,
   config: ContrailConfig,
-  spacesCtx?: SpacesContext | null
+  spacesCtx?: SpacesContext | null,
+  options: { pubsub?: import("../realtime/types").PubSub | null } = {}
 ): void {
   const ns = config.namespace;
+  const pubsub = options.pubsub ?? null;
 
   /** When a per-collection endpoint receives `?spaceUri=...`, verify the JWT,
    *  resolve membership, run the space ACL, and return the caller DID if allowed.
@@ -242,7 +448,9 @@ export function registerCollectionRoutes(
     }
 
     const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
-    const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
+    const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid, {
+      authOverride: config.spaces?.authOverride,
+    });
     if (!auth) {
       return c.json(
         { error: "AuthRequired", message: "spaceUri requires a valid service-auth JWT or read-grant invite token" },
@@ -277,33 +485,45 @@ export function registerCollectionRoutes(
         if (spaceUri) {
           const gated = await gateSpaceAccess(c, spaceUri, "read");
           if (gated instanceof Response) return gated;
-          // ACL passed — dispatch directly to the spaces adapter.
-          const nsid = colConfig.collection;
-          const list = await spacesCtx!.adapter.listRecords(spaceUri, nsid, {
-            byUser: params.get("byUser") ?? undefined,
-            cursor: params.get("cursor") ?? undefined,
-            limit: params.get("limit") ? Number(params.get("limit")) : undefined,
-          });
-          return c.json(list);
+          // Route through runPipeline with a single-element space list so the
+          // full filter / sort / hydrate / reference surface works on per-space
+          // queries too, not just on the cross-space union path.
+          try {
+            const result = await runPipeline(db, config, collection, params, undefined, [spaceUri]);
+            return c.json(result);
+          } catch (e: any) {
+            if (e.message === "Could not resolve actor") {
+              return c.json({ error: e.message }, 400);
+            }
+            throw e;
+          }
         }
 
-        // Union path: when Authorization is present, verify the JWT and fold
-        // in records from spaces the caller is a member of.
+        // Union path: when Authorization is present (or the dev-mode override
+        // can supply claims without one), verify and fold in records from
+        // spaces the caller is a member of.
         let spaceUris: string[] | undefined;
-        if (spacesCtx && c.req.header("Authorization")) {
+        const hasAuthHeader = !!c.req.header("Authorization");
+        const hasOverride = !!config.spaces?.authOverride;
+        if (spacesCtx && (hasAuthHeader || hasOverride)) {
           const nsid = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
-          const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid);
-          if (!auth) {
+          const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsid, {
+            authOverride: config.spaces?.authOverride,
+          });
+          if (auth) {
+            const { spaces } = await spacesCtx.adapter.listSpaces({
+              memberDid: auth.issuer,
+              limit: 200,
+            });
+            spaceUris = spaces.map((s) => s.uri);
+          } else if (hasAuthHeader) {
+            // Had an auth header but it was invalid — reject rather than
+            // silently downgrading to public results.
             return c.json(
               { error: "AuthRequired", message: "invalid service-auth JWT" },
               401
             );
           }
-          const { spaces } = await spacesCtx.adapter.listSpaces({
-            memberDid: auth.issuer,
-            limit: 200,
-          });
-          spaceUris = spaces.map((s) => s.uri);
         }
 
         try {
@@ -316,6 +536,309 @@ export function registerCollectionRoutes(
           throw e;
         }
       });
+
+      // Streaming variant — same query shape, SSE'd forever. Opted in via the
+      // presence of the realtime module; no explicit method config needed.
+      if (pubsub && spacesCtx) {
+        const colNsid = colConfig.collection;
+        const relations = colConfig.relations ?? {};
+        const references = colConfig.references ?? {};
+        // Map child-NSID → { relName, matchField } so we can route child
+        // events to hydration deltas without re-parsing config per event.
+        const childCollectionMap = new Map<
+          string,
+          { relName: string; matchField: string; matchMode: "uri" | "did" }
+        >();
+        for (const [relName, rel] of Object.entries(relations)) {
+          const childNsid = nsidForShortName(config, rel.collection) ?? rel.collection;
+          childCollectionMap.set(childNsid, {
+            relName,
+            matchField: getRelationField(rel),
+            matchMode: rel.match ?? "uri"
+          });
+        }
+
+        // TicketSigner for watch-scoped tickets. Minted on `mode=ws` handshake
+        // so the subsequent WS upgrade can auth with just `?ticket=...` (no
+        // cookie or JWT needed — enables cross-origin + stateless clients).
+        const ticketSigner = config.realtime?.ticketSecret
+          ? new TicketSigner(config.realtime.ticketSecret)
+          : null;
+        const ticketTtl = config.realtime?.ticketTtlMs ?? 120_000;
+
+        app.get(`/xrpc/${ns}.${collection}.watchRecords`, async (c) => {
+          const params = new URL(c.req.url).searchParams;
+          const spaceUri = params.get("spaceUri");
+          if (!spaceUri) {
+            return c.json(
+              { error: "InvalidRequest", message: "spaceUri required (cross-space watch is deferred)" },
+              400
+            );
+          }
+
+          // Try ticket-auth first: if a valid watch ticket scoped to this
+          // spaceUri/collection is present, use it and skip the JWT gate.
+          let callerDid: string | undefined;
+          let querySpec: SubscriberQuerySpec;
+          let ticketSpec: SubscriberQuerySpec | null = null;
+
+          const providedTicket = params.get("ticket");
+          if (providedTicket && ticketSigner) {
+            const payload = await ticketSigner.verify(providedTicket);
+            if (payload?.querySpec) {
+              const ts = payload.querySpec;
+              if (
+                ts.collection === colNsid &&
+                ts.spaceUri === spaceUri &&
+                payload.topics.includes(spaceTopic(spaceUri))
+              ) {
+                callerDid = payload.did;
+                ticketSpec = {
+                  collection: ts.collection,
+                  spaceUri: ts.spaceUri,
+                  ...(ts.hydrate ? { hydrate: ts.hydrate } : {})
+                };
+              }
+            }
+          }
+
+          if (!ticketSpec) {
+            const gated = await gateSpaceAccess(c, spaceUri, "read");
+            if (gated instanceof Response) return gated;
+            callerDid = "callerDid" in gated ? gated.callerDid : undefined;
+          }
+
+          // Build the query spec the DO will filter events against. Prefer
+          // the ticket's spec when present (guarantees parity with what the
+          // client asked for at handshake time, no param drift).
+          const hydrateSpec = parseHydrateParams(params, relations, references);
+          querySpec = ticketSpec ?? {
+            collection: colNsid,
+            spaceUri,
+            ...(Object.keys(hydrateSpec.relations).length > 0
+              ? {
+                  hydrate: Object.fromEntries(
+                    Object.entries(hydrateSpec.relations).map(([relName]) => {
+                      const rel = relations[relName]!;
+                      const childNsid =
+                        nsidForShortName(config, rel.collection) ?? rel.collection;
+                      return [
+                        relName,
+                        { childCollection: childNsid, matchField: getRelationField(rel) }
+                      ];
+                    })
+                  )
+                }
+              : {})
+          };
+
+          // Upgrade-to-WS path — forward directly to the DO with the spec,
+          // so the DO terminates the socket and hibernates when idle.
+          // Requires snapshot to be fetched separately (see `mode=ws` JSON
+          // handshake below) or accepted as lossy-on-connect for a plain WS
+          // upgrade.
+          const isUpgrade = c.req.header("Upgrade")?.toLowerCase() === "websocket";
+          const isWsMode = params.get("mode") === "ws";
+
+          if (isWsMode && !isUpgrade) {
+            // Handshake: return snapshot + a ticket the client uses to
+            // upgrade. Ticket carries the (did, topic, querySpec) signed
+            // so the WS-upgrade route skips any other auth.
+            try {
+              // Capture a server-side timestamp BEFORE running the snapshot.
+              // Any event published after this moment will have ts > sinceTs
+              // and be replayed by the DO on WS connect — so the client
+              // never misses events during the snapshot→WS gap.
+              const sinceTs = Date.now();
+              const result = await runPipeline(
+                db,
+                config,
+                collection,
+                params,
+                undefined,
+                [spaceUri]
+              );
+              let ticket: string | undefined;
+              if (ticketSigner && callerDid) {
+                ticket = await ticketSigner.sign({
+                  topics: [spaceTopic(spaceUri)],
+                  did: callerDid,
+                  ttlMs: ticketTtl,
+                  querySpec: querySpec as TicketQuerySpec
+                });
+              }
+              const wsUrl = (() => {
+                const u = new URL(c.req.url);
+                u.searchParams.delete("mode");
+                if (ticket) u.searchParams.set("ticket", ticket);
+                u.searchParams.set("sinceTs", String(sinceTs));
+                return u.pathname + u.search;
+              })();
+              return c.json({
+                transport: "ws",
+                snapshot: { records: result.records, cursor: result.cursor },
+                querySpec,
+                ticket,
+                ticketTtlMs: ticketTtl,
+                sinceTs,
+                wsUrl
+              });
+            } catch (err) {
+              return c.json(
+                { error: "SnapshotFailed", message: err instanceof Error ? err.message : String(err) },
+                500
+              );
+            }
+          }
+
+          if (isUpgrade && pubsub instanceof DurableObjectPubSub) {
+            // Forward the WS upgrade to the DO. The DO owns the socket from
+            // here and hibernates when idle. Replays any events buffered
+            // since the handshake `sinceTs` so the client closes the gap.
+            const sinceTsParam = params.get("sinceTs");
+            const sinceTs = sinceTsParam ? Number(sinceTsParam) : 0;
+            return pubsub.forwardSubscribe(spaceTopic(spaceUri), c.req.raw, {
+              did: callerDid,
+              querySpec,
+              sinceTs: Number.isFinite(sinceTs) ? sinceTs : 0
+            });
+          }
+
+          const ac = new AbortController();
+          const reqSignal = c.req.raw.signal;
+          if (reqSignal) {
+            if (reqSignal.aborted) ac.abort();
+            else reqSignal.addEventListener("abort", () => ac.abort(), { once: true });
+          }
+
+          // Worker-terminated WebSocket — used when pubsub isn't DO-backed
+          // (dev InMemoryPubSub). Same query-filter loop as SSE; different
+          // transport. Runs in the same isolate so no cost benefit, but
+          // matches the prod protocol.
+          if (isUpgrade) {
+            const WsPair = (globalThis as unknown as { WebSocketPair?: any }).WebSocketPair;
+            if (!WsPair) {
+              return c.json(
+                { error: "NotSupported", reason: "websockets-require-workers-runtime" },
+                426
+              );
+            }
+            const pair = new WsPair();
+            const clientWs = pair[0] as WebSocket;
+            const serverWs = pair[1] as WebSocket & { accept?: () => void };
+            serverWs.accept?.();
+
+            const sendWs = (kind: string, data: unknown) => {
+              try {
+                serverWs.send(JSON.stringify({ kind, data }));
+              } catch {
+                ac.abort();
+              }
+            };
+            serverWs.addEventListener?.("close", () => ac.abort());
+            serverWs.addEventListener?.("error", () => ac.abort());
+
+            void runQueryStream({
+              send: sendWs,
+              abort: ac,
+              spaceUri,
+              callerDid,
+              params,
+              db,
+              config,
+              collection,
+              colNsid,
+              pubsub,
+              relations,
+              references,
+              childCollectionMap
+            }).finally(() => {
+              try {
+                serverWs.close();
+              } catch {
+                /* ignore */
+              }
+            });
+
+            return new Response(null, {
+              status: 101,
+              webSocket: clientWs
+            } as ResponseInit & { webSocket: unknown });
+          }
+
+          // SSE fallback.
+          const encoder = new TextEncoder();
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              let closed = false;
+              const close = () => {
+                if (closed) return;
+                closed = true;
+                try {
+                  controller.close();
+                } catch {
+                  /* already closed */
+                }
+              };
+              ac.signal.addEventListener("abort", close, { once: true });
+
+              const send = (kind: string, data: unknown) => {
+                if (closed) return;
+                try {
+                  controller.enqueue(
+                    encoder.encode(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`)
+                  );
+                } catch {
+                  close();
+                }
+              };
+
+              const keepalive = setInterval(() => {
+                if (closed) return;
+                try {
+                  controller.enqueue(encoder.encode(`: keepalive\n\n`));
+                } catch {
+                  close();
+                }
+              }, 15_000);
+              ac.signal.addEventListener(
+                "abort",
+                () => clearInterval(keepalive),
+                { once: true }
+              );
+
+              void runQueryStream({
+                send,
+                abort: ac,
+                spaceUri,
+                callerDid,
+                params,
+                db,
+                config,
+                collection,
+                colNsid,
+                pubsub,
+                relations,
+                references,
+                childCollectionMap
+              }).finally(() => close());
+            },
+            cancel() {
+              ac.abort();
+            },
+          });
+
+          return new Response(stream, {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache, no-transform",
+              connection: "keep-alive",
+              "x-accel-buffering": "no",
+            },
+          });
+        });
+      }
     }
 
     if (!methods.includes("getRecord")) {

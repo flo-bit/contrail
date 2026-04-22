@@ -1,0 +1,19 @@
+{
+	"lexicon": 1,
+	"id": "tools.atmo.chat.message",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["text", "createdAt"],
+				"properties": {
+					"text": { "type": "string", "maxLength": 4000 },
+					"createdAt": { "type": "string", "format": "datetime" },
+					"replyTo": { "type": "string", "description": "rkey of the parent message in the same channel" }
+				}
+			}
+		}
+	}
+}

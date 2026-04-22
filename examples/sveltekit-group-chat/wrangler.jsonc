@@ -1,9 +1,11 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "svelte-atproto-oauth-cloudflare-workers",
+	"name": "sveltekit-group-chat",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"compatibility_date": "2025-12-25",
-	"compatibility_flags": ["nodejs_compat_v2"],
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
@@ -12,26 +14,51 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://statusphere.atmo.tools"
+		"OAUTH_PUBLIC_URL": "https://chat.atmo.tools",
+		"SERVICE_DID": "did:web:chat.atmo.tools"
 	},
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "statusphere",
-			"database_id": "REPLACE_WITH_D1_DATABASE_ID"
+			"database_name": "group-chat",
+			"database_id": "576a1971-7b78-4bc2-95f0-f83b360d3279"
 		}
 	],
 	"triggers": {
-		"crons": ["*/1 * * * *"]
+		"crons": [
+			"*/1 * * * *"
+		]
 	},
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_SESSIONS",
-			"id": "c44fc97274b84f5a97a8399b1977ad0d"
+			"id": "852448049fd74f0bb61448f0e1dd2d77"
 		},
 		{
 			"binding": "OAUTH_STATES",
-			"id": "115d8089d9ca4592a3a5e4a7d9146610"
+			"id": "3ef76633a67d46f3aa3a7b619e0730de"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "REALTIME",
+				"class_name": "RealtimePubSubDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"RealtimePubSubDO"
+			]
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BLOBS",
+			"bucket_name": "group-chat-blobs"
 		}
 	]
 }

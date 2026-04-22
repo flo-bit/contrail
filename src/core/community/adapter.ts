@@ -1,5 +1,12 @@
 import type { Database } from "../types";
-import type { AccessLevel, AccessLevelRow, CommunityMode, CommunityRow } from "./types";
+import type {
+  AccessLevel,
+  AccessLevelRow,
+  CommunityInviteRow,
+  CommunityMode,
+  CommunityRow,
+  CreateCommunityInviteInput,
+} from "./types";
 
 function toNum(v: unknown): number {
   return typeof v === "string" ? Number(v) : (v as number);
@@ -286,4 +293,110 @@ export class CommunityAdapter {
       .bind(spaceUri)
       .run();
   }
+
+  // ---- Invites -----------------------------------------------------------
+
+  async createInvite(input: CreateCommunityInviteInput): Promise<CommunityInviteRow> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO community_invites
+           (token_hash, space_uri, access_level, created_by, created_at, expires_at, max_uses, used_count, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
+      )
+      .bind(
+        input.tokenHash,
+        input.spaceUri,
+        input.accessLevel,
+        input.createdBy,
+        now,
+        input.expiresAt,
+        input.maxUses,
+        input.note
+      )
+      .run();
+    return {
+      tokenHash: input.tokenHash,
+      spaceUri: input.spaceUri,
+      accessLevel: input.accessLevel,
+      createdBy: input.createdBy,
+      createdAt: now,
+      expiresAt: input.expiresAt,
+      maxUses: input.maxUses,
+      usedCount: 0,
+      revokedAt: null,
+      note: input.note,
+    };
+  }
+
+  async getInvite(tokenHash: string): Promise<CommunityInviteRow | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM community_invites WHERE token_hash = ?`)
+      .bind(tokenHash)
+      .first<any>();
+    return row ? mapCommunityInviteRow(row) : null;
+  }
+
+  async listInvites(
+    spaceUri: string,
+    options: { includeRevoked?: boolean } = {}
+  ): Promise<CommunityInviteRow[]> {
+    const sql = options.includeRevoked
+      ? `SELECT * FROM community_invites WHERE space_uri = ? ORDER BY created_at DESC`
+      : `SELECT * FROM community_invites WHERE space_uri = ? AND revoked_at IS NULL ORDER BY created_at DESC`;
+    const { results } = await this.db.prepare(sql).bind(spaceUri).all<any>();
+    return results.map(mapCommunityInviteRow);
+  }
+
+  async revokeInvite(tokenHash: string): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        `UPDATE community_invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`
+      )
+      .bind(Date.now(), tokenHash)
+      .run();
+    const changes = (res as any)?.changes ?? (res as any)?.meta?.changes ?? 0;
+    return Number(changes) > 0;
+  }
+
+  /** Atomically consume one "use" from an invite. Returns the updated row if
+   *  the invite is currently usable, null otherwise (expired, revoked,
+   *  exhausted, or missing). The router calls this, then issues a grant if
+   *  the return is non-null. */
+  async redeemInvite(tokenHash: string, now: number): Promise<CommunityInviteRow | null> {
+    const res = await this.db
+      .prepare(
+        `UPDATE community_invites
+         SET used_count = used_count + 1
+         WHERE token_hash = ?
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+           AND (max_uses IS NULL OR used_count < max_uses)`
+      )
+      .bind(tokenHash, now)
+      .run();
+    const changes = (res as any)?.changes ?? (res as any)?.meta?.changes ?? 0;
+    if (Number(changes) === 0) return null;
+
+    const row = await this.db
+      .prepare(`SELECT * FROM community_invites WHERE token_hash = ?`)
+      .bind(tokenHash)
+      .first<any>();
+    return row ? mapCommunityInviteRow(row) : null;
+  }
+}
+
+function mapCommunityInviteRow(row: any): CommunityInviteRow {
+  return {
+    tokenHash: row.token_hash,
+    spaceUri: row.space_uri,
+    accessLevel: row.access_level as AccessLevel,
+    createdBy: row.created_by,
+    createdAt: toNum(row.created_at),
+    expiresAt: row.expires_at == null ? null : toNum(row.expires_at),
+    maxUses: row.max_uses == null ? null : Number(row.max_uses),
+    usedCount: Number(row.used_count ?? 0),
+    revokedAt: row.revoked_at == null ? null : toNum(row.revoked_at),
+    note: row.note ?? null,
+  };
 }

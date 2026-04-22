@@ -43,17 +43,43 @@ export interface ServiceAuthOptions {
 
 /** Hono middleware that verifies the Authorization: Bearer <JWT> as an atproto
  *  service-auth token. On success, attaches the decoded claims to c.var.serviceAuth.
- *  Expected Nsid method is taken from the route pattern (last segment after /xrpc/). */
+ *  Expected Nsid method is taken from the route pattern (last segment after /xrpc/).
+ *
+ *  If `authOverride` is provided and returns non-null claims, the JWT check is
+ *  skipped and the override's claims are attached instead — used to paper over
+ *  bsky.social's loopback-client restriction on `getServiceAuth` during dev.
+ *  The override must be gated in the caller (e.g. an env flag) since it
+ *  bypasses cryptographic verification. */
 export function createServiceAuthMiddleware(
-  verifier: ServiceJwtVerifier
+  verifier: ServiceJwtVerifier,
+  options: {
+    authOverride?: (
+      req: Request
+    ) => Promise<import("./types").AuthOverrideResult | null> | import("./types").AuthOverrideResult | null;
+  } = {}
 ): MiddlewareHandler {
   return async (c, next) => {
+    const lxm = extractLxmFromPath(c);
+
+    if (options.authOverride) {
+      const override = await options.authOverride(c.req.raw);
+      if (override) {
+        c.set("serviceAuth", {
+          issuer: override.issuer,
+          audience: override.audience ?? "",
+          lxm: override.lxm ?? lxm ?? undefined,
+          clientId: override.clientId,
+        } satisfies ServiceAuth);
+        await next();
+        return;
+      }
+    }
+
     const header = c.req.header("Authorization");
     if (!header || !header.startsWith("Bearer ")) {
       return c.json({ error: "AuthRequired", message: "Missing bearer token" }, 401);
     }
     const token = header.slice(7).trim();
-    const lxm = extractLxmFromPath(c);
 
     const result = await verifier.verify(token, { lxm });
     if (!result.ok) {
@@ -85,12 +111,32 @@ export function requireServiceAuth(c: Context): ServiceAuth {
 
 /** Verify a request's Authorization: Bearer token out-of-band (e.g. from a
  *  route handler that doesn't always require auth). Returns the claims on
- *  success, or null if missing/invalid. */
+ *  success, or null if missing/invalid.
+ *
+ *  If `authOverride` is provided and returns claims, the JWT path is skipped
+ *  and those claims are returned — same bypass as the middleware-level auth. */
 export async function verifyServiceAuthRequest(
   verifier: ServiceJwtVerifier,
   request: Request,
-  lxm?: Nsid | null
+  lxm?: Nsid | null,
+  options: {
+    authOverride?: (
+      req: Request
+    ) => Promise<import("./types").AuthOverrideResult | null> | import("./types").AuthOverrideResult | null;
+  } = {}
 ): Promise<ServiceAuth | null> {
+  if (options.authOverride) {
+    const override = await options.authOverride(request);
+    if (override) {
+      return {
+        issuer: override.issuer,
+        audience: override.audience ?? "",
+        lxm: override.lxm ?? lxm ?? undefined,
+        clientId: override.clientId,
+      };
+    }
+  }
+
   const header = request.headers.get("Authorization");
   if (!header || !header.startsWith("Bearer ")) return null;
   const token = header.slice(7).trim();

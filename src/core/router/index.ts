@@ -108,17 +108,19 @@ export function createApp(
   }
 
   registerAdminRoutes(app, db, config);
-  registerCollectionRoutes(app, db, config, spacesCtx);
+  registerCollectionRoutes(app, db, config, spacesCtx, { pubsub: realtimePubsub });
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
   registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx);
+
+  const authOverride = config.spaces?.authOverride;
 
   if (config.community && spacesCtx) {
     // Community routes reuse the spaces service-auth middleware (same JWT verifier).
     const authMiddleware =
       options.community?.authMiddleware ??
       options.spaces?.authMiddleware ??
-      createServiceAuthMiddleware(spacesCtx.verifier);
+      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
     registerCommunityRoutes(
       app,
       spacesDb,
@@ -132,7 +134,7 @@ export function createApp(
     const authMiddleware =
       options.realtime?.authMiddleware ??
       options.spaces?.authMiddleware ??
-      createServiceAuthMiddleware(spacesCtx.verifier);
+      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
     const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
     registerRealtimeRoutes(app, config, spacesCtx.adapter, communityAdapter, {
       authMiddleware,

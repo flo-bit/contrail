@@ -1,42 +1,70 @@
-import { getServerClient } from '$lib/contrail';
-import { extractProfile, type Profile } from '$lib/contrail/client';
 import type { PageServerLoad } from './$types';
+import type { Client } from '@atcute/client';
+import { authedFetch } from '$lib/rooms/server';
+import { parseSpaceUri } from '$lib/rooms/uri';
 
-export const load: PageServerLoad = async ({ platform }) => {
+interface ServerEntry {
+	communityDid: string;
+	name: string;
+	description?: string;
+	iconUrl?: string;
+	createdAt: string;
+	membersUri: string;
+}
+
+export const load: PageServerLoad = async ({ locals, platform }) => {
+	if (!locals.did || !locals.client) {
+		return { loggedIn: false, servers: [] as ServerEntry[] };
+	}
+
+	const ctx = {
+		env: platform!.env,
+		client: locals.client as Client,
+		did: locals.did as string
+	};
+
 	try {
-		const client = getServerClient(platform!.env.DB);
-
-		const res = await client.get('statusphere.app.status.listRecords', {
-			params: { limit: 50, profiles: true, sort: 'createdAt', order: 'desc' }
-		});
-
-		if (!res.ok) return { statuses: [], profiles: {} };
-
-		const records = res.data.records;
-		const statuses = records
-			.map((r) => {
-				const record = r.record as { status: string; createdAt: string };
-				return {
-					did: r.did,
-					rkey: r.rkey,
-					status: record.status,
-					createdAt: record.createdAt
+		const data = await authedFetch<{
+			records: Array<{
+				did: string;
+				rkey: string;
+				record: {
+					communityDid?: string;
+					name?: string;
+					description?: string;
+					createdAt?: string;
+					icon?: { ref?: { $link?: string } };
 				};
-			})
-			.filter((s) => !isNaN(new Date(s.createdAt).getTime()));
+				space?: string;
+			}>;
+		}>(ctx, 'tools.atmo.chat.server.listRecords', { query: { limit: '50' } });
 
-		const profiles: Record<string, Profile> = {};
-		if (res.data.profiles) {
-			for (const p of res.data.profiles) {
-				profiles[p.did] = extractProfile(p);
-			}
+		const servers: ServerEntry[] = [];
+		for (const r of data.records) {
+			if (!r.space) continue;
+			const parsed = parseSpaceUri(r.space);
+			if (!parsed) continue;
+			if (r.did !== parsed.communityDid) continue;
+			if (parsed.key !== 'members') continue;
+			if (r.rkey !== 'self') continue;
+			const rec = r.record;
+			if (!rec?.communityDid || !rec.name || !rec.createdAt) continue;
+			const iconCid = rec.icon?.ref?.$link;
+			servers.push({
+				communityDid: rec.communityDid,
+				name: rec.name,
+				description: rec.description,
+				iconUrl: iconCid
+					? `/api/blob?spaceUri=${encodeURIComponent(r.space)}&cid=${encodeURIComponent(iconCid)}`
+					: undefined,
+				createdAt: rec.createdAt,
+				membersUri: r.space
+			});
 		}
+		servers.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-		return { statuses, profiles };
+		return { loggedIn: true, servers };
 	} catch {
-		return {
-			statuses: [] as { did: string; rkey: string; status: string; createdAt: string }[],
-			profiles: {} as Record<string, Profile>
-		};
+		return { loggedIn: true, servers: [] as ServerEntry[] };
 	}
 };

@@ -67,3 +67,40 @@ export function setSignedCookie(
 	const signed = `${value}${SEPARATOR}${sig}`;
 	cookies.set(name, signed, options);
 }
+
+/** Verify + read a signed cookie from a raw Request's Cookie header.
+ *  Used from places that don't have a SvelteKit `Cookies` instance
+ *  (e.g. contrail auth override). */
+export function getSignedCookieFromRequest(req: Request, name: string): string | null {
+	const header = req.headers.get('cookie');
+	if (!header) return null;
+	const pairs = header.split(/;\s*/);
+	let raw: string | null = null;
+	for (const pair of pairs) {
+		const eq = pair.indexOf('=');
+		if (eq === -1) continue;
+		const key = pair.slice(0, eq);
+		if (key === name) {
+			raw = decodeURIComponent(pair.slice(eq + 1));
+			break;
+		}
+	}
+	if (!raw) return null;
+
+	const idx = raw.lastIndexOf(SEPARATOR);
+	if (idx === -1) return null;
+	const value = raw.slice(0, idx);
+	const sig = raw.slice(idx + 1);
+
+	let expected: Uint8Array;
+	let got: Uint8Array;
+	try {
+		expected = hmacSha256(value);
+		got = fromBase64Url(sig);
+	} catch {
+		return null;
+	}
+
+	if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
+	return value;
+}

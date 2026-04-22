@@ -1,0 +1,35 @@
+{
+	"lexicon": 1,
+	"id": "tools.atmo.community.invite.list",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "List invites for a community-owned space. Caller must have manager+ on the space. Raw tokens are never returned — tokenHash is the stable id.",
+			"parameters": {
+				"type": "params",
+				"required": ["spaceUri"],
+				"properties": {
+					"spaceUri":       { "type": "string", "format": "at-uri" },
+					"includeRevoked": { "type": "boolean", "default": false }
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["invites"],
+					"properties": {
+						"invites": {
+							"type": "array",
+							"items": { "type": "ref", "ref": "tools.atmo.community.defs#inviteView" }
+						}
+					}
+				}
+			},
+			"errors": [
+				{ "name": "Forbidden" },
+				{ "name": "NotFound" }
+			]
+		}
+	}
+}
