@@ -14,7 +14,7 @@ import {
   computeDidPlc,
   submitGenesisOp,
 } from "./plc";
-import { resolveEffectiveLevel, wouldCycle } from "./acl";
+import { resolveEffectiveLevel, resolveReachableSpaces, wouldCycle } from "./acl";
 import { reconcile } from "./reconcile";
 import type { AccessLevel } from "./types";
 import {
@@ -239,7 +239,10 @@ export function registerCommunityRoutes(
   app.get(`/xrpc/${NS}.list`, auth, async (c) => {
     const sa = getAuth(c);
     const actor = c.req.query("actor") ?? sa.issuer;
-    const rows = await community.listCommunitiesForActor(actor);
+    // Walk the delegation graph so communities reached via group memberships
+    // (not just direct DID grants) are included.
+    const reachable = await resolveReachableSpaces(community, actor);
+    const rows = await community.listCommunitiesOwningSpaces([...reachable]);
     return c.json({
       communities: rows.map((r) => ({
         did: r.did,
@@ -363,6 +366,12 @@ export function registerCommunityRoutes(
       return c.json({ error: "Forbidden", reason: "owner-or-admin-required" }, 403);
     }
 
+    // Before clearing this space's ACL rows, capture any spaces that delegate
+    // to it so we can re-reconcile their materialized membership after the
+    // delete — any DIDs that reached those parents only through this space
+    // must be removed from their spaces_members.
+    const delegatingParents = await community.listSpacesDelegatingTo(body.spaceUri);
+
     await spaces.deleteSpace(body.spaceUri);
     await community.deleteAllAccessForSpace(body.spaceUri);
     // Drop the materialized membership too.
@@ -374,6 +383,9 @@ export function registerCommunityRoutes(
         members.map((m) => m.did),
         sa.issuer
       );
+    }
+    for (const parent of delegatingParents) {
+      await reconcile(community, spaces, parent, sa.issuer);
     }
     return c.json({ ok: true });
   });
@@ -428,6 +440,14 @@ export function registerCommunityRoutes(
     // Cannot grant higher than own level.
     if (rankOf(body.accessLevel) > rankOf(callerLevel)) {
       return c.json({ error: "Forbidden", reason: "cannot-grant-higher-than-self" }, 403);
+    }
+    // grant() upserts; block downgrading a subject who already outranks the caller.
+    const existingGrant = await community.getAccessRow(
+      body.spaceUri,
+      (subjectDid ?? subjectSpaceUri)!
+    );
+    if (existingGrant && rankOf(existingGrant.accessLevel) > rankOf(callerLevel)) {
+      return c.json({ error: "Forbidden", reason: "cannot-modify-higher-than-self" }, 403);
     }
 
     // Cycle check when delegating to another space.

@@ -10,30 +10,11 @@ function mapCommunityRow(row: any): CommunityRow {
     did: row.did,
     mode: row.mode as CommunityMode,
     pdsEndpoint: row.pds_endpoint ?? null,
-    appPasswordEncrypted: row.app_password_encrypted
-      ? toBytes(row.app_password_encrypted)
-      : null,
     identifier: row.identifier ?? null,
-    signingKeyEncrypted: row.signing_key_encrypted
-      ? toBytes(row.signing_key_encrypted)
-      : null,
-    rotationKeyEncrypted: row.rotation_key_encrypted
-      ? toBytes(row.rotation_key_encrypted)
-      : null,
     createdBy: row.created_by,
     createdAt: toNum(row.created_at),
     deletedAt: row.deleted_at == null ? null : toNum(row.deleted_at),
   };
-}
-
-function toBytes(v: unknown): Uint8Array {
-  // Encrypted fields are stored base64 as TEXT; passthrough for other code paths.
-  if (v instanceof Uint8Array) return v;
-  if (typeof v === "string") {
-    // Treat as base64 for storage. Caller's cipher handles further decoding.
-    return new TextEncoder().encode(v);
-  }
-  throw new Error("unexpected blob column type");
 }
 
 function mapAccessRow(row: any): AccessLevelRow {
@@ -96,10 +77,7 @@ export class CommunityAdapter {
       did: input.did,
       mode: "adopt",
       pdsEndpoint: input.pdsEndpoint,
-      appPasswordEncrypted: new TextEncoder().encode(input.appPasswordEncrypted),
       identifier: input.identifier,
-      signingKeyEncrypted: null,
-      rotationKeyEncrypted: null,
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
@@ -125,10 +103,7 @@ export class CommunityAdapter {
       did: input.did,
       mode: "mint",
       pdsEndpoint: null,
-      appPasswordEncrypted: null,
       identifier: null,
-      signingKeyEncrypted: new TextEncoder().encode(input.signingKeyEncrypted),
-      rotationKeyEncrypted: new TextEncoder().encode(input.rotationKeyEncrypted),
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
@@ -187,19 +162,31 @@ export class CommunityAdapter {
       .run();
   }
 
-  async listCommunitiesForActor(actor: string): Promise<CommunityRow[]> {
-    // Communities where the actor has any access level in any community-owned space.
+  /** Direct access-level rows held by the given DID subject. Used as the seed
+   *  set for reverse-graph traversal. */
+  async listAccessRowsForSubject(subjectDid: string): Promise<AccessLevelRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM community_access_levels
+         WHERE subject_kind = 'did' AND subject = ?`
+      )
+      .bind(subjectDid)
+      .all<any>();
+    return results.map(mapAccessRow);
+  }
+
+  /** Communities owning any of the given space URIs. */
+  async listCommunitiesOwningSpaces(spaceUris: string[]): Promise<CommunityRow[]> {
+    if (spaceUris.length === 0) return [];
+    const placeholders = spaceUris.map(() => "?").join(",");
     const { results } = await this.db
       .prepare(
         `SELECT DISTINCT c.* FROM communities c
          JOIN spaces s ON s.owner_did = c.did AND s.deleted_at IS NULL
-         JOIN community_access_levels cal
-           ON cal.space_uri = s.uri
-           AND cal.subject_kind = 'did' AND cal.subject = ?
-         WHERE c.deleted_at IS NULL
+         WHERE c.deleted_at IS NULL AND s.uri IN (${placeholders})
          ORDER BY c.created_at DESC`
       )
-      .bind(actor)
+      .bind(...spaceUris)
       .all<any>();
     return results.map(mapCommunityRow);
   }

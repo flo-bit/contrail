@@ -231,6 +231,19 @@ describe("community e2e — stage 1", () => {
     expect(((await res.json()) as any).reason).toBe("cannot-grant-higher-than-self");
   });
 
+  it("grant cannot downgrade a subject who outranks the caller", async () => {
+    const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
+    // Bob is currently manager (promoted earlier in this describe block).
+    // Alice is owner of the space. Bob tries to downgrade Alice to member via grant.
+    const res = await call(app, "POST", "/xrpc/test.comm.community.space.grant", BOB, {
+      spaceUri,
+      subject: { did: ALICE },
+      accessLevel: "member",
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).reason).toBe("cannot-modify-higher-than-self");
+  });
+
   it("revokes and reconciler removes from spaces_members", async () => {
     const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
     const res = await call(app, "POST", "/xrpc/test.comm.community.space.revoke", ALICE, {

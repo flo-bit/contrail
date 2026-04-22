@@ -83,12 +83,16 @@ export function registerSpacesRoutes(
     const sa = getAuth(c);
     const scope = c.req.query("scope") ?? "member"; // "member" | "owner"
     const type = c.req.query("type") ?? undefined;
+    const owner = c.req.query("owner") ?? undefined;
     const cursor = c.req.query("cursor") ?? undefined;
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
 
     const opts: Parameters<typeof adapter.listSpaces>[0] = { type, cursor, limit };
     if (scope === "owner") opts.ownerDid = sa.issuer;
-    else opts.memberDid = sa.issuer;
+    else {
+      opts.memberDid = sa.issuer;
+      if (owner) opts.ownerDid = owner; // narrow to spaces owned by this DID
+    }
 
     const result = await adapter.listSpaces(opts);
     return c.json({

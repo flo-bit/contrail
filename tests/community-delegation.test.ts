@@ -25,6 +25,7 @@ const CONFIG: ContrailConfig = {
   },
   community: {
     masterKey: MASTER_KEY,
+    plcDirectory: "https://plc.test",
     fetch: mockFetch,
     resolver: mockResolver(),
   },
@@ -55,6 +56,10 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       JSON.stringify({ accessJwt: "a.b.c", refreshJwt: "r.r.r", did: COMMUNITY_DID }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
+  }
+  // PLC directory submissions for community.mint.
+  if (url.startsWith("https://plc.test/")) {
+    return new Response("{}", { status: 200 });
   }
   return new Response("not found", { status: 404 });
 }
@@ -225,6 +230,24 @@ describe("community delegation — stage 2", () => {
     expect(await flatMembers(app, ALICE, chat)).not.toContain(DIANA);
   });
 
+  it("deleting a delegated-from space re-reconciles parents' spaces_members", async () => {
+    const mods = await createSpace(app, ALICE, "cascade-mods");
+    const chat = await createSpace(app, ALICE, "cascade-chat");
+
+    // Diana reaches chat only via mods.
+    expect((await grant(app, ALICE, mods, { did: DIANA }, "member")).status).toBe(200);
+    expect((await grant(app, ALICE, chat, { spaceUri: mods }, "member")).status).toBe(200);
+    expect(await flatMembers(app, ALICE, chat)).toContain(DIANA);
+
+    // Delete mods; chat should no longer list Diana as a flattened member.
+    const del = await call(app, "POST", "/xrpc/test.comm.community.space.delete", ALICE, {
+      spaceUri: mods,
+    });
+    expect(del.status).toBe(200);
+
+    expect(await flatMembers(app, ALICE, chat)).not.toContain(DIANA);
+  });
+
   it("resync endpoint requires admin+", async () => {
     const s = await createSpace(app, ALICE, "resync-space");
     // Bob is a plain member
@@ -234,6 +257,37 @@ describe("community delegation — stage 2", () => {
       spaceUri: s,
     });
     expect(res.status).toBe(403);
+  });
+
+  it("community.list follows delegation across communities", async () => {
+    // Mint a second community. DIANA will have a direct grant only in the
+    // second community's space; the second community delegates a group from
+    // the first community into one of its own spaces. The actor Alice has no
+    // direct grant in the second community but reaches it via the delegation
+    // chain, so community.list must surface both.
+    const mint = await call(app, "POST", "/xrpc/test.comm.community.mint", DIANA, {});
+    expect(mint.status).toBe(200);
+    const second = ((await mint.json()) as any).communityDid as string;
+
+    // Diana creates a space in the second community and delegates the first
+    // community's (Alice-owned) $admin in as a member.
+    const createRes = await call(app, "POST", "/xrpc/test.comm.community.space.create", DIANA, {
+      communityDid: second,
+      key: "bridged",
+    });
+    expect(createRes.status).toBe(200);
+    const bridged = ((await createRes.json()) as any).space.uri as string;
+
+    const firstAdmin = `at://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
+    expect((await grant(app, DIANA, bridged, { spaceUri: firstAdmin }, "member")).status).toBe(200);
+
+    // Alice has no direct grant in the second community, but is reachable via
+    // `bridged` → firstAdmin (where she is owner).
+    const res = await call(app, "GET", `/xrpc/test.comm.community.list`, ALICE);
+    expect(res.status).toBe(200);
+    const dids = ((await res.json()) as any).communities.map((c: any) => c.did);
+    expect(dids).toContain(COMMUNITY_DID);
+    expect(dids).toContain(second);
   });
 
   it("resync endpoint works for owner", async () => {

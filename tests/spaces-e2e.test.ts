@@ -272,4 +272,38 @@ describe("spaces e2e", () => {
     const body = await asJson(res);
     expect(body.record.record.address).toBe("123 Main St");
   });
+
+  it("listSpaces?owner=<did> narrows scope=member to spaces owned by that DID", async () => {
+    // Alice creates a second space she owns.
+    await call(app, "POST", "/xrpc/test.spaces.space.createSpace", ALICE, {
+      key: "other-space",
+    });
+    // Charlie owns yet another space and adds Bob as a member.
+    const charlieSpaceRes = await call(app, "POST", "/xrpc/test.spaces.space.createSpace", CHARLIE, {
+      key: "charlie-space",
+    });
+    const charlieSpace = (await charlieSpaceRes.json() as any).space.uri;
+    await call(app, "POST", "/xrpc/test.spaces.space.addMember", CHARLIE, {
+      spaceUri: charlieSpace,
+      did: BOB,
+    });
+
+    // Without owner filter: Bob sees spaces from both Alice and Charlie.
+    const allRes = await call(app, "GET", "/xrpc/test.spaces.space.listSpaces?scope=member", BOB);
+    const all = (await allRes.json() as any).spaces;
+    const allOwners = new Set(all.map((s: any) => s.ownerDid));
+    expect(allOwners.has(ALICE)).toBe(true);
+    expect(allOwners.has(CHARLIE)).toBe(true);
+
+    // With owner=Alice: Bob sees only Alice-owned spaces.
+    const narrowedRes = await call(
+      app,
+      "GET",
+      `/xrpc/test.spaces.space.listSpaces?scope=member&owner=${ALICE}`,
+      BOB
+    );
+    const narrowed = (await narrowedRes.json() as any).spaces;
+    expect(narrowed.length).toBeGreaterThan(0);
+    for (const s of narrowed) expect(s.ownerDid).toBe(ALICE);
+  });
 });

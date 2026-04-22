@@ -79,6 +79,33 @@ export async function flattenEffectiveMembers(
   return dids;
 }
 
+/** All space URIs `actorDid` can reach (directly or via delegation).
+ *  Walks the reverse graph: direct grants first, then every space that
+ *  delegates to an already-reachable space. Used for community.list. */
+export async function resolveReachableSpaces(
+  adapter: CommunityAdapter,
+  actorDid: string,
+  opts: EffectiveLevelOptions = {}
+): Promise<Set<string>> {
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const reachable = new Set<string>();
+  const directRows = await adapter.listAccessRowsForSubject(actorDid);
+  const queue: Array<{ spaceUri: string; depth: number }> = directRows.map(
+    (r) => ({ spaceUri: r.spaceUri, depth: 0 })
+  );
+  while (queue.length) {
+    const { spaceUri, depth } = queue.shift()!;
+    if (reachable.has(spaceUri)) continue;
+    reachable.add(spaceUri);
+    if (depth >= maxDepth) continue;
+    const parents = await adapter.listSpacesDelegatingTo(spaceUri);
+    for (const parent of parents) {
+      if (!reachable.has(parent)) queue.push({ spaceUri: parent, depth: depth + 1 });
+    }
+  }
+  return reachable;
+}
+
 /** Check whether the actor would cause a cycle if added as a subject-space of `spaceUri`. */
 export async function wouldCycle(
   adapter: CommunityAdapter,

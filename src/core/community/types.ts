@@ -37,17 +37,14 @@ export interface CommunityConfig {
   fetch?: typeof fetch;
 }
 
+/** Public view of a community row. Encrypted credentials are not included here
+ *  — those live only behind CommunityAdapter.getRawCredentials(), which returns
+ *  the base64 envelope string intended to be passed straight to CredentialCipher. */
 export interface CommunityRow {
   did: string;
   mode: CommunityMode;
-  // adopt-mode fields
   pdsEndpoint: string | null;
-  appPasswordEncrypted: Uint8Array | null;
   identifier: string | null;
-  // mint-mode fields (Stage 4)
-  signingKeyEncrypted: Uint8Array | null;
-  rotationKeyEncrypted: Uint8Array | null;
-  // common
   createdBy: string;
   createdAt: number;
   deletedAt: number | null;
