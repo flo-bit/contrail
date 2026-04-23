@@ -18,7 +18,7 @@ import type { FormattedRecord } from "./helpers";
 import { formatRecord, parseIntParam, fieldToParam } from "./helpers";
 import { verifyServiceAuthRequest, extractInviteToken, checkInviteReadGrant } from "../spaces/auth";
 import { checkAccess } from "../spaces/acl";
-import { hashInviteToken } from "../spaces/invite-token";
+import { hashInviteToken } from "../invite/token";
 import type { SpacesContext } from ".";
 import type { Nsid } from "@atcute/lexicons";
 import type { RealtimeEvent } from "../realtime/types";
@@ -27,8 +27,7 @@ import { spaceTopic } from "../realtime/types";
 import type { SubscriberQuerySpec } from "../realtime/durable-object";
 import { DurableObjectPubSub } from "../realtime/durable-object";
 import { TicketSigner, type TicketQuerySpec } from "../realtime/ticket";
-import { parseHydrateParams } from "./hydrate";
-import { getRelationField, getNestedValue, nsidForShortName } from "../types";
+import { getRelationField, getNestedValue } from "../types";
 
 /** Shared implementation of the watchRecords snapshot+live loop. Called by
  *  both transport branches (SSE and Worker-terminated WS). The caller owns
@@ -73,8 +72,7 @@ async function runQueryStream(opts: {
   const parentDids = new Set<string>();
   const childToParent = new Map<string, { parentUri: string; relName: string }>();
 
-  const primaryUri = (payload: { authorDid: string; collection: string; rkey: string }) =>
-    `at://${payload.authorDid}/${payload.collection}/${payload.rkey}`;
+  const primaryUri = (payload: { uri: string }) => payload.uri;
 
   const handleChildEvent = (event: RealtimeEvent) => {
     if (!trackHydration) return;
@@ -82,7 +80,7 @@ async function runQueryStream(opts: {
     const meta = childCollectionMap.get(event.payload.collection);
     if (!meta) return;
     if (!(hydrateSpec.relations as Record<string, number>)[meta.relName]) return;
-    if (event.payload.spaceUri !== spaceUri) return;
+    if (event.payload.space !== spaceUri) return;
 
     if (event.kind === "record.created") {
       const matched = getNestedValue(event.payload.record, meta.matchField);
@@ -105,7 +103,7 @@ async function runQueryStream(opts: {
         relation: meta.relName,
         child: {
           uri: primaryUri(event.payload),
-          did: event.payload.authorDid,
+          did: event.payload.did,
           rkey: event.payload.rkey,
           collection: event.payload.collection,
           cid: event.payload.cid,
@@ -121,7 +119,7 @@ async function runQueryStream(opts: {
         parentUri: info.parentUri,
         relation: info.relName,
         childRkey: event.payload.rkey,
-        childDid: event.payload.authorDid
+        childDid: event.payload.did
       });
     }
   };
@@ -134,7 +132,7 @@ async function runQueryStream(opts: {
       return;
     }
     if (event.kind !== "record.created" && event.kind !== "record.deleted") return;
-    if (event.payload.spaceUri !== spaceUri) return;
+    if (event.payload.space !== spaceUri) return;
 
     if (event.payload.collection !== colNsid) {
       handleChildEvent(event);
@@ -145,11 +143,11 @@ async function runQueryStream(opts: {
     const uri = primaryUri(event.payload);
     if (event.kind === "record.created") {
       parentUris.add(uri);
-      parentDids.add(event.payload.authorDid);
+      parentDids.add(event.payload.did);
       send("record.created", {
         record: {
           uri,
-          did: event.payload.authorDid,
+          did: event.payload.did,
           rkey: event.payload.rkey,
           collection: event.payload.collection,
           cid: event.payload.cid,
@@ -163,7 +161,7 @@ async function runQueryStream(opts: {
       parentUris.delete(uri);
       send("record.deleted", {
         uri,
-        did: event.payload.authorDid,
+        did: event.payload.did,
         rkey: event.payload.rkey
       });
     }

@@ -1,4 +1,0 @@
-- permissioned blobs
-- websockets/sse/webhooks
-- add ingestion logic?
-- public spaces?

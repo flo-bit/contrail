@@ -11,6 +11,10 @@ import { processNotifyUris } from "./core/router/notify";
 import type { NotifyResult } from "./core/router/notify";
 import { runPersistent as runPersistentIngestion } from "./core/persistent";
 import type { PersistentIngestOptions } from "./core/persistent";
+import type { PubSub } from "./core/realtime/types";
+import { InMemoryPubSub } from "./core/realtime/in-memory";
+import { createApp, type CreateAppOptions } from "./core/router";
+import type { Hono } from "hono";
 
 export interface ContrailOptions extends ContrailConfig {
   db?: Database;
@@ -23,6 +27,7 @@ export class Contrail {
   private _db?: Database;
   private _spacesDb?: Database;
   private _ingestState: IngestState = createIngestState();
+  private _pubsub: PubSub | null = null;
 
   constructor(options: ContrailOptions) {
     const { db, spacesDb, ...configInput } = options;
@@ -30,6 +35,18 @@ export class Contrail {
     validateConfig(this.config);
     this._db = db;
     this._spacesDb = spacesDb;
+    // Build the pubsub instance up-front so ingestion and HTTP routes share
+    // it. Caller overrides via `config.realtime.pubsub` (e.g. DurableObject).
+    if (this.config.realtime) {
+      this._pubsub =
+        this.config.realtime.pubsub ??
+        new InMemoryPubSub({ queueBound: this.config.realtime.queueBound });
+    }
+  }
+
+  /** The shared realtime pubsub, or null when realtime isn't configured. */
+  get pubsub(): PubSub | null {
+    return this._pubsub;
   }
 
   private getDb(db?: Database): Database {
@@ -62,12 +79,22 @@ export class Contrail {
 
   /** Run one Jetstream ingestion cycle (catches up to present, then stops). */
   async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
-    await runIngestCycle(this.getDb(db), this.config, options?.timeoutMs, this._ingestState);
+    await runIngestCycle(
+      this.getDb(db),
+      this.config,
+      options?.timeoutMs,
+      this._ingestState,
+      this._pubsub ?? undefined
+    );
   }
 
   /** Run persistent Jetstream ingestion (long-lived, stays connected). */
   async runPersistent(options?: Omit<PersistentIngestOptions, 'logger'>, db?: Database): Promise<void> {
-    await runPersistentIngestion(this.getDb(db), this.config, { ...options, logger: this.config.logger });
+    await runPersistentIngestion(this.getDb(db), this.config, {
+      ...options,
+      logger: this.config.logger,
+      pubsub: this._pubsub ?? undefined,
+    });
   }
 
   /** Discover users from relays. Returns discovered DIDs. */
@@ -109,4 +136,33 @@ export class Contrail {
     const uriList = Array.isArray(uris) ? uris : [uris];
     return processNotifyUris(this.getDb(db), this.config, uriList);
   }
+
+  /** Build the Hono app for this Contrail instance. All HTTP routes
+   *  (collection / spaces / community / realtime) are registered here.
+   *  The realtime pubsub on this instance is reused, so subscribers see
+   *  events published from `ingest()` / `runPersistent()` on the same instance. */
+  app(options: AppOptions = {}): Hono {
+    const { db, ...appOpts } = options;
+    const main = this.getDb(db);
+    const spaces = options.spacesDb ?? this._spacesDb;
+    return createApp(main, this.config, {
+      ...appOpts,
+      spacesDb: spaces,
+      realtime: { ...appOpts.realtime, pubsub: this._pubsub ?? undefined },
+    });
+  }
+
+  /** Fetch-style handler built from `app()`. Use this from SvelteKit / Next /
+   *  Workers / Bun — anything that takes `(request) => Response`. */
+  handler(options: AppOptions = {}): (request: Request) => Promise<Response> {
+    const app = this.app(options);
+    return (request: Request) => app.fetch(request) as Promise<Response>;
+  }
+}
+
+/** Overrides accepted by `Contrail.app()` and `Contrail.handler()`. Mirrors
+ *  `CreateAppOptions` but lets the caller also override the DBs (falling back
+ *  to the ones given to the Contrail constructor). */
+export interface AppOptions extends CreateAppOptions {
+  db?: Database;
 }

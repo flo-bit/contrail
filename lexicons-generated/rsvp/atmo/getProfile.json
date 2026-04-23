@@ -65,11 +65,8 @@
           "type": "string"
         },
         "record": {
-          "type": "union",
-          "refs": [
-            "#appBskyActorProfile",
-            "#siteStandardPublication"
-          ]
+          "type": "ref",
+          "ref": "#appBskyActorProfile"
         }
       }
     },
@@ -133,57 +130,6 @@
         "joinedViaStarterPack": {
           "ref": "com.atproto.repo.strongRef",
           "type": "ref"
-        }
-      }
-    },
-    "siteStandardPublication": {
-      "type": "object",
-      "required": [
-        "url",
-        "name"
-      ],
-      "properties": {
-        "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "Base publication url (ex: https://standard.site). The canonical document URL is formed by combining this value with the document path."
-        },
-        "icon": {
-          "type": "blob",
-          "accept": [
-            "image/*"
-          ],
-          "maxSize": 1000000,
-          "description": "Square image to identify the publication. Should be at least 256x256."
-        },
-        "name": {
-          "type": "string",
-          "maxLength": 5000,
-          "description": "Name of the publication.",
-          "maxGraphemes": 500
-        },
-        "labels": {
-          "refs": [
-            "com.atproto.label.defs#selfLabels"
-          ],
-          "type": "union",
-          "description": "Self-label values for this publication. Effectively content warnings."
-        },
-        "basicTheme": {
-          "ref": "site.standard.theme.basic",
-          "type": "ref",
-          "description": "Simplified publication theme for tools and apps to utilize when displaying content."
-        },
-        "description": {
-          "type": "string",
-          "maxLength": 30000,
-          "description": "Brief description of the publication.",
-          "maxGraphemes": 3000
-        },
-        "preferences": {
-          "ref": "#preferences",
-          "type": "ref",
-          "description": "Object containing platform specific preferences (with a few shared properties)."
         }
       }
     }

@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.community.space.whoami",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Report the JWT issuer's effective access level in a space (resolving delegated memberships).",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "spaceUri"
+        ],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "accessLevel": {
+              "type": "ref",
+              "ref": "rsvp.atmo.community.defs#accessLevel",
+              "description": "Null when caller has no resolvable access."
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -391,6 +391,11 @@ export async function applyEvents(
     skipFeedFanout?: boolean;
     /** Pre-fetched existing records — skips the internal lookup when provided */
     existing?: Map<string, ExistingRecordInfo>;
+    /** When provided, publish `collection:<nsid>` and `actor:<did>` realtime
+     *  events for each applied event. Space-scoped publishing happens elsewhere
+     *  (see `realtime/publishing-adapter.ts`); public topics carry public
+     *  records only, which is exactly the scope of this function. */
+    pubsub?: import("../realtime/types").PubSub;
   }
 ): Promise<void> {
   if (events.length === 0) return;
@@ -479,6 +484,47 @@ export async function applyEvents(
   }
 
   await db.batch(batch);
+
+  // Publish realtime events for public records (collection: and actor:).
+  // Space records publish via the wrapping adapter; this path is public-only.
+  if (options?.pubsub) {
+    const pubsub = options.pubsub;
+    const ts = Date.now();
+    for (const e of events) {
+      if (e.operation === "delete") {
+        const payload = {
+          uri: e.uri,
+          did: e.did,
+          collection: e.collection,
+          rkey: e.rkey,
+        };
+        await pubsub.publish({ topic: `collection:${e.collection}`, kind: "record.deleted", payload, ts });
+        await pubsub.publish({ topic: `actor:${e.did}`, kind: "record.deleted", payload, ts });
+      } else {
+        const record = e.record ? safeParseJson(e.record) : {};
+        const payload = {
+          uri: e.uri,
+          did: e.did,
+          collection: e.collection,
+          rkey: e.rkey,
+          cid: e.cid,
+          record,
+          time_us: e.time_us,
+        };
+        await pubsub.publish({ topic: `collection:${e.collection}`, kind: "record.created", payload, ts });
+        await pubsub.publish({ topic: `actor:${e.did}`, kind: "record.created", payload, ts });
+      }
+    }
+  }
+}
+
+function safeParseJson(s: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 // --- Count columns ---

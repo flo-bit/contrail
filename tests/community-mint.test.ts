@@ -150,7 +150,7 @@ describe("community.mint — stage 4", () => {
 
     // Reserved spaces exist with the caller as owner.
     const adminUri = `at://${body.communityDid}/tools.atmo.event.space/$admin`;
-    const whoami = await call(app, "GET", `/xrpc/test.comm.community.whoami?spaceUri=${encodeURIComponent(adminUri)}`, ALICE);
+    const whoami = await call(app, "GET", `/xrpc/test.comm.community.space.whoami?spaceUri=${encodeURIComponent(adminUri)}`, ALICE);
     expect(((await whoami.json()) as any).accessLevel).toBe("owner");
   });
 

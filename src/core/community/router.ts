@@ -25,10 +25,7 @@ import {
   RESERVED_KEYS,
 } from "./types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
-import {
-  generateInviteToken,
-  hashInviteToken,
-} from "../spaces/invite-token";
+import { hashInviteToken, mintInviteToken } from "../invite/token";
 
 export interface CommunityRoutesOptions {
   /** Override auth middleware for tests. */
@@ -257,7 +254,7 @@ export function registerCommunityRoutes(
     });
   });
 
-  app.get(`/xrpc/${NS}.whoami`, auth, async (c) => {
+  app.get(`/xrpc/${NS}.space.whoami`, auth, async (c) => {
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
     if (!spaceUri) {
@@ -1018,8 +1015,7 @@ export function registerCommunityRoutes(
       return c.json({ error: "Forbidden", reason: "cannot-grant-higher-than-self" }, 403);
     }
 
-    const token = generateInviteToken();
-    const tokenHash = await hashInviteToken(token);
+    const { token, tokenHash } = await mintInviteToken();
 
     const row = await community.createInvite({
       spaceUri: body.spaceUri,

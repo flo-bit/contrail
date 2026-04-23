@@ -9,6 +9,7 @@
 	import { createWatchQuery } from '$lib/rooms/watch.svelte';
 	import type { WatchRecord } from '@atmo-dev/contrail/sync';
 	import { dev } from '$app/environment';
+	import { setConnectionStatus, resetConnectionStatus } from '$lib/rooms/connection.svelte';
 
 	let { data } = $props();
 
@@ -18,22 +19,46 @@
 	// Live message feed via contrail's watchRecords subscription. The engine
 	// handles the snapshot + live merge; we just render its `records` array.
 	// Sorted newest-first by default — flip to oldest-first for chat.
-	let query = $derived.by(() =>
-		createWatchQuery({
-			url: `/xrpc/tools.atmo.chat.message.watchRecords?spaceUri=${encodeURIComponent(data.spaceUri)}&limit=50`,
-			// In prod the server has a DurableObjectPubSub — open a DO-terminated
-			// WS so idle connections hibernate (near-zero cost at CF scale).
-			// In dev the server uses InMemoryPubSub (one isolate), which only
-			// speaks SSE, so downgrade.
+	//
+	// The query is keyed strictly on spaceUri — recreating it on every
+	// `data` identity change would tear down and rebuild the subscription on
+	// unrelated page-data invalidations (e.g. channel list refresh), flashing
+	// "Loading…" each time. Using a keyed effect here avoids that.
+	let query = $state<ReturnType<typeof createWatchQuery> | null>(null);
+	let currentUri: string | null = null;
+
+	$effect(() => {
+		const uri = data.spaceUri;
+		if (uri === currentUri) return;
+		query?.stop();
+		currentUri = uri;
+		query = createWatchQuery({
+			url: `/xrpc/tools.atmo.chat.message.watchRecords?spaceUri=${encodeURIComponent(uri)}&limit=50`,
 			transport: dev ? 'sse' : 'ws',
+			fetchAuthToken: dev
+				? undefined
+				: async () => {
+						const res = await fetch('/api/watch-token', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ lxm: 'tools.atmo.chat.message.watchRecords' })
+						});
+						if (!res.ok) throw new Error(`watch-token mint failed: ${res.status}`);
+						const d = (await res.json()) as { token: string };
+						return d.token;
+					},
 			compareRecords: (a: WatchRecord, b: WatchRecord) =>
 				(a.time_us ?? 0) - (b.time_us ?? 0)
-		})
-	);
+		});
+	});
 
-	// Teardown on channel change.
+	// Final teardown on component unmount.
 	$effect(() => {
-		return () => query.stop();
+		return () => {
+			query?.stop();
+			query = null;
+			currentUri = null;
+		};
 	});
 
 	// Unread / current-channel bookkeeping.
@@ -43,9 +68,16 @@
 		return () => setCurrentChannel(null);
 	});
 
+	// Mirror the query's connection status into the shared store so the
+	// layout's navbar can render a dot for it.
+	$effect(() => {
+		if (query) setConnectionStatus(query.status);
+		return () => resetConnectionStatus();
+	});
+
 	// Project records to the shape the existing template expects.
 	let messages = $derived(
-		query.records.map((r) => {
+		(query?.records ?? []).map((r) => {
 			const rec = r.record as { text?: string; createdAt?: string; replyTo?: string };
 			return {
 				rkey: r.rkey,
@@ -94,7 +126,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col pb-20">
 	<div bind:this={scrollEl} class="flex-1 overflow-y-auto px-4 py-6">
-		{#if query.status === 'connecting' || query.status === 'snapshot'}
+		{#if messages.length === 0 && (query?.status === 'connecting' || query?.status === 'snapshot' || query?.status === 'idle')}
 			<div class="text-base-500 text-center text-sm">Loading…</div>
 		{:else if messages.length === 0}
 			<div class="text-base-500 text-center text-sm">No messages yet. Say hi.</div>

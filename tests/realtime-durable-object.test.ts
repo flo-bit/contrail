@@ -52,13 +52,14 @@ function mkEvent(overrides: Partial<RealtimeEvent> = {}): RealtimeEvent {
     topic: "space:at://x/y/z",
     kind: "record.created",
     payload: {
-      spaceUri: "at://x/y/z",
+      uri: "at://did:plc:x/c/r",
+      did: "did:plc:x",
       collection: "c",
-      authorDid: "did:plc:x",
       rkey: "r",
       cid: null,
       record: {},
-      createdAt: 1,
+      time_us: 1,
+      space: "at://x/y/z",
     },
     ts: 1,
     ...(overrides as any),
@@ -96,7 +97,7 @@ describe("RealtimePubSubDO — publish/fanout", () => {
     doInstance.publishEvent({
       topic: "space:x",
       kind: "member.removed",
-      payload: { spaceUri: "at://x/y/z", did: "did:plc:kickme" },
+      payload: { space: "at://x/y/z", did: "did:plc:kickme" },
       ts: 1,
     });
 
@@ -141,7 +142,7 @@ describe("RealtimePubSubDO — publish/fanout", () => {
     doInstance.publishEvent({
       topic: "space:x",
       kind: "member.removed",
-      payload: { spaceUri: "at://x/y/z", did: "did:plc:self" },
+      payload: { space: "at://x/y/z", did: "did:plc:self" },
       ts: 8,
     });
 

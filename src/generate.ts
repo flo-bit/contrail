@@ -769,7 +769,10 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     }
   }
 
-  // --- Spaces: instantiate library templates under <ns>.space.* ---
+  // --- Spaces: instantiate library templates under <ns>.space.* and
+  //     <ns>.spaceExt.* (contrail-specific extras — invites, whoami).
+  //     Splitting the namespace keeps the `space.*` surface aligned with the
+  //     permissioned-data spec; extras move when the spec does not. ---
 
   if (config.spaces) {
     log("Generating space endpoints...");
@@ -777,17 +780,29 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     if (!templatesDir) {
       log("  (space templates not found — skipping)");
     } else {
-      const templateIdRe = /^tools\.atmo\.space(\.[A-Za-z0-9.]+)?$/;
-      const idReplace = (id: string) =>
-        id.startsWith("tools.atmo.space") ? id.replace(/^tools\.atmo\.space/, `${ns}.space`) : id;
+      // Order matters: more specific prefix first so `spaceExt` isn't matched
+      // by the `space` rule.
+      const prefixes: Array<[string, string]> = [
+        ["tools.atmo.spaceExt", `${ns}.spaceExt`],
+        ["tools.atmo.space", `${ns}.space`],
+      ];
+      const templateIdRe = /^tools\.atmo\.space(Ext)?(\.[A-Za-z0-9.]+)?$/;
+      const idReplace = (id: string) => {
+        for (const [from, to] of prefixes) {
+          if (id === from || id.startsWith(from + ".")) {
+            return to + id.slice(from.length);
+          }
+        }
+        return id;
+      };
 
       const rewriteRefs = (obj: any): any => {
         if (Array.isArray(obj)) return obj.map(rewriteRefs);
         if (obj && typeof obj === "object") {
           const out: any = {};
           for (const [k, v] of Object.entries(obj)) {
-            if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.space")) {
-              out[k] = v.replace(/^tools\.atmo\.space/, `${ns}.space`);
+            if (k === "ref" && typeof v === "string") {
+              out[k] = idReplace(v);
             } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
               out[k] = idReplace(v);
             } else {

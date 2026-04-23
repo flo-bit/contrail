@@ -3,40 +3,59 @@
 /** Discriminated union of every event kind that flows through the PubSub.
  *
  *  `record.created` carries the full record body so a subscriber can apply an
- *  insert or upsert without a follow-up `getRecord` call. `putRecord` over an
- *  existing `(authorDid, rkey)` publishes another `record.created` — treat it
- *  as upsert. */
+ *  insert or upsert without a follow-up `getRecord` call. Writing a new record
+ *  to the same `(did, collection, rkey)` publishes another `record.created` —
+ *  treat it as upsert.
+ *
+ *  **Payload shape mirrors `listRecords` output** (`uri`, `did`, `space?`,
+ *  `time_us`), so a subscriber can render a live row the same way it renders
+ *  a fetched row.
+ *
+ *  **Publisher/topic matrix (intentional trust split):**
+ *    - `collection:<nsid>` and `actor:<did>` carry *public* record events only
+ *      (from jetstream ingestion) — no `space`.
+ *    - `space:<uri>` and `community:<did>` carry *space* events — `space` is
+ *      always set. Never cross-published to public topics (privacy). */
 export type RealtimeEvent =
   | {
       topic: string;
       kind: "record.created";
       payload: {
-        spaceUri: string;
+        uri: string;
+        did: string;
         collection: string;
-        authorDid: string;
         rkey: string;
         cid: string | null;
         record: Record<string, unknown>;
-        createdAt: number;
+        time_us: number;
+        /** Present only for space records; absent for public records. */
+        space?: string;
       };
       ts: number;
     }
   | {
       topic: string;
       kind: "record.deleted";
-      payload: { spaceUri: string; collection: string; authorDid: string; rkey: string };
+      payload: {
+        uri: string;
+        did: string;
+        collection: string;
+        rkey: string;
+        /** Present only for space records; absent for public records. */
+        space?: string;
+      };
       ts: number;
     }
   | {
       topic: string;
       kind: "member.added";
-      payload: { spaceUri: string; did: string };
+      payload: { space: string; did: string };
       ts: number;
     }
   | {
       topic: string;
       kind: "member.removed";
-      payload: { spaceUri: string; did: string };
+      payload: { space: string; did: string };
       ts: number;
     };
 

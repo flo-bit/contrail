@@ -180,7 +180,8 @@ export async function runIngestCycle(
   db: Database,
   config: ContrailConfig,
   timeoutMs: number = 25_000,
-  state?: IngestState
+  state?: IngestState,
+  pubsub?: import("./realtime/types").PubSub
 ): Promise<void> {
   const log = getLogger(config);
   const s = state ?? createIngestState();
@@ -241,7 +242,7 @@ export async function runIngestCycle(
 
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
-    await applyEvents(db, batch, config);
+    await applyEvents(db, batch, config, { pubsub });
   }
 
   // Refresh stale/missing identities for DIDs in this batch

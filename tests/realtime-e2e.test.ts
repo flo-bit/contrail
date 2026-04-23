@@ -191,7 +191,7 @@ describe("realtime e2e (in-memory pubsub, SSE transport)", () => {
     // Fat payload: subscribers can render the new record without a follow-up fetch.
     expect(event.payload.record).toEqual({ text: "hello" });
     expect(event.payload.collection).toBe("app.event.message");
-    expect(event.payload.authorDid).toBe(ALICE);
+    expect(event.payload.did).toBe(ALICE);
     close();
   });
 

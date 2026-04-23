@@ -68,7 +68,7 @@ export function wrapWithPublishing(
       await publishSpaceAndCommunity(spaceUri, owner, (topic) => ({
         topic,
         kind: "member.added",
-        payload: { spaceUri, did },
+        payload: { space: spaceUri, did },
         ts: now,
       }));
     },
@@ -80,7 +80,7 @@ export function wrapWithPublishing(
       await publishSpaceAndCommunity(spaceUri, owner, (topic) => ({
         topic,
         kind: "member.removed",
-        payload: { spaceUri, did },
+        payload: { space: spaceUri, did },
         ts: now,
       }));
     },
@@ -94,7 +94,7 @@ export function wrapWithPublishing(
         await publishSpaceAndCommunity(spaceUri, owner, (topic) => ({
           topic,
           kind: "member.added",
-          payload: { spaceUri, did },
+          payload: { space: spaceUri, did },
           ts: now,
         }));
       }
@@ -102,7 +102,7 @@ export function wrapWithPublishing(
         await publishSpaceAndCommunity(spaceUri, owner, (topic) => ({
           topic,
           kind: "member.removed",
-          payload: { spaceUri, did },
+          payload: { space: spaceUri, did },
           ts: now,
         }));
       }
@@ -112,17 +112,22 @@ export function wrapWithPublishing(
       await inner.putRecord(record);
       const owner = await ownerOf(record.spaceUri);
       const now = Date.now();
+      // Space records use ms timestamps; listRecords surface uses microseconds
+      // (time_us). Convert here so subscribers can render a row identically.
+      const time_us = record.createdAt * 1000;
+      const uri = `at://${record.authorDid}/${record.collection}/${record.rkey}`;
       await publishSpaceAndCommunity(record.spaceUri, owner, (topic) => ({
         topic,
         kind: "record.created",
         payload: {
-          spaceUri: record.spaceUri,
+          uri,
+          did: record.authorDid,
           collection: record.collection,
-          authorDid: record.authorDid,
           rkey: record.rkey,
           cid: record.cid,
           record: record.record,
-          createdAt: record.createdAt,
+          time_us,
+          space: record.spaceUri,
         },
         ts: now,
       }));
@@ -132,10 +137,11 @@ export function wrapWithPublishing(
       await inner.deleteRecord(spaceUri, collection, authorDid, rkey);
       const owner = await ownerOf(spaceUri);
       const now = Date.now();
+      const uri = `at://${authorDid}/${collection}/${rkey}`;
       await publishSpaceAndCommunity(spaceUri, owner, (topic) => ({
         topic,
         kind: "record.deleted",
-        payload: { spaceUri, collection, authorDid, rkey },
+        payload: { uri, did: authorDid, collection, rkey, space: spaceUri },
         ts: now,
       }));
     },

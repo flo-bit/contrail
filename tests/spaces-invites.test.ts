@@ -6,7 +6,7 @@ import { initSchema } from "../src/core/db/schema";
 import { createApp } from "../src/core/router";
 import { resolveConfig } from "../src/core/types";
 import type { ContrailConfig } from "../src/core/types";
-import { generateInviteToken, hashInviteToken } from "../src/core/spaces/invite-token";
+import { generateInviteToken, hashInviteToken } from "../src/core/invite/token";
 
 const ALICE = "did:plc:alice";
 const BOB = "did:plc:bob";
@@ -84,14 +84,14 @@ describe("invite e2e", () => {
   });
 
   it("non-owner cannot create an invite", async () => {
-    const res = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", BOB, {
+    const res = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", BOB, {
       spaceUri,
     });
     expect(res.status).toBe(403);
   });
 
   it("owner creates an invite and Bob redeems it to become a member", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri,
     });
     expect(create.status).toBe(200);
@@ -101,7 +101,7 @@ describe("invite e2e", () => {
     expect(invite.spaceUri).toBe(spaceUri);
     expect(invite.usedCount).toBe(0);
 
-    const redeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", BOB, { token });
+    const redeem = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", BOB, { token });
     expect(redeem.status).toBe(200);
     const body = (await redeem.json()) as any;
     expect(body.spaceUri).toBe(spaceUri);
@@ -116,58 +116,58 @@ describe("invite e2e", () => {
   });
 
   it("single-use invite rejects second redemption", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, maxUses: 1,
     });
     const { token } = (await create.json()) as any;
 
-    const first = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", BOB, { token });
+    const first = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", BOB, { token });
     expect(first.status).toBe(200);
 
-    const second = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    const second = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", CHARLIE, { token });
     expect(second.status).toBe(400);
     const body = (await second.json()) as any;
     expect(body.reason).toBe("expired-revoked-or-exhausted");
   });
 
   it("expired invite rejects redemption", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, expiresAt: Date.now() - 1000,
     });
     const { token } = (await create.json()) as any;
-    const res = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    const res = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", CHARLIE, { token });
     expect(res.status).toBe(400);
   });
 
   it("revoked invite rejects redemption and list filters it by default", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri,
     });
     const { token, invite } = (await create.json()) as any;
 
-    const revoke = await call(app, "POST", "/xrpc/test.spaces.space.invite.revoke", ALICE, {
+    const revoke = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.revoke", ALICE, {
       spaceUri, tokenHash: invite.tokenHash,
     });
     expect(revoke.status).toBe(200);
     expect(((await revoke.json()) as any).ok).toBe(true);
 
-    const tryRedeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    const tryRedeem = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", CHARLIE, { token });
     expect(tryRedeem.status).toBe(400);
 
-    const listActive = await call(app, "GET", `/xrpc/test.spaces.space.invite.list?spaceUri=${encodeURIComponent(spaceUri)}`, ALICE);
+    const listActive = await call(app, "GET", `/xrpc/test.spaces.spaceExt.invite.list?spaceUri=${encodeURIComponent(spaceUri)}`, ALICE);
     const activeHashes = ((await listActive.json()) as any).invites.map((i: any) => i.tokenHash);
     expect(activeHashes).not.toContain(invite.tokenHash);
 
-    const listAll = await call(app, "GET", `/xrpc/test.spaces.space.invite.list?spaceUri=${encodeURIComponent(spaceUri)}&includeRevoked=true`, ALICE);
+    const listAll = await call(app, "GET", `/xrpc/test.spaces.spaceExt.invite.list?spaceUri=${encodeURIComponent(spaceUri)}&includeRevoked=true`, ALICE);
     const allHashes = ((await listAll.json()) as any).invites.map((i: any) => i.tokenHash);
     expect(allHashes).toContain(invite.tokenHash);
   });
 
   it("non-owner cannot list or revoke invites", async () => {
-    const listRes = await call(app, "GET", `/xrpc/test.spaces.space.invite.list?spaceUri=${encodeURIComponent(spaceUri)}`, BOB);
+    const listRes = await call(app, "GET", `/xrpc/test.spaces.spaceExt.invite.list?spaceUri=${encodeURIComponent(spaceUri)}`, BOB);
     expect(listRes.status).toBe(403);
 
-    const revokeRes = await call(app, "POST", "/xrpc/test.spaces.space.invite.revoke", BOB, {
+    const revokeRes = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.revoke", BOB, {
       spaceUri, tokenHash: "nonexistent",
     });
     expect(revokeRes.status).toBe(403);
@@ -179,7 +179,7 @@ describe("invite e2e", () => {
       spaceUri, collection: "app.event.message", record: { text: "hello world" },
     });
 
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, kind: "read",
     });
     const { token, invite } = (await create.json()) as any;
@@ -193,12 +193,12 @@ describe("invite e2e", () => {
     expect(body.records.length).toBeGreaterThan(0);
 
     // Read token cannot be redeemed for membership.
-    const redeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    const redeem = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", CHARLIE, { token });
     expect(redeem.status).toBe(400);
   });
 
   it("read-join token grants anonymous read AND can be redeemed for membership", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, kind: "read-join",
     });
     const { token, invite } = (await create.json()) as any;
@@ -210,16 +210,16 @@ describe("invite e2e", () => {
     expect(anon.status).toBe(200);
 
     // Same token can also be redeemed by a signed-in user.
-    const redeem = await call(app, "POST", "/xrpc/test.spaces.space.invite.redeem", CHARLIE, { token });
+    const redeem = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.redeem", CHARLIE, { token });
     expect(redeem.status).toBe(200);
   });
 
   it("revoked read-token rejects anonymous read", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, kind: "read",
     });
     const { token, invite } = (await create.json()) as any;
-    await call(app, "POST", "/xrpc/test.spaces.space.invite.revoke", ALICE, {
+    await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.revoke", ALICE, {
       spaceUri, tokenHash: invite.tokenHash,
     });
     const url = `/xrpc/test.spaces.space.listRecords?spaceUri=${encodeURIComponent(spaceUri)}&collection=app.event.message&inviteToken=${token}`;
@@ -228,7 +228,7 @@ describe("invite e2e", () => {
   });
 
   it("read-token does not grant write", async () => {
-    const create = await call(app, "POST", "/xrpc/test.spaces.space.invite.create", ALICE, {
+    const create = await call(app, "POST", "/xrpc/test.spaces.spaceExt.invite.create", ALICE, {
       spaceUri, kind: "read",
     });
     const { token } = (await create.json()) as any;

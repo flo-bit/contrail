@@ -50,7 +50,7 @@ export type {
 } from "./core/spaces/types";
 export { HostedAdapter } from "./core/spaces/adapter";
 export { nextTid } from "./core/spaces/tid";
-export { generateInviteToken, hashInviteToken } from "./core/spaces/invite-token";
+export { generateInviteToken, hashInviteToken, mintInviteToken } from "./core/invite";
 export {
   MemoryBlobAdapter,
   R2BlobAdapter,

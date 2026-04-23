@@ -15,6 +15,9 @@ export interface PersistentIngestOptions {
   /** Override subscription creation for testing */
   createSubscription?: (cursor: number | null) => JetstreamSubscription;
   logger?: Logger;
+  /** Publish `collection:<nsid>` / `actor:<did>` events for each applied
+   *  public record. Usually supplied by the Contrail instance. */
+  pubsub?: import("./realtime/types").PubSub;
 }
 
 function getLogger(config: ContrailConfig, options?: PersistentIngestOptions): Logger {
@@ -68,6 +71,7 @@ export async function runPersistent(
         state,
         log,
         createSubscription: options?.createSubscription,
+        pubsub: options?.pubsub,
       });
       reconnectAttempts = 0;
     } catch (err) {
@@ -93,6 +97,7 @@ interface StreamOptions {
   state: IngestState;
   log: Logger;
   createSubscription?: (cursor: number | null) => any;
+  pubsub?: import("./realtime/types").PubSub;
 }
 
 async function streamAndFlush(
@@ -132,7 +137,7 @@ async function streamAndFlush(
     resetFlushTimer();
 
     try {
-      await applyEvents(db, batch, config);
+      await applyEvents(db, batch, config, { pubsub: opts.pubsub });
 
       const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
       await saveCursor(db, lastTimeUs);

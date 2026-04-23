@@ -37,6 +37,14 @@ export interface WatchStoreOptions {
 	 *  When omitted, the connection is opened without an explicit token —
 	 *  rely on cookies / bearer tokens your fetch policy sends automatically. */
 	fetchTicket?: () => Promise<string>;
+	/** Optional: mint a short-lived bearer token (typically an atproto
+	 *  service-auth JWT scoped to `<collection>.watchRecords`). Called once
+	 *  per connect attempt; returned token is sent as `Authorization: Bearer`
+	 *  on the handshake fetch (`mode=ws`) or on the SSE connection via a
+	 *  `?auth=` query param the server doesn't use — browsers can't set
+	 *  headers on EventSource, so for SSE the app should cookie-auth or
+	 *  fall back to `fetchTicket`. */
+	fetchAuthToken?: () => Promise<string>;
 	/** Custom compare. Default: sort by `time_us` descending (newest first),
 	 *  tie-breaking by rkey. */
 	compareRecords?: (a: WatchRecord, b: WatchRecord) => number;
@@ -97,6 +105,12 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	let error: Error | null = null;
 	const listeners = new Set<(state: WatchStoreState) => void>();
 
+	// Per-snapshot reconcile: during a snapshot we track which keys were
+	// included, and on snapshot.end we evict any stale keys the previous
+	// snapshot had but this one didn't. Keeps data visible across reconnects
+	// and prevents stale records accumulating forever.
+	let snapshotSeen: Set<string> | null = null;
+
 	let es: EventSource | null = null;
 	let ws: WebSocket | null = null;
 	let started = false;
@@ -127,7 +141,9 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	};
 
 	const applySnapshotRecord = (record: WatchRecord) => {
-		byKey.set(key(record), record);
+		const k = key(record);
+		byKey.set(k, record);
+		snapshotSeen?.add(k);
 	};
 
 	const applyCreated = (record: WatchRecord) => {
@@ -199,14 +215,28 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 			case "snapshot.start":
 				setStatus("snapshot");
 				backoffMs = 1000;
+				// Begin reconcile pass. Stale records from the previous session
+				// stay visible until snapshot.end replaces them.
+				snapshotSeen = new Set();
 				break;
 			case "snapshot.record":
 				applySnapshotRecord(msg.data.record);
 				break;
-			case "snapshot.end":
+			case "snapshot.end": {
+				// Evict anything we had before this snapshot that the server
+				// didn't re-send. Preserves continuity across reconnects
+				// while still dropping records that were deleted while we
+				// were disconnected.
+				if (snapshotSeen) {
+					for (const k of Array.from(byKey.keys())) {
+						if (!snapshotSeen.has(k)) byKey.delete(k);
+					}
+					snapshotSeen = null;
+				}
 				resort();
 				setStatus("live");
 				break;
+			}
 			case "record.created":
 				applyCreated(msg.data.record);
 				break;
@@ -282,7 +312,12 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 	};
 
 	const openWs = async () => {
-		// Step 1: snapshot + handshake.
+		// Step 1: snapshot + handshake. Authenticated by Bearer token from
+		// `fetchAuthToken` (an atproto service-auth JWT — browsers get this
+		// from a same-origin helper that uses the OAuth session). The server
+		// returns a ticket bound to (did, spaceUri, querySpec); we pass that
+		// back embedded in the wsUrl on the WS upgrade so the WS itself
+		// doesn't need a JWT (EventSource/WebSocket can't set headers).
 		let snapshotUrl = options.url;
 		const sep = snapshotUrl.includes("?") ? "&" : "?";
 		snapshotUrl += `${sep}mode=ws`;
@@ -290,7 +325,12 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 			const ticket = await options.fetchTicket();
 			snapshotUrl += `&ticket=${encodeURIComponent(ticket)}`;
 		}
-		const res = await fetch(snapshotUrl, { headers: { accept: "application/json" } });
+		const headers: Record<string, string> = { accept: "application/json" };
+		if (options.fetchAuthToken) {
+			const token = await options.fetchAuthToken();
+			headers.authorization = `Bearer ${token}`;
+		}
+		const res = await fetch(snapshotUrl, { headers });
 		if (!res.ok) throw new Error(`snapshot fetch failed (${res.status})`);
 		const handshake = (await res.json()) as {
 			transport: "ws";
@@ -311,8 +351,15 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 		resort();
 		backoffMs = 1000;
 
-		// Step 2: open the WS. `wsUrl` is a relative path from the server.
-		const wsHref = new URL(handshake.wsUrl, options.url);
+		// Step 2: open the WS. `wsUrl` is a relative path from the server;
+		// resolve it against the page origin (not against options.url — both
+		// are relative and `new URL(relative, relative)` throws, which
+		// previously manifested as the connection indicator being stuck on
+		// "connecting" while the engine re-fetched snapshots in a tight
+		// loop). The server embeds the handshake ticket in it when issued.
+		const g = globalThis as { location?: { origin?: string } };
+		const base = g.location?.origin ?? "http://localhost";
+		const wsHref = new URL(handshake.wsUrl, base);
 		wsHref.protocol = wsHref.protocol === "https:" ? "wss:" : "ws:";
 		const socket = new WebSocket(wsHref.toString());
 		ws = socket;
@@ -365,8 +412,8 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 		backoffMs = Math.min(backoffMs * 2, 30_000);
 		setTimeout(() => {
 			if (stopped) return;
-			byKey.clear();
-			sorted = [];
+			// Keep existing records visible; `snapshot.end` will reconcile
+			// away anything that disappeared while we were offline.
 			void openOnce();
 		}, delay);
 	};

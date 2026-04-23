@@ -213,7 +213,7 @@ export async function whoami(
 	ctx: AuthedCallContext,
 	query: { spaceUri: string }
 ): Promise<{ spaceUri: string; accessLevel: string | null }> {
-	return callContrail(ctx, 'tools.atmo.chat.community.whoami', { query });
+	return callContrail(ctx, 'tools.atmo.chat.community.space.whoami', { query });
 }
 
 // --- realtime --------------------------------------------------------------

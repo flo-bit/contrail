@@ -11,7 +11,7 @@ import {
   verifyServiceAuthRequest,
 } from "./auth";
 import { nextTid } from "./tid";
-import { generateInviteToken, hashInviteToken } from "./invite-token";
+import { hashInviteToken, mintInviteToken } from "../invite/token";
 import { buildSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
@@ -87,9 +87,11 @@ export function registerSpacesRoutes(
 
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
-   *  templates at `lexicons/tools/atmo/space/*` that the generator instantiates
-   *  under `<ns>.space.*`. */
+   *  templates at `spaces-lexicon-templates/*` that the generator instantiates
+   *  under `<ns>.space.*` (spec-aligned) and `<ns>.spaceExt.*` (contrail
+   *  extras — invites, whoami — that the permissioned-data spec doesn't cover). */
   const SPACE = `${config.namespace}.space`;
+  const SPACE_EXT = `${config.namespace}.spaceExt`;
 
   // Read endpoints
   app.get(`/xrpc/${SPACE}.listSpaces`, auth, async (c) => {
@@ -484,8 +486,8 @@ export function registerSpacesRoutes(
     return c.json({ space: publicSpaceView(space, true) });
   });
 
-  // Invites
-  app.post(`/xrpc/${SPACE}.invite.create`, auth, async (c) => {
+  // Invites (contrail extras — emitted under <ns>.spaceExt.invite.*)
+  app.post(`/xrpc/${SPACE_EXT}.invite.create`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
       | {
@@ -509,8 +511,7 @@ export function registerSpacesRoutes(
       return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
     }
 
-    const token = generateInviteToken();
-    const tokenHash = await hashInviteToken(token);
+    const { token, tokenHash } = await mintInviteToken();
     const invite = await adapter.createInvite({
       spaceUri: body.spaceUri,
       tokenHash,
@@ -523,7 +524,7 @@ export function registerSpacesRoutes(
     return c.json({ token, invite: publicInviteView(invite) });
   });
 
-  app.post(`/xrpc/${SPACE}.invite.redeem`, auth, async (c) => {
+  app.post(`/xrpc/${SPACE_EXT}.invite.redeem`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as { token?: string } | null;
     if (!body?.token) {
@@ -538,7 +539,7 @@ export function registerSpacesRoutes(
     return c.json({ spaceUri: invite.spaceUri });
   });
 
-  app.get(`/xrpc/${SPACE}.invite.list`, auth, async (c) => {
+  app.get(`/xrpc/${SPACE_EXT}.invite.list`, auth, async (c) => {
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
     if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
@@ -552,7 +553,7 @@ export function registerSpacesRoutes(
     return c.json({ invites: invites.map(publicInviteView) });
   });
 
-  app.post(`/xrpc/${SPACE}.invite.revoke`, auth, async (c) => {
+  app.post(`/xrpc/${SPACE_EXT}.invite.revoke`, auth, async (c) => {
     const sa = getAuth(c);
     const body = (await c.req.json().catch(() => null)) as
       | { spaceUri?: string; tokenHash?: string }
@@ -624,7 +625,7 @@ export function registerSpacesRoutes(
     return c.json({ ok: true });
   });
 
-  app.get(`/xrpc/${SPACE}.whoami`, auth, async (c) => {
+  app.get(`/xrpc/${SPACE_EXT}.whoami`, auth, async (c) => {
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
     if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);

@@ -118,7 +118,7 @@ export const load: LayoutServerLoad = async ({ locals, params, platform }) => {
 		const adminUri = buildAdminUri(communityDid);
 		const d = await authedFetch<{ accessLevel: string | null }>(
 			ctx,
-			'tools.atmo.chat.community.whoami',
+			'tools.atmo.chat.community.space.whoami',
 			{ query: { spaceUri: adminUri } }
 		);
 		isAdmin = d.accessLevel === 'admin' || d.accessLevel === 'owner';

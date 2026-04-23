@@ -110,37 +110,42 @@ export function connectCommunityRealtime(communityDid: string): () => void {
 		} catch {
 			return;
 		}
+		// Payload shape mirrors listRecords output (uri/did/collection/rkey/cid/record/time_us/space?).
+		// `space` is only set for space records — which is what we filter this community stream to.
 		if (kind === 'record.created') {
 			const p = ev.payload as {
-				spaceUri: string;
+				uri: string;
+				did: string;
 				collection: string;
-				authorDid: string;
 				rkey: string;
 				record: Record<string, unknown>;
-				createdAt: number | string;
+				time_us: number;
+				space?: string;
 			};
+			if (!p.space) return;
 			if (p.collection === 'tools.atmo.chat.message') {
 				const rec = p.record as { text?: string; createdAt?: string; replyTo?: string };
 				if (rec.text && rec.createdAt) {
-					channelMessages.append(p.spaceUri, {
+					channelMessages.append(p.space, {
 						rkey: p.rkey,
-						authorDid: p.authorDid,
+						authorDid: p.did,
 						text: rec.text,
 						createdAt: rec.createdAt,
 						replyTo: rec.replyTo
 					});
 					// Bump unread if we're not currently on this channel.
-					if (!isCurrentChannel(p.spaceUri)) {
-						bumpUnread(p.spaceUri, rec.createdAt);
+					if (!isCurrentChannel(p.space)) {
+						bumpUnread(p.space, rec.createdAt);
 					}
 				}
 			} else if (p.collection === 'tools.atmo.chat.channel') {
 				void invalidateAll();
 			}
 		} else if (kind === 'record.deleted') {
-			const p = ev.payload as { spaceUri: string; collection: string; rkey: string };
+			const p = ev.payload as { uri: string; did: string; collection: string; rkey: string; space?: string };
+			if (!p.space) return;
 			if (p.collection === 'tools.atmo.chat.message') {
-				channelMessages.remove(p.spaceUri, p.rkey);
+				channelMessages.remove(p.space, p.rkey);
 			} else if (p.collection === 'tools.atmo.chat.channel') {
 				void invalidateAll();
 			}

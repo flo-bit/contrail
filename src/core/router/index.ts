@@ -89,22 +89,27 @@ export function createApp(
           }
         : null;
 
-  // Realtime pubsub is built up-front so the publishing decorator can reference
-  // it. The subscribe endpoint uses the same instance.
+  // Realtime pubsub is built whenever realtime is configured — independent of
+  // spaces. With spaces, the spaces adapter is wrapped so private record/member
+  // events publish to space:/community: topics. Without spaces, only public
+  // topics (collection:/actor:) see traffic — those are published from
+  // applyEvents (jetstream ingestion), not from here.
   let realtimePubsub: PubSub | null = null;
-  if (config.realtime && spacesCtx) {
+  if (config.realtime) {
     realtimePubsub =
       options.realtime?.pubsub ?? config.realtime.pubsub ?? new InMemoryPubSub({
         queueBound: config.realtime.queueBound,
       });
-    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
-    const isCommunityDid = communityAdapter
-      ? cachedIsCommunityDid(communityAdapter)
-      : undefined;
-    spacesCtx = {
-      ...spacesCtx,
-      adapter: wrapWithPublishing(spacesCtx.adapter, realtimePubsub, { isCommunityDid }),
-    };
+    if (spacesCtx) {
+      const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+      const isCommunityDid = communityAdapter
+        ? cachedIsCommunityDid(communityAdapter)
+        : undefined;
+      spacesCtx = {
+        ...spacesCtx,
+        adapter: wrapWithPublishing(spacesCtx.adapter, realtimePubsub, { isCommunityDid }),
+      };
+    }
   }
 
   registerAdminRoutes(app, db, config);
@@ -130,13 +135,18 @@ export function createApp(
     );
   }
 
-  if (config.realtime && spacesCtx && realtimePubsub) {
-    const authMiddleware =
-      options.realtime?.authMiddleware ??
-      options.spaces?.authMiddleware ??
-      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
+  if (config.realtime && realtimePubsub) {
+    // The ticket endpoint still needs a JWT verifier — but that verifier only
+    // exists when spaces is configured. Without spaces, private-topic ticket
+    // minting simply isn't offered; public subscriptions (collection:/actor:)
+    // require no auth and still work.
+    const authMiddleware = spacesCtx
+      ? options.realtime?.authMiddleware ??
+        options.spaces?.authMiddleware ??
+        createServiceAuthMiddleware(spacesCtx.verifier, { authOverride })
+      : null;
     const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
-    registerRealtimeRoutes(app, config, spacesCtx.adapter, communityAdapter, {
+    registerRealtimeRoutes(app, config, spacesCtx?.adapter ?? null, communityAdapter, {
       authMiddleware,
       pubsub: realtimePubsub,
     });

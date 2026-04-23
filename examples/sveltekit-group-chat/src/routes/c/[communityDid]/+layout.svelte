@@ -7,6 +7,7 @@
 	import { createChannel } from '$lib/rooms/rooms.remote';
 	import { unread, resetUnread } from '$lib/rooms/unread.svelte';
 	import { connectCommunityRealtime } from '$lib/rooms/realtime.svelte';
+	import { connection, connectionIndicator } from '$lib/rooms/connection.svelte';
 
 	let { data, children } = $props();
 
@@ -116,6 +117,24 @@
 			<span class="truncate font-semibold">{data.server?.name ?? 'server'}</span>
 		{/if}
 	</div>
+
+	{@const ind = connectionIndicator(connection.status)}
+	<span
+		class="flex items-center gap-1.5 text-xs"
+		title={ind.label}
+		aria-label={`Connection: ${ind.label}`}
+	>
+		<span
+			class="size-2 rounded-full {ind.color === 'green'
+				? 'bg-emerald-500'
+				: ind.color === 'orange'
+					? 'animate-pulse bg-amber-500'
+					: ind.color === 'red'
+						? 'bg-red-500'
+						: 'bg-base-400'}"
+		></span>
+		<span class="text-base-500 hidden sm:inline">{ind.label}</span>
+	</span>
 </Navbar>
 
 <Sidebar>

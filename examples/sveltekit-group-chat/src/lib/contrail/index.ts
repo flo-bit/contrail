@@ -52,23 +52,20 @@ function build(env: Env): Bundle {
 				maxSize: 2 * 1024 * 1024,
 				accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 			},
-			// Dev-only bypass: trust the HMAC-signed `did` cookie the OAuth flow
-			// sets, in lieu of a service-auth JWT. bsky.social rejects
-			// `getServiceAuth` for loopback clients, so without this the demo
-			// would need a tunnel. NEVER set DEV_AUTH=1 in prod.
+			// Dev-only bypass: trust the HMAC-signed session cookie (or an
+			// X-Dev-Did header for server-side synthetic requests) as auth, so
+			// the loopback OAuth client doesn't need to round-trip through the
+			// user's PDS for getServiceAuth (bsky.social rejects that on
+			// loopback). In prod, DEV_AUTH is unset and every caller — browser
+			// or third-party — must present a real atproto service-auth JWT.
+			// Browsers get one by calling our SvelteKit helper which uses the
+			// OAuth session to mint via the user's PDS.
 			authOverride: devAuth
 				? (req: Request) => {
-						// Accept either the HMAC-signed session cookie (from the
-						// browser via /xrpc/...) or an X-Dev-Did header (from the
-						// server-side remote helpers, which construct synthetic
-						// requests and already trust the session themselves).
 						const headerDid = req.headers.get('x-dev-did');
 						const did = headerDid ?? getSignedCookieFromRequest(req, 'did');
 						if (!did) return null;
-						return {
-							issuer: did,
-							audience: env.SERVICE_DID
-						};
+						return { issuer: did, audience: env.SERVICE_DID };
 					}
 				: undefined
 		},

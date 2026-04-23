@@ -125,7 +125,7 @@ async function grant(app: Hono, caller: string, spaceUri: string, subject: any, 
 }
 
 async function whoamiLevel(app: Hono, caller: string, spaceUri: string): Promise<string | null> {
-  const res = await call(app, "GET", `/xrpc/test.comm.community.whoami?spaceUri=${encodeURIComponent(spaceUri)}`, caller);
+  const res = await call(app, "GET", `/xrpc/test.comm.community.space.whoami?spaceUri=${encodeURIComponent(spaceUri)}`, caller);
   expect(res.status).toBe(200);
   return ((await res.json()) as any).accessLevel;
 }

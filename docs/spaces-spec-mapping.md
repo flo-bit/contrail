@@ -44,7 +44,6 @@ All endpoints are emitted under `<config.namespace>.space.*` from templates in
 - `space.listMembers` — members for a space (member/owner only)
 - `space.listRecords` — space-scoped record listing; bearer-read supported
 - `space.getRecord` — single record; bearer-read supported
-- `space.whoami` — caller's relationship to a space (extra; not in spec)
 
 ### Write
 - `space.putRecord`
@@ -56,11 +55,16 @@ All endpoints are emitted under `<config.namespace>.space.*` from templates in
 - `space.removeMember`
 - `space.leaveSpace` — self-remove; owner cannot leave (extra)
 
-### Invites (extra; not in the spec)
-- `space.invite.create` — returns raw token once; hash stored
-- `space.invite.redeem`
-- `space.invite.list`
-- `space.invite.revoke`
+### Contrail extras (namespace: `<ns>.spaceExt.*`)
+Clearly-off-spec features live under a separate namespace so the `space.*`
+surface stays close to whatever the permissioned-data spec becomes. Moved here
+from `space.*` in an earlier refactor.
+
+- `spaceExt.whoami` — caller's relationship to a space (owner / member flags)
+- `spaceExt.invite.create` — returns raw token once; hash stored
+- `spaceExt.invite.redeem`
+- `spaceExt.invite.list`
+- `spaceExt.invite.revoke`
 
 Invites have three kinds: `join`, `read`, `read-join`. `read` tokens grant
 bearer-only anonymous read access; `read-join` does both; `join` requires a

@@ -11,13 +11,14 @@ function mk(topic: string, n: number): RealtimeEvent {
     topic,
     kind: "record.created",
     payload: {
-      spaceUri: "at://x/y/z",
+      uri: `at://did:plc:x/c/${n}`,
+      did: "did:plc:x",
       collection: "c",
-      authorDid: "did:plc:x",
       rkey: String(n),
       cid: null,
       record: {},
-      createdAt: n,
+      time_us: n,
+      space: "at://x/y/z",
     },
     ts: n,
   };

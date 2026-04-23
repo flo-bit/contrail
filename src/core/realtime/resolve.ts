@@ -17,7 +17,10 @@ import { resolveReachableSpaces } from "../community/acl";
 import { spaceTopic, parseCommunityTopic, parseSpaceTopic } from "./types";
 
 export interface TopicResolutionContext {
-  spaces: StorageAdapter;
+  /** May be null when the deployment has no spaces module — in that case
+   *  `space:` and `community:` topics are NotSupported. Public topics
+   *  (`collection:`, `actor:`) still resolve. */
+  spaces: StorageAdapter | null;
   /** May be null if the community module is not enabled. */
   community: CommunityAdapter | null;
 }
@@ -41,6 +44,9 @@ export async function resolveTopicForCaller(
   // space:<uri>
   const spaceUri = parseSpaceTopic(rawTopic);
   if (spaceUri) {
+    if (!ctx.spaces) {
+      return { ok: false, error: "NotSupported", reason: "spaces-module-disabled" };
+    }
     const space = await ctx.spaces.getSpace(spaceUri);
     if (!space) return { ok: false, error: "NotFound", reason: "space-not-found" };
     if (space.ownerDid === callerDid) return { ok: true, topics: [rawTopic] };
@@ -52,7 +58,7 @@ export async function resolveTopicForCaller(
   // community:<did>
   const communityDid = parseCommunityTopic(rawTopic);
   if (communityDid) {
-    if (!ctx.community) {
+    if (!ctx.community || !ctx.spaces) {
       return { ok: false, error: "NotSupported", reason: "community-module-disabled" };
     }
     const row = await ctx.community.getCommunity(communityDid);
@@ -72,18 +78,15 @@ export async function resolveTopicForCaller(
     return { ok: true, topics };
   }
 
-  // actor:<did> — self-only in v1.
+  // actor:<did> — public stream of records authored by this DID.
+  // Any caller can subscribe (parallels listRecords with an `actor` filter).
   if (rawTopic.startsWith("actor:")) {
-    const did = rawTopic.slice("actor:".length);
-    if (did !== callerDid) {
-      return { ok: false, error: "Forbidden", reason: "actor-self-only" };
-    }
     return { ok: true, topics: [rawTopic] };
   }
 
-  // collection:<nsid> — public firehose, not exposed in v1.
+  // collection:<nsid> — public firehose for this collection.
   if (rawTopic.startsWith("collection:")) {
-    return { ok: false, error: "NotSupported", reason: "collection-firehose-disabled" };
+    return { ok: true, topics: [rawTopic] };
   }
 
   return { ok: false, error: "InvalidRequest", reason: "unknown-topic" };

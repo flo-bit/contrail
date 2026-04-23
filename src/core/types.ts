@@ -384,6 +384,12 @@ export function validateConfig(config: ContrailConfig): void {
       }
     }
   }
+
+  if (config.community && !config.spaces) {
+    throw new Error(
+      "Invalid config: `community` requires `spaces`. Community-owned spaces reuse the spaces storage adapter."
+    );
+  }
 }
 
 // Helpers

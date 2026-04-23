@@ -70,9 +70,9 @@ export function translateForQuery(
   const spec = sub.querySpec;
   if (!spec) return null;
   if (event.kind !== "record.created" && event.kind !== "record.deleted") return [];
-  if (event.payload.spaceUri !== spec.spaceUri) return [];
+  if (event.payload.space !== spec.spaceUri) return [];
 
-  const primaryUri = `at://${event.payload.authorDid}/${event.payload.collection}/${event.payload.rkey}`;
+  const primaryUri = `at://${event.payload.did}/${event.payload.collection}/${event.payload.rkey}`;
 
   if (event.payload.collection === spec.collection) {
     if (event.kind === "record.created") {
@@ -82,7 +82,7 @@ export function translateForQuery(
           data: {
             record: {
               uri: primaryUri,
-              did: event.payload.authorDid,
+              did: event.payload.did,
               rkey: event.payload.rkey,
               collection: event.payload.collection,
               cid: event.payload.cid,
@@ -100,7 +100,7 @@ export function translateForQuery(
         kind: "record.deleted",
         data: {
           uri: primaryUri,
-          did: event.payload.authorDid,
+          did: event.payload.did,
           rkey: event.payload.rkey
         }
       }
@@ -125,7 +125,7 @@ export function translateForQuery(
             relation: relName,
             child: {
               uri: primaryUri,
-              did: event.payload.authorDid,
+              did: event.payload.did,
               rkey: event.payload.rkey,
               collection: event.payload.collection,
               cid: event.payload.cid,
@@ -145,7 +145,7 @@ export function translateForQuery(
           parentUri: info.parentUri,
           relation: relName,
           childRkey: event.payload.rkey,
-          childDid: event.payload.authorDid
+          childDid: event.payload.did
         }
       }
     ];

@@ -21,13 +21,13 @@ permissioned-data spec with no knowledge of access levels or delegation.
 | ------------------------------------------- | ------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
 | Community as a DID                          | `communities.did`                                                   | ✅        | 1:1                                                                                                      |
 | Mint a fresh did:plc for a community        | `community.mint` → P-256 keypairs + genesis op + plc.directory POST | ✅        | Post uses secp256k1; we use P-256 (both spec-valid, we avoid the dep)                                    |
-| Adopt an existing account                   | `community.adopt` (app password)                                    | ➕        | Not in the post; contrail addition. See [community.md](./community.md) for the rationale                  |
+| Adopt an existing account                   | `community.adopt` (app password)                                    | ➕        | Not in the post; contrail addition — app passwords avoid OAuth's periodic re-auth, useful for machine-operated accounts |
 | Creator-held rotation key (recovery)        | Returned once by `community.mint` as `recoveryKey`                  | ✅        | Never stored; caller must save it                                                                        |
 | Groups-are-spaces                           | Community-owned rows in `spaces`                                    | ✅        | No separate groups table; every group is a space                                                         |
 | `$admin` reserved space                     | Auto-created on community creation                                  | ✅        | Keyed by the literal string `$admin`; cannot be deleted                                                  |
 | `$publishers` reserved space                | Auto-created on community creation                                  | ➕        | Not in the post; contrail extension for the "publish public records as the community" capability         |
 | Delegated membership (space → space)        | `community_access_levels.subject_kind = 'space'`                    | ✅        | Recursive resolution with cycle guard + depth cap                                                        |
-| Access-level ladder                         | `member` / `manager` / `admin` / `owner`                            | ⚠️        | 4 levels vs the post's 8. See [community.md § Relationship to the Arbiter post](./community.md)           |
+| Access-level ladder                         | `member` / `manager` / `admin` / `owner`                            | ⚠️        | 4 levels vs the post's 8 — post-levels 2–3 (add/remove members) collapse into `manager`; levels 4–5 collapse into `admin` |
 | Read-Member-List (pre-member tier)          | _none_                                                              | ❌        | Post's level 1; skipped in v1                                                                            |
 | Add-Members vs Remove-Members split         | Bundled into `manager`                                              | ⚠️        | Post treats them separately                                                                              |
 | Configure-Space                             | `admin` in that space                                               | ✅        | Post's level 5                                                                                           |
@@ -35,7 +35,7 @@ permissioned-data spec with no knowledge of access levels or delegation.
 | Remove-Space                                | `owner` in target space OR `admin` in `$admin`                      | ✅        | Post's level 7                                                                                           |
 | Owner                                       | `owner`; only meaningful in `$admin` for owner-management           | ✅        | Post's level 8                                                                                           |
 | Push model for membership lists             | Reconciler writes `spaces_members` after each change                | ➕        | Post doesn't specify a sync direction; push keeps spaces read-path zero-overhead                         |
-| Cross-community / cross-arbiter delegation  | _same-contrail only_                                                | ❌        | v1 constraint. Private-membership federation is deferred — see [community.md § Deferred work]            |
+| Cross-community / cross-arbiter delegation  | _same-contrail only_                                                | ❌        | v1 constraint. Private-membership federation is deferred until the cross-instance distribution shape firms up |
 | Invites as a separate service               | `community.invite.*` (create/list/revoke/redeem)                    | ➕        | Built-in — tokens pre-sign a grant, redeemer gets the encoded access level. SHA-256 at rest, atomic redeem. |
 | Writing records under the arbiter's account | `community.space.putRecord` (in-space) + `community.putRecord` (public) | ✅    | In-space: `admin+`. Public: `member+` in `$publishers` — routes through adopted community's PDS          |
 | Public membership-list flag                 | _none_                                                              | ❌        | Post allows spaces to expose membership publicly. Ruled out for cross-instance federation (privacy)      |
@@ -55,7 +55,7 @@ membership is user-controlled or community-controlled.
 
 ### Community lifecycle
 - `community.adopt` · `community.mint` · `community.reauth` · `community.delete`
-- `community.list` · `community.getHealth` · `community.whoami`
+- `community.list` · `community.getHealth`
 
 ### Space (group / role / channel) lifecycle
 - `community.space.create` · `community.space.delete`
@@ -63,6 +63,7 @@ membership is user-controlled or community-controlled.
 ### Membership
 - `community.space.grant` · `community.space.revoke` · `community.space.setAccessLevel`
 - `community.space.listMembers` (`?flatten=true` for the resolved DID list) · `community.space.resync`
+- `community.space.whoami` — caller's effective access level in a space
 
 ### Invites
 - `community.invite.create` · `community.invite.list` · `community.invite.revoke` · `community.invite.redeem`

@@ -15,12 +15,19 @@ import type { PubSub, RealtimeEvent } from "./types";
 import { DEFAULT_TICKET_TTL_MS, DEFAULT_KEEPALIVE_MS } from "./types";
 
 export interface RealtimeRoutesOptions {
-  /** Required: auth middleware for `<ns>.realtime.ticket` (JWT required).
-   *  The subscribe endpoint uses the *ticket* path primarily, so it does not
-   *  require this middleware — but bots can subscribe with Authorization
-   *  header, in which case this middleware is used as a fallback. */
-  authMiddleware: MiddlewareHandler;
+  /** Auth middleware for `<ns>.realtime.ticket` and for JWT-based bot
+   *  subscriptions to private topics. Null when no JWT verifier is available
+   *  (deployments without a spaces config) — in that case, private-topic
+   *  subscribe paths return NotSupported and public topics still work without
+   *  auth. */
+  authMiddleware: MiddlewareHandler | null;
   pubsub?: PubSub;
+}
+
+/** Public topics: subscribable without any auth. Mirrors listRecords
+ *  semantics — no JWT means "public records only". */
+function isPublicTopic(topic: string): boolean {
+  return topic.startsWith("collection:") || topic.startsWith("actor:");
 }
 
 /** WebSocketPair exists on Cloudflare Workers; on Node/Bun it's absent.
@@ -32,7 +39,7 @@ interface WebSocketPairCtor {
 export function registerRealtimeRoutes(
   app: Hono,
   config: ContrailConfig,
-  spaces: StorageAdapter,
+  spaces: StorageAdapter | null,
   community: CommunityAdapter | null,
   options: RealtimeRoutesOptions
 ): void {
@@ -47,36 +54,51 @@ export function registerRealtimeRoutes(
   const NS = `${config.namespace}.realtime`;
 
   // POST /<ns>.realtime.ticket — { topic } → { ticket, topics, expiresAt }
-  app.post(`/xrpc/${NS}.ticket`, options.authMiddleware, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as { topic?: string } | null;
-    if (!body?.topic) {
-      return c.json({ error: "InvalidRequest", message: "topic required" }, 400);
-    }
-    const resolved = await resolveTopicForCaller(body.topic, sa.issuer, { spaces, community });
-    if (!resolved.ok) {
-      const status = resolved.error === "NotFound" ? 404 : resolved.error === "Forbidden" ? 403 : 400;
-      return c.json({ error: resolved.error, reason: resolved.reason }, status);
-    }
-    const ticket = await signer.sign({
-      topics: resolved.topics,
-      did: sa.issuer,
-      ttlMs: ticketTtl,
+  // Ticket-minting exists so browsers (which can't set Authorization on
+  // EventSource) can subscribe to *private* topics. Public topics
+  // (collection:, actor:) don't need tickets — subscribe with `?topic=` directly.
+  if (options.authMiddleware) {
+    const authMw = options.authMiddleware;
+    app.post(`/xrpc/${NS}.ticket`, authMw, async (c) => {
+      const sa = getAuth(c);
+      const body = (await c.req.json().catch(() => null)) as { topic?: string } | null;
+      if (!body?.topic) {
+        return c.json({ error: "InvalidRequest", message: "topic required" }, 400);
+      }
+      const resolved = await resolveTopicForCaller(body.topic, sa.issuer, { spaces, community });
+      if (!resolved.ok) {
+        const status = resolved.error === "NotFound" ? 404 : resolved.error === "Forbidden" ? 403 : 400;
+        return c.json({ error: resolved.error, reason: resolved.reason }, status);
+      }
+      const ticket = await signer.sign({
+        topics: resolved.topics,
+        did: sa.issuer,
+        ttlMs: ticketTtl,
+      });
+      return c.json({
+        ticket,
+        topics: resolved.topics,
+        expiresAt: Date.now() + ticketTtl,
+      });
     });
-    return c.json({
-      ticket,
-      topics: resolved.topics,
-      expiresAt: Date.now() + ticketTtl,
-    });
-  });
+  }
 
-  // GET /<ns>.realtime.subscribe — SSE or WS, driven by ?ticket= or JWT.
+  // GET /<ns>.realtime.subscribe — SSE or WS.
+  //
+  // Three access paths, all land on the same stream:
+  //   - `?topic=collection:<nsid>` or `?topic=actor:<did>` — *public*, no auth.
+  //     Mirrors listRecords semantics.
+  //   - `?ticket=<jwt>` — presented by browsers, minted via `.ticket` after
+  //     a JWT-authenticated call. Only used for private topics.
+  //   - `Authorization: Bearer <jwt>` + `?topic=space:<uri>` — server-side
+  //     bots can skip the ticket dance and go straight to subscribe.
   app.get(`/xrpc/${NS}.subscribe`, async (c) => {
     const url = new URL(c.req.url);
     const ticketParam = url.searchParams.get("ticket");
     const collectionFilter = url.searchParams.get("collection");
+    const topicParam = url.searchParams.get("topic");
 
-    let callerDid: string;
+    let callerDid: string | null = null;
     let topics: string[];
 
     if (ticketParam) {
@@ -87,30 +109,41 @@ export function registerRealtimeRoutes(
       callerDid = payload.did;
       topics = payload.topics;
       // Optional: narrow to topics the query explicitly requests.
-      const requested = url.searchParams.get("topic");
-      if (requested) {
-        if (!payload.topics.includes(requested)) {
+      if (topicParam) {
+        if (!payload.topics.includes(topicParam)) {
           return c.json({ error: "Forbidden", reason: "topic-not-in-ticket" }, 403);
         }
-        topics = [requested];
+        topics = [topicParam];
       }
+    } else if (topicParam && isPublicTopic(topicParam)) {
+      // Public subscribe — no auth required. Jetstream ingestion publishes
+      // record events to collection:/actor: topics directly.
+      topics = [topicParam];
     } else {
-      // JWT path for server-side bots. Requires the auth middleware to have
-      // run and attached `serviceAuth` to the context — so we invoke it
-      // inline.
-      const runAuth = options.authMiddleware;
+      // JWT path for private-topic bots. If no auth middleware is available
+      // (deployment has no spaces config), private topics aren't offered.
+      if (!options.authMiddleware) {
+        return c.json(
+          {
+            error: "InvalidRequest",
+            reason: "private-topic-without-auth",
+            message:
+              "Subscribing to space:/community: topics requires a JWT verifier; only public topics (collection:, actor:) are available on this deployment.",
+          },
+          400
+        );
+      }
       let authed = false;
-      await runAuth(c, async () => {
+      await options.authMiddleware(c, async () => {
         authed = true;
       });
       if (!authed) return c.res; // middleware already responded with 401
       const sa = getAuth(c);
       callerDid = sa.issuer;
-      const topic = url.searchParams.get("topic");
-      if (!topic) {
+      if (!topicParam) {
         return c.json({ error: "InvalidRequest", message: "topic required" }, 400);
       }
-      const resolved = await resolveTopicForCaller(topic, callerDid, { spaces, community });
+      const resolved = await resolveTopicForCaller(topicParam, callerDid, { spaces, community });
       if (!resolved.ok) {
         const status = resolved.error === "NotFound" ? 404 : resolved.error === "Forbidden" ? 403 : 400;
         return c.json({ error: resolved.error, reason: resolved.reason }, status);
@@ -191,10 +224,11 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
 
 /** Wrap an iterable: drop events that don't pass the collection filter (if
  *  any), and close the outer controller as soon as we see a `member.removed`
- *  for the caller's own DID. */
+ *  for the caller's own DID. `callerDid` may be null on public subscriptions
+ *  (anonymous) — in that case self-kick is not applicable. */
 function withSelfKickAndFilter(
   source: AsyncIterable<RealtimeEvent>,
-  callerDid: string,
+  callerDid: string | null,
   collectionFilter: string | null,
   ac: AbortController
 ): AsyncIterable<RealtimeEvent> {
