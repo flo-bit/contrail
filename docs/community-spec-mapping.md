@@ -48,7 +48,7 @@ Legend: ✅ aligned · ⚠️ partial / different granularity · ❌ missing · 
 ## XRPC surface
 
 All endpoints emitted under `<config.namespace>.community.*` from templates
-in `community-lexicon-templates/`. Distinct from `<ns>.space.*` so the
+in `lexicon-templates/community/`. Distinct from `<ns>.space.*` so the
 user-managed spaces surface stays clean. Community-managed spaces live
 under `<ns>.community.space.*` so the endpoint name reveals whether
 membership is user-controlled or community-controlled.

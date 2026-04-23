@@ -59,12 +59,15 @@ function fieldToParam(field: string): string {
   return field.replace(/\.(\w)/g, (_, c) => c.toUpperCase());
 }
 
-/** Locate the shipped space-template directory. Works in contrail's own repo
- *  and in downstream projects that depend on @atmo-dev/contrail. */
-function findSpaceTemplatesDir(rootDir: string): string | null {
+/** Locate a shipped lexicon-template subdir (`spaces`/`community`/`realtime`).
+ *  Works in contrail's own repo and in downstream projects that depend on
+ *  @atmo-dev/contrail. All three module templates live under one
+ *  `lexicon-templates/` parent; each subdir is instantiated by the generator
+ *  into its own `<ns>.*` namespace. */
+function findTemplatesDir(rootDir: string, module: "spaces" | "community" | "realtime"): string | null {
   const candidates = [
-    join(rootDir, "spaces-lexicon-templates"),
-    join(rootDir, "node_modules/@atmo-dev/contrail/spaces-lexicon-templates"),
+    join(rootDir, "lexicon-templates", module),
+    join(rootDir, "node_modules/@atmo-dev/contrail/lexicon-templates", module),
   ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
@@ -72,27 +75,9 @@ function findSpaceTemplatesDir(rootDir: string): string | null {
   return null;
 }
 
-function findCommunityTemplatesDir(rootDir: string): string | null {
-  const candidates = [
-    join(rootDir, "community-lexicon-templates"),
-    join(rootDir, "node_modules/@atmo-dev/contrail/community-lexicon-templates"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-function findRealtimeTemplatesDir(rootDir: string): string | null {
-  const candidates = [
-    join(rootDir, "realtime-lexicon-templates"),
-    join(rootDir, "node_modules/@atmo-dev/contrail/realtime-lexicon-templates"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
+const findSpaceTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "spaces");
+const findCommunityTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "community");
+const findRealtimeTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "realtime");
 
 /** Yield all JSON files under a directory (recursive). */
 function* walkJson(dir: string): Generator<string> {

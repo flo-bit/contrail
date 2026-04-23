@@ -6,9 +6,7 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "spaces-lexicon-templates/**/*.json",
-    "community-lexicon-templates/**/*.json",
-    "realtime-lexicon-templates/**/*.json"
+    "lexicon-templates/**/*.json"
   ],
   "exports": {
     ".": {
@@ -39,9 +37,7 @@
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"
     },
-    "./spaces-lexicon-templates/*.json": "./spaces-lexicon-templates/*.json",
-    "./community-lexicon-templates/*.json": "./community-lexicon-templates/*.json",
-    "./realtime-lexicon-templates/*.json": "./realtime-lexicon-templates/*.json"
+    "./lexicon-templates/*.json": "./lexicon-templates/*.json"
   },
   "repository": {
     "type": "git",

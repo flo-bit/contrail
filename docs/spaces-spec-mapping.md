@@ -36,7 +36,7 @@ flow is shipped (same story we already have for public records via jetstream).
 ## Endpoints
 
 All endpoints are emitted under `<config.namespace>.space.*` from templates in
-`spaces-lexicon-templates/`.
+`lexicon-templates/spaces/`.
 
 ### Read
 - `space.listSpaces` — caller's spaces (scope=member|owner)

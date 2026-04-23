@@ -87,7 +87,7 @@ export function registerSpacesRoutes(
 
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
-   *  templates at `spaces-lexicon-templates/*` that the generator instantiates
+   *  templates at `lexicon-templates/spaces/*` that the generator instantiates
    *  under `<ns>.space.*` (spec-aligned) and `<ns>.spaceExt.*` (contrail
    *  extras — invites, whoami — that the permissioned-data spec doesn't cover). */
   const SPACE = `${config.namespace}.space`;
