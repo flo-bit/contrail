@@ -136,13 +136,13 @@ describe("community e2e — stage 1", () => {
 
     // whoami in both reserved spaces → owner
     for (const uri of [adminUri, publishersUri]) {
-      const r = await call(app, "GET", `/xrpc/test.comm.community.space.whoami?spaceUri=${encodeURIComponent(uri)}`, ALICE);
+      const r = await call(app, "GET", `/xrpc/test.comm.spaceExt.whoami?spaceUri=${encodeURIComponent(uri)}`, ALICE);
       expect(r.status).toBe(200);
       expect(((await r.json()) as any).accessLevel).toBe("owner");
     }
 
     // Bob isn't in either
-    const r = await call(app, "GET", `/xrpc/test.comm.community.space.whoami?spaceUri=${encodeURIComponent(adminUri)}`, BOB);
+    const r = await call(app, "GET", `/xrpc/test.comm.spaceExt.whoami?spaceUri=${encodeURIComponent(adminUri)}`, BOB);
     expect(r.status).toBe(200);
     expect(((await r.json()) as any).accessLevel).toBe(null);
   });
@@ -255,7 +255,7 @@ describe("community e2e — stage 1", () => {
     const level = await call(
       app,
       "GET",
-      `/xrpc/test.comm.community.space.whoami?spaceUri=${encodeURIComponent(spaceUri)}`,
+      `/xrpc/test.comm.spaceExt.whoami?spaceUri=${encodeURIComponent(spaceUri)}`,
       BOB
     );
     expect(((await level.json()) as any).accessLevel).toBe(null);

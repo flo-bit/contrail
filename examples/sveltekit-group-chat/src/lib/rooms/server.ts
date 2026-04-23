@@ -213,7 +213,7 @@ export async function whoami(
 	ctx: AuthedCallContext,
 	query: { spaceUri: string }
 ): Promise<{ spaceUri: string; accessLevel: string | null }> {
-	return callContrail(ctx, 'tools.atmo.chat.community.space.whoami', { query });
+	return callContrail(ctx, 'tools.atmo.chat.spaceExt.whoami', { query });
 }
 
 // --- realtime --------------------------------------------------------------
@@ -258,7 +258,7 @@ export async function createCommunityInvite(
 	maxUses: number | null;
 	createdAt: number;
 }> {
-	return callContrail(ctx, 'tools.atmo.chat.community.invite.create', { body: input });
+	return callContrail(ctx, 'tools.atmo.chat.invite.create', { body: input });
 }
 
 export async function listCommunityInvites(
@@ -267,21 +267,21 @@ export async function listCommunityInvites(
 ): Promise<{ invites: InviteView[] }> {
 	const q: Record<string, string> = { spaceUri: query.spaceUri };
 	if (query.includeRevoked) q.includeRevoked = 'true';
-	return callContrail(ctx, 'tools.atmo.chat.community.invite.list', { query: q });
+	return callContrail(ctx, 'tools.atmo.chat.invite.list', { query: q });
 }
 
 export async function revokeCommunityInvite(
 	ctx: AuthedCallContext,
 	input: { tokenHash: string }
 ): Promise<{ ok: true }> {
-	return callContrail(ctx, 'tools.atmo.chat.community.invite.revoke', { body: input });
+	return callContrail(ctx, 'tools.atmo.chat.invite.revoke', { body: input });
 }
 
 export async function redeemCommunityInvite(
 	ctx: AuthedCallContext,
 	input: { token: string }
 ): Promise<{ spaceUri: string; accessLevel: string; communityDid: string }> {
-	return callContrail(ctx, 'tools.atmo.chat.community.invite.redeem', { body: input });
+	return callContrail(ctx, 'tools.atmo.chat.invite.redeem', { body: input });
 }
 
 // --- blobs -----------------------------------------------------------------

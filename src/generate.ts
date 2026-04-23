@@ -64,7 +64,10 @@ function fieldToParam(field: string): string {
  *  @atmo-dev/contrail. All three module templates live under one
  *  `lexicon-templates/` parent; each subdir is instantiated by the generator
  *  into its own `<ns>.*` namespace. */
-function findTemplatesDir(rootDir: string, module: "spaces" | "community" | "realtime"): string | null {
+function findTemplatesDir(
+  rootDir: string,
+  module: "spaces" | "community" | "realtime" | "invite"
+): string | null {
   const candidates = [
     join(rootDir, "lexicon-templates", module),
     join(rootDir, "node_modules/@atmo-dev/contrail/lexicon-templates", module),
@@ -78,6 +81,7 @@ function findTemplatesDir(rootDir: string, module: "spaces" | "community" | "rea
 const findSpaceTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "spaces");
 const findCommunityTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "community");
 const findRealtimeTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "realtime");
+const findInviteTemplatesDir = (rootDir: string) => findTemplatesDir(rootDir, "invite");
 
 /** Yield all JSON files under a directory (recursive). */
 function* walkJson(dir: string): Generator<string> {
@@ -872,6 +876,51 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           for (const [k, v] of Object.entries(obj)) {
             if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.realtime")) {
               out[k] = v.replace(/^tools\.atmo\.realtime/, `${ns}.realtime`);
+            } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
+              out[k] = idReplace(v);
+            } else {
+              out[k] = rewriteRefs(v);
+            }
+          }
+          return out;
+        }
+        return obj;
+      };
+
+      for (const file of walkJson(templatesDir)) {
+        const doc = JSON.parse(readFileSync(file, "utf-8"));
+        if (typeof doc.id !== "string" || !templateIdRe.test(doc.id)) continue;
+        const newId = idReplace(doc.id);
+        const rewritten = rewriteRefs({ ...doc, id: newId });
+        writeLexicon(newId, rewritten);
+      }
+    }
+  }
+
+  // --- Invites: a single <ns>.invite.* family that dispatches on space
+  //     ownership. Emitted whenever spaces is configured (user-owned spaces
+  //     can always issue invites); community-owned spaces add the
+  //     `accessLevel` branch inside the same handlers. ---
+
+  if (config.spaces) {
+    log("Generating invite endpoints...");
+    const templatesDir = findInviteTemplatesDir(rootDir);
+    if (!templatesDir) {
+      log("  (invite templates not found — skipping)");
+    } else {
+      const templateIdRe = /^tools\.atmo\.invite(\.[A-Za-z0-9.]+)?$/;
+      const idReplace = (id: string) =>
+        id.startsWith("tools.atmo.invite")
+          ? id.replace(/^tools\.atmo\.invite/, `${ns}.invite`)
+          : id;
+
+      const rewriteRefs = (obj: any): any => {
+        if (Array.isArray(obj)) return obj.map(rewriteRefs);
+        if (obj && typeof obj === "object") {
+          const out: any = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (k === "ref" && typeof v === "string" && v.startsWith("tools.atmo.invite")) {
+              out[k] = v.replace(/^tools\.atmo\.invite/, `${ns}.invite`);
             } else if (k === "id" && typeof v === "string" && templateIdRe.test(v)) {
               out[k] = idReplace(v);
             } else {

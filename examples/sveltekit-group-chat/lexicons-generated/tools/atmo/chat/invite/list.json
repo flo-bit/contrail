@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "tools.atmo.chat.community.invite.list",
+  "id": "tools.atmo.chat.invite.list",
   "defs": {
     "main": {
       "type": "query",
-      "description": "List invites for a community-owned space. Caller must have manager+ on the space. Raw tokens are never returned — tokenHash is the stable id.",
+      "description": "List invites for a space. User-owned spaces: owner-only. Community-owned spaces: manager+.",
       "parameters": {
         "type": "params",
         "required": [
@@ -33,7 +33,7 @@
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "tools.atmo.chat.community.defs#inviteView"
+                "ref": "tools.atmo.chat.invite.defs#inviteView"
               }
             }
           }
@@ -41,10 +41,10 @@
       },
       "errors": [
         {
-          "name": "Forbidden"
+          "name": "NotFound"
         },
         {
-          "name": "NotFound"
+          "name": "Forbidden"
         }
       ]
     }

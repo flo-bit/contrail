@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "tools.atmo.spaceExt.invite.list",
+  "id": "tools.atmo.invite.list",
   "defs": {
     "main": {
       "type": "query",
-      "description": "List invites for a space. Owner only.",
+      "description": "List invites for a space. User-owned spaces: owner-only. Community-owned spaces: manager+.",
       "parameters": {
         "type": "params",
         "required": ["spaceUri"],
@@ -21,7 +21,7 @@
           "properties": {
             "invites": {
               "type": "array",
-              "items": { "type": "ref", "ref": "tools.atmo.space.defs#inviteView" }
+              "items": { "type": "ref", "ref": "tools.atmo.invite.defs#inviteView" }
             }
           }
         }

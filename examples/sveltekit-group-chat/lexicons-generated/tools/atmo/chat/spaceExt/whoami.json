@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Report the caller's relationship to a space: whether they are the owner and/or a member. Useful for clients to avoid a listMembers roundtrip.",
+      "description": "Caller's relationship to a space. For user-owned spaces membership is binary (`isMember`). For community-owned spaces `accessLevel` is also returned, resolved through the community's access-level ladder (including delegated grants).",
       "parameters": {
         "type": "params",
         "required": [
@@ -31,6 +31,16 @@
             },
             "isMember": {
               "type": "boolean"
+            },
+            "accessLevel": {
+              "type": "string",
+              "knownValues": [
+                "member",
+                "manager",
+                "admin",
+                "owner"
+              ],
+              "description": "Only set for community-owned spaces. Null when the caller has no resolvable access."
             }
           }
         }

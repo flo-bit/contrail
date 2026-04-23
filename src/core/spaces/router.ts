@@ -11,12 +11,11 @@ import {
   verifyServiceAuthRequest,
 } from "./auth";
 import { nextTid } from "./tid";
-import { hashInviteToken, mintInviteToken } from "../invite/token";
+import { hashInviteToken } from "../invite/token";
+import { resolveEffectiveLevel } from "../community/acl";
 import { buildSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
-  type InviteKind,
-  type InviteRow,
   type SpaceRow,
   type SpacesConfig,
   type StorageAdapter,
@@ -38,7 +37,8 @@ export function registerSpacesRoutes(
   db: Database,
   config: ContrailConfig,
   options: SpacesRoutesOptions = {},
-  ctx?: { adapter: StorageAdapter; verifier: import("@atcute/xrpc-server/auth").ServiceJwtVerifier } | null
+  ctx?: { adapter: StorageAdapter; verifier: import("@atcute/xrpc-server/auth").ServiceJwtVerifier } | null,
+  community?: import("../community/adapter").CommunityAdapter | null
 ): void {
   const spacesConfig = config.spaces;
   if (!spacesConfig) return;
@@ -486,89 +486,8 @@ export function registerSpacesRoutes(
     return c.json({ space: publicSpaceView(space, true) });
   });
 
-  // Invites (contrail extras — emitted under <ns>.spaceExt.invite.*)
-  app.post(`/xrpc/${SPACE_EXT}.invite.create`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as
-      | {
-          spaceUri?: string;
-          kind?: InviteKind;
-          expiresAt?: number;
-          maxUses?: number;
-          note?: string;
-        }
-      | null;
-    if (!body?.spaceUri) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
-    }
-    const kind: InviteKind = body.kind ?? "join";
-    if (kind !== "join" && kind !== "read" && kind !== "read-join") {
-      return c.json({ error: "InvalidRequest", message: "kind must be 'join', 'read', or 'read-join'" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-
-    const { token, tokenHash } = await mintInviteToken();
-    const invite = await adapter.createInvite({
-      spaceUri: body.spaceUri,
-      tokenHash,
-      kind,
-      expiresAt: body.expiresAt ?? null,
-      maxUses: body.maxUses ?? null,
-      createdBy: sa.issuer,
-      note: body.note ?? null,
-    });
-    return c.json({ token, invite: publicInviteView(invite) });
-  });
-
-  app.post(`/xrpc/${SPACE_EXT}.invite.redeem`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as { token?: string } | null;
-    if (!body?.token) {
-      return c.json({ error: "InvalidRequest", message: "token required" }, 400);
-    }
-    const tokenHash = await hashInviteToken(body.token);
-    const invite = await adapter.redeemInvite(tokenHash, Date.now());
-    if (!invite) {
-      return c.json({ error: "InvalidInvite", reason: "expired-revoked-or-exhausted" }, 400);
-    }
-    await adapter.addMember(invite.spaceUri, sa.issuer, invite.createdBy);
-    return c.json({ spaceUri: invite.spaceUri });
-  });
-
-  app.get(`/xrpc/${SPACE_EXT}.invite.list`, auth, async (c) => {
-    const sa = getAuth(c);
-    const spaceUri = c.req.query("spaceUri");
-    if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
-    const space = await adapter.getSpace(spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-    const includeRevoked = c.req.query("includeRevoked") === "true";
-    const invites = await adapter.listInvites(spaceUri, { includeRevoked });
-    return c.json({ invites: invites.map(publicInviteView) });
-  });
-
-  app.post(`/xrpc/${SPACE_EXT}.invite.revoke`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; tokenHash?: string }
-      | null;
-    if (!body?.spaceUri || !body.tokenHash) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri and tokenHash required" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-    const ok = await adapter.revokeInvite(body.tokenHash);
-    return c.json({ ok });
-  });
+  // Invites live under `<ns>.invite.*` — see src/core/invite/router.ts. The
+  // unified surface dispatches on space ownership.
 
   app.post(`/xrpc/${SPACE}.addMember`, auth, async (c) => {
     const sa = getAuth(c);
@@ -625,6 +544,9 @@ export function registerSpacesRoutes(
     return c.json({ ok: true });
   });
 
+  // Unified whoami — `<ns>.spaceExt.whoami?spaceUri=X` → { isOwner, isMember,
+  // accessLevel? }. `accessLevel` is present only when the target space is
+  // community-owned; for user-owned spaces membership is binary.
   app.get(`/xrpc/${SPACE_EXT}.whoami`, auth, async (c) => {
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
@@ -633,12 +555,24 @@ export function registerSpacesRoutes(
     if (!space) return c.json({ error: "NotFound" }, 404);
 
     const isOwner = space.ownerDid === sa.issuer;
-    if (isOwner) {
-      return c.json({ isOwner: true, isMember: true });
+
+    // Community-owned space: resolve through the access-level ladder. The
+    // reconciler keeps spaces_members in sync, so isMember derives from the
+    // effective level directly.
+    const isCommunity = community ? !!(await community.getCommunity(space.ownerDid)) : false;
+    if (isCommunity) {
+      const level = await resolveEffectiveLevel(community!, spaceUri, sa.issuer);
+      return c.json({
+        isOwner,
+        isMember: isOwner || !!level,
+        accessLevel: level,
+      });
     }
+
+    // User-owned space: binary membership.
+    if (isOwner) return c.json({ isOwner: true, isMember: true });
     const member = await adapter.getMember(spaceUri, sa.issuer);
-    if (!member) return c.json({ isOwner: false, isMember: false });
-    return c.json({ isOwner: false, isMember: true });
+    return c.json({ isOwner: false, isMember: !!member });
   });
 }
 
@@ -653,20 +587,6 @@ function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {
   return auth;
 }
 
-function publicInviteView(invite: InviteRow) {
-  return {
-    tokenHash: invite.tokenHash,
-    spaceUri: invite.spaceUri,
-    kind: invite.kind,
-    expiresAt: invite.expiresAt,
-    maxUses: invite.maxUses,
-    usedCount: invite.usedCount,
-    createdBy: invite.createdBy,
-    createdAt: invite.createdAt,
-    revokedAt: invite.revokedAt,
-    note: invite.note,
-  };
-}
 
 function publicSpaceView(space: SpaceRow, forOwner: boolean) {
   return {

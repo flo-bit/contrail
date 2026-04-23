@@ -17,6 +17,7 @@ import type { CommunityRoutesOptions } from "../community/router";
 import { CommunityAdapter } from "../community/adapter";
 import { registerRealtimeRoutes } from "../realtime/router";
 import type { RealtimeRoutesOptions } from "../realtime/router";
+import { registerInviteRoutes } from "../invite/router";
 import { InMemoryPubSub } from "../realtime/in-memory";
 import { wrapWithPublishing } from "../realtime/publishing-adapter";
 import type { PubSub } from "../realtime/types";
@@ -116,7 +117,10 @@ export function createApp(
   registerCollectionRoutes(app, db, config, spacesCtx, { pubsub: realtimePubsub });
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
-  registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx);
+  const communityAdapterForSpaces = config.community && spacesCtx
+    ? new CommunityAdapter(spacesDb)
+    : null;
+  registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx, communityAdapterForSpaces);
 
   const authOverride = config.spaces?.authOverride;
 
@@ -133,6 +137,16 @@ export function createApp(
       { ...options.community, authMiddleware },
       { spacesAdapter: spacesCtx.adapter, verifier: spacesCtx.verifier }
     );
+  }
+
+  if (config.spaces && spacesCtx) {
+    // Unified invite surface: one `<ns>.invite.*` family that dispatches on
+    // space ownership (user-owned → addMember; community-owned → grant).
+    const authMiddleware =
+      options.spaces?.authMiddleware ??
+      createServiceAuthMiddleware(spacesCtx.verifier, { authOverride });
+    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+    registerInviteRoutes(app, config, spacesCtx.adapter, communityAdapter, { authMiddleware });
   }
 
   if (config.realtime && realtimePubsub) {
