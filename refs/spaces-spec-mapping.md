@@ -1,7 +1,7 @@
 # Spaces: mapping to the atproto permissioned-data rough spec
 
 This is the map between contrail's spaces implementation and the rough spec
-sketched at <https://dholms.leaflet.pub/3mhj6bcqats2o> (Daniel Holmgren,
+sketched at [dholms.leaflet.pub/3mhj6bcqats2o](https://dholms.leaflet.pub/3mhj6bcqats2o) (Daniel Holmgren,
 March 2026). The spec is explicitly low-confidence and subject to change — so
 is this doc. The goal is to make it obvious, when the real spec lands, where
 contrail already lines up and where it needs to change.

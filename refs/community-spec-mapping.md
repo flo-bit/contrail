@@ -1,7 +1,7 @@
 # Communities: mapping to the Arbiter design post
 
 This is the map between contrail's community module and the Arbiter design
-sketched at <https://zicklag.leaflet.pub/3mjrvb5pul224> (zicklag / Roomy,
+sketched at [zicklag.leaflet.pub/3mjrvb5pul224](https://zicklag.leaflet.pub/3mjrvb5pul224) (zicklag / Roomy,
 April 2026). The post is an early design note and will likely evolve — so
 will this doc. The goal is to make it obvious, when the standard firms up,
 where contrail already lines up and where it needs to change.
