@@ -7,7 +7,7 @@
  *        params: { spaceUri, limit: 50 }
  *      })
  *    );
- *    // template: {#each messagesQuery.records as r (r.rkey)} {r.record.text}
+ *    // template: {#each messagesQuery.records as r (r.rkey)} {r.value.text}
  *
  *  Records and params are typed via the app's generated `XRPCQueries` /
  *  `Records` ambient declarations (from `src/lexicon-types/`). Reading
@@ -243,14 +243,14 @@ export class WatchQuery<K extends string> {
 	addOptimistic(input: {
 		rkey: string;
 		did: string;
-		record: RecordShapeOf<K>;
+		value: RecordShapeOf<K>;
 		time_us?: number;
 	}): void {
 		this.#store.addOptimistic({
 			rkey: input.rkey,
 			did: input.did,
 			collection: this.#collection,
-			record: input.record as Record<string, unknown>,
+			value: input.value as Record<string, unknown>,
 			time_us: input.time_us
 		});
 	}

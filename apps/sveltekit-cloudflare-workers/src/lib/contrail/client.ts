@@ -14,13 +14,13 @@ export interface Profile {
 export function extractProfile(entry: {
 	did: string;
 	handle?: string;
-	record?: unknown;
+	value?: unknown;
 }): Profile {
-	const record = entry.record as { displayName?: string; avatar?: string } | undefined;
+	const value = entry.value as { displayName?: string; avatar?: string } | undefined;
 	return {
 		handle: entry.handle ?? entry.did,
-		displayName: record?.displayName,
-		avatar: record?.avatar
+		displayName: value?.displayName,
+		avatar: value?.avatar
 	};
 }
 

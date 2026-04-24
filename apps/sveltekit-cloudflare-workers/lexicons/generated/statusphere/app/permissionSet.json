@@ -10,7 +10,7 @@
         {
           "type": "permission",
           "resource": "rpc",
-          "inheritAud": true,
+          "aud": "*",
           "lxm": [
             "statusphere.app.getCursor",
             "statusphere.app.getOverview",

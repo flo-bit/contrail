@@ -1,0 +1,169 @@
+{
+  "lexicon": 1,
+  "id": "com.example.event.getRecord",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get a single community.lexicon.calendar.event record by AT URI",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT URI of the record"
+          },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include profile + identity info keyed by DID"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "uri",
+            "value"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid"
+            },
+            "value": {
+              "type": "ref",
+              "ref": "community.lexicon.calendar.event#main"
+            },
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            },
+            "time_us": {
+              "type": "integer"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "#appBskyActorProfile"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        }
+      }
+    },
+    "appBskyActorProfile": {
+      "type": "object",
+      "properties": {
+        "avatar": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Small image to be displayed next to posts from account. AKA, 'profile picture'"
+        },
+        "banner": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Larger horizontal image to display behind profile view."
+        },
+        "labels": {
+          "refs": [
+            "com.atproto.label.defs#selfLabels"
+          ],
+          "type": "union",
+          "description": "Self-label values, specific to the Bluesky application, on the overall account."
+        },
+        "website": {
+          "type": "string",
+          "format": "uri"
+        },
+        "pronouns": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Free-form pronouns text.",
+          "maxGraphemes": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "pinnedPost": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2560,
+          "description": "Free-form profile description text.",
+          "maxGraphemes": 256
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 640,
+          "maxGraphemes": 64
+        },
+        "joinedViaStarterPack": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        }
+      }
+    }
+  }
+}

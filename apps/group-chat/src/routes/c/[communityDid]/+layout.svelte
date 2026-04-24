@@ -37,7 +37,7 @@
 	function projectChannel(
 		r: (typeof channelsQuery.records)[number]
 	): ChannelMeta | null {
-		const rec = r.record;
+		const rec = r.value;
 		if (!r._space || rec.communityDid !== data.communityDid || !rec.name) return null;
 		if (!rec.createdAt) return null;
 		let visibility: 'public' | 'private';

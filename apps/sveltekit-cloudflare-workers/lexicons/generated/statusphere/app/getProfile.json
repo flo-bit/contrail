@@ -54,19 +54,20 @@
           "type": "string",
           "format": "at-uri"
         },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "#appBskyActorProfile"
+        },
         "collection": {
           "type": "string",
           "format": "nsid"
         },
         "rkey": {
           "type": "string"
-        },
-        "cid": {
-          "type": "string"
-        },
-        "record": {
-          "type": "ref",
-          "ref": "#appBskyActorProfile"
         }
       }
     },

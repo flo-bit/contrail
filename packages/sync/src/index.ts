@@ -14,13 +14,13 @@
 
 export interface WatchRecord {
 	uri: string;
+	cid?: string | null;
+	value: Record<string, unknown>;
 	did: string;
 	rkey: string;
 	collection: string;
-	record: Record<string, unknown>;
 	time_us?: number;
 	indexed_at?: number;
-	cid?: string | null;
 	/** Set when the record originates from a per-space table. */
 	_space?: string;
 	/** Present on optimistic entries added via `addOptimistic` — not set by
@@ -111,7 +111,7 @@ export interface WatchStore {
 		rkey: string;
 		did: string;
 		collection?: string;
-		record: Record<string, unknown>;
+		value: Record<string, unknown>;
 		time_us?: number;
 		uri?: string;
 	}): void;
@@ -563,7 +563,7 @@ export function createWatchStore(options: WatchStoreOptions): WatchStore {
 				did: input.did,
 				rkey: input.rkey,
 				collection: input.collection ?? "",
-				record: input.record,
+				value: input.value,
 				time_us: input.time_us ?? now * 1000,
 				indexed_at: now,
 				cid: null,

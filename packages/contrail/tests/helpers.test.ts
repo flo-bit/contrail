@@ -15,7 +15,7 @@ describe("formatRecord", () => {
       indexed_at: 2000,
     };
     const formatted = formatRecord(row);
-    expect(formatted.record).toEqual({ name: "hello" });
+    expect(formatted.value).toEqual({ name: "hello" });
     expect(formatted.uri).toBe("at://did:plc:test/test.col/abc");
     expect(formatted.did).toBe("did:plc:test");
   });
@@ -31,7 +31,7 @@ describe("formatRecord", () => {
       time_us: 0,
       indexed_at: 0,
     };
-    expect(formatRecord(row).record).toBeNull();
+    expect(formatRecord(row).value).toBeNull();
   });
 
   it("returns raw string for invalid JSON", () => {
@@ -45,7 +45,7 @@ describe("formatRecord", () => {
       time_us: 0,
       indexed_at: 0,
     };
-    expect(formatRecord(row).record).toBe("not-json");
+    expect(formatRecord(row).value).toBe("not-json");
   });
 });
 

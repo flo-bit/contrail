@@ -141,19 +141,6 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     return null;
   }
 
-  function detectQueryableFields(collection: string): Record<string, QueryableField> {
-    const filePath = findCollectionLexicon(collection);
-    if (!filePath) return {};
-    try {
-      const doc = JSON.parse(readFileSync(filePath, "utf-8"));
-      const mainRecord = doc.defs?.main?.record;
-      if (!mainRecord?.properties) return {};
-      return analyzeProperties(doc.defs, mainRecord.properties, "");
-    } catch {
-      return {};
-    }
-  }
-
   function getKnownValues(collection: string, fieldName: string): string[] {
     const filePath = findCollectionLexicon(collection);
     if (!filePath) return [];
@@ -217,13 +204,17 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     relationDefs?: RelationDef[],
     referenceDefs?: ReferenceDef[]
   ) {
+    // Response shape mirrors atproto's `com.atproto.repo.listRecords#record`
+    // ({ uri, cid, value }) and extends it with contrail-specific fields.
+    // Required list + field name match the standard so generic atproto
+    // clients can consume contrail responses without custom handling.
     const properties: Record<string, any> = {
       uri: { type: "string", format: "at-uri" },
+      cid: { type: "string", format: "cid" },
+      value: collectionRef ? { type: "ref", ref: collectionRef } : { type: "unknown" },
       did: { type: "string", format: "did" },
       collection: { type: "string", format: "nsid" },
       rkey: { type: "string" },
-      cid: { type: "string" },
-      record: collectionRef ? { type: "ref", ref: collectionRef } : { type: "unknown" },
       time_us: { type: "integer" },
       ...(config.spaces
         ? {
@@ -256,7 +247,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         properties[rd.refName] = { type: "ref", ref: `#ref${cap(rd.refName)}Record` };
       }
     }
-    return { type: "object", required: ["uri", "did", "collection", "rkey", "time_us"], properties };
+    return { type: "object", required: ["uri", "cid", "value"], properties };
   }
 
   function buildHydrateDefs(relationDefs: RelationDef[]): Record<string, any> {
@@ -345,10 +336,10 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       extraDefs[defName] = schema;
       objectRefs.push(`#${defName}`);
     }
-    let recordField: any;
-    if (objectRefs.length === 1) recordField = { type: "ref", ref: objectRefs[0] };
-    else if (objectRefs.length > 1) recordField = { type: "union", refs: objectRefs };
-    else recordField = { type: "unknown" };
+    let valueField: any;
+    if (objectRefs.length === 1) valueField = { type: "ref", ref: objectRefs[0] };
+    else if (objectRefs.length > 1) valueField = { type: "union", refs: objectRefs };
+    else valueField = { type: "unknown" };
     return {
       profileEntry: {
         type: "object",
@@ -357,10 +348,10 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
           did: { type: "string", format: "did" },
           handle: { type: "string" },
           uri: { type: "string", format: "at-uri" },
+          cid: { type: "string", format: "cid" },
+          value: valueField,
           collection: { type: "string", format: "nsid" },
           rkey: { type: "string" },
-          cid: { type: "string" },
-          record: recordField,
         },
       },
       ...extraDefs,
@@ -431,9 +422,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       if (!targetConfig) continue;
       const targetNsid = targetConfig.collection;
 
-      const autoDetected = detectQueryableFields(targetNsid);
-      const manual = targetConfig.queryable ?? {};
-      const merged = { ...autoDetected, ...manual };
+      const merged = targetConfig.queryable ?? {};
 
       // Search
       if (Array.isArray(targetConfig.searchable) && targetConfig.searchable.length > 0 && !feedParams["search"]) {
@@ -581,9 +570,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     const collection = colConfig.collection; // full NSID for lexicon refs
     const collectionRef = getCollectionLexiconRef(collection);
 
-    const autoDetected = detectQueryableFields(collection);
-    const manual = colConfig.queryable ?? {};
-    const merged = { ...autoDetected, ...manual };
+    const merged = colConfig.queryable ?? {};
     resolvedQueryableMap[shortName] = merged;
 
     // --- listRecords ---
@@ -751,7 +738,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       writeLexicon(`${ns}.${shortName}.getRecord`, {
         lexicon: 1, id: `${ns}.${shortName}.getRecord`,
         defs: {
-          main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "did", "collection", "rkey", "time_us"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
+          main: { type: "query", description: `Get a single ${collection} record by AT URI`, parameters: { type: "params", required: ["uri"], properties: getParams }, output: { encoding: "application/json", schema: { type: "object", required: ["uri", "value"], properties: { ...buildRecordDef(collectionRef, countFields, relationDefs, referenceDefs).properties, profiles: { type: "array", items: { type: "ref", ref: "#profileEntry" } } } } } },
           ...hydrateDefs, ...refDefs, ...profileDefs(),
         },
       });
@@ -1046,31 +1033,6 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
 }
 
 // --- Helpers used by writeRuntimeFiles ---
-
-function analyzeProperties(
-  defs: Record<string, any>,
-  properties: Record<string, any>,
-  prefix: string
-): Record<string, QueryableField> {
-  const result: Record<string, QueryableField> = {};
-  for (const [field, def] of Object.entries(properties)) {
-    const path = prefix ? `${prefix}.${field}` : field;
-    if (def.type === "string") {
-      if (def.format === "datetime") result[path] = { type: "range" };
-      else if (def.format !== "uri" && def.format !== "at-uri") result[path] = {};
-    } else if (def.type === "integer" || def.type === "number") {
-      result[path] = { type: "range" };
-    } else if (def.type === "ref" && def.ref === "com.atproto.repo.strongRef") {
-      result[`${path}.uri`] = {};
-    } else if (def.type === "union" && Array.isArray(def.refs) && def.refs.includes("com.atproto.repo.strongRef")) {
-      result[`${path}.uri`] = {};
-    } else if (def.type === "ref" && def.ref) {
-      const refId = def.ref.includes("#") ? def.ref.split("#")[1] : null;
-      if (refId && defs[refId]?.type === "string") result[path] = {};
-    }
-  }
-  return result;
-}
 
 function scanLexiconsDir(dirs: string[]): string[] {
   const files: string[] = [];

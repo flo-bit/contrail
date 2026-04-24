@@ -2,31 +2,31 @@ import type { Database, RecordRow } from "../types";
 
 export interface FormattedRecord {
   uri: string;
+  cid: string | null;
+  value: unknown;
   did: string;
   collection: string;
   rkey: string;
-  cid: string | null;
-  record: any;
   time_us: number;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export function formatRecord(row: RecordRow): FormattedRecord {
-  let record = null;
+  let value: unknown = null;
   if (row.record) {
     try {
-      record = JSON.parse(row.record);
+      value = JSON.parse(row.record);
     } catch {
-      record = row.record;
+      value = row.record;
     }
   }
   return {
     uri: row.uri,
+    cid: row.cid,
+    value,
     did: row.did,
     collection: row.collection,
     rkey: row.rkey,
-    cid: row.cid,
-    record,
     time_us: row.time_us,
     ...(row._space ? { space: row._space } : {}),
   };

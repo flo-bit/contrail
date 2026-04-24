@@ -174,46 +174,7 @@ Safe to run repeatedly — each pass converges toward zero missing / stale. Prog
 
 Refresh is **not** a replacement for `ingest`/`runPersistent` — it walks every user's full history, which is expensive. Use it after outages or during dev idle, not as a continuous freshness mechanism.
 
-## Querying
-
-### HTTP (what most callers use)
-
-Every config field gets a predictable URL param:
-
-```
-/xrpc/com.example.event.listRecords?mode=online&startsAtMin=2026-01-01&rsvpsGoingCountMin=10&sort=startsAt&order=asc&hydrateRsvps=5
-/xrpc/com.example.event.getRecord?uri=at://did:plc:.../...&hydrateRsvps=5
-```
-
-| Config produces | URL param |
-|---|---|
-| `queryable: { field: {} }` | `?field=value` (equality) |
-| `queryable: { field: { type: "range" } }` | `?fieldMin=…`, `?fieldMax=…` |
-| `relations: { rel: {...} }` | `?relCountMin=N`, `?sort=relCount`, `?hydrateRel=N` |
-| `relations: { rel: { groups: { going } } }` | `?relGoingCountMin=N`, `?sort=relGoingCount` |
-| `references: { ref: {...} }` | `?hydrateRef=true` |
-
-Dotted field names become camelCase params — `queryable: { "subject.uri": {} }` → `?subjectUri=…`.
-
-### Programmatic
-
-```ts
-const { records, cursor } = await contrail.query("event", {
-  filters: { mode: "online" },
-  rangeFilters: { startsAt: { min: "2026-01-01" } },
-  countFilters: { rsvp: 10 },                         // keyed by child collection short name
-  sort: { recordField: "startsAt", direction: "asc" },
-  limit: 20,
-});
-```
-
-The programmatic shape doesn't use the URL param names — keys are the underlying field/collection identifiers:
-
-- `filters` / `rangeFilters` — keyed by the field name from your config (`startsAt`, `subject.uri`), not the camelCased URL param.
-- `countFilters` — keyed by the target collection's short name for totals, or by the full `nsid#group` token for group counts. E.g., `{ rsvp: 10 }` for "at least 10 RSVPs total," or `{ "community.lexicon.calendar.rsvp#going": 10 }` for "at least 10 going."
-- `sort` — `{ recordField, direction }` for field sorts, `{ countType, direction }` for count sorts (where `countType` is the same collection-short-name or `nsid#group` as above).
-
-For count filters / sorts, the HTTP side is nicer than the programmatic side — consider going through `createHandler` + `fetch` even for in-process calls if you want the friendly names.
+Reading the indexed data — filters, sorts, hydration, search, pagination — has its own doc: [Querying](./02-querying.md).
 
 ## Adapters
 
@@ -237,6 +198,6 @@ const db = createPostgresDatabase(pool);
 | `jetstreams` | Bluesky | Jetstream URLs |
 | `relays` | Bluesky | Relay URLs for discovery |
 | `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
-| `spaces` | — | See [Spaces](./03-spaces.md) |
-| `community` | — | See [Communities](./04-communities.md) |
-| `realtime` | — | See [Sync](./05-sync.md) |
+| `spaces` | — | See [Spaces](./04-spaces.md) |
+| `community` | — | See [Communities](./05-communities.md) |
+| `realtime` | — | See [Sync](./06-sync.md) |

@@ -83,18 +83,20 @@ the worker keeps itself fresh from now on via the cron. hit:
 GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
 ```
 
-returns every `community.lexicon.calendar.event` record published anywhere on atproto that matches, as JSON. that's it — no PDS setup, no lexicon publishing, no relay configuration. everything scales from there: add filters, add full-text search, add more collections, turn on [spaces](./docs/03-spaces.md) for private records, mount the handler in sveltekit instead, swap the adapter for postgres.
+returns every `community.lexicon.calendar.event` record published anywhere on atproto that matches, as JSON. that's it — no PDS setup, no lexicon publishing, no relay configuration. everything scales from there: add filters, add full-text search, add more collections, turn on [spaces](./docs/04-spaces.md) for private records, mount the handler in sveltekit instead, swap the adapter for postgres.
 
 **not using workers?** same library, different `db`. see [adapters](./docs/01-indexing.md#adapters) for node:sqlite and postgres.
 
 ## Docs
 
-- [Indexing](./docs/01-indexing.md) — the core: collections, queries, ingestion, adapters
-- [Lexicons](./docs/02-lexicons.md) — `contrail-lex` CLI, codegen, publishing
-- [Spaces](./docs/03-spaces.md) — permissioned records stored by the appview
-- [Communities](./docs/04-communities.md) — group-controlled atproto DIDs
-- [Sync](./docs/05-sync.md) — reactive client-side store over `watchRecords`
-- [Examples](./docs/06-examples.md) — reference deployments in the repo
+- [Indexing](./docs/01-indexing.md) — the core: collections, ingestion, adapters
+- [Querying](./docs/02-querying.md) — filters, sorts, hydration, search, pagination
+- [Lexicons](./docs/03-lexicons.md) — `contrail-lex` CLI, codegen, publishing
+- [Spaces](./docs/04-spaces.md) — permissioned records stored by the appview
+- [Communities](./docs/05-communities.md) — group-controlled atproto DIDs
+- [Sync](./docs/06-sync.md) — reactive client-side store over `watchRecords`
+- [Examples](./docs/07-examples.md) — reference deployments in the repo
+- Frameworks: [SvelteKit + Cloudflare](./docs/frameworks/sveltekit-cloudflare.md)
 
 ## Packages
 

@@ -46,9 +46,9 @@
 		messagesQuery.records.map((r) => ({
 			rkey: r.rkey,
 			authorDid: r.did,
-			text: r.record.text ?? '',
-			createdAt: r.record.createdAt ?? '',
-			replyTo: r.record.replyTo,
+			text: r.value.text ?? '',
+			createdAt: r.value.createdAt ?? '',
+			replyTo: r.value.replyTo,
 			pending: r.optimistic === 'pending',
 			failed: r.optimistic === 'failed',
 			error: r.optimisticError
@@ -79,7 +79,7 @@
 		messagesQuery.addOptimistic({
 			rkey,
 			did: data.myDid,
-			record: {
+			value: {
 				$type: 'tools.atmo.chat.message',
 				text: t,
 				createdAt: new Date().toISOString()

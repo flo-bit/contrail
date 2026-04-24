@@ -1,0 +1,26 @@
+{
+  "lexicon": 1,
+  "id": "com.example.permissionSet",
+  "defs": {
+    "main": {
+      "type": "permission-set",
+      "title": "com.example",
+      "description": "All XRPC methods exposed by the com.example service.",
+      "permissions": [
+        {
+          "type": "permission",
+          "resource": "rpc",
+          "aud": "*",
+          "lxm": [
+            "com.example.event.getRecord",
+            "com.example.event.listRecords",
+            "com.example.getCursor",
+            "com.example.getOverview",
+            "com.example.getProfile",
+            "com.example.notifyOfUpdate"
+          ]
+        }
+      ]
+    }
+  }
+}

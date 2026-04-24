@@ -15,12 +15,12 @@ export const load: PageServerLoad = async ({ platform }) => {
 		const records = res.data.records;
 		const statuses = records
 			.map((r) => {
-				const record = r.record as { status: string; createdAt: string };
+				const value = r.value as { status: string; createdAt: string };
 				return {
 					did: r.did,
 					rkey: r.rkey,
-					status: record.status,
-					createdAt: record.createdAt
+					status: value.status,
+					createdAt: value.createdAt
 				};
 			})
 			.filter((s) => !isNaN(new Date(s.createdAt).getTime()));

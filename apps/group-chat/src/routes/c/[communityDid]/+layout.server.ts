@@ -41,14 +41,14 @@ export const load: LayoutServerLoad = async ({ locals, params, platform }) => {
 				r.space &&
 				r.did === communityDid &&
 				r.rkey === 'self' &&
-				r.record?.communityDid === communityDid
+				r.value?.communityDid === communityDid
 		);
-		if (row?.record?.name) {
-			const iconCid = row.record.icon?.ref?.$link;
+		if (row?.value?.name) {
+			const iconCid = row.value.icon?.ref?.$link;
 			server = {
 				communityDid,
-				name: row.record.name,
-				description: row.record.description,
+				name: row.value.name,
+				description: row.value.description,
 				iconUrl: iconCid
 					? `/api/blob?spaceUri=${encodeURIComponent(row.space!)}&cid=${encodeURIComponent(iconCid)}`
 					: undefined,

@@ -9,10 +9,10 @@ export interface ProfileEntry {
   did: string;
   handle: string | null;
   uri?: string;
+  cid?: string | null;
+  value?: unknown;
   collection?: string;
   rkey?: string;
-  cid?: string | null;
-  record?: any;
 }
 
 export function collectDids(
@@ -60,12 +60,12 @@ export async function resolveProfiles(
     );
 
     for (const row of rows) {
-      let record = null;
+      let value: unknown = null;
       if (row.record) {
         try {
-          record = JSON.parse(row.record);
+          value = JSON.parse(row.record);
         } catch {
-          record = row.record;
+          value = row.record;
         }
       }
       if (!result[row.did]) result[row.did] = [];
@@ -76,7 +76,7 @@ export async function resolveProfiles(
         collection,
         rkey: row.rkey,
         cid: row.cid,
-        record,
+        value,
       });
     }
   }
@@ -165,7 +165,7 @@ async function fetchMissingProfiles(
             collection,
             rkey,
             cid,
-            record,
+            value: record,
           });
         } catch {
           // Skip failures silently

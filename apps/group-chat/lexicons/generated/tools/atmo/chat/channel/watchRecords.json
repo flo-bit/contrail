@@ -44,34 +44,15 @@
             "type": "string",
             "description": "Filter by communityDid"
           },
-          "name": {
-            "type": "string",
-            "description": "Filter by name"
-          },
-          "topic": {
-            "type": "string",
-            "description": "Filter by topic"
-          },
           "visibility": {
             "type": "string",
             "description": "Filter by visibility"
-          },
-          "createdAtMin": {
-            "type": "string",
-            "description": "Minimum value for createdAt"
-          },
-          "createdAtMax": {
-            "type": "string",
-            "description": "Maximum value for createdAt"
           },
           "sort": {
             "type": "string",
             "knownValues": [
               "communityDid",
-              "name",
-              "topic",
-              "visibility",
-              "createdAt"
+              "visibility"
             ],
             "description": "Field to sort by (default: time_us)"
           },

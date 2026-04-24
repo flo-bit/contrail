@@ -110,7 +110,7 @@ export function connectCommunityRealtime(communityDid: string): () => void {
 		} catch {
 			return;
 		}
-		// Payload shape mirrors listRecords output (uri/did/collection/rkey/cid/record/time_us/space?).
+		// Payload shape mirrors listRecords output (uri/cid/value/did/collection/rkey/time_us/space?).
 		// `space` is only set for space records — which is what we filter this community stream to.
 		if (kind === 'record.created') {
 			const p = ev.payload as {
@@ -118,13 +118,13 @@ export function connectCommunityRealtime(communityDid: string): () => void {
 				did: string;
 				collection: string;
 				rkey: string;
-				record: Record<string, unknown>;
+				value: Record<string, unknown>;
 				time_us: number;
 				space?: string;
 			};
 			if (!p.space) return;
 			if (p.collection === 'tools.atmo.chat.message') {
-				const rec = p.record as { text?: string; createdAt?: string; replyTo?: string };
+				const rec = p.value as { text?: string; createdAt?: string; replyTo?: string };
 				if (rec.text && rec.createdAt) {
 					channelMessages.append(p.space, {
 						rkey: p.rkey,

@@ -29,8 +29,8 @@ export const load: LayoutServerLoad = async ({ locals, platform }) => {
 		const entry = data.profiles?.[0];
 		const profile: Profile = {
 			handle: entry?.handle ?? undefined,
-			displayName: entry?.record?.displayName,
-			avatar: entry?.record?.avatar
+			displayName: entry?.value?.displayName,
+			avatar: entry?.value?.avatar
 		};
 		return { did: locals.did, profile };
 	} catch {

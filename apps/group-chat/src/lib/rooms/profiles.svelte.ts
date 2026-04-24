@@ -42,8 +42,8 @@ export function ensureProfile(did: string): void {
 			profiles[did] = {
 				did,
 				handle: entry?.handle ?? undefined,
-				displayName: entry?.record?.displayName,
-				avatar: entry?.record?.avatar
+				displayName: entry?.value?.displayName,
+				avatar: entry?.value?.avatar
 			};
 		} catch {
 			profiles[did] = { did, failed: true };

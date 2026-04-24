@@ -1,6 +1,6 @@
 # Communities
 
-Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys are held by the appview on behalf of multiple members, with tiered access levels. Built on top of [spaces](./03-spaces.md).
+Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys are held by the appview on behalf of multiple members, with tiered access levels. Built on top of [spaces](./04-spaces.md).
 
 ## When to use this
 

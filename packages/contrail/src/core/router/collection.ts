@@ -140,7 +140,7 @@ async function runQueryStream(opts: {
           rkey: event.payload.rkey,
           collection: event.payload.collection,
           cid: event.payload.cid,
-          record: event.payload.record,
+          value: event.payload.record,
           _space: event.payload.space
         }
       });
@@ -185,7 +185,7 @@ async function runQueryStream(opts: {
           rkey: event.payload.rkey,
           collection: event.payload.collection,
           cid: event.payload.cid,
-          record: event.payload.record,
+          value: event.payload.record,
           time_us: nowUs,
           indexed_at: event.ts,
           _space: event.payload.space

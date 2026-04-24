@@ -47,7 +47,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			if (r.did !== parsed.communityDid) continue;
 			if (parsed.key !== 'members') continue;
 			if (r.rkey !== 'self') continue;
-			const rec = r.record;
+			const rec = r.value;
 			if (!rec?.communityDid || !rec.name || !rec.createdAt) continue;
 			const iconCid = rec.icon?.ref?.$link;
 			servers.push({

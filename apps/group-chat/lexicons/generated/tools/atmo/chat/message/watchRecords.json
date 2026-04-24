@@ -40,10 +40,6 @@
             "type": "string",
             "description": "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied."
           },
-          "text": {
-            "type": "string",
-            "description": "Filter by text"
-          },
           "createdAtMin": {
             "type": "string",
             "description": "Minimum value for createdAt"
@@ -52,16 +48,10 @@
             "type": "string",
             "description": "Maximum value for createdAt"
           },
-          "replyTo": {
-            "type": "string",
-            "description": "Filter by replyTo"
-          },
           "sort": {
             "type": "string",
             "knownValues": [
-              "text",
-              "createdAt",
-              "replyTo"
+              "createdAt"
             ],
             "description": "Field to sort by (default: time_us)"
           },

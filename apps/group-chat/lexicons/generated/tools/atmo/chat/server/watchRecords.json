@@ -44,29 +44,10 @@
             "type": "string",
             "description": "Filter by communityDid"
           },
-          "name": {
-            "type": "string",
-            "description": "Filter by name"
-          },
-          "description": {
-            "type": "string",
-            "description": "Filter by description"
-          },
-          "createdAtMin": {
-            "type": "string",
-            "description": "Minimum value for createdAt"
-          },
-          "createdAtMax": {
-            "type": "string",
-            "description": "Maximum value for createdAt"
-          },
           "sort": {
             "type": "string",
             "knownValues": [
-              "communityDid",
-              "name",
-              "description",
-              "createdAt"
+              "communityDid"
             ],
             "description": "Field to sort by (default: time_us)"
           },
