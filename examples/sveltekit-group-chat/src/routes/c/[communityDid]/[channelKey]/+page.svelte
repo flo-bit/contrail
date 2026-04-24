@@ -6,19 +6,20 @@
 	import { setCurrentChannel } from '$lib/rooms/realtime.svelte';
 	import { markLastRead } from '$lib/rooms/unread.svelte';
 	import { displayName } from '$lib/rooms/profiles.svelte';
+	import { getContext } from 'svelte';
 	import { createWatchQuery } from '$lib/rooms/watch.svelte';
 	import { setConnectionStatus, resetConnectionStatus } from '$lib/rooms/connection.svelte';
 	import { nextTid } from '@atmo-dev/contrail';
+	import { CHANNELS_CTX, type ChannelsContext } from '$lib/rooms/channels-context';
 
 	let { data } = $props();
 
-	let channel = $derived(data.channels.find((c) => c.key === data.channelKey));
+	const channelsCtx = getContext<ChannelsContext>(CHANNELS_CTX);
+
+	let channel = $derived(channelsCtx.list.find((c) => c.key === data.channelKey));
 	let channelName = $derived(channel?.name ?? data.channelKey);
 
-	// Live message feed. `$derived` recreates the query when spaceUri changes;
-	// the old instance is auto-torn down via `createSubscriber` once no
-	// component reads it. Initial ticket is pre-minted during SSR to save one
-	// roundtrip; reconnects call the configured ticket minter transparently.
+	// Live message feed. `$derived` recreates the query when spaceUri changes
 	let messagesQuery = $derived(
 		createWatchQuery({
 			endpoint: 'tools.atmo.chat.message',

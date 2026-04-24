@@ -138,17 +138,16 @@ export function connectCommunityRealtime(communityDid: string): () => void {
 						bumpUnread(p.space, rec.createdAt);
 					}
 				}
-			} else if (p.collection === 'tools.atmo.chat.channel') {
-				void invalidateAll();
 			}
+			// Channel record events are handled by the layout's channel
+			// watch query now — no server-loader reinvoke needed.
 		} else if (kind === 'record.deleted') {
 			const p = ev.payload as { uri: string; did: string; collection: string; rkey: string; space?: string };
 			if (!p.space) return;
 			if (p.collection === 'tools.atmo.chat.message') {
 				channelMessages.remove(p.space, p.rkey);
-			} else if (p.collection === 'tools.atmo.chat.channel') {
-				void invalidateAll();
 			}
+			// Channel deletions: handled by the layout's channel watch query.
 		} else if (kind === 'member.added' || kind === 'member.removed') {
 			void invalidateAll();
 		}

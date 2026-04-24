@@ -1,10 +1,16 @@
 <script lang="ts">
+	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { CHANNELS_CTX, type ChannelsContext } from '$lib/rooms/channels-context';
+
 	let { data } = $props();
 
+	const channelsCtx = getContext<ChannelsContext>(CHANNELS_CTX);
+
 	$effect(() => {
-		if (data.channels.length > 0) {
-			void goto(`/c/${encodeURIComponent(data.communityDid)}/${data.channels[0].key}`, {
+		const first = channelsCtx.list[0];
+		if (first) {
+			void goto(`/c/${encodeURIComponent(data.communityDid)}/${first.key}`, {
 				replaceState: true
 			});
 		}
@@ -12,7 +18,7 @@
 </script>
 
 <div class="flex flex-1 items-center justify-center p-8">
-	{#if data.channels.length === 0}
+	{#if channelsCtx.list.length === 0}
 		<div class="text-base-500 text-center">
 			<p>No channels yet.</p>
 			{#if data.isAdmin}

@@ -1,13 +1,17 @@
 <script lang="ts">
+	import { setContext } from 'svelte';
 	import { page } from '$app/state';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button, Input, Modal, Heading, Sidebar, Navbar } from '@foxui/core';
 	import { user } from '$lib/atproto';
 	import { createChannel } from '$lib/rooms/rooms.remote';
+	import { createWatchQuery } from '$lib/rooms/watch.svelte';
 	import { unread, resetUnread } from '$lib/rooms/unread.svelte';
 	import { connectCommunityRealtime } from '$lib/rooms/realtime.svelte';
 	import { connection, connectionIndicator } from '$lib/rooms/connection.svelte';
+	import { parseSpaceUri } from '$lib/rooms/uri';
+	import { CHANNELS_CTX, type ChannelMeta } from '$lib/rooms/channels-context';
 
 	let { data, children } = $props();
 
@@ -19,9 +23,56 @@
 	let creating = $state(false);
 	let createError = $state<string | null>(null);
 
+	// Live channel list. Derived from a cross-space watch on
+	// `tools.atmo.chat.channel` records authored by the community DID —
+	// the contrail resolver expands this to the subset of channel spaces
+	// the caller has access to (owner or direct member or via delegation).
+	let channelsQuery = $derived(
+		createWatchQuery({
+			endpoint: 'tools.atmo.chat.channel',
+			params: { actor: data.communityDid as `did:${string}:${string}`, limit: 100 }
+		})
+	);
+
+	function projectChannel(
+		r: (typeof channelsQuery.records)[number]
+	): ChannelMeta | null {
+		const rec = r.record;
+		if (!r._space || rec.communityDid !== data.communityDid || !rec.name) return null;
+		if (!rec.createdAt) return null;
+		let visibility: 'public' | 'private';
+		if (rec.visibility === 'public') visibility = 'public';
+		else if (rec.visibility === 'private') visibility = 'private';
+		else return null;
+		const parsed = parseSpaceUri(r._space);
+		if (!parsed || parsed.key.startsWith('$') || parsed.key === 'members') return null;
+		return {
+			spaceUri: r._space,
+			key: parsed.key,
+			name: rec.name,
+			topic: rec.topic,
+			visibility,
+			createdAt: rec.createdAt
+		};
+	}
+
+	let channels: readonly ChannelMeta[] = $derived(
+		channelsQuery.records
+			.map(projectChannel)
+			.filter((c): c is ChannelMeta => c !== null)
+			.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+	);
+
+	// Expose the live list to child pages ([channelKey], root) via context.
+	setContext(CHANNELS_CTX, {
+		get list() {
+			return channels;
+		}
+	});
+
 	let currentChannelKey = $derived(page.params.channelKey ?? null);
 	let currentChannel = $derived(
-		currentChannelKey ? (data.channels.find((c) => c.key === currentChannelKey) ?? null) : null
+		currentChannelKey ? (channels.find((c) => c.key === currentChannelKey) ?? null) : null
 	);
 
 	async function submitNewChannel(e: SubmitEvent) {
@@ -46,9 +97,11 @@
 			newChannelTopic = '';
 			privateDids = '';
 			newChannelPrivate = false;
-			// Same-layout navigation wouldn't rerun the loader that populates
-			// `data.channels`, so force it before we navigate to the new channel.
-			await invalidateAll();
+			// The live watch picks up the new channel record automatically,
+			// but the caller's membership only lands after the grant completes,
+			// and the resolver-expanded ticket is cached for ~120s. In the
+			// common case the snapshot reconcile on next ticket refresh covers
+			// it; for now, fire-and-forget.
 			await goto(
 				resolve('/c/[communityDid]/[channelKey]', {
 					communityDid: data.communityDid,
@@ -70,7 +123,7 @@
 
 	$effect(() => {
 		if (currentChannelKey) {
-			const ch = data.channels.find((c) => c.key === currentChannelKey);
+			const ch = channels.find((c) => c.key === currentChannelKey);
 			if (ch) resetUnread(ch.spaceUri);
 		}
 	});
@@ -176,11 +229,11 @@
 				{/if}
 			</div>
 
-			{#if data.channels.length === 0}
+			{#if channels.length === 0}
 				<div class="text-base-500 px-2 py-1 text-xs">no channels yet</div>
 			{:else}
 				<ul class="flex flex-col gap-0.5">
-					{#each data.channels as ch (ch.spaceUri)}
+					{#each channels as ch (ch.spaceUri)}
 						{@const active = ch.key === currentChannelKey}
 						{@const hasUnread = !active && (unread.counts[ch.spaceUri] ?? 0) > 0}
 						<li>

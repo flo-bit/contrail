@@ -198,10 +198,21 @@ export async function getRealtimeTicket(
  *  snapshot on the ticketed connection. */
 export async function mintWatchTicket(
 	ctx: AuthedCallContext,
-	input: { watchRecordsNsid: string; spaceUri: string; limit?: number }
+	input: {
+		watchRecordsNsid: string;
+		/** Per-space watch. Mutually exclusive with `actor`. */
+		spaceUri?: string;
+		/** Cross-space watch — actor must currently be a community DID. */
+		actor?: string;
+		limit?: number;
+	}
 ): Promise<{ ticket: string; expiresAt: number }> {
+	if (!input.spaceUri && !input.actor) {
+		throw new Error('mintWatchTicket: spaceUri or actor required');
+	}
 	const url = new URL(`http://localhost/xrpc/${input.watchRecordsNsid}`);
-	url.searchParams.set('spaceUri', input.spaceUri);
+	if (input.spaceUri) url.searchParams.set('spaceUri', input.spaceUri);
+	if (input.actor) url.searchParams.set('actor', input.actor);
 	url.searchParams.set('mode', 'ws');
 	if (input.limit) url.searchParams.set('limit', String(input.limit));
 	const req = new Request(url, { headers: { accept: 'application/json' } });

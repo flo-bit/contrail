@@ -114,7 +114,13 @@ export function createApp(
   }
 
   registerAdminRoutes(app, db, config);
-  registerCollectionRoutes(app, db, config, spacesCtx, { pubsub: realtimePubsub });
+  const communityAdapterForCollection = config.community
+    ? new CommunityAdapter(spacesDb)
+    : null;
+  registerCollectionRoutes(app, db, config, spacesCtx, {
+    pubsub: realtimePubsub,
+    community: communityAdapterForCollection,
+  });
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
   const communityAdapterForSpaces = config.community && spacesCtx

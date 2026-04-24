@@ -91,9 +91,12 @@ export interface TicketMintContext {
 export type TicketMinter = (ctx: TicketMintContext) => Promise<string>;
 
 let ticketMinter: TicketMinter | null = async ({ endpoint, params }) => {
+	const spaceUri = params.spaceUri ? String(params.spaceUri) : undefined;
+	const actor = params.actor ? String(params.actor) : undefined;
 	const res = await mintWatchTicketCmd({
 		watchRecordsNsid: `${endpoint}.watchRecords`,
-		spaceUri: String(params.spaceUri ?? ''),
+		...(spaceUri ? { spaceUri } : {}),
+		...(actor ? { actor } : {}),
 		limit: typeof params.limit === 'number' ? params.limit : 50
 	});
 	return res.ticket;

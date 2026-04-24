@@ -26,7 +26,11 @@ export interface TicketPayload {
 
 export interface TicketQuerySpec {
   collection: string;
-  spaceUri: string;
+  /** Exactly one of `spaceUri` or `actor` is set. `spaceUri` = per-space
+   *  watch; `actor` = cross-space watch for records authored by this DID
+   *  (the ticket's `topics` list carries the expanded delivery topics). */
+  spaceUri?: string;
+  actor?: string;
   hydrate?: Record<string, { childCollection: string; matchField: string }>;
 }
 

@@ -23,11 +23,33 @@ import type { SpacesContext } from ".";
 import type { Nsid } from "@atcute/lexicons";
 import type { RealtimeEvent } from "../realtime/types";
 import { sseResponse } from "../realtime/sse";
-import { spaceTopic } from "../realtime/types";
+import { spaceTopic, communityTopic, parseSpaceTopic } from "../realtime/types";
 import type { SubscriberQuerySpec } from "../realtime/durable-object";
 import { DurableObjectPubSub } from "../realtime/durable-object";
 import { TicketSigner, type TicketQuerySpec } from "../realtime/ticket";
+import { resolveTopicForCaller } from "../realtime/resolve";
+import { mergeAsyncIterables } from "../realtime/merge";
+import type { CommunityAdapter } from "../community/adapter";
 import { getRelationField, getNestedValue } from "../types";
+
+/** Scope of a watch stream.
+ *  - `space`: single permissioned space — one `space:<uri>` topic.
+ *  - `actor`: records authored by `actor` across multiple spaces — the
+ *    resolver expanded these to a per-caller subset of space topics (plus
+ *    `actor:<did>` for public records). Events outside `allowedSpaces`
+ *    are filtered out. */
+type WatchScope =
+  | { kind: "space"; spaceUri: string }
+  | {
+      kind: "actor";
+      actor: string;
+      /** Concrete pubsub topics to subscribe to (from resolveTopicForCaller). */
+      topics: string[];
+      /** Space URIs the caller can see. Events with `space` outside this
+       *  set are dropped. Undefined `space` on an event (public record)
+       *  is allowed only when `actor` topic is in `topics`. */
+      allowedSpaces: Set<string>;
+    };
 
 /** Shared implementation of the watchRecords snapshot+live loop. Called by
  *  both transport branches (SSE and Worker-terminated WS). The caller owns
@@ -35,7 +57,7 @@ import { getRelationField, getNestedValue } from "../types";
 async function runQueryStream(opts: {
   send: (kind: string, data: unknown) => void;
   abort: AbortController;
-  spaceUri: string;
+  scope: WatchScope;
   callerDid: string | undefined;
   params: URLSearchParams;
   db: Database;
@@ -53,7 +75,7 @@ async function runQueryStream(opts: {
   const {
     send,
     abort,
-    spaceUri,
+    scope,
     callerDid,
     params,
     db,
@@ -65,6 +87,13 @@ async function runQueryStream(opts: {
     references,
     childCollectionMap
   } = opts;
+
+  // Predicate: does this event belong in the caller's scope?
+  const inScope = (space: string | undefined): boolean => {
+    if (scope.kind === "space") return space === scope.spaceUri;
+    if (space == null) return false; // actor mode: require space for now (app topic)
+    return scope.allowedSpaces.has(space);
+  };
 
   const hydrateSpec = parseHydrateParams(params, relations, references);
   const trackHydration = Object.keys(hydrateSpec.relations).length > 0;
@@ -80,7 +109,11 @@ async function runQueryStream(opts: {
     const meta = childCollectionMap.get(event.payload.collection);
     if (!meta) return;
     if (!(hydrateSpec.relations as Record<string, number>)[meta.relName]) return;
-    if (event.payload.space !== spaceUri) return;
+    if (!inScope(event.payload.space)) return;
+    // Actor mode: additionally require the record's author match our actor
+    // (the caller might share spaces with other authors — we only surface
+    // records by the actor under watch).
+    if (scope.kind === "actor" && event.payload.did !== scope.actor) return;
 
     if (event.kind === "record.created") {
       const matched = getNestedValue(event.payload.record, meta.matchField);
@@ -108,7 +141,7 @@ async function runQueryStream(opts: {
           collection: event.payload.collection,
           cid: event.payload.cid,
           record: event.payload.record,
-          _space: spaceUri
+          _space: event.payload.space
         }
       });
     } else {
@@ -132,7 +165,8 @@ async function runQueryStream(opts: {
       return;
     }
     if (event.kind !== "record.created" && event.kind !== "record.deleted") return;
-    if (event.payload.space !== spaceUri) return;
+    if (!inScope(event.payload.space)) return;
+    if (scope.kind === "actor" && event.payload.did !== scope.actor) return;
 
     if (event.payload.collection !== colNsid) {
       handleChildEvent(event);
@@ -154,7 +188,7 @@ async function runQueryStream(opts: {
           record: event.payload.record,
           time_us: nowUs,
           indexed_at: event.ts,
-          _space: spaceUri
+          _space: event.payload.space
         }
       });
     } else {
@@ -167,8 +201,15 @@ async function runQueryStream(opts: {
     }
   };
 
-  const topic = spaceTopic(spaceUri);
-  const iter = pubsub.subscribe(topic, abort.signal);
+  // Subscribe: one topic for space-scoped, merge across all topics for
+  // actor-scoped. `mergeAsyncIterables` exists for exactly this case.
+  let iter: AsyncIterable<RealtimeEvent>;
+  if (scope.kind === "space") {
+    iter = pubsub.subscribe(spaceTopic(scope.spaceUri), abort.signal);
+  } else {
+    const sources = scope.topics.map((t) => pubsub.subscribe(t, abort.signal));
+    iter = mergeAsyncIterables(sources, abort.signal);
+  }
 
   const buffered: RealtimeEvent[] = [];
   let snapshotDone = false;
@@ -186,8 +227,15 @@ async function runQueryStream(opts: {
   })();
 
   try {
-    send("snapshot.start", { spaceUri, collection: colNsid });
-    const result = await runPipeline(db, config, collection, params, undefined, [spaceUri]);
+    send(
+      "snapshot.start",
+      scope.kind === "space"
+        ? { spaceUri: scope.spaceUri, collection: colNsid }
+        : { actor: scope.actor, collection: colNsid }
+    );
+    const snapshotSpaces =
+      scope.kind === "space" ? [scope.spaceUri] : Array.from(scope.allowedSpaces);
+    const result = await runPipeline(db, config, collection, params, undefined, snapshotSpaces);
     for (const record of result.records) {
       if (abort.signal.aborted) break;
       if (typeof record.uri === "string") parentUris.add(record.uri);
@@ -209,7 +257,15 @@ async function runQueryStream(opts: {
           }
         }
       }
-      send("snapshot.record", { record });
+      // Normalize `space` → `_space` so snapshot records carry the same
+      // field name as live `record.created` payloads. Clients then have a
+      // single key to read regardless of origin.
+      const normalized = record as Record<string, unknown>;
+      if (normalized.space !== undefined && normalized._space === undefined) {
+        normalized._space = normalized.space;
+        delete normalized.space;
+      }
+      send("snapshot.record", { record: normalized });
     }
     send("snapshot.end", { cursor: result.cursor });
     snapshotDone = true;
@@ -397,10 +453,14 @@ export function registerCollectionRoutes(
   db: Database,
   config: ContrailConfig,
   spacesCtx?: SpacesContext | null,
-  options: { pubsub?: import("../realtime/types").PubSub | null } = {}
+  options: {
+    pubsub?: import("../realtime/types").PubSub | null;
+    community?: CommunityAdapter | null;
+  } = {}
 ): void {
   const ns = config.namespace;
   const pubsub = options.pubsub ?? null;
+  const community = options.community ?? null;
 
   /** When a per-collection endpoint receives `?spaceUri=...`, verify the JWT,
    *  resolve membership, run the space ACL, and return the caller DID if allowed.
@@ -561,67 +621,128 @@ export function registerCollectionRoutes(
         app.get(`/xrpc/${ns}.${collection}.watchRecords`, async (c) => {
           const params = new URL(c.req.url).searchParams;
           const spaceUri = params.get("spaceUri");
-          if (!spaceUri) {
+          const actorParam = params.get("actor");
+
+          if (!spaceUri && !actorParam) {
             return c.json(
-              { error: "InvalidRequest", message: "spaceUri required (cross-space watch is deferred)" },
+              { error: "InvalidRequest", message: "spaceUri or actor required" },
               400
             );
           }
 
-          // Try ticket-auth first: if a valid watch ticket scoped to this
-          // spaceUri/collection is present, use it and skip the JWT gate.
+          // Resolve the caller and their scope. Two parallel paths:
+          //   - space-scoped: single `space:<uri>` topic, per-space ACL gate.
+          //   - actor-scoped: caller's reachable spaces in the actor's
+          //     community (v1 only supports community DIDs as the actor).
+          //     Events are delivered via N `space:<uri>` topics and filtered
+          //     to `did === actor`.
           let callerDid: string | undefined;
-          let querySpec: SubscriberQuerySpec;
-          let ticketSpec: SubscriberQuerySpec | null = null;
+          let scope: WatchScope;
+          let scopeTopics: string[]; // for ticket signing
+          let ticketSpec: TicketQuerySpec | null = null;
 
           const providedTicket = params.get("ticket");
           if (providedTicket && ticketSigner) {
             const payload = await ticketSigner.verify(providedTicket);
-            if (payload?.querySpec) {
+            if (payload?.querySpec && payload.querySpec.collection === colNsid) {
               const ts = payload.querySpec;
-              if (
-                ts.collection === colNsid &&
-                ts.spaceUri === spaceUri &&
-                payload.topics.includes(spaceTopic(spaceUri))
-              ) {
+              if (spaceUri && ts.spaceUri === spaceUri) {
+                if (payload.topics.includes(spaceTopic(spaceUri))) {
+                  callerDid = payload.did;
+                  ticketSpec = {
+                    collection: ts.collection,
+                    spaceUri: ts.spaceUri,
+                    ...(ts.hydrate ? { hydrate: ts.hydrate } : {})
+                  };
+                }
+              } else if (actorParam && ts.actor === actorParam) {
                 callerDid = payload.did;
                 ticketSpec = {
                   collection: ts.collection,
-                  spaceUri: ts.spaceUri,
+                  actor: ts.actor,
                   ...(ts.hydrate ? { hydrate: ts.hydrate } : {})
                 };
               }
             }
           }
 
-          if (!ticketSpec) {
-            const gated = await gateSpaceAccess(c, spaceUri, "read");
-            if (gated instanceof Response) return gated;
-            callerDid = "callerDid" in gated ? gated.callerDid : undefined;
+          const hydrateSpec = parseHydrateParams(params, relations, references);
+          const hydrateForSpec = Object.keys(hydrateSpec.relations).length > 0
+            ? Object.fromEntries(
+                Object.entries(hydrateSpec.relations).map(([relName]) => {
+                  const rel = relations[relName]!;
+                  const childNsid =
+                    nsidForShortName(config, rel.collection) ?? rel.collection;
+                  return [
+                    relName,
+                    { childCollection: childNsid, matchField: getRelationField(rel) }
+                  ];
+                })
+              )
+            : undefined;
+
+          if (spaceUri) {
+            if (!ticketSpec) {
+              const gated = await gateSpaceAccess(c, spaceUri, "read");
+              if (gated instanceof Response) return gated;
+              callerDid = "callerDid" in gated ? gated.callerDid : undefined;
+            }
+            scope = { kind: "space", spaceUri };
+            scopeTopics = [spaceTopic(spaceUri)];
+          } else {
+            // Actor-scoped path — v1 only supports community DIDs.
+            const actor = actorParam!;
+            if (!community || !spacesCtx) {
+              return c.json(
+                { error: "NotSupported", reason: "community-module-disabled" },
+                400
+              );
+            }
+            const isCommunity = !!(await community.getCommunity(actor));
+            if (!isCommunity) {
+              return c.json(
+                { error: "InvalidRequest", reason: "actor-must-be-community-did", message: "cross-space watch currently only supports community DIDs as actor" },
+                400
+              );
+            }
+
+            if (!ticketSpec) {
+              // Verify the caller via the same JWT/in-process path used for
+              // per-space queries, then resolve the community topic to the
+              // caller's accessible space topics.
+              const nsidLxm = new URL(c.req.url).pathname.match(/\/xrpc\/([^?]+)/)?.[1] as Nsid | null;
+              const auth = await verifyServiceAuthRequest(spacesCtx.verifier, c.req.raw, nsidLxm);
+              if (!auth) {
+                return c.json(
+                  { error: "AuthRequired", message: "service-auth JWT or in-process principal required" },
+                  401
+                );
+              }
+              callerDid = auth.issuer;
+            }
+            const resolved = await resolveTopicForCaller(communityTopic(actor), callerDid!, {
+              spaces: spacesCtx.adapter,
+              community
+            });
+            if (!resolved.ok) {
+              const status =
+                resolved.error === "NotFound" ? 404 :
+                resolved.error === "Forbidden" ? 403 : 400;
+              return c.json({ error: resolved.error, reason: resolved.reason }, status);
+            }
+            const allowedSpaces = new Set<string>();
+            for (const t of resolved.topics) {
+              const uri = parseSpaceTopic(t);
+              if (uri) allowedSpaces.add(uri);
+            }
+            scope = { kind: "actor", actor, topics: resolved.topics, allowedSpaces };
+            scopeTopics = resolved.topics;
           }
 
-          // Build the query spec the DO will filter events against. Prefer
-          // the ticket's spec when present (guarantees parity with what the
-          // client asked for at handshake time, no param drift).
-          const hydrateSpec = parseHydrateParams(params, relations, references);
-          querySpec = ticketSpec ?? {
+          const querySpec: TicketQuerySpec = ticketSpec ?? {
             collection: colNsid,
-            spaceUri,
-            ...(Object.keys(hydrateSpec.relations).length > 0
-              ? {
-                  hydrate: Object.fromEntries(
-                    Object.entries(hydrateSpec.relations).map(([relName]) => {
-                      const rel = relations[relName]!;
-                      const childNsid =
-                        nsidForShortName(config, rel.collection) ?? rel.collection;
-                      return [
-                        relName,
-                        { childCollection: childNsid, matchField: getRelationField(rel) }
-                      ];
-                    })
-                  )
-                }
-              : {})
+            ...(spaceUri ? { spaceUri } : { actor: actorParam! }),
+            ...(hydrateForSpec ? { hydrate: hydrateForSpec } : {})
           };
 
           // Upgrade-to-WS path — forward directly to the DO with the spec,
@@ -634,29 +755,27 @@ export function registerCollectionRoutes(
 
           if (isWsMode && !isUpgrade) {
             // Handshake: return snapshot + a ticket the client uses to
-            // upgrade. Ticket carries the (did, topic, querySpec) signed
+            // upgrade. Ticket carries the (did, topics, querySpec) signed
             // so the WS-upgrade route skips any other auth.
             try {
-              // Capture a server-side timestamp BEFORE running the snapshot.
-              // Any event published after this moment will have ts > sinceTs
-              // and be replayed by the DO on WS connect — so the client
-              // never misses events during the snapshot→WS gap.
               const sinceTs = Date.now();
+              const snapshotSpaces =
+                scope.kind === "space" ? [scope.spaceUri] : Array.from(scope.allowedSpaces);
               const result = await runPipeline(
                 db,
                 config,
                 collection,
                 params,
                 undefined,
-                [spaceUri]
+                snapshotSpaces
               );
               let ticket: string | undefined;
               if (ticketSigner && callerDid) {
                 ticket = await ticketSigner.sign({
-                  topics: [spaceTopic(spaceUri)],
+                  topics: scopeTopics,
                   did: callerDid,
                   ttlMs: ticketTtl,
-                  querySpec: querySpec as TicketQuerySpec
+                  querySpec
                 });
               }
               const wsUrl = (() => {
@@ -683,15 +802,23 @@ export function registerCollectionRoutes(
             }
           }
 
-          if (isUpgrade && pubsub instanceof DurableObjectPubSub) {
+          if (isUpgrade && pubsub instanceof DurableObjectPubSub && scope.kind === "space") {
             // Forward the WS upgrade to the DO. The DO owns the socket from
             // here and hibernates when idle. Replays any events buffered
             // since the handshake `sinceTs` so the client closes the gap.
+            //
+            // Actor-scoped queries fall through to the worker-terminated
+            // path below — the DO binding is single-topic today; extending
+            // it to fan out over N topics is future work.
             const sinceTsParam = params.get("sinceTs");
             const sinceTs = sinceTsParam ? Number(sinceTsParam) : 0;
-            return pubsub.forwardSubscribe(spaceTopic(spaceUri), c.req.raw, {
+            return pubsub.forwardSubscribe(spaceTopic(scope.spaceUri), c.req.raw, {
               did: callerDid,
-              querySpec,
+              querySpec: {
+                collection: querySpec.collection,
+                spaceUri: scope.spaceUri,
+                ...(querySpec.hydrate ? { hydrate: querySpec.hydrate } : {})
+              },
               sinceTs: Number.isFinite(sinceTs) ? sinceTs : 0
             });
           }
@@ -733,7 +860,7 @@ export function registerCollectionRoutes(
             void runQueryStream({
               send: sendWs,
               abort: ac,
-              spaceUri,
+              scope,
               callerDid,
               params,
               db,
@@ -802,7 +929,7 @@ export function registerCollectionRoutes(
               void runQueryStream({
                 send,
                 abort: ac,
-                spaceUri,
+                scope,
                 callerDid,
                 params,
                 db,

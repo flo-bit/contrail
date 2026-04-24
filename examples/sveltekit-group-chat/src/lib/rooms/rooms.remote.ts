@@ -189,7 +189,8 @@ export const postMessage = command(PostMessageInput, async (input) => {
 // ---------------------------------------------------------------------------
 
 const MintWatchTicketInput = v.object({
-	spaceUri: v.pipe(v.string(), v.minLength(1)),
+	spaceUri: v.optional(v.pipe(v.string(), v.minLength(1))),
+	actor: v.optional(v.pipe(v.string(), v.minLength(1))),
 	watchRecordsNsid: v.pipe(v.string(), v.minLength(1)),
 	limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(200)))
 });
