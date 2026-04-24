@@ -6,15 +6,67 @@
  * dogfooding ingester the developer might have running in another terminal.
  */
 import pg from "pg";
+import type { Client } from "@atcute/client";
+import {
+  CompositeDidDocumentResolver,
+  PlcDidDocumentResolver,
+} from "@atcute/identity-resolver";
+import type { Did as AtDid, Nsid } from "@atcute/lexicons";
 
 export type Did = `did:${string}:${string}`;
 
 export const PDS_PORT = Number(process.env.DEVNET_PDS_PORT ?? 4000);
 export const PDS_URL = `http://localhost:${PDS_PORT}`;
+export const PLC_PORT = Number(process.env.DEVNET_PLC_PORT ?? 2582);
+export const PLC_URL = `http://localhost:${PLC_PORT}`;
 export const HANDLE_DOMAIN = process.env.DEVNET_HANDLE_DOMAIN ?? ".devnet.test";
 export const PDS_ADMIN_PASSWORD = process.env.DEVNET_PDS_ADMIN_PASSWORD ?? "devnet-admin-password";
 export const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/contrail";
+
+/**
+ * Arbitrary service DID used for the test Contrail deployment. The only
+ * requirements: (a) the JWTs we mint via getServiceAuth use this as their
+ * `aud` claim, and (b) Contrail's SpacesConfig.serviceDid matches. The DID
+ * itself doesn't need to be resolvable — the verifier only resolves issuers
+ * (users), not the audience.
+ */
+export const CONTRAIL_SERVICE_DID = "did:web:contrail-test.devnet.test";
+
+/**
+ * Resolver that points the PLC method at the local devnet PLC on :2582.
+ * Without this, the default resolver hits plc.directory and 404s on every
+ * devnet DID.
+ */
+export function createDevnetResolver() {
+  return new CompositeDidDocumentResolver({
+    methods: {
+      plc: new PlcDidDocumentResolver({ apiUrl: PLC_URL }),
+    },
+  });
+}
+
+/**
+ * Mint an atproto service-auth JWT via the PDS's getServiceAuth endpoint.
+ * Requires the client to already be authed for a user. Returns the raw JWT
+ * string suitable for `Authorization: Bearer <token>`.
+ */
+export async function mintServiceAuthJwt(
+  client: Client,
+  opts: { aud: string; lxm?: string; expSeconds?: number },
+): Promise<string> {
+  const params: { aud: AtDid; lxm?: Nsid; exp?: number } = {
+    aud: opts.aud as AtDid,
+  };
+  if (opts.lxm) params.lxm = opts.lxm as Nsid;
+  if (opts.expSeconds) params.exp = Math.floor(Date.now() / 1000) + opts.expSeconds;
+
+  const res = await client.get("com.atproto.server.getServiceAuth", { params });
+  if (!res.ok) {
+    throw new Error(`getServiceAuth → ${res.status}: ${JSON.stringify(res.data)}`);
+  }
+  return res.data.token;
+}
 
 export type TestAccount = { handle: string; password: string; did: Did };
 
