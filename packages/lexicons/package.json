@@ -7,6 +7,9 @@
     "dist",
     "lexicon-templates/**/*.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
