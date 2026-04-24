@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build && tsx scripts/append-scheduled.ts",
+		"build": "tsx scripts/generate.ts && lex-cli generate && vite build && tsx scripts/append-scheduled.ts",
 		"generate": "tsx scripts/generate.ts",
 		"generate:pull": "tsx scripts/generate.ts && lex-cli pull && tsx scripts/generate.ts && lex-cli pull && lex-cli generate",
 		"sync": "tsx scripts/sync.ts",
