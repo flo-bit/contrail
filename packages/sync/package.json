@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-sync",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Client-side reactive watch-store over contrail's watchRecords endpoints. SSE + WebSocket transports, optimistic updates, optional IndexedDB cache.",
   "type": "module",
   "sideEffects": false,
