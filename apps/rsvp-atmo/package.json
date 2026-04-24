@@ -1,0 +1,35 @@
+{
+  "name": "rsvp-atmo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Reference Cloudflare Workers deployment of contrail — indexes community.lexicon.calendar.event/rsvp on D1 with the full spaces/community/realtime surface enabled.",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "dev:auto": "tsx scripts/dev.ts",
+    "deploy": "wrangler deploy",
+    "clean": "tsx scripts/clean.ts",
+    "generate": "tsx src/generate.ts",
+    "generate:pull": "contrail-lex all --config src/config.ts",
+    "publish-lexicons": "tsx scripts/publish-lexicons.ts",
+    "typecheck": "tsc --noEmit",
+    "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",
+    "sync": "tsx src/sync.ts"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*"
+  },
+  "devDependencies": {
+    "@atcute/atproto": "^3.1.10",
+    "@atcute/client": "^4.2.1",
+    "@atcute/lex-cli": "^2.5.3",
+    "@atcute/lexicon-doc": "^2.1.2",
+    "@atcute/lexicons": "^1.2.9",
+    "@atmo-dev/contrail-lexicons": "workspace:*",
+    "@cloudflare/workers-types": "^4.20250124.0",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.63.0"
+  }
+}

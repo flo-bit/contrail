@@ -1,7 +1,10 @@
 packages:
-  - "examples/sveltekit-group-chat"
+  - "packages/*"
+  - "apps/*"
 
-ignoredBuiltDependencies:
+onlyBuiltDependencies:
   - esbuild
   - sharp
   - workerd
+  - "@tailwindcss/oxide"
+  - "@sveltejs/kit"

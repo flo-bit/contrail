@@ -1,17 +1,13 @@
-name: Release
+name: CI
 
 on:
+  pull_request:
   push:
-    branches: ['main']
-
-permissions:
-  id-token: write # OIDC for npm trusted publishing
-  contents: write
-  pull-requests: write
+    branches-ignore: ['main']
 
 jobs:
-  release:
-    name: Build and Release
+  check:
+    name: Build, test, typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -38,24 +34,15 @@ jobs:
         with:
           node-version: 22.14
           cache: 'pnpm'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install npm with OIDC support
-        run: npm install -g npm@11.5.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        run: pnpm typecheck
+
       - name: Build
         run: pnpm build
 
-      - name: Run tests
+      - name: Test
         run: pnpm test
-
-      - name: Create Release Pull Request or Publish to npm
-        uses: changesets/action@v1
-        with:
-          publish: pnpm release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true

@@ -1,108 +1,20 @@
 {
-  "name": "@atmo-dev/contrail",
-  "version": "0.1.1",
-  "description": "Index AT Protocol records with typed XRPC endpoints. Cloudflare Workers + D1, SvelteKit, Node.js.",
+  "name": "contrail-monorepo",
+  "private": true,
+  "version": "0.0.0",
   "type": "module",
-  "sideEffects": false,
-  "files": [
-    "dist",
-    "lexicon-templates/**/*.json"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./server": {
-      "types": "./dist/server.d.ts",
-      "import": "./dist/server.js"
-    },
-    "./sqlite": {
-      "types": "./dist/adapters/sqlite.d.ts",
-      "import": "./dist/adapters/sqlite.js"
-    },
-    "./postgres": {
-      "types": "./dist/adapters/postgres.d.ts",
-      "import": "./dist/adapters/postgres.js"
-    },
-    "./generate": {
-      "types": "./dist/generate.d.ts",
-      "import": "./dist/generate.js"
-    },
-    "./publish": {
-      "types": "./dist/publish.d.ts",
-      "import": "./dist/publish.js"
-    },
-    "./sync": {
-      "types": "./dist/sync/index.d.ts",
-      "import": "./dist/sync/index.js"
-    },
-    "./sync/cache-idb": {
-      "types": "./dist/sync/cache-idb.d.ts",
-      "import": "./dist/sync/cache-idb.js"
-    },
-    "./lexicon-templates/*.json": "./lexicon-templates/*.json"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/flo-bit/contrail.git"
-  },
-  "keywords": [
-    "atproto",
-    "bluesky",
-    "cloudflare",
-    "d1",
-    "indexer",
-    "xrpc"
-  ],
   "scripts": {
-    "build": "tsup",
-    "release": "changeset publish",
-    "dev": "wrangler dev --test-scheduled",
-    "dev:auto": "tsx scripts/dev.ts",
-    "deploy": "wrangler deploy",
-    "clean": "tsx scripts/clean.ts",
-    "generate": "tsx app/generate.ts",
-    "generate:pull": "tsx app/generate.ts && lex-cli pull && tsx app/generate.ts && lex-cli pull && lex-cli generate",
-    "publish-lexicons": "tsx scripts/publish-lexicons.ts",
-    "typecheck": "tsc --noEmit",
-    "ingest": "curl -s http://localhost:8787/__scheduled?cron=*/1+*+*+*+*",
-    "sync": "tsx app/sync.ts",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "@atcute/atproto": "^3.1.10",
-    "@atcute/cid": "^2.4.1",
-    "@atcute/client": "^4.2.1",
-    "@atcute/identity": "^1.1.4",
-    "@atcute/identity-resolver": "^1.2.2",
-    "@atcute/jetstream": "^1.0.2",
-    "@atcute/lexicons": "^1.2.9",
-    "@atcute/xrpc-server": "^0.1.12",
-    "hono": "^4.12.8"
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "dev": "turbo run dev",
+    "clean": "turbo run clean",
+    "release": "turbo run build && changeset publish"
   },
   "devDependencies": {
-    "@atcute/lex-cli": "^2.5.3",
-    "@atcute/lexicon-doc": "^2.1.2",
     "@changesets/cli": "^2.29.4",
-    "@cloudflare/workers-types": "^4.20250124.0",
-    "@types/node": "^25.5.0",
-    "@types/pg": "^8.20.0",
-    "pg": "^8.20.0",
-    "tsup": "^8.5.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.0",
-    "wrangler": "^4.63.0"
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3"
   },
-  "peerDependencies": {
-    "pg": "^8.0.0"
-  },
-  "peerDependenciesMeta": {
-    "pg": {
-      "optional": true
-    }
-  },
-  "license": "MIT"
+  "packageManager": "pnpm@10.30.1"
 }

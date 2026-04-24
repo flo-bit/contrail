@@ -1,0 +1,42 @@
+{
+  "name": "@atmo-dev/contrail-sync",
+  "version": "0.1.1",
+  "description": "Client-side reactive watch-store over contrail's watchRecords endpoints. SSE + WebSocket transports, optimistic updates, optional IndexedDB cache.",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cache-idb": {
+      "types": "./dist/cache-idb.d.ts",
+      "import": "./dist/cache-idb.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git",
+    "directory": "packages/sync"
+  },
+  "keywords": [
+    "atproto",
+    "contrail",
+    "sync",
+    "realtime",
+    "watch"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3"
+  },
+  "license": "MIT"
+}
