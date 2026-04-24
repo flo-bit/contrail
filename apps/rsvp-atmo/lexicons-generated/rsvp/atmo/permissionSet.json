@@ -1,0 +1,69 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.permissionSet",
+  "defs": {
+    "main": {
+      "type": "permission-set",
+      "title": "rsvp.atmo",
+      "description": "All XRPC methods exposed by the rsvp.atmo service.",
+      "permissions": [
+        {
+          "type": "permission",
+          "resource": "rpc",
+          "aud": "*",
+          "lxm": [
+            "rsvp.atmo.community.adopt",
+            "rsvp.atmo.community.delete",
+            "rsvp.atmo.community.deleteRecord",
+            "rsvp.atmo.community.getHealth",
+            "rsvp.atmo.community.invite.create",
+            "rsvp.atmo.community.invite.list",
+            "rsvp.atmo.community.invite.redeem",
+            "rsvp.atmo.community.invite.revoke",
+            "rsvp.atmo.community.list",
+            "rsvp.atmo.community.mint",
+            "rsvp.atmo.community.putRecord",
+            "rsvp.atmo.community.reauth",
+            "rsvp.atmo.community.space.create",
+            "rsvp.atmo.community.space.delete",
+            "rsvp.atmo.community.space.deleteRecord",
+            "rsvp.atmo.community.space.grant",
+            "rsvp.atmo.community.space.listMembers",
+            "rsvp.atmo.community.space.putRecord",
+            "rsvp.atmo.community.space.resync",
+            "rsvp.atmo.community.space.revoke",
+            "rsvp.atmo.community.space.setAccessLevel",
+            "rsvp.atmo.community.space.whoami",
+            "rsvp.atmo.event.getRecord",
+            "rsvp.atmo.event.listRecords",
+            "rsvp.atmo.getCursor",
+            "rsvp.atmo.getOverview",
+            "rsvp.atmo.getProfile",
+            "rsvp.atmo.notifyOfUpdate",
+            "rsvp.atmo.rsvp.getRecord",
+            "rsvp.atmo.rsvp.listRecords",
+            "rsvp.atmo.space.addMember",
+            "rsvp.atmo.space.createSpace",
+            "rsvp.atmo.space.deleteRecord",
+            "rsvp.atmo.space.getBlob",
+            "rsvp.atmo.space.getRecord",
+            "rsvp.atmo.space.getSpace",
+            "rsvp.atmo.space.leaveSpace",
+            "rsvp.atmo.space.listBlobs",
+            "rsvp.atmo.space.listMembers",
+            "rsvp.atmo.space.listRecords",
+            "rsvp.atmo.space.listSpaces",
+            "rsvp.atmo.space.putRecord",
+            "rsvp.atmo.space.removeMember",
+            "rsvp.atmo.space.uploadBlob",
+            "rsvp.atmo.spaceExt.invite.create",
+            "rsvp.atmo.spaceExt.invite.list",
+            "rsvp.atmo.spaceExt.invite.redeem",
+            "rsvp.atmo.spaceExt.invite.revoke",
+            "rsvp.atmo.spaceExt.whoami"
+          ]
+        }
+      ]
+    }
+  }
+}

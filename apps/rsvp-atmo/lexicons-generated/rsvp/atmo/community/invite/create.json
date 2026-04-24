@@ -1,0 +1,93 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.community.invite.create",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create an invite for a community-owned space. Caller must have manager+ on the target space and cannot grant a higher level than their own. Returns the raw token once; only its SHA-256 is stored.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "accessLevel"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "accessLevel": {
+              "type": "ref",
+              "ref": "rsvp.atmo.community.defs#accessLevel"
+            },
+            "expiresAt": {
+              "type": "integer",
+              "description": "Unix ms. Omit for no expiry."
+            },
+            "maxUses": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Omit for unlimited redemptions."
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "token",
+            "tokenHash",
+            "spaceUri",
+            "accessLevel",
+            "createdAt"
+          ],
+          "properties": {
+            "token": {
+              "type": "string",
+              "description": "Raw token. Shown once — cannot be retrieved later."
+            },
+            "tokenHash": {
+              "type": "string"
+            },
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "accessLevel": {
+              "type": "ref",
+              "ref": "rsvp.atmo.community.defs#accessLevel"
+            },
+            "expiresAt": {
+              "type": "integer"
+            },
+            "maxUses": {
+              "type": "integer"
+            },
+            "createdAt": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        }
+      ]
+    }
+  }
+}

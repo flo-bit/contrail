@@ -1,0 +1,37 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.invite.redeem",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Redeem an invite token. User-owned spaces: caller becomes a member. Community-owned spaces: caller is granted the invite's access level.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["token"],
+          "properties": {
+            "token": { "type": "string" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["spaceUri"],
+          "properties": {
+            "spaceUri":    { "type": "string", "format": "at-uri" },
+            "kind":        { "type": "string", "description": "Set for user-owned spaces — echoes the invite kind consumed." },
+            "accessLevel": { "type": "string", "description": "Set for community-owned spaces — the level granted." },
+            "communityDid": { "type": "string", "format": "did", "description": "Set for community-owned spaces." }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidInvite" },
+        { "name": "NotFound" }
+      ]
+    }
+  }
+}

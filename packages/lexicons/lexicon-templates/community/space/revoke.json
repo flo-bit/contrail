@@ -1,0 +1,34 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.community.space.revoke",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Remove a subject's access grant from a space. Caller must have `manager` or higher and outrank the subject's current level.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["spaceUri", "subject"],
+          "properties": {
+            "spaceUri": { "type": "string", "format": "at-uri" },
+            "subject":  { "type": "ref", "ref": "tools.atmo.community.defs#subject" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": { "ok": { "type": "boolean" } }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "NotFound" },
+        { "name": "Forbidden" }
+      ]
+    }
+  }
+}

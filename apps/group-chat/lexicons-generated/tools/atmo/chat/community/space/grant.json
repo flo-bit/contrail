@@ -1,0 +1,60 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.community.space.grant",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Grant or upsert a subject's access level on a space. Caller needs `manager` or higher; the granted level cannot exceed the caller's own. A subject can be a DID (member) or another space (delegated membership).",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaceUri",
+            "subject",
+            "accessLevel"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "subject": {
+              "type": "ref",
+              "ref": "tools.atmo.chat.community.defs#subject"
+            },
+            "accessLevel": {
+              "type": "ref",
+              "ref": "tools.atmo.chat.community.defs#accessLevel"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

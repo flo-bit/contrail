@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.community.mint",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Mint a fresh did:plc for a new community. Contrail generates three P-256 keypairs (signing, contrail rotation, creator rotation), submits a genesis op to the PLC directory, and stores the signing + contrail-rotation keys encrypted. The creator's rotation key is returned once as a recovery secret and never stored.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "handle": {
+              "type": "string",
+              "description": "Optional handle to include in alsoKnownAs (as at://<handle>)."
+            },
+            "pdsEndpoint": {
+              "type": "string",
+              "description": "Optional PDS endpoint to include as the atproto_pds service."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "communityDid",
+            "recoveryKey"
+          ],
+          "properties": {
+            "communityDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "recoveryKey": {
+              "type": "unknown",
+              "description": "Creator's rotation key as a private JWK. Shown once — cannot be retrieved later."
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "UpstreamFailure"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.community.defs",
+  "description": "Shared types for community-module XRPC methods.",
+  "defs": {
+    "accessLevel": {
+      "type": "string",
+      "knownValues": ["member", "manager", "admin", "owner"],
+      "description": "Module-internal access levels that govern community operations on a given space. Ordered: member < manager < admin < owner."
+    },
+    "communityView": {
+      "type": "object",
+      "required": ["did", "mode", "createdAt"],
+      "properties": {
+        "did":        { "type": "string", "format": "did" },
+        "mode":       { "type": "string", "knownValues": ["adopt", "mint"] },
+        "identifier": { "type": "string", "description": "Handle or DID at adoption time (adopt only)." },
+        "createdAt":  { "type": "integer" }
+      }
+    },
+    "spaceView": {
+      "type": "object",
+      "required": ["uri", "ownerDid", "type", "key", "serviceDid", "createdAt"],
+      "properties": {
+        "uri":        { "type": "string", "format": "at-uri" },
+        "ownerDid":   { "type": "string", "format": "did" },
+        "type":       { "type": "string", "format": "nsid" },
+        "key":        { "type": "string" },
+        "serviceDid": { "type": "string" },
+        "createdAt":  { "type": "integer" }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "description": "Exactly one of `did` or `spaceUri` must be set.",
+      "properties": {
+        "did":      { "type": "string", "format": "did" },
+        "spaceUri": { "type": "string", "format": "at-uri" }
+      }
+    },
+    "memberRow": {
+      "type": "object",
+      "required": ["subject", "accessLevel", "grantedBy", "grantedAt"],
+      "properties": {
+        "subject":     { "type": "ref", "ref": "#subject" },
+        "accessLevel": { "type": "ref", "ref": "#accessLevel" },
+        "grantedBy":   { "type": "string", "format": "did" },
+        "grantedAt":   { "type": "integer" }
+      }
+    },
+    "flatMember": {
+      "type": "object",
+      "required": ["did", "addedAt"],
+      "properties": {
+        "did":     { "type": "string", "format": "did" },
+        "addedAt": { "type": "integer" }
+      }
+    },
+    "inviteView": {
+      "type": "object",
+      "required": ["tokenHash", "spaceUri", "accessLevel", "createdBy", "createdAt", "usedCount"],
+      "properties": {
+        "tokenHash":   { "type": "string", "description": "SHA-256 of the raw token. Stable id for list/revoke; never grants access on its own." },
+        "spaceUri":    { "type": "string", "format": "at-uri" },
+        "accessLevel": { "type": "ref", "ref": "#accessLevel" },
+        "createdBy":   { "type": "string", "format": "did" },
+        "createdAt":   { "type": "integer" },
+        "expiresAt":   { "type": "integer", "description": "Unix ms. Omitted for no expiry." },
+        "maxUses":     { "type": "integer", "description": "Omitted for unlimited." },
+        "usedCount":   { "type": "integer" },
+        "revokedAt":   { "type": "integer", "description": "Unix ms. Omitted if not revoked." },
+        "note":        { "type": "string" }
+      }
+    }
+  }
+}

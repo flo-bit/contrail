@@ -1,0 +1,25 @@
+{
+	"lexicon": 1,
+	"id": "tools.atmo.chat.server",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "literal:self",
+			"record": {
+				"type": "object",
+				"required": ["communityDid", "name", "createdAt"],
+				"properties": {
+					"communityDid": { "type": "string", "format": "did" },
+					"name": { "type": "string", "maxLength": 128 },
+					"description": { "type": "string", "maxLength": 2000 },
+					"icon": {
+						"type": "blob",
+						"accept": ["image/png", "image/jpeg", "image/webp", "image/gif"],
+						"maxSize": 1000000
+					},
+					"createdAt": { "type": "string", "format": "datetime" }
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,24 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.invite.defs",
+  "defs": {
+    "inviteView": {
+      "type": "object",
+      "description": "An invite row as exposed to clients. Either `kind` (user-owned space) or `accessLevel` (community-owned space) is set, never both.",
+      "required": ["tokenHash", "spaceUri", "createdBy", "createdAt", "usedCount"],
+      "properties": {
+        "tokenHash":   { "type": "string", "description": "Stable identifier for list/revoke operations." },
+        "spaceUri":    { "type": "string", "format": "at-uri" },
+        "kind":        { "type": "string", "knownValues": ["join", "read", "read-join"], "description": "Set for user-owned spaces. Absent for community-owned." },
+        "accessLevel": { "type": "string", "knownValues": ["member", "manager", "admin", "owner"], "description": "Set for community-owned spaces. Absent for user-owned." },
+        "createdBy":   { "type": "string", "format": "did" },
+        "createdAt":   { "type": "integer", "description": "Unix ms." },
+        "expiresAt":   { "type": "integer", "description": "Unix ms. Omitted for no expiry." },
+        "maxUses":     { "type": "integer", "minimum": 1 },
+        "usedCount":   { "type": "integer" },
+        "revokedAt":   { "type": "integer", "description": "Unix ms. Omitted if not revoked." },
+        "note":        { "type": "string", "maxLength": 500 }
+      }
+    }
+  }
+}

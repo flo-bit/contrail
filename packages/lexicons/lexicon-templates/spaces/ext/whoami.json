@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.spaceExt.whoami",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Caller's relationship to a space. For user-owned spaces membership is binary (`isMember`). For community-owned spaces `accessLevel` is also returned, resolved through the community's access-level ladder (including delegated grants).",
+      "parameters": {
+        "type": "params",
+        "required": ["spaceUri"],
+        "properties": {
+          "spaceUri": { "type": "string", "format": "at-uri" }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["isOwner", "isMember"],
+          "properties": {
+            "isOwner":     { "type": "boolean" },
+            "isMember":    { "type": "boolean" },
+            "accessLevel": { "type": "string", "knownValues": ["member", "manager", "admin", "owner"], "description": "Only set for community-owned spaces. Null when the caller has no resolvable access." }
+          }
+        }
+      },
+      "errors": [
+        { "name": "NotFound" }
+      ]
+    }
+  }
+}

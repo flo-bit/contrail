@@ -1,0 +1,399 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.event.listRecords",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Query community.lexicon.calendar.event records with filters",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "format": "at-identifier",
+            "description": "Filter by DID or handle (triggers on-demand backfill)"
+          },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include profile + identity info keyed by DID"
+          },
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token)."
+          },
+          "byUser": {
+            "type": "string",
+            "format": "did",
+            "description": "Only used with spaceUri — filter to records authored by this DID."
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied."
+          },
+          "search": {
+            "type": "string",
+            "description": "Full-text search across: name, description"
+          },
+          "mode": {
+            "type": "string",
+            "description": "Filter by mode"
+          },
+          "name": {
+            "type": "string",
+            "description": "Filter by name"
+          },
+          "endsAtMin": {
+            "type": "string",
+            "description": "Minimum value for endsAt"
+          },
+          "endsAtMax": {
+            "type": "string",
+            "description": "Maximum value for endsAt"
+          },
+          "status": {
+            "type": "string",
+            "description": "Filter by status"
+          },
+          "startsAtMin": {
+            "type": "string",
+            "description": "Minimum value for startsAt"
+          },
+          "startsAtMax": {
+            "type": "string",
+            "description": "Maximum value for startsAt"
+          },
+          "createdAtMin": {
+            "type": "string",
+            "description": "Minimum value for createdAt"
+          },
+          "createdAtMax": {
+            "type": "string",
+            "description": "Maximum value for createdAt"
+          },
+          "description": {
+            "type": "string",
+            "description": "Filter by description"
+          },
+          "rsvpsCountMin": {
+            "type": "integer",
+            "description": "Minimum total rsvps count"
+          },
+          "hydrateRsvps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Number of rsvps records to embed per record"
+          },
+          "rsvpsInterestedCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = interested"
+          },
+          "rsvpsGoingCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = going"
+          },
+          "rsvpsNotgoingCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = notgoing"
+          },
+          "sort": {
+            "type": "string",
+            "knownValues": [
+              "mode",
+              "name",
+              "endsAt",
+              "status",
+              "startsAt",
+              "createdAt",
+              "description",
+              "rsvpsCount",
+              "rsvpsInterestedCount",
+              "rsvpsGoingCount",
+              "rsvpsNotgoingCount"
+            ],
+            "description": "Field to sort by (default: time_us)"
+          },
+          "order": {
+            "type": "string",
+            "knownValues": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction (default: desc for dates/numbers/counts, asc for strings)"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "records"
+          ],
+          "properties": {
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#record"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "uri",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.event#main"
+        },
+        "time_us": {
+          "type": "integer"
+        },
+        "space": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "Present when the record was read from a permissioned space; its value is the space URI."
+        },
+        "rsvpsCount": {
+          "type": "integer",
+          "description": "Total rsvps count"
+        },
+        "rsvpsInterestedCount": {
+          "type": "integer",
+          "description": "rsvps count where status = interested"
+        },
+        "rsvpsGoingCount": {
+          "type": "integer",
+          "description": "rsvps count where status = going"
+        },
+        "rsvpsNotgoingCount": {
+          "type": "integer",
+          "description": "rsvps count where status = notgoing"
+        },
+        "rsvps": {
+          "type": "ref",
+          "ref": "#hydrateRsvps"
+        }
+      }
+    },
+    "hydrateRsvpsRecord": {
+      "type": "object",
+      "required": [
+        "uri",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.rsvp#main"
+        },
+        "time_us": {
+          "type": "integer"
+        },
+        "space": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "Present when the record was read from a permissioned space."
+        }
+      }
+    },
+    "hydrateRsvps": {
+      "type": "object",
+      "properties": {
+        "interested": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "going": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "notgoing": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "other": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "cid": {
+          "type": "string"
+        },
+        "record": {
+          "type": "ref",
+          "ref": "#appBskyActorProfile"
+        }
+      }
+    },
+    "appBskyActorProfile": {
+      "type": "object",
+      "properties": {
+        "avatar": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Small image to be displayed next to posts from account. AKA, 'profile picture'"
+        },
+        "banner": {
+          "type": "blob",
+          "accept": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "maxSize": 1000000,
+          "description": "Larger horizontal image to display behind profile view."
+        },
+        "labels": {
+          "refs": [
+            "com.atproto.label.defs#selfLabels"
+          ],
+          "type": "union",
+          "description": "Self-label values, specific to the Bluesky application, on the overall account."
+        },
+        "website": {
+          "type": "string",
+          "format": "uri"
+        },
+        "pronouns": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Free-form pronouns text.",
+          "maxGraphemes": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "pinnedPost": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2560,
+          "description": "Free-form profile description text.",
+          "maxGraphemes": 256
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 640,
+          "maxGraphemes": 64
+        },
+        "joinedViaStarterPack": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref"
+        }
+      }
+    }
+  }
+}

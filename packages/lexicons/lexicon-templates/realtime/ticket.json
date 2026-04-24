@@ -1,0 +1,40 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.realtime.ticket",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Mint a short-lived subscription ticket for the given topic. The caller's access is checked and — for `community:<did>` topics — expanded to the concrete list of `space:<uri>` topics the caller can see. Server-side callers may skip tickets and use their JWT directly on `.subscribe`.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["topic"],
+          "properties": {
+            "topic": {
+              "type": "string",
+              "description": "Requested topic. One of `space:<uri>`, `community:<did>`, `actor:<did>` (self-only in v1)."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ticket", "topics", "expiresAt"],
+          "properties": {
+            "ticket":    { "type": "string", "description": "HMAC-signed opaque token. Passed as `?ticket=` on `.subscribe`." },
+            "topics":    { "type": "array", "items": { "type": "string" }, "description": "Concrete delivery topics authorized by this ticket." },
+            "expiresAt": { "type": "integer", "description": "Unix ms." }
+          }
+        }
+      },
+      "errors": [
+        { "name": "Forbidden" },
+        { "name": "NotFound" },
+        { "name": "NotSupported" }
+      ]
+    }
+  }
+}

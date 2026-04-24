@@ -1,0 +1,55 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.createSpace",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create a new space owned by the JWT issuer. The caller is added as an owner-perm member.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "format": "nsid",
+              "description": "Space type NSID. Defaults to the service's configured type."
+            },
+            "key": {
+              "type": "string",
+              "description": "Space key. Auto-generated (TID) if omitted."
+            },
+            "appPolicyRef": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "appPolicy": {
+              "type": "ref",
+              "ref": "rsvp.atmo.space.defs#appPolicy"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "space"
+          ],
+          "properties": {
+            "space": {
+              "type": "ref",
+              "ref": "rsvp.atmo.space.defs#spaceView"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AlreadyExists"
+        }
+      ]
+    }
+  }
+}

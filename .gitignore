@@ -2,9 +2,12 @@ node_modules
 .wrangler
 dist
 
+# Turbo
+.turbo
+
 # Generated (internal only)
-lex.config.js
-src/lexicon-types/
-src/core/queryable.generated.ts
+packages/contrail/src/core/queryable.generated.ts
+apps/*/src/lexicon-types/
+apps/*/lex.config.js
 
 stuff/

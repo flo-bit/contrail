@@ -1,0 +1,114 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.channel.watchRecords",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Subscribe to a live tools.atmo.chat.channel query. Returns Server-Sent Events: `snapshot.start`, `snapshot.record` (N of), `snapshot.end`, then `record.created` / `record.deleted` as records enter/leave the result, plus a final `member.removed` if the caller loses access mid-stream. v1 requires spaceUri; cross-space watch is deferred.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "format": "at-identifier",
+            "description": "Filter by DID or handle (triggers on-demand backfill)"
+          },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include profile + identity info keyed by DID"
+          },
+          "spaceUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token)."
+          },
+          "byUser": {
+            "type": "string",
+            "format": "did",
+            "description": "Only used with spaceUri — filter to records authored by this DID."
+          },
+          "inviteToken": {
+            "type": "string",
+            "description": "Read-grant invite token for anonymous bearer access. Replaces JWT auth when supplied."
+          },
+          "communityDid": {
+            "type": "string",
+            "description": "Filter by communityDid"
+          },
+          "name": {
+            "type": "string",
+            "description": "Filter by name"
+          },
+          "topic": {
+            "type": "string",
+            "description": "Filter by topic"
+          },
+          "visibility": {
+            "type": "string",
+            "description": "Filter by visibility"
+          },
+          "createdAtMin": {
+            "type": "string",
+            "description": "Minimum value for createdAt"
+          },
+          "createdAtMax": {
+            "type": "string",
+            "description": "Maximum value for createdAt"
+          },
+          "sort": {
+            "type": "string",
+            "knownValues": [
+              "communityDid",
+              "name",
+              "topic",
+              "visibility",
+              "createdAt"
+            ],
+            "description": "Field to sort by (default: time_us)"
+          },
+          "order": {
+            "type": "string",
+            "knownValues": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction (default: desc for dates/numbers/counts, asc for strings)"
+          }
+        }
+      },
+      "output": {
+        "encoding": "text/event-stream",
+        "schema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "NotSupported"
+        }
+      ]
+    }
+  }
+}

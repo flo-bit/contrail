@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.community.space.resync",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Manually recompute `spaces_members` for a community-owned space. Useful after a crash mid-reconcile leaves stale membership. Caller must have `admin` or higher.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["spaceUri"],
+          "properties": {
+            "spaceUri": { "type": "string", "format": "at-uri" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": { "ok": { "type": "boolean" } }
+        }
+      },
+      "errors": [
+        { "name": "NotFound" },
+        { "name": "Forbidden" }
+      ]
+    }
+  }
+}

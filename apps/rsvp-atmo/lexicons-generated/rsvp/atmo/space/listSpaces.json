@@ -1,0 +1,62 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.space.listSpaces",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "List spaces the caller has access to. Default scope is 'member' (spaces the caller is a member of, including owned); 'owner' lists only spaces the caller owns. When scope='member', the optional 'owner' param narrows to spaces owned by that DID — useful for listing all channels in a specific community the caller can access.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "knownValues": [
+              "member",
+              "owner"
+            ],
+            "default": "member"
+          },
+          "type": {
+            "type": "string",
+            "format": "nsid"
+          },
+          "owner": {
+            "type": "string",
+            "format": "did",
+            "description": "With scope=member, filter to spaces owned by this DID. Ignored when scope=owner."
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "spaces"
+          ],
+          "properties": {
+            "spaces": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "rsvp.atmo.space.defs#spaceView"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

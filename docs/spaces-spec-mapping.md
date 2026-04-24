@@ -21,7 +21,7 @@ flow is shipped (same story we already have for public records via jetstream).
 | Space type (NSID)              | `spaces.type`                                                | ✅        | 1:1                                                                            |
 | Space key / skey               | `spaces.key`                                                 | ✅        | TID-generated when caller omits it                                             |
 | Record addressing 6-tuple      | `(owner, type, key, author-did, collection, rkey)`           | ✅        | Storage is keyed by `(space_uri, did, rkey)`; `space_uri` encodes the first 3  |
-| Single ACL = member list       | `spaces_members (did, perms)`                                | ✅        | Only `read`/`write` perms; owner is implicit write                             |
+| Single ACL = member list       | `spaces_members (did)`                                       | ✅        | Membership is binary: you're in or you're out. Owner is implicit member. No read/write tiering — apps filter writes themselves |
 | Space credential (2–4h token)  | _none; service-auth JWTs used directly_                      | ❌        | Fine while contrail is a single appview. Add a shim when real PDS sync lands   |
 | App allow/deny                 | `appPolicy {mode, apps[]}`                                   | ✅        | Matches spec's default-allow / default-deny model. Visible only to the owner   |
 | Permissioned repo per user     | single DB (`spaces_records_<short>`)                         | ⚠️        | Structurally compatible — keyed per `(space, author)`. Federation is future    |
@@ -36,7 +36,7 @@ flow is shipped (same story we already have for public records via jetstream).
 ## Endpoints
 
 All endpoints are emitted under `<config.namespace>.space.*` from templates in
-`spaces-lexicon-templates/`.
+`lexicon-templates/spaces/`.
 
 ### Read
 - `space.listSpaces` — caller's spaces (scope=member|owner)
@@ -44,7 +44,6 @@ All endpoints are emitted under `<config.namespace>.space.*` from templates in
 - `space.listMembers` — members for a space (member/owner only)
 - `space.listRecords` — space-scoped record listing; bearer-read supported
 - `space.getRecord` — single record; bearer-read supported
-- `space.whoami` — caller's relationship to a space (extra; not in spec)
 
 ### Write
 - `space.putRecord`
@@ -56,11 +55,16 @@ All endpoints are emitted under `<config.namespace>.space.*` from templates in
 - `space.removeMember`
 - `space.leaveSpace` — self-remove; owner cannot leave (extra)
 
-### Invites (extra; not in the spec)
-- `space.invite.create` — returns raw token once; hash stored
-- `space.invite.redeem`
-- `space.invite.list`
-- `space.invite.revoke`
+### Contrail extras (namespace: `<ns>.spaceExt.*`)
+Clearly-off-spec features live under a separate namespace so the `space.*`
+surface stays close to whatever the permissioned-data spec becomes. Moved here
+from `space.*` in an earlier refactor.
+
+- `spaceExt.whoami` — caller's relationship to a space (owner / member flags)
+- `spaceExt.invite.create` — returns raw token once; hash stored
+- `spaceExt.invite.redeem`
+- `spaceExt.invite.list`
+- `spaceExt.invite.revoke`
 
 Invites have three kinds: `join`, `read`, `read-join`. `read` tokens grant
 bearer-only anonymous read access; `read-join` does both; `join` requires a
@@ -99,6 +103,17 @@ the real spec lands:
 - Keep the member list as the single ACL. Don't add roles or per-collection
   policies just because it's easy — the spec is emphatic that the member list
   is _the_ ACL.
+- Membership is binary, not tiered. Previously had `perms: "read" | "write"`
+  per member row; collapsed to plain membership because the rough spec is
+  moving toward "member = access, apps filter writes." Delete keeps the
+  owner / own-record rule, but that's about *which records you can affect*,
+  not a permission tier on the member row.
+- Don't over-engineer the space row with pre-emptive extension columns.
+  Previously had `member_list_ref` as a hook for externally-managed
+  membership; dropped because the community-module case is handled via
+  ownership (community-owned spaces are managed by the community module, no
+  flag column needed). If a future need for external membership sources
+  shows up, add the column then.
 - Keep `space.whoami`, `space.leaveSpace`, and the invite endpoints clearly
   labeled as contrail extras in docs. If the spec ends up naming some of
   them, renaming is cheap; relying on them from the base spec isn't.

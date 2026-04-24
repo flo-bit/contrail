@@ -1,4 +1,10 @@
-ignoredBuiltDependencies:
+packages:
+  - "packages/*"
+  - "apps/*"
+
+onlyBuiltDependencies:
   - esbuild
   - sharp
   - workerd
+  - "@tailwindcss/oxide"
+  - "@sveltejs/kit"

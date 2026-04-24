@@ -1,0 +1,56 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.community.adopt",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Adopt an existing ATProto account as a community identity. The provided app password is verified by creating a session, then stored encrypted. Creates the reserved `$admin` and `$publishers` spaces with the caller as `owner` in both.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "identifier",
+            "appPassword"
+          ],
+          "properties": {
+            "identifier": {
+              "type": "string",
+              "description": "Handle or DID of the account to adopt."
+            },
+            "appPassword": {
+              "type": "string",
+              "description": "App password for the account; verified by createSession and stored encrypted."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "communityDid"
+          ],
+          "properties": {
+            "communityDid": {
+              "type": "string",
+              "format": "did"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Unauthorized"
+        },
+        {
+          "name": "AlreadyExists"
+        }
+      ]
+    }
+  }
+}

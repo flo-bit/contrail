@@ -1,0 +1,24 @@
+{
+	"lexicon": 1,
+	"id": "tools.atmo.chat.channel",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "literal:self",
+			"record": {
+				"type": "object",
+				"required": ["communityDid", "name", "visibility", "createdAt"],
+				"properties": {
+					"communityDid": { "type": "string", "format": "did" },
+					"name": { "type": "string", "maxLength": 128 },
+					"topic": { "type": "string", "maxLength": 512 },
+					"visibility": {
+						"type": "string",
+						"knownValues": ["public", "private"]
+					},
+					"createdAt": { "type": "string", "format": "datetime" }
+				}
+			}
+		}
+	}
+}

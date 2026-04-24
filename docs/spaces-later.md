@@ -61,15 +61,11 @@ don't have that yet. Lightweight interim: Server-Sent Events on
 `space.subscribeRecords?spaceUri=&collection=`. Works for first-party apps
 right away; swap to the real thing later.
 
-## Namespace split for contrail-specific extras
-Right now `space.invite.*`, `space.whoami`, and `space.leaveSpace` all live
-alongside spec-adjacent endpoints. If the spec lands with different names or
-semantics for some of these, migration cost is "rename everywhere." A second
-namespace (`<ns>.spaceExt.*` or `<ns>.contrail.*`) for clearly-off-spec
-features would keep the `space.*` surface close to whatever the spec becomes.
-
-Decision: split them. Pick a namespace name, move at least `invite.*` and
-`whoami`; `leaveSpace` is ambiguous.
+## Namespace split for contrail-specific extras — done
+`space.invite.*` and `space.whoami` moved to `<ns>.spaceExt.*`. See
+[spaces-spec-mapping.md § Contrail extras](./spaces-spec-mapping.md#contrail-extras-namespace-nsspaceext).
+`leaveSpace` is still in `space.*` — revisit if the spec lands with different
+self-remove semantics.
 
 ## Ownership transfer
 Dropped for now. The space URI is `at://<ownerDid>/<type>/<key>` — owner DID

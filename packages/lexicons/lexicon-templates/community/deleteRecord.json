@@ -1,0 +1,37 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.community.deleteRecord",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Delete a public record authored by the community from the community's PDS. Adopted communities only. Caller must be `member` or higher in the community's `$publishers` space.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["communityDid", "collection", "rkey"],
+          "properties": {
+            "communityDid": { "type": "string", "format": "did" },
+            "collection":   { "type": "string", "format": "nsid" },
+            "rkey":         { "type": "string" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": { "ok": { "type": "boolean" } }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "NotFound" },
+        { "name": "Forbidden" },
+        { "name": "NotSupported" },
+        { "name": "UpstreamFailure" }
+      ]
+    }
+  }
+}

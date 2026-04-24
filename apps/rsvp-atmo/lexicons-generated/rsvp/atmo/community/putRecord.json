@@ -1,0 +1,73 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.community.putRecord",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Publish a public record authored by the community via the community's PDS. Adopted communities only. Caller must be `member` or higher in the community's `$publishers` space.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "communityDid",
+            "collection",
+            "record"
+          ],
+          "properties": {
+            "communityDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            },
+            "record": {
+              "type": "unknown"
+            },
+            "validate": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotSupported"
+        },
+        {
+          "name": "UpstreamFailure"
+        }
+      ]
+    }
+  }
+}

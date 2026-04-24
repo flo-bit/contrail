@@ -1,0 +1,62 @@
+{
+  "name": "@atmo-dev/contrail-lexicons",
+  "version": "0.1.1",
+  "description": "Generate atproto lexicon JSON (and optionally TypeScript types via @atcute/lex-cli) from a Contrail config.",
+  "type": "module",
+  "files": [
+    "dist",
+    "lexicon-templates/**/*.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./generate": {
+      "types": "./dist/generate.d.ts",
+      "import": "./dist/generate.js"
+    },
+    "./publish": {
+      "types": "./dist/publish.d.ts",
+      "import": "./dist/publish.js"
+    },
+    "./lexicon-templates/*.json": "./lexicon-templates/*.json"
+  },
+  "bin": {
+    "contrail-lex": "./dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git",
+    "directory": "packages/lexicons"
+  },
+  "keywords": [
+    "atproto",
+    "contrail",
+    "lexicon",
+    "codegen"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@atcute/lex-cli": "^2.5.3"
+  },
+  "devDependencies": {
+    "@atmo-dev/contrail": "workspace:*",
+    "@types/node": "^25.5.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@atmo-dev/contrail": "workspace:*"
+  },
+  "license": "MIT"
+}

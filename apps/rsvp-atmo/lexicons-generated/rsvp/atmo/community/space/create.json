@@ -1,0 +1,58 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.community.space.create",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create a community-owned space (group/role/channel). Caller needs `admin` or higher in the community's `$admin` space. Reserved keys (`$admin`, `$publishers`, …) are rejected here.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "communityDid"
+          ],
+          "properties": {
+            "communityDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "key": {
+              "type": "string",
+              "description": "Space key. Auto-generated if omitted."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "space"
+          ],
+          "properties": {
+            "space": {
+              "type": "ref",
+              "ref": "rsvp.atmo.community.defs#spaceView"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "AlreadyExists"
+        }
+      ]
+    }
+  }
+}

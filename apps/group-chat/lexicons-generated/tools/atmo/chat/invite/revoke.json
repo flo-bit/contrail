@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.chat.invite.revoke",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Revoke an invite by tokenHash. User-owned spaces: owner-only. Community-owned spaces: invite creator OR manager+ on the target space.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "tokenHash"
+          ],
+          "properties": {
+            "spaceUri": {
+              "type": "string",
+              "format": "at-uri",
+              "description": "Optional — ownership is inferred from the invite row; required for user-owned spaces for a sanity check."
+            },
+            "tokenHash": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    }
+  }
+}

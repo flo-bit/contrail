@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.community.space.delete",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Soft-delete a community-owned space. Caller must be `owner` on the space, or `admin`+ in the community's `$admin` space. Reserved spaces cannot be deleted.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["spaceUri"],
+          "properties": {
+            "spaceUri": { "type": "string", "format": "at-uri" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": { "ok": { "type": "boolean" } }
+        }
+      },
+      "errors": [
+        { "name": "NotFound" },
+        { "name": "Forbidden" }
+      ]
+    }
+  }
+}
