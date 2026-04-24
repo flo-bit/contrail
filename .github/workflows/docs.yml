@@ -1,0 +1,13 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  pages: write
+
+jobs:
+  docs:
+    uses: flo-bit/tiny-docs/.github/workflows/tiny-docs.yml@v1
