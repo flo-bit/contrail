@@ -15,8 +15,7 @@
           "properties": {
             "spaceUri": {
               "type": "string",
-              "format": "at-uri",
-              "description": "Optional — ownership is inferred from the invite row; required for user-owned spaces for a sanity check."
+              "description": "Optional \u2014 ownership is inferred from the invite row; required for user-owned spaces for a sanity check."
             },
             "tokenHash": {
               "type": "string"

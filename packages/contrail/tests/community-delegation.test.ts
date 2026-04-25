@@ -278,7 +278,7 @@ describe("community delegation — stage 2", () => {
     expect(createRes.status).toBe(200);
     const bridged = ((await createRes.json()) as any).space.uri as string;
 
-    const firstAdmin = `at://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
+    const firstAdmin = `ats://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
     expect((await grant(app, DIANA, bridged, { spaceUri: firstAdmin }, "member")).status).toBe(200);
 
     // Alice has no direct grant in the second community, but is reachable via

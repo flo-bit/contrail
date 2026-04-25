@@ -79,7 +79,7 @@ Realtime subscriptions (`watchRecords`) can't use regular service-auth JWTs for 
 
 Server-side minting comes in two flavours:
 
-- `com.example.realtime.ticket` — POST `{ topic }` (e.g. `"space:at://..."`) → `{ ticket, topics, expiresAt }`. Bare topic-list ticket, used with the generic `<ns>.realtime.subscribe` endpoint.
+- `com.example.realtime.ticket` — POST `{ topic }` (e.g. `"space:ats://..."`) → `{ ticket, topics, expiresAt }`. Bare topic-list ticket, used with the generic `<ns>.realtime.subscribe` endpoint.
 - `<collection>.watchRecords?mode=ws&spaceUri=…` (or `&actor=…`) handshake — returns `{ snapshot, ticket, wsUrl, sinceTs, ticketTtlMs, querySpec }`. The ticket is bound to `(did, topics, querySpec)` and is the one to use for the per-collection `watchRecords` stream — both for SSE (`?ticket=…`) and the subsequent WS upgrade.
 
 Both flavours are signed by `realtime.ticketSecret` (a 32-byte random, configured once). Clients hand the ticket off via `?ticket=...` on connect.
@@ -88,7 +88,7 @@ In the `@atmo-dev/contrail-sync` client:
 
 ```ts
 createWatchStore({
-  url: "/xrpc/com.example.message.watchRecords?spaceUri=at://...",
+  url: "/xrpc/com.example.message.watchRecords?spaceUri=ats://...",
   mintTicket: async () => (await fetch("/api/ticket")).then((r) => r.text()),
 });
 ```

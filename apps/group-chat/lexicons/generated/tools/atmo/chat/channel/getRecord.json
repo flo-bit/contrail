@@ -22,7 +22,6 @@
           },
           "spaceUri": {
             "type": "string",
-            "format": "at-uri",
             "description": "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token)."
           },
           "inviteToken": {
@@ -72,7 +71,6 @@
             },
             "space": {
               "type": "string",
-              "format": "at-uri",
               "description": "Present when the record was read from a permissioned space; its value is the space URI."
             },
             "profiles": {

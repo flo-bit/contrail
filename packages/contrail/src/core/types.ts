@@ -292,7 +292,7 @@ export interface RecordRow {
   /** Set when the row originates from a per-space table. Used by the
    *  pipeline/hydration/response layers to route child queries to the same
    *  space and tag the output. */
-  _space?: string;
+  space?: string;
 }
 
 export interface IngestEvent {

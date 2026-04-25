@@ -38,16 +38,16 @@
 		r: (typeof channelsQuery.records)[number]
 	): ChannelMeta | null {
 		const rec = r.value;
-		if (!r._space || rec.communityDid !== data.communityDid || !rec.name) return null;
+		if (!r.space || rec.communityDid !== data.communityDid || !rec.name) return null;
 		if (!rec.createdAt) return null;
 		let visibility: 'public' | 'private';
 		if (rec.visibility === 'public') visibility = 'public';
 		else if (rec.visibility === 'private') visibility = 'private';
 		else return null;
-		const parsed = parseSpaceUri(r._space);
+		const parsed = parseSpaceUri(r.space);
 		if (!parsed || parsed.key.startsWith('$') || parsed.key === 'members') return null;
 		return {
-			spaceUri: r._space,
+			spaceUri: r.space,
 			key: parsed.key,
 			name: rec.name,
 			topic: rec.topic,

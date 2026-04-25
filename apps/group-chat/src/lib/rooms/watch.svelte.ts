@@ -71,7 +71,7 @@ export interface TypedWatchRecord<R> {
 	time_us?: number;
 	indexed_at?: number;
 	cid?: string | null;
-	_space?: string;
+	space?: string;
 	/** Present on optimistic entries added via `addOptimistic`. */
 	optimistic?: 'pending' | 'failed';
 	/** Error attached via `markFailed`. */

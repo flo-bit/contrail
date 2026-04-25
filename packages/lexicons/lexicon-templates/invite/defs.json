@@ -8,7 +8,7 @@
       "required": ["tokenHash", "spaceUri", "createdBy", "createdAt", "usedCount"],
       "properties": {
         "tokenHash":   { "type": "string", "description": "Stable identifier for list/revoke operations." },
-        "spaceUri":    { "type": "string", "format": "at-uri" },
+        "spaceUri":    { "type": "string" },
         "kind":        { "type": "string", "knownValues": ["join", "read", "read-join"], "description": "Set for user-owned spaces. Absent for community-owned." },
         "accessLevel": { "type": "string", "knownValues": ["member", "manager", "admin", "owner"], "description": "Set for community-owned spaces. Absent for user-owned." },
         "createdBy":   { "type": "string", "format": "did" },

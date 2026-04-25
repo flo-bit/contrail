@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Remove the caller from a space's member list. The owner cannot leave — they must delete the space instead.",
+      "description": "Remove the caller from a space's member list. The owner cannot leave \u2014 they must delete the space instead.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -14,8 +14,7 @@
           ],
           "properties": {
             "spaceUri": {
-              "type": "string",
-              "format": "at-uri"
+              "type": "string"
             }
           }
         }

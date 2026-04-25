@@ -220,8 +220,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         ? {
             space: {
               type: "string",
-              format: "at-uri",
-              description: "Present when the record was read from a permissioned space; its value is the space URI.",
+              description: "Present when the record was read from a permissioned space; its value is the `ats://` space URI.",
             },
           }
         : {}),
@@ -279,8 +278,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
             ? {
                 space: {
                   type: "string",
-                  format: "at-uri",
-                  description: "Present when the record was read from a permissioned space.",
+                  description: "Present when the record was read from a permissioned space; `ats://` URI.",
                 },
               }
             : {}),
@@ -320,8 +318,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
             ? {
                 space: {
                   type: "string",
-                  format: "at-uri",
-                  description: "Present when the record was read from a permissioned space.",
+                  description: "Present when the record was read from a permissioned space; `ats://` URI.",
                 },
               }
             : {}),
@@ -591,8 +588,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         ? {
             spaceUri: {
               type: "string",
-              format: "at-uri",
-              description: "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token).",
+              description: "If set, query records inside this permissioned space (requires service-auth JWT or a read-grant invite token). `ats://` URI.",
             },
             byUser: {
               type: "string",
@@ -725,8 +721,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
         ? {
             spaceUri: {
               type: "string",
-              format: "at-uri",
-              description: "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token).",
+              description: "If set, fetch from this permissioned space (requires service-auth JWT or a read-grant invite token). `ats://` URI.",
             },
             inviteToken: {
               type: "string",

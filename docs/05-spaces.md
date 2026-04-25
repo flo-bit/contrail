@@ -6,7 +6,7 @@ Auth-gated store for records that can't live on public PDSes — private events,
 
 > A **space** is a bag of records with one lock. The **member list** says who has the key.
 
-- One owner (DID), one type (NSID), one key. Identified by `at://<owner>/<type>/<key>`.
+- One owner (DID), one type (NSID), one key. Identified by `ats://<owner>/<type>/<key>` — distinct scheme from atproto record URIs (`at://`) so the two can't be confused at any layer.
 - Every member (including owner) has read + write inside the space. Delete is scoped to your own records — no one can remove records they didn't author, owner included. To wipe everything, delete the space.
 - Optional **app policy** gates which OAuth clients can act in the space.
 
@@ -51,7 +51,7 @@ Space-specific wiring:
 | `?spaceUri=…` + JWT | one space (ACL-gated) |
 | JWT, no `spaceUri` | public **unioned** with every space the caller is a member of |
 
-Filters, sorts, hydration, and references work across all three. Records from a space carry a `space: <spaceUri>` field on `listRecords`/`getRecord` responses (the watchRecords stream uses `_space` instead — see [Sync](./07-sync.md)).
+Filters, sorts, hydration, and references work across all three. Records from a space carry a `space: <spaceUri>` field — same on `listRecords`/`getRecord` responses and `watchRecords` stream events.
 
 ## Invites
 

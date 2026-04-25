@@ -9,7 +9,7 @@
         "type": "params",
         "required": ["spaceUri", "collection"],
         "properties": {
-          "spaceUri":    { "type": "string", "format": "at-uri" },
+          "spaceUri":    { "type": "string" },
           "collection":  { "type": "string", "format": "nsid" },
           "byUser":      { "type": "string", "format": "did", "description": "Only return records authored by this DID." },
           "cursor":      { "type": "string" },

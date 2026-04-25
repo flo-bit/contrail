@@ -11,7 +11,7 @@
           "type": "object",
           "required": ["tokenHash"],
           "properties": {
-            "spaceUri":  { "type": "string", "format": "at-uri", "description": "Optional — ownership is inferred from the invite row; required for user-owned spaces for a sanity check." },
+            "spaceUri":  { "type": "string", "description": "Optional — ownership is inferred from the invite row; required for user-owned spaces for a sanity check." },
             "tokenHash": { "type": "string" }
           }
         }

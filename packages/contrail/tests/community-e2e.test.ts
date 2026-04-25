@@ -131,8 +131,8 @@ describe("community e2e — stage 1", () => {
   it("adopts a community and creates reserved spaces with creator as owner", async () => {
     const did = await adopt(app, ALICE);
 
-    const adminUri = `at://${did}/tools.atmo.event.space/$admin`;
-    const publishersUri = `at://${did}/tools.atmo.event.space/$publishers`;
+    const adminUri = `ats://${did}/tools.atmo.event.space/$admin`;
+    const publishersUri = `ats://${did}/tools.atmo.event.space/$publishers`;
 
     // whoami in both reserved spaces → owner
     for (const uri of [adminUri, publishersUri]) {
@@ -171,7 +171,7 @@ describe("community e2e — stage 1", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.space.uri).toBe(`at://${COMMUNITY_DID}/tools.atmo.event.space/general`);
+    expect(body.space.uri).toBe(`ats://${COMMUNITY_DID}/tools.atmo.event.space/general`);
     expect(body.space.ownerDid).toBe(COMMUNITY_DID);
   });
 
@@ -193,7 +193,7 @@ describe("community e2e — stage 1", () => {
   });
 
   it("owner grants Bob member access to #general; reconciler populates spaces_members", async () => {
-    const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
+    const spaceUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/general`;
     const res = await call(app, "POST", "/xrpc/test.comm.community.space.grant", ALICE, {
       spaceUri,
       subject: { did: BOB },
@@ -214,7 +214,7 @@ describe("community e2e — stage 1", () => {
   });
 
   it("manager cannot grant higher than own level", async () => {
-    const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
+    const spaceUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/general`;
     // Promote Bob to manager
     await call(app, "POST", "/xrpc/test.comm.community.space.grant", ALICE, {
       spaceUri,
@@ -232,7 +232,7 @@ describe("community e2e — stage 1", () => {
   });
 
   it("grant cannot downgrade a subject who outranks the caller", async () => {
-    const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
+    const spaceUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/general`;
     // Bob is currently manager (promoted earlier in this describe block).
     // Alice is owner of the space. Bob tries to downgrade Alice to member via grant.
     const res = await call(app, "POST", "/xrpc/test.comm.community.space.grant", BOB, {
@@ -245,7 +245,7 @@ describe("community e2e — stage 1", () => {
   });
 
   it("revokes and reconciler removes from spaces_members", async () => {
-    const spaceUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/general`;
+    const spaceUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/general`;
     const res = await call(app, "POST", "/xrpc/test.comm.community.space.revoke", ALICE, {
       spaceUri,
       subject: { did: BOB },
@@ -262,7 +262,7 @@ describe("community e2e — stage 1", () => {
   });
 
   it("cannot delete a reserved space", async () => {
-    const adminUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
+    const adminUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
     const res = await call(app, "POST", "/xrpc/test.comm.community.space.delete", ALICE, {
       spaceUri: adminUri,
     });

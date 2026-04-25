@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "List spaces the caller has access to. Default scope is 'member' (spaces the caller is a member of, including owned); 'owner' lists only spaces the caller owns. When scope='member', the optional 'owner' param narrows to spaces owned by that DID — useful for listing all channels in a specific community the caller can access.",
+      "description": "List spaces the caller has access to. Default scope is 'member' (spaces the caller is a member of, including owned); 'owner' lists only spaces the caller owns. When scope='member', the optional 'owner' param narrows to spaces owned by that DID \u2014 useful for listing all channels in a specific community the caller can access.",
       "parameters": {
         "type": "params",
         "properties": {

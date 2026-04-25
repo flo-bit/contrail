@@ -10,10 +10,10 @@ import {
 import { batchedInQuery, formatRecord } from "./helpers";
 
 /** Group rows by their origin: public (undefined key) or a specific spaceUri. */
-function groupBySource<T extends { _space?: string }>(rows: T[]): Map<string | undefined, T[]> {
+function groupBySource<T extends { space?: string }>(rows: T[]): Map<string | undefined, T[]> {
   const groups = new Map<string | undefined, T[]>();
   for (const r of rows) {
-    const key = r._space;
+    const key = r.space;
     const g = groups.get(key);
     if (g) g.push(r);
     else groups.set(key, [r]);
@@ -130,7 +130,7 @@ export async function resolveHydrates(
               formatRecord({
                 ...(row as any),
                 collection: childNsid,
-                ...(sourceSpace ? { _space: sourceSpace } : {}),
+                ...(sourceSpace ? { space: sourceSpace } : {}),
               } as RecordRow)
             );
           }
@@ -212,7 +212,7 @@ export async function resolveReferences(
           result[parentUri][refName] = formatRecord({
             ...(row as any),
             collection: refNsid,
-            ...(sourceSpace ? { _space: sourceSpace } : {}),
+            ...(sourceSpace ? { space: sourceSpace } : {}),
           } as RecordRow);
         }
       }

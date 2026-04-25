@@ -129,7 +129,7 @@ describe("<ns>.invite.* — unified surface", () => {
         appPassword: "anything",
       });
       expect(adopt.status).toBe(200);
-      adminUri = `at://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
+      adminUri = `ats://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
 
       // Alice (owner in $admin) creates a child space.
       const create = await call(app, "POST", "/xrpc/test.inv.community.space.create", ALICE, {

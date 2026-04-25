@@ -16,8 +16,7 @@
           ],
           "properties": {
             "spaceUri": {
-              "type": "string",
-              "format": "at-uri"
+              "type": "string"
             },
             "collection": {
               "type": "string",

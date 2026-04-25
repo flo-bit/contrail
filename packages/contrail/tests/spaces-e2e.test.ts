@@ -96,7 +96,7 @@ describe("spaces e2e", () => {
     expect(res.status).toBe(200);
     const { space } = await asJson(res);
     spaceUri = space.uri;
-    expect(spaceUri).toBe(`at://${ALICE}/tools.atmo.event.space/birthday-2026`);
+    expect(spaceUri).toBe(`ats://${ALICE}/tools.atmo.event.space/birthday-2026`);
   });
 
   it("owner can write a location record", async () => {

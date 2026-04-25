@@ -141,7 +141,7 @@ async function runQueryStream(opts: {
           collection: event.payload.collection,
           cid: event.payload.cid,
           value: event.payload.record,
-          _space: event.payload.space
+          space: event.payload.space
         }
       });
     } else {
@@ -188,7 +188,7 @@ async function runQueryStream(opts: {
           value: event.payload.record,
           time_us: nowUs,
           indexed_at: event.ts,
-          _space: event.payload.space
+          space: event.payload.space
         }
       });
     } else {
@@ -257,15 +257,7 @@ async function runQueryStream(opts: {
           }
         }
       }
-      // Normalize `space` → `_space` so snapshot records carry the same
-      // field name as live `record.created` payloads. Clients then have a
-      // single key to read regardless of origin.
-      const normalized = record as Record<string, unknown>;
-      if (normalized.space !== undefined && normalized._space === undefined) {
-        normalized._space = normalized.space;
-        delete normalized.space;
-      }
-      send("snapshot.record", { record: normalized });
+      send("snapshot.record", { record });
     }
     send("snapshot.end", { cursor: result.cursor });
     snapshotDone = true;

@@ -10,7 +10,9 @@
       "Bash(npm test:*)",
       "Bash(npx lex-cli:*)",
       "Bash(pnpm vitest:*)",
-      "WebFetch(domain:flo-bit.dev)"
+      "WebFetch(domain:flo-bit.dev)",
+      "WebFetch(domain:atproto.com)",
+      "WebFetch(domain:docs.bsky.app)"
     ]
   }
 }

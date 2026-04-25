@@ -53,8 +53,7 @@
       ],
       "properties": {
         "uri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "ownerDid": {
           "type": "string",
@@ -84,8 +83,7 @@
           "format": "did"
         },
         "spaceUri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         }
       }
     },
@@ -147,8 +145,7 @@
           "description": "SHA-256 of the raw token. Stable id for list/revoke; never grants access on its own."
         },
         "spaceUri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "accessLevel": {
           "type": "ref",

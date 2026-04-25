@@ -22,7 +22,7 @@
       "type": "object",
       "required": ["uri", "ownerDid", "type", "key", "serviceDid", "createdAt"],
       "properties": {
-        "uri":        { "type": "string", "format": "at-uri" },
+        "uri":        { "type": "string" },
         "ownerDid":   { "type": "string", "format": "did" },
         "type":       { "type": "string", "format": "nsid" },
         "key":        { "type": "string" },
@@ -35,7 +35,7 @@
       "description": "Exactly one of `did` or `spaceUri` must be set.",
       "properties": {
         "did":      { "type": "string", "format": "did" },
-        "spaceUri": { "type": "string", "format": "at-uri" }
+        "spaceUri": { "type": "string" }
       }
     },
     "memberRow": {
@@ -61,7 +61,7 @@
       "required": ["tokenHash", "spaceUri", "accessLevel", "createdBy", "createdAt", "usedCount"],
       "properties": {
         "tokenHash":   { "type": "string", "description": "SHA-256 of the raw token. Stable id for list/revoke; never grants access on its own." },
-        "spaceUri":    { "type": "string", "format": "at-uri" },
+        "spaceUri":    { "type": "string" },
         "accessLevel": { "type": "ref", "ref": "#accessLevel" },
         "createdBy":   { "type": "string", "format": "did" },
         "createdAt":   { "type": "integer" },

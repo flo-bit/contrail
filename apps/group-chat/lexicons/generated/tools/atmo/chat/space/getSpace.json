@@ -12,8 +12,7 @@
         ],
         "properties": {
           "uri": {
-            "type": "string",
-            "format": "at-uri"
+            "type": "string"
           },
           "inviteToken": {
             "type": "string",

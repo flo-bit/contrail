@@ -21,7 +21,7 @@
           "type": "object",
           "required": ["spaceUri"],
           "properties": {
-            "spaceUri":    { "type": "string", "format": "at-uri" },
+            "spaceUri":    { "type": "string" },
             "kind":        { "type": "string", "description": "Set for user-owned spaces — echoes the invite kind consumed." },
             "accessLevel": { "type": "string", "description": "Set for community-owned spaces — the level granted." },
             "communityDid": { "type": "string", "format": "did", "description": "Set for community-owned spaces." }

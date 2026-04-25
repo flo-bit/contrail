@@ -22,7 +22,7 @@ export interface WatchRecord {
 	time_us?: number;
 	indexed_at?: number;
 	/** Set when the record originates from a per-space table. */
-	_space?: string;
+	space?: string;
 	/** Present on optimistic entries added via `addOptimistic` — not set by
 	 *  records arriving from the stream. Auto-dropped when a real record
 	 *  with the same rkey arrives via `record.created`. */

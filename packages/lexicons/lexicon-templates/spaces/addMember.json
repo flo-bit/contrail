@@ -11,7 +11,7 @@
           "type": "object",
           "required": ["spaceUri", "did"],
           "properties": {
-            "spaceUri": { "type": "string", "format": "at-uri" },
+            "spaceUri": { "type": "string" },
             "did":      { "type": "string", "format": "did" }
           }
         }
