@@ -7,6 +7,7 @@ export default defineConfig({
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
     "src/workers/backfill.ts",
+    "src/worker/index.ts",
     "src/cli.ts",
     "src/cli-config.ts",
   ],

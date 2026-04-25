@@ -16,16 +16,24 @@ import { markInProcess } from "./core/spaces/in-process";
  * For most cases, prefer `contrail.handler()` directly when DBs are bound at
  * construction time.
  */
+export interface CreateHandlerOptions {
+  /** Bundled lexicon JSONs — if provided, served at `/lexicons` so
+   *  consumer apps can fetch + typegen against this deployment. Generate
+   *  with `contrail-lex generate` and import from `lexicons/generated`. */
+  lexicons?: object[];
+}
+
 export function createHandler(
-  contrail: Contrail
+  contrail: Contrail,
+  options: CreateHandlerOptions = {}
 ): (request: Request, db?: Database, spacesDb?: Database) => Promise<Response> {
   // When no per-request DBs are provided, build the app once and reuse it.
   let cached: ((request: Request) => Promise<Response>) | null = null;
   return (request: Request, db?: Database, spacesDb?: Database) => {
     if (db || spacesDb) {
-      return contrail.handler({ db, spacesDb })(request);
+      return contrail.handler({ db, spacesDb, lexicons: options.lexicons })(request);
     }
-    cached ??= contrail.handler();
+    cached ??= contrail.handler({ lexicons: options.lexicons });
     return cached(request);
   };
 }

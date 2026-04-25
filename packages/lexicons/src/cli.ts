@@ -9,14 +9,15 @@
  *   contrail-lex types                            # wraps `lex-cli generate`
  *   contrail-lex all [--no-types] [--config ...]  # generate → pull → types
  *   contrail-lex publish [handle] [password]      # publish lexicons to a PDS
+ *   contrail-lex pull-service <url>               # fetch lexicons from a deployed contrail
  *
  * Config auto-detects at ./contrail.config.ts, ./app/config.ts, or
  * ./src/lib/contrail/config.ts (first match wins); override with --config.
  * The file must default-export or named-export `config: ContrailConfig`.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
 import {
   findConfigFile,
   loadConfig,
@@ -25,17 +26,18 @@ import {
 import { generateLexicons } from "./generate.js";
 import { publishLexicons } from "./publish.js";
 
-type Subcommand = "generate" | "pull" | "types" | "all" | "publish" | "help";
+type Subcommand = "generate" | "pull" | "types" | "all" | "publish" | "pull-service" | "help";
 
 const USAGE = `contrail-lex <subcommand> [options]
 
 Subcommands:
-  generate     Emit lexicon JSON from Contrail config
-  pull         Pull external lexicons (wraps \`lex-cli pull\`)
-  types        Generate TS types from lexicon JSON (wraps \`lex-cli generate\`)
-  all          generate → pull → generate → pull → types (full pipeline)
-  publish      Publish lexicon JSON as com.atproto.lexicon.schema records on a PDS
-  help         Print this message
+  generate        Emit lexicon JSON from Contrail config
+  pull            Pull external lexicons (wraps \`lex-cli pull\`)
+  types           Generate TS types from lexicon JSON (wraps \`lex-cli generate\`)
+  all             generate → pull → generate → pull → types (full pipeline)
+  publish         Publish lexicon JSON as com.atproto.lexicon.schema records on a PDS
+  pull-service    Fetch lexicons from a deployed contrail \`/lexicons\` endpoint
+  help            Print this message
 
 Options:
   --config <path>     Path to Contrail config file. Default: auto-detect.
@@ -44,6 +46,8 @@ Options:
   --generated-dir     For \`publish\`: dir of JSON to publish. Default: lexicons/generated.
   --skip-confirm      For \`publish\`: skip the "do you control these zones?" prompt.
   --dry-run           For \`publish\`: print what would be published + the DNS records needed, no writes.
+  --out <dir>         For \`pull-service\`: where to write fetched lexicons. Default: lexicons/pulled.
+  --namespace <ns>    For \`pull-service\`: construct the URL as \`<base>/xrpc/<ns>.lexicons\`. Or pass a full URL.
 
 Environment variables (for \`publish\`):
   LEXICON_ACCOUNT_IDENTIFIER   handle or DID (falls back to positional arg 1)
@@ -58,6 +62,8 @@ function parseArgs(argv: string[]): {
   generatedDir: string;
   skipConfirm: boolean;
   dryRun: boolean;
+  out?: string;
+  namespace?: string;
   positional: string[];
 } {
   const args = argv.slice(2);
@@ -68,6 +74,8 @@ function parseArgs(argv: string[]): {
   let generatedDir = "lexicons/generated";
   let skipConfirm = false;
   let dryRun = false;
+  let out: string | undefined;
+  let namespace: string | undefined;
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -77,11 +85,13 @@ function parseArgs(argv: string[]): {
     else if (a === "--generated-dir") generatedDir = args[++i];
     else if (a === "--skip-confirm") skipConfirm = true;
     else if (a === "--dry-run") dryRun = true;
+    else if (a === "--out") out = args[++i];
+    else if (a === "--namespace") namespace = args[++i];
     else if (a === "-h" || a === "--help")
-      return { cmd: "help", root, withTypes: true, generatedDir, skipConfirm, dryRun, positional };
+      return { cmd: "help", root, withTypes: true, generatedDir, skipConfirm, dryRun, out, namespace, positional };
     else positional.push(a);
   }
-  return { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, positional };
+  return { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, out, namespace, positional };
 }
 
 
@@ -142,8 +152,80 @@ async function cmdPublish(
   return result.failed.length ? 1 : 0;
 }
 
+interface LexiconDoc {
+  id?: string;
+  [k: string]: unknown;
+}
+
+async function cmdPullService(
+  root: string,
+  outDir: string,
+  namespace: string | undefined,
+  positional: string[]
+): Promise<number> {
+  const url = positional[0];
+  if (!url) {
+    console.error("usage: contrail-lex pull-service <url> [--namespace <ns>]");
+    console.error(
+      "  <url> is either a full URL to the lexicon endpoint\n" +
+        "    e.g. https://my-contrail.dev/xrpc/com.example.lexicons\n" +
+        "  or a base URL combined with --namespace:\n" +
+        "    contrail-lex pull-service https://my-contrail.dev --namespace com.example"
+    );
+    return 1;
+  }
+  let endpoint: string;
+  if (url.includes("/xrpc/")) {
+    endpoint = url;
+  } else if (namespace) {
+    endpoint = `${url.replace(/\/$/, "")}/xrpc/${namespace}.lexicons`;
+  } else {
+    console.error(
+      "pull-service: pass a full URL containing /xrpc/<ns>.lexicons, or use --namespace <ns> to construct one."
+    );
+    return 1;
+  }
+  console.log(`fetching ${endpoint}…`);
+
+  let docs: LexiconDoc[];
+  try {
+    const res = await fetch(endpoint);
+    if (!res.ok) {
+      console.error(`request failed: ${res.status} ${res.statusText}`);
+      return 1;
+    }
+    const body = (await res.json()) as { lexicons?: LexiconDoc[] };
+    docs = body.lexicons ?? [];
+  } catch (err) {
+    console.error(`fetch error: ${(err as Error).message}`);
+    return 1;
+  }
+
+  if (docs.length === 0) {
+    console.error(
+      "no lexicons in response. the service must pass { lexicons } to createWorker() " +
+        "(emit with `contrail-lex generate` and import from ./lexicons/generated)."
+    );
+    return 1;
+  }
+
+  const absOut = resolve(root, outDir);
+  mkdirSync(absOut, { recursive: true });
+  let written = 0;
+  for (const doc of docs) {
+    if (!doc.id || typeof doc.id !== "string") continue;
+    const filePath = join(absOut, ...doc.id.split(".")) + ".json";
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify(doc, null, 2) + "\n");
+    written++;
+  }
+  console.log(`wrote ${written} lexicon(s) to ${absOut}`);
+  console.log("run `npx lex-cli generate` (or `contrail-lex types`) to emit TS types.");
+  return 0;
+}
+
 async function main(): Promise<number> {
-  const { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, positional } =
+  const { cmd, config, root, withTypes, generatedDir, skipConfirm, dryRun, out, namespace, positional } =
     parseArgs(process.argv);
 
   if (cmd === "help") {
@@ -155,6 +237,8 @@ async function main(): Promise<number> {
   if (cmd === "types") return runLexCli(["generate"], root);
   if (cmd === "publish")
     return cmdPublish(root, generatedDir, positional, skipConfirm, dryRun);
+  if (cmd === "pull-service")
+    return cmdPullService(root, out ?? "lexicons/pulled", namespace, positional);
 
   const configPath = findConfigFile(root, config);
   if (!configPath) {

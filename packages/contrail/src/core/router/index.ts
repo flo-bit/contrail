@@ -38,6 +38,11 @@ export interface CreateAppOptions {
   spacesDb?: Database;
   /** Full spaces context override (escape hatch for tests). */
   spacesCtx?: SpacesContext | null;
+  /** Lexicon JSONs to serve at `/lexicons` so consumer apps can fetch +
+   *  typegen against this deployment. Emit with `contrail-lex generate` —
+   *  its `lexicons/generated/index.ts` exports the right shape. If omitted,
+   *  the endpoint returns `404`. */
+  lexicons?: object[];
 }
 
 export function createApp(
@@ -53,6 +58,16 @@ export function createApp(
   app.get("/xrpc/_health", (c) => c.json({ status: "ok" }));
 
   const ns = config.namespace;
+
+  // Lexicon manifest — lets consumer apps fetch every lexicon this
+  // deployment speaks (generated + pulled + custom) over HTTP and
+  // typegen clients, without needing a PDS or DNS resolution. Only
+  // registered when the caller passed bundled lexicons at build time
+  // via `contrail-lex generate`.
+  if (options.lexicons && options.lexicons.length > 0) {
+    const lexicons = options.lexicons;
+    app.get(`/xrpc/${ns}.lexicons`, (c) => c.json({ lexicons }));
+  }
 
   app.get(`/xrpc/${ns}.getProfile`, async (c) => {
     const actor = c.req.query("actor");

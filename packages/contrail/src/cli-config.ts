@@ -46,13 +46,21 @@ export function findConfigFile(root: string, explicit?: string): string | null {
 
 /** Load a config file via jiti — handles TS + ESM + CJS transparently,
  *  no tsx/ts-node hook required. Accepts either a named export `config` or
- *  a default export. Throws if neither is present. */
+ *  a default export. Validates the result has the minimum `ContrailConfig`
+ *  shape (`namespace` + `collections`) so misnamed exports throw at load
+ *  time rather than producing confusing "undefined.namespace" errors later. */
 export async function loadConfig<T = ContrailConfig>(path: string): Promise<T> {
   const jiti = createJiti(import.meta.url, { interopDefault: true });
   const mod = (await jiti.import(path)) as { config?: unknown; default?: unknown };
   const config = mod.config ?? mod.default;
   if (!config || typeof config !== "object") {
     throw new Error(`Config at ${path} did not export a \`config\` object`);
+  }
+  if (!("namespace" in config) || !("collections" in config)) {
+    throw new Error(
+      `Config at ${path} did not export a valid \`config\` — missing required fields (namespace, collections). ` +
+        `Make sure your file does \`export const config: ContrailConfig = { namespace: "…", collections: {…} }\`.`
+    );
   }
   return config as T;
 }

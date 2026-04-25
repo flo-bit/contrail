@@ -11,12 +11,13 @@ pnpm add -D @atmo-dev/contrail-lexicons @atcute/lex-cli
 ## CLI
 
 ```bash
-contrail-lex generate   # emit lexicon JSON from your Contrail config
-contrail-lex pull       # wraps `lex-cli pull` (fetch external lexicons)
-contrail-lex types      # wraps `lex-cli generate` (JSON → TS types)
-contrail-lex all        # generate → pull → generate → pull → types
-contrail-lex all --no-types    # same, skip the type step
-contrail-lex publish    # publish lexicons to your PDS (add --dry-run to preview)
+contrail-lex generate       # emit lexicon JSON from your Contrail config
+contrail-lex pull           # wraps `lex-cli pull` (fetch external lexicons)
+contrail-lex types          # wraps `lex-cli generate` (JSON → TS types)
+contrail-lex all            # generate → pull → generate → pull → types
+contrail-lex all --no-types # same, skip the type step
+contrail-lex publish        # publish lexicons to your PDS (add --dry-run to preview)
+contrail-lex pull-service <url>  # consume a deployed contrail's /lexicons endpoint
 ```
 
 Config is auto-detected at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts`. Override with `--config <path>`.
@@ -35,6 +36,25 @@ src/lexicon-types/      # TS types from lex-cli generate
 ```
 
 `lexicons/custom/`, `lexicons/generated/`, and `lexicons/pulled/` should be **committed** — that way CI doesn't need network access. `lex.config.js` and `src/lexicon-types/` are regenerated on demand and safe to gitignore.
+
+`lexicons/generated/index.ts` is also emitted on every run — a barrel that imports every lexicon the deployment speaks (generated + pulled + custom). Pass it to `createWorker(config, { lexicons })` to expose them at `/xrpc/<namespace>.lexicons` on your deployed service; consumer apps can then `pull-service` against it.
+
+## Consuming a deployed contrail
+
+If you're building a frontend that talks to someone's (or your own) deployed contrail, you don't need the backend's source code to get typed XRPC calls. Have the operator pass `{ lexicons }` to `createWorker`, then:
+
+```bash
+contrail-lex pull-service https://my-contrail.dev/xrpc/com.example.lexicons
+# or: contrail-lex pull-service https://my-contrail.dev --namespace com.example
+
+npx lex-cli generate
+```
+
+`pull-service` hits the manifest endpoint, writes each lexicon under `lexicons/pulled/<nsid>.json`, and `lex-cli generate` emits TypeScript types for `@atcute/client`. Override the output dir with `--out <path>`.
+
+The manifest includes the service's generated lexicons *plus* any external NSIDs the generator `$ref`s (e.g., `app.bsky.actor.profile`, `community.lexicon.calendar.event`) — so typegen resolves cleanly with no additional fetching from bsky / atproto registries.
+
+No PDS setup required, no DNS, no published lexicon records — just an HTTP endpoint and typegen.
 
 ## Publishing
 

@@ -31,6 +31,10 @@
       "types": "./dist/workers/backfill.d.ts",
       "import": "./dist/workers/backfill.js"
     },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js"
+    },
     "./cli-config": {
       "types": "./dist/cli-config.d.ts",
       "import": "./dist/cli-config.js"
