@@ -203,3 +203,4 @@ const db = createPostgresDatabase(pool);
 | `spaces` | — | See [Spaces](./05-spaces.md) |
 | `community` | — | See [Communities](./06-communities.md) |
 | `realtime` | — | See [Sync](./07-sync.md) |
+| `labels` | — | See [Labels](./08-labels.md) |

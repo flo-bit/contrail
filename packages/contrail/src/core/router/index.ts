@@ -24,6 +24,8 @@ import type { PubSub } from "../realtime/types";
 import { resolveActor } from "../identity";
 import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
+import { selectAcceptedLabelers } from "../labels/select";
+import { hydrateLabels } from "../labels/hydrate";
 
 export interface SpacesContext {
   adapter: StorageAdapter;
@@ -88,6 +90,25 @@ export function createApp(
     const profileMap = await resolveProfiles(db, config, [did]);
     const profiles = profileMap[did];
     if (!profiles || profiles.length === 0) return c.json({ error: "Profile not found" }, 404);
+
+    if (config.labels) {
+      const params = new URL(c.req.url).searchParams;
+      const sel = selectAcceptedLabelers(
+        c.req.raw.headers.get("atproto-accept-labelers"),
+        params.get("labelers"),
+        config.labels,
+      );
+      if (sel.accepted.length > 0) {
+        const labelsByUri = await hydrateLabels(db, [did], sel.accepted);
+        const ls = labelsByUri[did];
+        if (ls && ls.length > 0) {
+          for (const entry of profiles) {
+            entry.labels = ls;
+          }
+        }
+        c.header("atproto-content-labelers", sel.accepted.join(","));
+      }
+    }
 
     return c.json({ profiles });
   });

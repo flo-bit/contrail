@@ -64,6 +64,12 @@ export function createWorker(
       const db = env[binding] as Database;
       await ensureReady(env, db);
       ctx.waitUntil(contrail.ingest({}, db));
+      // Run label ingest alongside the jetstream catch-up so a single cron
+      // tick keeps both data streams fresh. Only scheduled when configured —
+      // skipping the no-op promise keeps the worker task list tight.
+      if (config.labels) {
+        ctx.waitUntil(contrail.ingestLabels({}, db));
+      }
     },
   };
 }

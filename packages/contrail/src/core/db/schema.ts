@@ -12,6 +12,7 @@ import {
 import { getSearchableFields } from "../search";
 import { buildSpacesBaseSchema } from "../spaces/schema";
 import { buildCommunitySchema } from "../community/schema";
+import { buildLabelsSchema } from "../labels/schema";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
@@ -315,6 +316,13 @@ export async function initSchema(
     const target = spacesSharesMainDb ? db : spacesDb!;
     const communityStmts = buildCommunitySchema(dialect);
     await target.batch(communityStmts.map((s) => target.prepare(s)));
+  }
+
+  if (config.labels) {
+    // Labels tables live on the main DB — they're keyed by at-URI / DID and
+    // are read alongside public records during hydration.
+    const labelsStmts = buildLabelsSchema(dialect);
+    await db.batch(labelsStmts.map((s) => db.prepare(s)));
   }
 
   // FTS5 may not be available (e.g. node:sqlite) — skip gracefully

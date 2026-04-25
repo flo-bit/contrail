@@ -161,6 +161,11 @@ export interface ContrailConfig {
   /** Realtime module configuration. When set, the service exposes ticket + SSE/WS
    *  subscribe XRPCs, and wraps the spaces adapter to publish events after writes. */
   realtime?: import("./realtime/types").RealtimeConfig;
+  /** Labels module configuration. When set, contrail subscribes to the
+   *  configured labelers, indexes their labels into a single `labels` table,
+   *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile
+   *  responses gated by the caller's `atproto-accept-labelers` header. */
+  labels?: import("./labels/types").LabelsConfig;
   /** Customize the auto-generated `<namespace>.permissionSet` lexicon. */
   permissionSet?: PermissionSetConfig;
 }

@@ -16,6 +16,8 @@ import { resolveProfiles, collectDids } from "./profiles";
 import { resolveActor } from "../identity";
 import type { FormattedRecord } from "./helpers";
 import { formatRecord, parseIntParam, fieldToParam } from "./helpers";
+import { selectAcceptedLabelers } from "../labels/select";
+import { hydrateLabels } from "../labels/hydrate";
 import { verifyServiceAuthRequest, extractInviteToken, checkInviteReadGrant } from "../spaces/auth";
 import { checkAccess } from "../spaces/acl";
 import { hashInviteToken } from "../invite/token";
@@ -278,8 +280,12 @@ export async function runPipeline(
   collection: string,
   params: URLSearchParams,
   source?: RecordSource,
-  spaceUris?: string[]
-): Promise<{ records: FormattedRecord[]; cursor?: string; profiles?: any[] }> {
+  spaceUris?: string[],
+  /** Optional headers from the originating request — used for label
+   *  hydration (`atproto-accept-labelers`). Other entry points pass nothing
+   *  and labels are gated by `?labelers=` / config defaults. */
+  headers?: Headers
+): Promise<{ records: FormattedRecord[]; cursor?: string; profiles?: any[]; labelersApplied?: string[] }> {
   const colConfig = config.collections[collection];
   if (!colConfig) throw new Error(`Unknown collection: ${collection}`);
 
@@ -433,11 +439,55 @@ export async function runPipeline(
     ? await resolveProfiles(db, config, allDids)
     : undefined;
 
+  let labelersApplied: string[] | undefined;
+  if (config.labels) {
+    const sel = selectAcceptedLabelers(
+      headers?.get("atproto-accept-labelers") ?? null,
+      params.get("labelers"),
+      config.labels,
+    );
+    if (sel.accepted.length > 0) {
+      const subjects: string[] = [
+        ...formattedRecords.map((r) => r.uri),
+        ...allDids,
+      ];
+      const cidByUri = new Map<string, string | null>();
+      for (const r of formattedRecords) cidByUri.set(r.uri, r.cid);
+      const labelsByUri = await hydrateLabels(db, subjects, sel.accepted, cidByUri);
+      for (const fr of formattedRecords) {
+        const ls = labelsByUri[fr.uri];
+        if (ls && ls.length > 0) fr.labels = ls;
+      }
+      if (profileMap) {
+        for (const entries of Object.values(profileMap)) {
+          for (const entry of entries) {
+            const ls = labelsByUri[entry.did];
+            if (ls && ls.length > 0) entry.labels = ls;
+          }
+        }
+      }
+      labelersApplied = sel.accepted;
+    }
+  }
+
   return {
     records: formattedRecords,
     cursor: result.cursor,
     ...(profileMap ? { profiles: Object.values(profileMap).flat() } : {}),
+    ...(labelersApplied ? { labelersApplied } : {}),
   };
+}
+
+/** Serialize a runPipeline result as JSON, echoing
+ *  `atproto-content-labelers` when labels were applied. The result's
+ *  `labelersApplied` field never appears in the response body — it's a
+ *  side channel for the route to read and turn into a header. */
+function jsonWithLabelers(c: Context, result: { labelersApplied?: string[] } & Record<string, unknown>) {
+  const { labelersApplied, ...body } = result;
+  if (labelersApplied && labelersApplied.length > 0) {
+    c.header("atproto-content-labelers", labelersApplied.join(","));
+  }
+  return c.json(body);
 }
 
 export function registerCollectionRoutes(
@@ -537,8 +587,8 @@ export function registerCollectionRoutes(
           // full filter / sort / hydrate / reference surface works on per-space
           // queries too, not just on the cross-space union path.
           try {
-            const result = await runPipeline(db, config, collection, params, undefined, [spaceUri]);
-            return c.json(result);
+            const result = await runPipeline(db, config, collection, params, undefined, [spaceUri], c.req.raw.headers);
+            return jsonWithLabelers(c, result);
           } catch (e: any) {
             if (e.message === "Could not resolve actor") {
               return c.json({ error: e.message }, 400);
@@ -571,8 +621,8 @@ export function registerCollectionRoutes(
         }
 
         try {
-          const result = await runPipeline(db, config, collection, params, undefined, spaceUris);
-          return c.json(result);
+          const result = await runPipeline(db, config, collection, params, undefined, spaceUris, c.req.raw.headers);
+          return jsonWithLabelers(c, result);
         } catch (e: any) {
           if (e.message === "Could not resolve actor") {
             return c.json({ error: e.message }, 400);
@@ -759,7 +809,8 @@ export function registerCollectionRoutes(
                 collection,
                 params,
                 undefined,
-                snapshotSpaces
+                snapshotSpaces,
+                c.req.raw.headers
               );
               let ticket: string | undefined;
               if (ticketSigner && callerDid) {
@@ -1040,6 +1091,34 @@ export function registerCollectionRoutes(
         ? await resolveProfiles(db, config, allDids)
         : undefined;
 
+      let labelersApplied: string[] | undefined;
+      if (config.labels) {
+        const sel = selectAcceptedLabelers(
+          c.req.raw.headers.get("atproto-accept-labelers"),
+          params.get("labelers"),
+          config.labels,
+        );
+        if (sel.accepted.length > 0) {
+          const subjects: string[] = [row.uri, ...allDids];
+          const cidByUri = new Map<string, string | null>([[row.uri, row.cid]]);
+          const labelsByUri = await hydrateLabels(db, subjects, sel.accepted, cidByUri);
+          const ls = labelsByUri[row.uri];
+          if (ls && ls.length > 0) (formatted as Record<string, unknown>).labels = ls;
+          if (profileMap) {
+            for (const entries of Object.values(profileMap)) {
+              for (const entry of entries) {
+                const els = labelsByUri[entry.did];
+                if (els && els.length > 0) entry.labels = els;
+              }
+            }
+          }
+          labelersApplied = sel.accepted;
+        }
+      }
+      if (labelersApplied) {
+        c.header("atproto-content-labelers", labelersApplied.join(","));
+      }
+
       return c.json({
         ...formatted,
         ...(profileMap ? { profiles: Object.values(profileMap).flat() } : {}),
@@ -1062,8 +1141,8 @@ export function registerCollectionRoutes(
         const params = new URL(c.req.url).searchParams;
         try {
           const source = await handler(db, params, config);
-          const result = await runPipeline(db, config, collection, params, source);
-          return c.json(result);
+          const result = await runPipeline(db, config, collection, params, source, undefined, c.req.raw.headers);
+          return jsonWithLabelers(c, result);
         } catch (e: any) {
           if (e.message === "Could not resolve actor") {
             return c.json({ error: e.message }, 400);

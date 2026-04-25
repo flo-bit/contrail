@@ -19,15 +19,17 @@ import { Contrail } from "./contrail.js";
 import type { CollectionStats, RefreshResult } from "./core/refresh.js";
 import type { Database } from "./core/types.js";
 
-type Subcommand = "backfill" | "refresh" | "dev" | "help";
+type Subcommand = "backfill" | "refresh" | "labels-backfill" | "dev" | "help";
 
 const USAGE = `contrail <subcommand> [options]
 
 Subcommands:
-  backfill     One-time bulk load from each known DID's PDS (resumable)
-  refresh      Fresh sweep: reconcile PDS vs DB, report missing + stale
-  dev          Local wrangler dev + auto-trigger cron + backfill/refresh prompts
-  help         Print this message
+  backfill          One-time bulk load from each known DID's PDS (resumable)
+  refresh           Fresh sweep: reconcile PDS vs DB, report missing + stale
+  labels-backfill   One-shot drain per configured labeler — runs catch-up cycles
+                    until each labeler has no more pending events (resumable)
+  dev               Local wrangler dev + auto-trigger cron + backfill/refresh prompts
+  help              Print this message
 
 Options (backfill):
   --config <path>      Path to Contrail config file (TS or JS).
@@ -285,6 +287,60 @@ async function main(): Promise<number> {
     });
     printRefreshReport(result, opts.byCollection);
     return 0;
+  }
+
+  if (opts.cmd === "labels-backfill") {
+    const configPath = resolveConfigPath(opts);
+    if (!configPath) return 1;
+    const config = await loadConfig(configPath);
+    if (!config.labels || config.labels.sources.length === 0) {
+      console.error("No labels configured (config.labels.sources is empty).");
+      return 1;
+    }
+    const { getPlatformProxy } = await import("wrangler");
+    const { env, dispose } = await getPlatformProxy({
+      environment: opts.remote ? "production" : undefined,
+    });
+    try {
+      const db = (env as Record<string, unknown>)[opts.binding] as Database | undefined;
+      if (!db) {
+        console.error(`No binding named "${opts.binding}" in wrangler env.`);
+        return 1;
+      }
+      const contrail = new Contrail(config);
+      await contrail.init(db);
+
+      // Run cycles until each cycle drains nothing new — measured by the
+      // labeler_cursors not advancing across two consecutive cycles.
+      const before = new Map<string, number>();
+      let stable = 0;
+      while (stable < 2) {
+        const rows = (
+          await db
+            .prepare("SELECT did, cursor FROM labeler_cursors")
+            .all<{ did: string; cursor: number }>()
+        ).results ?? [];
+        for (const r of rows) before.set(r.did, r.cursor);
+        await contrail.ingestLabels({ timeoutMs: 60_000 }, db);
+        const after = (
+          await db
+            .prepare("SELECT did, cursor FROM labeler_cursors")
+            .all<{ did: string; cursor: number }>()
+        ).results ?? [];
+        let advanced = false;
+        for (const r of after) {
+          if ((before.get(r.did) ?? -1) !== r.cursor) {
+            advanced = true;
+            break;
+          }
+        }
+        stable = advanced ? 0 : stable + 1;
+      }
+      console.log("labels-backfill: caught up");
+      return 0;
+    } finally {
+      await dispose();
+    }
   }
 
   if (opts.cmd === "dev") return cmdDev(opts);
