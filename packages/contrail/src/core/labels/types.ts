@@ -19,10 +19,6 @@ export interface LabelsConfig {
    *  `?labelers=`. Defaults to every entry in `sources`. Set `[]` for
    *  opt-in-only — clients see no labels unless they ask. */
   defaults?: string[];
-  /** Honor caller-supplied DIDs that aren't in `sources`. Default: false.
-   *  When true, unknown DIDs in the request are accepted (and the labeler
-   *  may be lazily registered for ingest in a later release). */
-  allowUserSupplied?: boolean;
   /** Per-request cap. Default: 20 (matches Bluesky). */
   maxPerRequest?: number;
 }

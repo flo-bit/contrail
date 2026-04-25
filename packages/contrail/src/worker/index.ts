@@ -63,13 +63,9 @@ export function createWorker(
     ): Promise<void> {
       const db = env[binding] as Database;
       await ensureReady(env, db);
+      // ingest() drives both record and label ingestion in parallel when
+      // labels are configured — single waitUntil covers the whole cron tick.
       ctx.waitUntil(contrail.ingest({}, db));
-      // Run label ingest alongside the jetstream catch-up so a single cron
-      // tick keeps both data streams fresh. Only scheduled when configured —
-      // skipping the no-op promise keeps the worker task list tight.
-      if (config.labels) {
-        ctx.waitUntil(contrail.ingestLabels({}, db));
-      }
     },
   };
 }

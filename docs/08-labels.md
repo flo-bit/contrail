@@ -39,7 +39,7 @@ Per request, contrail picks accepted labelers in this order:
 3. `config.labels.defaults` — operator policy.
 4. Every entry in `config.labels.sources`.
 
-The list is intersected with what's actually configured (unknowns dropped — see [`allowUserSupplied`](#allowusersupplied) below) and capped at `maxPerRequest` (default 20). Contrail echoes the applied set back via `atproto-content-labelers`.
+The list is intersected with what's actually configured (unknowns dropped — only labelers we've subscribed to have rows to hydrate from) and capped at `maxPerRequest` (default 20). Contrail echoes the applied set back via `atproto-content-labelers`.
 
 ```
 GET /xrpc/com.example.event.listRecords
@@ -69,10 +69,6 @@ GET /xrpc/com.example.event.listRecords
 ```
 
 `labels` matches `com.atproto.label.defs#label` field-for-field — pass it straight to atproto SDK moderation helpers.
-
-### `allowUserSupplied`
-
-Default: `false` — caller-supplied DIDs that aren't in `sources` are silently dropped. Set `true` to honor them anyway. The current request still only returns labels for already-indexed sources; lazy registration of new labelers is future work.
 
 ### `defaults: []`
 

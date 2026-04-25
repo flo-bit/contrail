@@ -127,7 +127,7 @@ describe("labels router integration", () => {
     expect(body.records[0]!.labels).toBeUndefined();
   });
 
-  it("unknown caller-supplied DIDs are dropped (allowUserSupplied off)", async () => {
+  it("unknown caller-supplied DIDs are dropped", async () => {
     const { contrail } = await setup();
     const app = contrail.app();
 

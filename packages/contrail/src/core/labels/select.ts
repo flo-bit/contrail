@@ -9,20 +9,14 @@ import { DEFAULT_LABELS_MAX_PER_REQUEST } from "./types";
  *    3. `config.defaults` (operator policy)
  *    4. every entry in `config.sources`
  *
- *  Each candidate DID is checked against `config.sources`. Unknown DIDs are
- *  dropped unless `allowUserSupplied: true`, in which case they're returned
- *  in `lazyAdd` for the caller to schedule a registration. The active
- *  request gets results only from already-indexed sources.
+ *  Each candidate DID is checked against `config.sources`. Unknowns are
+ *  dropped — we only have rows for labelers we've subscribed to.
  *
  *  Header values can carry `;param` modifiers (e.g. `did:plc:...;redact`);
  *  v1 strips and ignores those — only the bare DID is honored. */
 export interface SelectedLabelers {
   /** DIDs to use for hydration this request. */
   accepted: string[];
-  /** DIDs the caller asked for that aren't configured (only populated when
-   *  `allowUserSupplied: true`). The hydrator ignores these for the current
-   *  request — the caller should enqueue registration as a follow-up. */
-  lazyAdd: string[];
 }
 
 export function selectAcceptedLabelers(
@@ -43,20 +37,15 @@ export function selectAcceptedLabelers(
   }
 
   const accepted: string[] = [];
-  const lazyAdd: string[] = [];
   const seen = new Set<string>();
   for (const did of candidates) {
     if (seen.has(did)) continue;
     seen.add(did);
-    if (known.has(did)) {
-      accepted.push(did);
-    } else if (cfg.allowUserSupplied) {
-      lazyAdd.push(did);
-    }
+    if (known.has(did)) accepted.push(did);
     if (accepted.length >= cap) break;
   }
 
-  return { accepted, lazyAdd };
+  return { accepted };
 }
 
 /** Parse a comma-separated DID list. Returns null when the input is empty

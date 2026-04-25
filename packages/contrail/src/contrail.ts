@@ -15,7 +15,7 @@ import { runPersistent as runPersistentIngestion } from "./core/persistent";
 import type { PersistentIngestOptions } from "./core/persistent";
 import {
   runLabelIngestCycle,
-  runPersistentLabels,
+  runPersistentLabels as runPersistentLabelsImpl,
   type PersistentLabelsOptions,
 } from "./core/labels/subscribe";
 import type { PubSub } from "./core/realtime/types";
@@ -84,29 +84,49 @@ export class Contrail {
     return queryRecords(this.getDb(db), this.config, { collection, ...options });
   }
 
-  /** Run one Jetstream ingestion cycle (catches up to present, then stops). */
+  /** Run one ingestion cycle: catches up records from Jetstream and — when
+   *  `config.labels` is set — labels from each configured labeler in parallel.
+   *  Both share the same `timeoutMs` budget; they're independent network
+   *  operations so concurrency is free. */
   async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
-    await runIngestCycle(
-      this.getDb(db),
-      this.config,
-      options?.timeoutMs,
-      this._ingestState,
-      this._pubsub ?? undefined
-    );
+    const d = this.getDb(db);
+    const tasks: Promise<void>[] = [
+      runIngestCycle(d, this.config, options?.timeoutMs, this._ingestState, this._pubsub ?? undefined),
+    ];
+    if (this.config.labels) {
+      tasks.push(runLabelIngestCycle(d, this.config, options?.timeoutMs));
+    }
+    await Promise.all(tasks);
   }
 
-  /** Run persistent Jetstream ingestion (long-lived, stays connected). */
+  /** Long-lived ingestion: streams records via Jetstream and — when
+   *  `config.labels` is set — labels via per-labeler `subscribeLabels` sockets.
+   *  Both honor the supplied `signal` and shut down cleanly together. */
   async runPersistent(options?: Omit<PersistentIngestOptions, 'logger'>, db?: Database): Promise<void> {
-    await runPersistentIngestion(this.getDb(db), this.config, {
-      ...options,
-      logger: this.config.logger,
-      pubsub: this._pubsub ?? undefined,
-    });
+    const d = this.getDb(db);
+    const tasks: Promise<void>[] = [
+      runPersistentIngestion(d, this.config, {
+        ...options,
+        logger: this.config.logger,
+        pubsub: this._pubsub ?? undefined,
+      }),
+    ];
+    if (this.config.labels) {
+      tasks.push(
+        runPersistentLabelsImpl(d, this.config, {
+          signal: options?.signal,
+          batchSize: options?.batchSize,
+          flushIntervalMs: options?.flushIntervalMs,
+          logger: this.config.logger,
+        }),
+      );
+    }
+    await Promise.all(tasks);
   }
 
-  /** Run one labeler ingestion cycle — for every labeler in `config.labels.sources`,
-   *  drains pending `subscribeLabels` frames and persists them to the `labels`
-   *  table. No-op when `config.labels` is unset. Mirrors `ingest()`. */
+  /** Run *only* the labeler ingestion cycle. Escape hatch for callers who
+   *  want to run record and label ingestion in separate processes / workers.
+   *  `ingest()` already covers the typical case. */
   async ingestLabels(
     options?: { timeoutMs?: number },
     db?: Database,
@@ -115,14 +135,14 @@ export class Contrail {
     await runLabelIngestCycle(this.getDb(db), this.config, options?.timeoutMs);
   }
 
-  /** Long-lived label ingestion — one socket per labeler, auto-reconnect on drop.
-   *  No-op when `config.labels` is unset. Mirrors `runPersistent()`. */
+  /** Run *only* the persistent labeler ingestion. Escape hatch counterpart
+   *  to `ingestLabels()`. `runPersistent()` covers the typical case. */
   async runPersistentLabels(
     options?: Omit<PersistentLabelsOptions, "logger">,
     db?: Database,
   ): Promise<void> {
     if (!this.config.labels) return;
-    await runPersistentLabels(this.getDb(db), this.config, {
+    await runPersistentLabelsImpl(this.getDb(db), this.config, {
       ...options,
       logger: this.config.logger,
     });

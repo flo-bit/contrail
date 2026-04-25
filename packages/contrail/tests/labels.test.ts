@@ -129,7 +129,6 @@ describe("labels: selectAcceptedLabelers", () => {
   it("falls back to defaults (= sources) when caller sends nothing", () => {
     const sel = selectAcceptedLabelers(null, null, cfg);
     expect(sel.accepted).toEqual([SRC_A, SRC_B]);
-    expect(sel.lazyAdd).toEqual([]);
   });
 
   it("honors header before query param", () => {
@@ -142,20 +141,18 @@ describe("labels: selectAcceptedLabelers", () => {
     expect(sel.accepted).toEqual([SRC_B]);
   });
 
-  it("drops unknown DIDs by default", () => {
+  it("drops unknown DIDs", () => {
     const sel = selectAcceptedLabelers("did:plc:strangerlabeler", null, cfg);
     expect(sel.accepted).toEqual([]);
-    expect(sel.lazyAdd).toEqual([]);
   });
 
-  it("collects unknowns as lazyAdd when allowUserSupplied is true", () => {
+  it("mixes known + unknown — keeps only the known", () => {
     const sel = selectAcceptedLabelers(
       `did:plc:strangerlabeler,${SRC_A}`,
       null,
-      { ...cfg, allowUserSupplied: true },
+      cfg,
     );
     expect(sel.accepted).toEqual([SRC_A]);
-    expect(sel.lazyAdd).toEqual(["did:plc:strangerlabeler"]);
   });
 
   it("strips ;param modifiers from header values", () => {
