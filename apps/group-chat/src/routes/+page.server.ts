@@ -28,7 +28,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			records: Array<{
 				did: string;
 				rkey: string;
-				record: {
+				value: {
 					communityDid?: string;
 					name?: string;
 					description?: string;

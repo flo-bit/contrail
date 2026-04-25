@@ -4,7 +4,7 @@ import type { SpaceMemberRow, SpaceRow } from "../src/core/spaces/types";
 
 function mkSpace(overrides: Partial<SpaceRow> = {}): SpaceRow {
   return {
-    uri: "at://did:plc:alice/tools.atmo.event.space/s1",
+    uri: "ats://did:plc:alice/tools.atmo.event.space/s1",
     ownerDid: "did:plc:alice",
     type: "tools.atmo.event.space",
     key: "s1",

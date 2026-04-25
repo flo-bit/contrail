@@ -42,7 +42,7 @@ Tickets are minted server-side via `com.example.realtime.ticket` (or any app-spe
 ## Optimistic updates
 
 ```ts
-store.addOptimistic({ rkey, did, record: { text: "hi" } });
+store.addOptimistic({ rkey, did, value: { text: "hi" } });
 // later, on mutation failure:
 store.markFailed(rkey, err);
 // or explicit rollback:

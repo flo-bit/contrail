@@ -793,7 +793,7 @@ export async function queryRecords(
       record: row.record,
       time_us: row.time_us,
       indexed_at: row.indexed_at,
-      ...(spaceUri ? { _space: spaceUri } : {}),
+      ...(spaceUri ? { space: spaceUri } : {}),
     };
     if (countCols.length > 0) {
       const counts: Record<string, number> = {};

@@ -36,7 +36,7 @@
             },
             "recoveryKey": {
               "type": "unknown",
-              "description": "Creator's rotation key as a private JWK. Shown once — cannot be retrieved later."
+              "description": "Creator's rotation key as a private JWK. Shown once \u2014 cannot be retrieved later."
             }
           }
         }

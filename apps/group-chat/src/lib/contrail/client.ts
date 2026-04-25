@@ -8,7 +8,7 @@ export interface Profile {
 
 /**
  * Extract a simple profile from a contrail profile entry.
- * Contrail returns { did, handle, record: { displayName, avatar, ... } }
+ * Contrail returns { did, handle, value: { displayName, avatar, ... } }
  * while components expect { handle, displayName?, avatar? }.
  */
 export function extractProfile(entry: {

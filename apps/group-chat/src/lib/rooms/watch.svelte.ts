@@ -59,7 +59,7 @@ export type RecordShapeOf<K extends string> = K extends keyof Records
 		: Record<string, unknown>
 	: Record<string, unknown>;
 
-/** WatchRecord with a typed `record` payload. Mirrors WatchRecord's explicit
+/** WatchRecord with a typed `value` payload. Mirrors WatchRecord's explicit
  *  fields but without the `[k: string]: unknown` catchall (which would
  *  poison property access under `Omit`). */
 export interface TypedWatchRecord<R> {
@@ -67,11 +67,11 @@ export interface TypedWatchRecord<R> {
 	did: string;
 	rkey: string;
 	collection: string;
-	record: R;
+	value: R;
 	time_us?: number;
 	indexed_at?: number;
 	cid?: string | null;
-	_space?: string;
+	space?: string;
 	/** Present on optimistic entries added via `addOptimistic`. */
 	optimistic?: 'pending' | 'failed';
 	/** Error attached via `markFailed`. */

@@ -11,7 +11,7 @@
           "type": "object",
           "required": ["spaceUri"],
           "properties": {
-            "spaceUri": { "type": "string", "format": "at-uri" }
+            "spaceUri": { "type": "string" }
           }
         }
       },

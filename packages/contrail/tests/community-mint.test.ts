@@ -149,7 +149,7 @@ describe("community.mint — stage 4", () => {
     expect(ourCalls[0]!.body.rotationKeys).toHaveLength(2);
 
     // Reserved spaces exist with the caller as owner.
-    const adminUri = `at://${body.communityDid}/tools.atmo.event.space/$admin`;
+    const adminUri = `ats://${body.communityDid}/tools.atmo.event.space/$admin`;
     const whoami = await call(app, "GET", `/xrpc/test.comm.spaceExt.whoami?spaceUri=${encodeURIComponent(adminUri)}`, ALICE);
     expect(((await whoami.json()) as any).accessLevel).toBe("owner");
   });

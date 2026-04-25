@@ -18,8 +18,7 @@
           "description": "Stable identifier for list/revoke operations."
         },
         "spaceUri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "kind": {
           "type": "string",

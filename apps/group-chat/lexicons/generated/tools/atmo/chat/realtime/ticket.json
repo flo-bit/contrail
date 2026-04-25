@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Mint a short-lived subscription ticket for the given topic. The caller's access is checked and — for `community:<did>` topics — expanded to the concrete list of `space:<uri>` topics the caller can see. Server-side callers may skip tickets and use their JWT directly on `.subscribe`.",
+      "description": "Mint a short-lived subscription ticket for the given topic. The caller's access is checked and \u2014 for `community:<did>` topics \u2014 expanded to the concrete list of `space:<uri>` topics the caller can see. Server-side callers may skip tickets and use their JWT directly on `.subscribe`.",
       "input": {
         "encoding": "application/json",
         "schema": {

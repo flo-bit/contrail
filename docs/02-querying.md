@@ -7,7 +7,7 @@ Once [indexing](./01-indexing.md) is set up, every collection you declared gets 
 | `{namespace}.{short}.listRecords` | Paginated list with filters, sorts, hydration |
 | `{namespace}.{short}.getRecord?uri=…` | Single record by AT-URI |
 
-Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, `{namespace}.permissionSet`.
+Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, `{namespace}.permissionSet`, `{namespace}.lexicons`.
 
 ## HTTP (what most callers use)
 
@@ -73,12 +73,14 @@ Each record response is a flat shape:
 {
   "uri": "at://did:plc:.../community.lexicon.calendar.event/...",
   "cid": "...",
-  "record": { "name": "Rust meetup", "startsAt": "2026-03-16T...", ... },
+  "value": { "name": "Rust meetup", "startsAt": "2026-03-16T...", ... },
   "rsvpsCount": 42,        // from relations
   "rsvpsGoingCount": 30,
   // relations + references appear here only when hydrated
 }
 ```
+
+The `value` field carries the record body — same shape as atproto's `com.atproto.repo.listRecords#record`. `did`, `collection`, `rkey`, and `time_us` are also returned alongside as optional extras.
 
 ### `?hydrateRel=N` (relations)
 
@@ -94,11 +96,11 @@ Returns:
 {
   "records": [{
     "uri": "at://.../event/...",
-    "record": { "name": "..." },
+    "value": { "name": "..." },
     "rsvpsCount": 42,
     "rsvps": {
-      "going":     [ {uri, record}, ... 5 items ],
-      "interested":[ {uri, record}, ... 5 items ]
+      "going":     [ {uri, cid, value}, ... 5 items ],
+      "interested":[ {uri, cid, value}, ... 5 items ]
     }
   }]
 }
@@ -114,7 +116,7 @@ Embeds the single referenced parent record — useful for RSVP lists that need t
 /xrpc/com.example.rsvp.listRecords?subjectUri=at://.../event/...&hydrateEvent=true
 ```
 
-Each RSVP record in the response gains an `event: {uri, cid, record}` field.
+Each RSVP record in the response gains an `event: {uri, cid, value}` field.
 
 ### `?profiles=true`
 
@@ -124,18 +126,28 @@ Opt in to profile + handle hydration for every DID referenced in the result:
 /xrpc/com.example.event.listRecords?profiles=true
 ```
 
-Response grows a top-level `profiles` map keyed by DID:
+Response grows a top-level `profiles` array, one entry per (DID, configured profile NSID):
 
 ```jsonc
 {
   "records": [...],
-  "profiles": {
-    "did:plc:alice...": { "handle": "alice.bsky.social", "record": {...} }
-  }
+  "profiles": [
+    {
+      "did": "did:plc:alice...",
+      "handle": "alice.bsky.social",
+      "uri": "at://did:plc:alice.../app.bsky.actor.profile/self",
+      "cid": "...",
+      "collection": "app.bsky.actor.profile",
+      "rkey": "self",
+      "value": { /* profile record body */ }
+    }
+  ]
 }
 ```
 
-Which profile NSID to hydrate from is configured at the top level of Contrail's config (`profiles`, defaults to `["app.bsky.actor.profile"]`).
+A DID with no profile record (or whose handle resolved but profile didn't) shows up as a bare `{ did, handle }` entry — `uri`/`cid`/`value` are omitted. With multiple profile NSIDs configured, you'll see one entry per (DID × NSID) that resolved.
+
+Which profile NSID(s) to hydrate from is configured at the top level of Contrail's config (`profiles`, defaults to `["app.bsky.actor.profile"]`).
 
 ## Full-text search
 

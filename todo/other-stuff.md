@@ -1,0 +1,1 @@
+- allow running custom functions before ingestion (e.g. for filtering out unallowed writes)

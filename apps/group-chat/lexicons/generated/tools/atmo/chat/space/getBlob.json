@@ -13,8 +13,7 @@
         ],
         "properties": {
           "spaceUri": {
-            "type": "string",
-            "format": "at-uri"
+            "type": "string"
           },
           "cid": {
             "type": "string",

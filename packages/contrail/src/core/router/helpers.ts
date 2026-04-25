@@ -28,7 +28,7 @@ export function formatRecord(row: RecordRow): FormattedRecord {
     collection: row.collection,
     rkey: row.rkey,
     time_us: row.time_us,
-    ...(row._space ? { space: row._space } : {}),
+    ...(row.space ? { space: row.space } : {}),
   };
 }
 

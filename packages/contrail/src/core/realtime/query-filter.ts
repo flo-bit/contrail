@@ -24,7 +24,7 @@ export type TranslatedEnvelope =
           record: Record<string, unknown>;
           time_us: number;
           indexed_at: number;
-          _space: string;
+          space: string;
         };
       };
     }
@@ -41,7 +41,7 @@ export type TranslatedEnvelope =
           collection: string;
           cid: string | null | undefined;
           record: Record<string, unknown>;
-          _space: string;
+          space: string;
         };
       };
     }
@@ -89,7 +89,7 @@ export function translateForQuery(
               record: event.payload.record,
               time_us: event.ts * 1000,
               indexed_at: event.ts,
-              _space: spec.spaceUri
+              space: spec.spaceUri
             }
           }
         }
@@ -130,7 +130,7 @@ export function translateForQuery(
               collection: event.payload.collection,
               cid: event.payload.cid,
               record: event.payload.record,
-              _space: spec.spaceUri
+              space: spec.spaceUri
             }
           }
         }

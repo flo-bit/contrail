@@ -13,6 +13,9 @@ export interface ProfileEntry {
   value?: unknown;
   collection?: string;
   rkey?: string;
+  /** Hydrated by the labels module when the caller has accepted-labelers
+   *  active and there are matching labels on this DID. */
+  labels?: unknown;
 }
 
 export function collectDids(

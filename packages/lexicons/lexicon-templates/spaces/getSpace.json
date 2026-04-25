@@ -9,7 +9,7 @@
         "type": "params",
         "required": ["uri"],
         "properties": {
-          "uri":         { "type": "string", "format": "at-uri" },
+          "uri":         { "type": "string" },
           "inviteToken": { "type": "string", "description": "Read-grant invite token. When supplied, replaces JWT auth for this read." }
         }
       },

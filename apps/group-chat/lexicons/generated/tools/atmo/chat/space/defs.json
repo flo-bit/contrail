@@ -15,8 +15,7 @@
       ],
       "properties": {
         "uri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "ownerDid": {
           "type": "string",
@@ -78,8 +77,7 @@
       ],
       "properties": {
         "spaceUri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "collection": {
           "type": "string",
@@ -171,8 +169,7 @@
           "type": "string"
         },
         "spaceUri": {
-          "type": "string",
-          "format": "at-uri"
+          "type": "string"
         },
         "kind": {
           "type": "string",

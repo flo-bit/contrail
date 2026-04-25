@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Create a community-owned space (group/role/channel). Caller needs `admin` or higher in the community's `$admin` space. Reserved keys (`$admin`, `$publishers`, …) are rejected here.",
+      "description": "Create a community-owned space (group/role/channel). Caller needs `admin` or higher in the community's `$admin` space. Reserved keys (`$admin`, `$publishers`, \u2026) are rejected here.",
       "input": {
         "encoding": "application/json",
         "schema": {

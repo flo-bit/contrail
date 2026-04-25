@@ -28,16 +28,15 @@
           ],
           "properties": {
             "spaceUri": {
-              "type": "string",
-              "format": "at-uri"
+              "type": "string"
             },
             "kind": {
               "type": "string",
-              "description": "Set for user-owned spaces — echoes the invite kind consumed."
+              "description": "Set for user-owned spaces \u2014 echoes the invite kind consumed."
             },
             "accessLevel": {
               "type": "string",
-              "description": "Set for community-owned spaces — the level granted."
+              "description": "Set for community-owned spaces \u2014 the level granted."
             },
             "communityDid": {
               "type": "string",

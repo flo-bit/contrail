@@ -15,8 +15,7 @@
           ],
           "properties": {
             "spaceUri": {
-              "type": "string",
-              "format": "at-uri"
+              "type": "string"
             },
             "did": {
               "type": "string",

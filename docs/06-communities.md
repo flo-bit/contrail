@@ -8,8 +8,8 @@ When you want atproto records published under a *shared* identity — a team, a 
 
 ## Two modes
 
-- **Minted** — contrail creates a fresh `did:plc` for the community, holds the signing + rotation keys, publishes from it.
-- **Adopted** — contrail takes over an existing DID whose rotation keys were handed over by the owner.
+- **Minted** — contrail creates a fresh `did:plc` for the community, holds the signing key plus one rotation key (a second rotation key is returned to the creator once for recovery), and publishes from it.
+- **Adopted** — contrail takes over an existing account by holding an **app password** issued from its PDS. The owner's identity, signing key, and rotation keys are unchanged; contrail just gets PDS write access via the app password.
 
 Either way, the result is the same: a DID that multiple members can act through, gated by access levels.
 
@@ -49,6 +49,6 @@ The spaces layer stays ignorant of access levels — it just sees "this DID is a
 
 - No per-record per-level ACLs. Model as spaces.
 - No auto-rotation on key compromise yet.
-- Adoption is irreversible without manual key surrender back to the owner.
+- Adoption can be revoked unilaterally by the owner — they revoke the app password on their PDS and contrail loses write access. (Mint mode is the irreversible one: the creator's recovery rotation key, returned once at mint time, is the only path back if contrail's signing/rotation key is compromised.)
 
 The design follows zicklag's [Arbiter design sketch](https://zicklag.leaflet.pub/3mjrvb5pul224) for group management on atproto. The post is an early design note; our implementation will track it as the spec firms up.

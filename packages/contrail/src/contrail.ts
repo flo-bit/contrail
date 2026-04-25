@@ -13,6 +13,11 @@ import { processNotifyUris } from "./core/router/notify";
 import type { NotifyResult } from "./core/router/notify";
 import { runPersistent as runPersistentIngestion } from "./core/persistent";
 import type { PersistentIngestOptions } from "./core/persistent";
+import {
+  runLabelIngestCycle,
+  runPersistentLabels,
+  type PersistentLabelsOptions,
+} from "./core/labels/subscribe";
 import type { PubSub } from "./core/realtime/types";
 import { InMemoryPubSub } from "./core/realtime/in-memory";
 import { createApp, type CreateAppOptions } from "./core/router";
@@ -96,6 +101,30 @@ export class Contrail {
       ...options,
       logger: this.config.logger,
       pubsub: this._pubsub ?? undefined,
+    });
+  }
+
+  /** Run one labeler ingestion cycle — for every labeler in `config.labels.sources`,
+   *  drains pending `subscribeLabels` frames and persists them to the `labels`
+   *  table. No-op when `config.labels` is unset. Mirrors `ingest()`. */
+  async ingestLabels(
+    options?: { timeoutMs?: number },
+    db?: Database,
+  ): Promise<void> {
+    if (!this.config.labels) return;
+    await runLabelIngestCycle(this.getDb(db), this.config, options?.timeoutMs);
+  }
+
+  /** Long-lived label ingestion — one socket per labeler, auto-reconnect on drop.
+   *  No-op when `config.labels` is unset. Mirrors `runPersistent()`. */
+  async runPersistentLabels(
+    options?: Omit<PersistentLabelsOptions, "logger">,
+    db?: Database,
+  ): Promise<void> {
+    if (!this.config.labels) return;
+    await runPersistentLabels(this.getDb(db), this.config, {
+      ...options,
+      logger: this.config.logger,
     });
   }
 

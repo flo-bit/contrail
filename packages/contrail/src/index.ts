@@ -94,6 +94,25 @@ export type {
   DurableObjectState,
 } from "./core/realtime/durable-object";
 
+// Labels
+export type {
+  LabelsConfig,
+  LabelerSource,
+  LabelRow,
+  LabelerCursorRow,
+} from "./core/labels/types";
+export type { HydratedLabel } from "./core/labels/hydrate";
+export { hydrateLabels } from "./core/labels/hydrate";
+export { selectAcceptedLabelers } from "./core/labels/select";
+export { applyLabels } from "./core/labels/apply";
+export type { IncomingLabel } from "./core/labels/apply";
+export {
+  runLabelIngestCycle,
+  runPersistentLabels,
+} from "./core/labels/subscribe";
+export type { PersistentLabelsOptions } from "./core/labels/subscribe";
+export { resolveLabelerEndpoint } from "./core/labels/resolve";
+
 // Community
 export {
   CommunityAdapter,

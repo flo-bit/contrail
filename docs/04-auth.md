@@ -77,20 +77,18 @@ Tokens can be revoked (`invite.revoke`), expire automatically (`ttl`), and be ex
 
 Realtime subscriptions (`watchRecords`) can't use regular service-auth JWTs for two reasons: the WebSocket upgrade can't carry arbitrary headers, and an open socket would outlive a 60s JWT TTL. So contrail uses separate short-lived tickets.
 
-Server-side minting:
+Server-side minting comes in two flavours:
 
-```
-com.example.realtime.ticket  { spaceUri }
-  → { ticket: "...", expiresAt: 1234567890 }
-```
+- `com.example.realtime.ticket` — POST `{ topic }` (e.g. `"space:ats://..."`) → `{ ticket, topics, expiresAt }`. Bare topic-list ticket, used with the generic `<ns>.realtime.subscribe` endpoint.
+- `<collection>.watchRecords?mode=ws&spaceUri=…` (or `&actor=…`) handshake — returns `{ snapshot, ticket, wsUrl, sinceTs, ticketTtlMs, querySpec }`. The ticket is bound to `(did, topics, querySpec)` and is the one to use for the per-collection `watchRecords` stream — both for SSE (`?ticket=…`) and the subsequent WS upgrade.
 
-The ticket is signed by `realtime.ticketSecret` (a 32-byte random, configured once), bound to `(did, spaceUri, querySpec)`. Client uses it on the SSE or WS handshake via `?ticket=...`.
+Both flavours are signed by `realtime.ticketSecret` (a 32-byte random, configured once). Clients hand the ticket off via `?ticket=...` on connect.
 
 In the `@atmo-dev/contrail-sync` client:
 
 ```ts
 createWatchStore({
-  url: "/xrpc/com.example.message.watchRecords?spaceUri=at://...",
+  url: "/xrpc/com.example.message.watchRecords?spaceUri=ats://...",
   mintTicket: async () => (await fetch("/api/ticket")).then((r) => r.text()),
 });
 ```

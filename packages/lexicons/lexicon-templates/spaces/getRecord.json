@@ -9,7 +9,7 @@
         "type": "params",
         "required": ["spaceUri", "collection", "author", "rkey"],
         "properties": {
-          "spaceUri":    { "type": "string", "format": "at-uri" },
+          "spaceUri":    { "type": "string" },
           "collection":  { "type": "string", "format": "nsid" },
           "author":      { "type": "string", "format": "did" },
           "rkey":        { "type": "string" },

@@ -9,7 +9,7 @@
         "type": "params",
         "required": ["spaceUri"],
         "properties": {
-          "spaceUri":       { "type": "string", "format": "at-uri" },
+          "spaceUri":       { "type": "string" },
           "includeRevoked": { "type": "boolean", "default": false }
         }
       },

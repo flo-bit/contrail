@@ -14,8 +14,7 @@
           ],
           "properties": {
             "spaceUri": {
-              "type": "string",
-              "format": "at-uri"
+              "type": "string"
             },
             "kind": {
               "type": "string",
@@ -34,7 +33,7 @@
                 "admin",
                 "owner"
               ],
-              "description": "For community-owned spaces. The access level granted on redemption — the creator's own level caps what they can grant."
+              "description": "For community-owned spaces. The access level granted on redemption \u2014 the creator's own level caps what they can grant."
             },
             "expiresAt": {
               "type": "integer",
@@ -62,7 +61,7 @@
           "properties": {
             "token": {
               "type": "string",
-              "description": "Raw token. Shown once — cannot be retrieved later."
+              "description": "Raw token. Shown once \u2014 cannot be retrieved later."
             },
             "invite": {
               "type": "ref",

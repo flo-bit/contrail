@@ -11,7 +11,7 @@
           "type": "object",
           "required": ["spaceUri", "collection", "rkey"],
           "properties": {
-            "spaceUri":   { "type": "string", "format": "at-uri" },
+            "spaceUri":   { "type": "string" },
             "collection": { "type": "string", "format": "nsid" },
             "rkey":       { "type": "string" }
           }

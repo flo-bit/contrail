@@ -35,7 +35,7 @@ export function ensureProfile(did: string): void {
 				profiles?: Array<{
 					did: string;
 					handle?: string | null;
-					record?: { displayName?: string; avatar?: string };
+					value?: { displayName?: string; avatar?: string };
 				}>;
 			};
 			const entry = data.profiles?.[0];

@@ -9,7 +9,7 @@
         "type": "params",
         "required": ["spaceUri", "cid"],
         "properties": {
-          "spaceUri": { "type": "string", "format": "at-uri" },
+          "spaceUri": { "type": "string" },
           "cid":      { "type": "string", "format": "cid" },
           "inviteToken": {
             "type": "string",

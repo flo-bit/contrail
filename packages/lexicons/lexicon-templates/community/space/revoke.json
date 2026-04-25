@@ -11,7 +11,7 @@
           "type": "object",
           "required": ["spaceUri", "subject"],
           "properties": {
-            "spaceUri": { "type": "string", "format": "at-uri" },
+            "spaceUri": { "type": "string" },
             "subject":  { "type": "ref", "ref": "tools.atmo.community.defs#subject" }
           }
         }

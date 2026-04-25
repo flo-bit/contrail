@@ -25,7 +25,7 @@ export const load: LayoutServerLoad = async ({ locals, params, platform }) => {
 			records: Array<{
 				did: string;
 				rkey: string;
-				record: {
+				value: {
 					communityDid?: string;
 					name?: string;
 					description?: string;

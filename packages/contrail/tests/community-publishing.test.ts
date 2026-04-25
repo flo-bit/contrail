@@ -132,8 +132,8 @@ async function grant(app: Hono, caller: string, spaceUri: string, subject: any, 
 
 describe("community publishing + reauth — stage 3", () => {
   let app: Hono;
-  const publishers = `at://${COMMUNITY_DID}/tools.atmo.event.space/$publishers`;
-  const admin = `at://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
+  const publishers = `ats://${COMMUNITY_DID}/tools.atmo.event.space/$publishers`;
+  const admin = `ats://${COMMUNITY_DID}/tools.atmo.event.space/$admin`;
 
   beforeAll(async () => {
     app = await makeApp();
