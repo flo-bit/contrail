@@ -154,6 +154,53 @@ describe("runPersistent", () => {
     expect(cursor).toBe(3004);
   });
 
+  it("flushes buffered events on timer while subscription is still live", async () => {
+    // Regression test for the idle-stream flush bug. Forces exactly one code
+    // path — timer-driven flush — by:
+    //   - batchSize=100 with only 3 events: batchSize flush can never fire
+    //   - assert BEFORE controller.abort(): the finally-block's final flush
+    //     can't contribute, so records in the DB prove the periodic timer ran
+    // The mock subscription yields 3 events then hangs forever, mimicking a
+    // Jetstream connection that goes quiet. The previous implementation only
+    // checked the flush condition when a new event arrived, so those 3 events
+    // would sit in memory until the next event or shutdown — which in prod
+    // surfaces as "events published but never indexed."
+    const events = Array.from({ length: 3 }, (_, i) => ({
+      kind: "commit" as const,
+      did: `did:plc:idle${i}`,
+      time_us: 5000 + i,
+      commit: {
+        collection: "community.lexicon.calendar.event",
+        operation: "create",
+        rkey: `idle${i}`,
+        cid: `cid${i}`,
+        record: { name: `Idle ${i}`, startsAt: "2026-04-01T10:00:00Z", mode: "online" },
+      },
+    }));
+
+    const controller = new AbortController();
+    const promise = runPersistent(db, TEST_CONFIG, {
+      batchSize: 100,
+      flushIntervalMs: 100,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription(events) as any,
+    });
+
+    // Wait well past the flush interval — no further events will arrive.
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Assert BEFORE abort: the timer must have driven the flush on its own.
+    const mid = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      limit: 100,
+    });
+    const idleUris = mid.records.map((r) => r.uri).filter((u) => u.includes("/idle"));
+    expect(idleUris.length, "timer flush did not run while subscription was idle").toBe(3);
+
+    controller.abort();
+    await promise;
+  });
+
   it("skips non-commit events", async () => {
     const events = [
       { kind: "identity" as const, did: "did:plc:someone", time_us: 4000 },
