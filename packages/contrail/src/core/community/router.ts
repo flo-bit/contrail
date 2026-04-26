@@ -504,6 +504,17 @@ export function registerCommunityRoutes(
       return c.json({ error: "Forbidden", reason: "cannot-revoke-higher-than-self" }, 403);
     }
 
+    // Refuse to remove the last owner — would leave the space (and, on $admin,
+    // the whole community) unmanageable. Caller can hand off ownership first
+    // by promoting a successor to `owner`, then revoking themselves.
+    if (existing.accessLevel === "owner") {
+      const rows = await community.listAccessRows(body.spaceUri);
+      const ownerCount = rows.filter((r) => r.accessLevel === "owner").length;
+      if (ownerCount <= 1) {
+        return c.json({ error: "LastOwner", reason: "last-owner" }, 409);
+      }
+    }
+
     await community.revoke({ spaceUri: body.spaceUri, subjectDid, subjectSpaceUri });
     await reconcile(community, spaces, body.spaceUri, sa.issuer);
 
@@ -588,6 +599,14 @@ export function registerCommunityRoutes(
     }
     if (rankOf(body.accessLevel) > rankOf(callerLevel)) {
       return c.json({ error: "Forbidden", reason: "cannot-grant-higher-than-self" }, 403);
+    }
+    // Refuse to demote the last owner — same reasoning as the revoke path.
+    if (existing.accessLevel === "owner" && body.accessLevel !== "owner") {
+      const rows = await community.listAccessRows(body.spaceUri);
+      const ownerCount = rows.filter((r) => r.accessLevel === "owner").length;
+      if (ownerCount <= 1) {
+        return c.json({ error: "LastOwner", reason: "last-owner" }, 409);
+      }
     }
 
     await community.grant({
