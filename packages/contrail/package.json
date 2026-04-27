@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Index AT Protocol records with typed XRPC endpoints. Cloudflare Workers + D1, SvelteKit, Node.js.",
   "type": "module",
   "sideEffects": false,

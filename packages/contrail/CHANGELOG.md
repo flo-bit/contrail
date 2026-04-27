@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.4.1
+
+### Patch Changes
+
+- 0e6ba77: update cli
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [0e6ba77]
+  - @atmo-dev/contrail@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes
