@@ -10,7 +10,7 @@ import { join, relative } from "path";
 import type { ContrailConfig } from "@atmo-dev/contrail";
 
 /** Return the sorted list of XRPC method NSIDs (queries + procedures) in a
- *  generated lexicon set — the same list that ends up in `<ns>.permissionSet`'s
+ *  generated lexicon set — the same list that ends up in `<ns>.authFull`'s
  *  `lxm`. Use when the permission set isn't published yet and you need the
  *  scoped method list inline (e.g. in an OAuth client config).
  *
@@ -956,10 +956,19 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     methodNsids.sort();
 
     const psConfig = config.permissionSet ?? {};
+    const nsPrefix = `${ns}.`;
+
+    // Auto-include any configured collections that live under the namespace.
+    // Cross-namespace collections (e.g. `app.bsky.*`) can't appear here —
+    // permission-set lexicons can only reference NSIDs in their own namespace —
+    // so callers must declare those as separate scopes in the OAuth client config.
+    const autoCollections = Object.values(config.collections)
+      .map((c) => c.collection)
+      .filter((nsid) => nsid === ns || nsid.startsWith(nsPrefix))
+      .sort();
 
     // Permission-set lexicons can only reference NSIDs under their own namespace.
     // Validate `additional` entries before we emit and produce an invalid schema.
-    const nsPrefix = `${ns}.`;
     for (const [i, perm] of (psConfig.additional ?? []).entries()) {
       const p = perm as { resource?: string; lxm?: string[]; collection?: string[] };
       const offending: string[] = [];
@@ -979,15 +988,15 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
       }
     }
 
-    writeLexicon(`${ns}.permissionSet`, {
+    writeLexicon(`${ns}.authFull`, {
       lexicon: 1,
-      id: `${ns}.permissionSet`,
+      id: `${ns}.authFull`,
       defs: {
         main: {
           type: "permission-set",
           title: psConfig.title ?? ns,
           description:
-            psConfig.description ?? `All XRPC methods exposed by the ${ns} service.`,
+            psConfig.description ?? `Full access to the ${ns} service`,
           permissions: [
             {
               type: "permission",
@@ -1000,6 +1009,9 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
               aud: "*",
               lxm: methodNsids,
             },
+            ...(autoCollections.length > 0
+              ? [{ type: "permission" as const, resource: "repo" as const, collection: autoCollections }]
+              : []),
             ...(psConfig.additional ?? []),
           ],
         },

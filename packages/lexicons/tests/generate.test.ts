@@ -232,14 +232,41 @@ describe("extractXrpcMethods / listXrpcMethods", () => {
     expect(methods).toContain("test.app.post.getRecord");
     expect(methods).toContain("test.app.getProfile");
     // Does not include non-method defs (e.g. `defs`, records, permission-set).
-    expect(methods).not.toContain("test.app.permissionSet");
+    expect(methods).not.toContain("test.app.authFull");
   });
 
-  it("listXrpcMethods matches the permissionSet lxm list for the same config", () => {
+  it("listXrpcMethods matches the authFull lxm list for the same config", () => {
     const methods = listXrpcMethods(BASIC_CONFIG, { rootDir: ROOT_DIR, lexiconDirs: [] });
     const lexicons = generate(BASIC_CONFIG);
-    const ps = (lexicons["test.app.permissionSet"] as any).defs.main.permissions[0];
+    const ps = (lexicons["test.app.authFull"] as any).defs.main.permissions[0];
     expect(ps.lxm).toEqual(methods);
+  });
+
+  it("authFull auto-includes same-namespace collections in a repo permission", () => {
+    const config: ContrailConfig = {
+      namespace: "test.app",
+      collections: {
+        local: { collection: "test.app.thing" },
+        external: { collection: "xyz.other.thing" },
+      },
+    };
+    const lexicons = generate(config);
+    const perms = (lexicons["test.app.authFull"] as any).defs.main.permissions;
+    const repoEntry = perms.find((p: any) => p.resource === "repo");
+    expect(repoEntry).toBeDefined();
+    expect(repoEntry.collection).toEqual(["test.app.thing"]);
+  });
+
+  it("authFull omits the repo permission entry when no collections match the namespace", () => {
+    const config: ContrailConfig = {
+      namespace: "test.app",
+      collections: {
+        external: { collection: "xyz.other.thing" },
+      },
+    };
+    const lexicons = generate(config);
+    const perms = (lexicons["test.app.authFull"] as any).defs.main.permissions;
+    expect(perms.find((p: any) => p.resource === "repo")).toBeUndefined();
   });
 
   it("includes realtime + community + spaces endpoints when those modules are enabled", () => {

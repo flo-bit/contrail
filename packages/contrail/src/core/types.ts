@@ -166,7 +166,7 @@ export interface ContrailConfig {
    *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile
    *  responses gated by the caller's `atproto-accept-labelers` header. */
   labels?: import("./labels/types").LabelsConfig;
-  /** Customize the auto-generated `<namespace>.permissionSet` lexicon. */
+  /** Customize the auto-generated `<namespace>.authFull` lexicon. */
   permissionSet?: PermissionSetConfig;
 }
 
