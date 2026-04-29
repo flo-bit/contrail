@@ -52,18 +52,18 @@ pnpm test:e2e:watch    # re-run on change
 
 ## Tests
 
-- `tests/health.test.ts` — service health checks (PLC, PDS, TAP, Jetstream)
-- `tests/ingest-roundtrip.test.ts` — publish → index roundtrip. Creates a
-  fresh PDS account, publishes a calendar event and an RSVP, and verifies
-  both the record and its `rsvpsGoingCount` via an in-process XRPC handler.
-- `tests/cursor-resume.test.ts` — regression for `runPersistent`'s durable
-  cursor. Starts the ingester, publishes A, stops the ingester, publishes
-  B + updates B + deletes A, restarts, and verifies the saved cursor
-  replays the gap.
-
-Each test spins up its own `runPersistent` in-process against an isolated
-postgres schema, so tests don't interfere with each other or with any
+See `tests/` for the current suite. Each test header explains its scope.
+Tests spin up their own `runPersistent` in-process against an isolated
+postgres schema, so they don't interfere with each other or with a
 dogfooding ingester running in another terminal.
+
+### Gap-probe pattern (`it.fails`)
+
+Some tests use vitest's `it.fails(...)` to pin currently-known gaps in
+contrail behavior — they pass *because* contrail doesn't yet enforce the
+condition. The moment the condition is enforced, the test flips from
+passing to failing, forcing whoever lands the fix to update the assertion
+to the new correct behavior. Each `it.fails` block names the gap inline.
 
 ## Teardown
 

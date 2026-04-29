@@ -6,7 +6,7 @@
  * dogfooding ingester the developer might have running in another terminal.
  */
 import pg from "pg";
-import type { Client } from "@atcute/client";
+import { CredentialManager, Client } from "@atcute/client";
 import {
   CompositeDidDocumentResolver,
   PlcDidDocumentResolver,
@@ -156,4 +156,117 @@ export async function waitFor<T>(
     `waitFor(${label}) timed out after ${timeoutMs}ms (${attempts} attempts)` +
       (lastErr ? `: ${(lastErr as Error).message}` : ""),
   );
+}
+
+/**
+ * Log a TestAccount into the devnet PDS and return an authed atcute Client.
+ */
+export async function login(acct: TestAccount): Promise<Client> {
+  const creds = new CredentialManager({ service: PDS_URL });
+  await creds.login({ identifier: acct.handle, password: acct.password });
+  return new Client({ handler: creds });
+}
+
+/**
+ * A `fetch` shim that rewrites the unreachable `https://devnet.test` host
+ * (which devnet PDSes publish in every DID document's `atproto_pds` service
+ * entry) to the host-mapped `PDS_URL`. Pass this as `community.fetch` so the
+ * credential check on adopt and the proxied createRecord on putRecord both
+ * land on the local container instead of failing DNS.
+ */
+export const devnetRewriteFetch: typeof fetch = (input, init) => {
+  const url = typeof input === "string" ? input : input.toString();
+  return fetch(url.replace(/^https:\/\/devnet\.test/, PDS_URL), init);
+};
+
+/**
+ * Fetch a record straight from the devnet PDS via `com.atproto.repo.getRecord`.
+ * Used to confirm a proxied write (e.g. via `community.putRecord`) actually
+ * landed on the PDS and not just contrail's local index.
+ */
+export async function getRecordFromPds(
+  repo: string,
+  collection: string,
+  rkey: string,
+): Promise<{ status: number; record?: any }> {
+  const url =
+    `${PDS_URL}/xrpc/com.atproto.repo.getRecord` +
+    `?repo=${encodeURIComponent(repo)}` +
+    `&collection=${encodeURIComponent(collection)}` +
+    `&rkey=${encodeURIComponent(rkey)}`;
+  const res = await fetch(url);
+  if (!res.ok) return { status: res.status };
+  const body = (await res.json()) as { value: any };
+  return { status: res.status, record: body.value };
+}
+
+/**
+ * Mint an app password for `acct` via the PDS. Used by tests that need to
+ * adopt the account as a community (the community module stores the app
+ * password encrypted in its credential vault).
+ */
+export async function createAppPasswordFor(acct: TestAccount): Promise<string> {
+  const c = await login(acct);
+  const res = await c.post("com.atproto.server.createAppPassword", {
+    input: { name: `e2e-${Date.now()}` },
+  });
+  if (!res.ok) {
+    throw new Error(`createAppPassword: ${JSON.stringify(res.data)}`);
+  }
+  return res.data.password;
+}
+
+/**
+ * A callAs function makes an XRPC call against the in-process Contrail
+ * handler with a freshly minted service-auth JWT. Each call mints its own
+ * token so the `lxm` claim binds to that specific endpoint.
+ */
+export type CallAs = (
+  client: Client,
+  method: "GET" | "POST",
+  lxm: string,
+  opts?: { body?: unknown; query?: Record<string, string> },
+) => Promise<Response>;
+
+/**
+ * Create a caller bound to a specific in-process handler. Use one per test
+ * file's `beforeAll` to avoid passing `handle` through every assertion.
+ */
+export function createCaller(
+  handle: (req: Request) => Promise<Response>,
+): CallAs {
+  return async (client, method, lxm, opts = {}) => {
+    const token = await mintServiceAuthJwt(client, {
+      aud: CONTRAIL_SERVICE_DID,
+      lxm,
+    });
+    const qs = opts.query
+      ? "?" + new URLSearchParams(opts.query).toString()
+      : "";
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+    };
+    if (opts.body !== undefined) headers["content-type"] = "application/json";
+    return handle(
+      new Request(`http://test/xrpc/${lxm}${qs}`, {
+        method,
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      }),
+    );
+  };
+}
+
+/**
+ * Parse a Response body as JSON, throwing a clear error (with status + raw
+ * text) if the body isn't JSON. Saves a `try/catch` in every assertion that
+ * needs to inspect a 4xx/5xx body.
+ */
+export async function jsonOr(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`non-JSON response ${res.status}: ${text}`);
+  }
 }
