@@ -96,7 +96,7 @@ describe("spaces auth (devnet PDS JWT → Contrail verifier)", () => {
     expect(res.status, `createSpace → ${res.status}: ${text}`).toBe(200);
 
     const data = (await res.json()) as { space: { uri: string; ownerDid: string } };
-    expect(data.space.uri).toMatch(/^at:\/\//);
+    expect(data.space.uri).toMatch(/^ats:\/\//);
     expect(data.space.ownerDid).toBe(alice.did);
   });
 
