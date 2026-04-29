@@ -9,13 +9,11 @@
  * to `owner`, then demote or revoke the departing owner. The community
  * DID itself never moves.
  *
- * Gap pinned with `it.fails`:
- *
- *   Last-owner guard. The owner of a community can revoke themselves
- *   (or setAccessLevel themselves down) while they are the ONLY owner,
- *   leaving the community ownerless and unmanageable. The two `it.fails`
- *   probes flip to passing the moment Contrail enforces the guard,
- *   forcing whoever lands the fix to update the assertion.
+ * Last-owner guard: revoking or demoting the only `owner` on a space is
+ * refused with 409 / `reason: "last-owner"`. On `$admin` this prevents the
+ * "alice locks herself out of her own community" footgun; on any other
+ * space it preserves the only role that can grant `owner`. Hand off
+ * ownership first by promoting a successor.
  *
  * Each test mints its own service-auth JWT per call — same pattern as
  * spaces-auth.test.ts. No mocks on the auth path; real PDS → real PLC →
@@ -216,48 +214,41 @@ describe("community lifecycle (mint → grant → list → revoke, + gap probes)
     expect(res.status, await res.clone().text()).toBe(200);
   });
 
-  // ----- gap probes: last-owner guard missing -------------------------------
-  // Today Alice (the only owner) can revoke herself, leaving the community
-  // unmanageable. When Contrail adds the guard, both probes flip to passing
-  // and force the fix to update the expected status code.
+  // ----- last-owner guard ----------------------------------------------------
+  // Removing or demoting the only `owner` on a space would leave it
+  // unmanageable (and on $admin, the whole community ownerless). The router
+  // refuses with 409 Conflict / reason: "last-owner" on both paths.
 
-  it.fails(
-    "space.revoke should reject removing the last owner",
-    async () => {
-      const res = await callAs(aliceClient, "POST", `${NS}.space.revoke`, {
-        body: { spaceUri: adminSpaceUri, subject: { did: alice.did } },
-      });
-      // Expected future behavior: 4xx (e.g. 409 Conflict, reason: "last-owner").
-      // Document the currently-observed behavior in the assertion message so
-      // the failure is useful when run before the guard lands.
-      expect(
-        res.status,
-        `Pre-guard Contrail returns 200 here — the community is now ownerless. ` +
-          `Once the last-owner guard lands, this should return 4xx.`,
-      ).not.toBe(200);
-    },
-  );
+  it("space.revoke rejects removing the last owner", async () => {
+    const res = await callAs(aliceClient, "POST", `${NS}.space.revoke`, {
+      body: { spaceUri: adminSpaceUri, subject: { did: alice.did } },
+    });
+    expect(res.status).toBe(409);
+    const data = (await jsonOr(res)) as { error: string; reason: string };
+    expect(data.error).toBe("LastOwner");
+    expect(data.reason).toBe("last-owner");
+  });
 
-  it.fails(
-    "setAccessLevel should reject demoting the last owner",
-    async () => {
-      // Fresh community so the previous test's state doesn't interfere.
-      const mint = await callAs(aliceClient, "POST", `${NS}.mint`, { body: {} });
-      const { communityDid: freshDid } = (await mint.json()) as {
-        communityDid: string;
-      };
-      const freshAdmin = `ats://${freshDid}/${SPACE_TYPE}/$admin`;
+  it("setAccessLevel rejects demoting the last owner", async () => {
+    // Fresh community so the previous test's state doesn't interfere.
+    const mint = await callAs(aliceClient, "POST", `${NS}.mint`, { body: {} });
+    const { communityDid: freshDid } = (await mint.json()) as {
+      communityDid: string;
+    };
+    const freshAdmin = `ats://${freshDid}/${SPACE_TYPE}/$admin`;
 
-      const res = await callAs(aliceClient, "POST", `${NS}.space.setAccessLevel`, {
-        body: {
-          spaceUri: freshAdmin,
-          subject: { did: alice.did },
-          accessLevel: "manager",
-        },
-      });
-      expect(res.status).not.toBe(200);
-    },
-  );
+    const res = await callAs(aliceClient, "POST", `${NS}.space.setAccessLevel`, {
+      body: {
+        spaceUri: freshAdmin,
+        subject: { did: alice.did },
+        accessLevel: "manager",
+      },
+    });
+    expect(res.status).toBe(409);
+    const data = (await jsonOr(res)) as { error: string; reason: string };
+    expect(data.error).toBe("LastOwner");
+    expect(data.reason).toBe("last-owner");
+  });
 
   // ----- ownership handoff via role rotation --------------------------------
   // The community DID stays put; ownership moves by promoting a successor to
