@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.4.2
+
+### Patch Changes
+
+- 8513b3e: small fixes
+
 ## 0.4.1
 
 ### Patch Changes
