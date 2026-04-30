@@ -26,7 +26,7 @@ import {
 import { blobKey } from "./blob-adapter";
 import { collectBlobCids } from "./blob-refs";
 import {
-  createInProcessVerifier,
+  createBindingCredentialVerifier,
   decodeUnverifiedClaims,
   issueCredential,
   verifyCredential,
@@ -34,6 +34,10 @@ import {
   type CredentialScope,
   type CredentialVerifier,
 } from "./credentials";
+import {
+  createLocalBindingResolver,
+  createLocalKeyResolver,
+} from "./binding";
 import { create as createCid, toString as cidToString } from "@atcute/cid";
 
 /** Optional hook to extend `<ns>.spaceExt.whoami` with extra fields when a
@@ -57,6 +61,12 @@ export interface SpacesRoutesOptions {
   adapter?: StorageAdapter;
   /** Optional whoami extension; see {@link WhoamiExtension}. */
   whoamiExtension?: WhoamiExtension;
+  /** Optional credential verifier for the record host. When omitted, a
+   *  default in-process binding verifier is built from the authority's
+   *  signing config (Local binding + Local key resolvers). Override to
+   *  accept credentials from external authorities — wire in PDS-record /
+   *  DID-doc binding resolvers and a DID-doc key resolver. */
+  credentialVerifier?: CredentialVerifier;
 }
 
 /** Umbrella registration: wires both the authority and the record-host
@@ -83,15 +93,24 @@ export function registerSpacesRoutes(
   registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, options.whoamiExtension);
 
   if (spacesConfig.recordHost) {
-    // In-process verifier: when authority and record host are colocated,
-    // the host has direct access to the authority's public key. Phase 4
-    // adds a binding-resolving verifier for split deployments.
-    const verifier = authorityConfig.signing
-      ? createInProcessVerifier({
-          authorityDid: authorityConfig.serviceDid,
-          publicKey: authorityConfig.signing.publicKey,
-        })
-      : undefined;
+    // Build the default in-process verifier when the authority can sign:
+    // Local binding (always points at the configured authority) + Local
+    // key resolver (knows the authority's public key directly). Caller
+    // can override via `options.credentialVerifier` to accept external
+    // authorities — wire in PDS-record / DID-doc resolvers there.
+    const verifier =
+      options.credentialVerifier ??
+      (authorityConfig.signing
+        ? createBindingCredentialVerifier({
+            bindings: createLocalBindingResolver({
+              authorityDid: authorityConfig.serviceDid,
+            }),
+            keys: createLocalKeyResolver({
+              authorityDid: authorityConfig.serviceDid,
+              publicKey: authorityConfig.signing.publicKey,
+            }),
+          })
+        : undefined);
     registerRecordHostRoutes(app, adapter, adapter, spacesConfig.recordHost, config, auth, verifier);
   }
 }

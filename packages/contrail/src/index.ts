@@ -76,6 +76,7 @@ export {
   verifyCredential,
   decodeUnverifiedClaims,
   createInProcessVerifier,
+  createBindingCredentialVerifier,
 } from "./core/spaces/credentials";
 export type {
   CredentialClaims,
@@ -86,6 +87,19 @@ export type {
   VerifyErr,
   VerifyOptions,
 } from "./core/spaces/credentials";
+
+// Binding + key resolution
+export {
+  createLocalBindingResolver,
+  createOwnerSelfBindingResolver,
+  createCompositeBindingResolver,
+  createPdsBindingResolver,
+  createDidDocBindingResolver,
+  createLocalKeyResolver,
+  createDidDocKeyResolver,
+  createCompositeKeyResolver,
+} from "./core/spaces/binding";
+export type { BindingResolver, KeyResolver } from "./core/spaces/binding";
 
 // Realtime
 export type {

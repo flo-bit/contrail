@@ -238,7 +238,8 @@ export interface CredentialVerifier {
 /** In-process verifier for the simple deployment: the authority and record
  *  host run in one process and the record host has direct access to the
  *  authority's public key. Rejects any credential whose `iss` isn't the
- *  configured authority. Phase 4 generalizes to multi-authority. */
+ *  configured authority. Phase 4 has a more general
+ *  {@link createBindingCredentialVerifier} that does proper binding lookup. */
 export function createInProcessVerifier(args: {
   authorityDid: string;
   publicKey: JsonWebKey;
@@ -247,6 +248,36 @@ export function createInProcessVerifier(args: {
     verify(jwt) {
       return verifyCredential(jwt, {
         resolveKey: async (iss) => (iss === args.authorityDid ? args.publicKey : null),
+      });
+    },
+  };
+}
+
+/** Verifier composed of a {@link BindingResolver} (which DID is authorized
+ *  to issue for this space?) and a {@link KeyResolver} (what's that DID's
+ *  public key?). This is the production-shape verifier — phase 4's main
+ *  contribution.
+ *
+ *  Verification flow:
+ *    1. Decode the JWT's claims (no signature check yet).
+ *    2. Ask the binding resolver: who's authorized for `claims.space`?
+ *    3. Confirm `claims.iss === authorizedDid`.
+ *    4. Ask the key resolver for that DID's verification key.
+ *    5. Verify signature + expiry + scope match.
+ */
+export function createBindingCredentialVerifier(args: {
+  bindings: import("./binding").BindingResolver;
+  keys: import("./binding").KeyResolver;
+}): CredentialVerifier {
+  return {
+    async verify(jwt) {
+      const peek = decodeUnverifiedClaims(jwt);
+      if (!peek) return { ok: false, reason: "malformed" };
+      const authorizedDid = await args.bindings.resolveAuthority(peek.space);
+      if (!authorizedDid) return { ok: false, reason: "unknown-issuer" };
+      if (peek.iss !== authorizedDid) return { ok: false, reason: "unknown-issuer" };
+      return verifyCredential(jwt, {
+        resolveKey: (iss, kid) => args.keys.resolveKey(iss, kid),
       });
     },
   };
