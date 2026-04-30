@@ -6,7 +6,7 @@ export {
 	actorToDid,
 	getPDS,
 	getDetailedProfile,
-	getClient,
+	getPDSClient,
 	listRecords,
 	getRecord,
 	putRecord,

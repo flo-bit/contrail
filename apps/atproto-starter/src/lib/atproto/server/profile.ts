@@ -8,7 +8,7 @@ const PROFILE_CACHE_TTL = 60 * 60; // 1 hour
  * Falls back to a fresh fetch if the cache KV doesn't exist or on cache miss.
  * Returns undefined if the profile can't be loaded.
  */
-export async function loadProfile(did: Did, profileCache?: KVNamespace) {
+export async function getProfile(did: Did, profileCache?: KVNamespace) {
 	// Try cache first
 	if (profileCache) {
 		try {

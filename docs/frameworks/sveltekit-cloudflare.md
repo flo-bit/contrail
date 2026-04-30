@@ -203,9 +203,10 @@ From now on:
 - [Indexing](../01-indexing.md) — config options, adapter choices
 - [Querying](../02-querying.md) — filters, sorts, hydration, search
 - [Lexicons](../03-lexicons.md) — generate TS types for your XRPC surface
-- [Auth](../04-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
-- [Spaces](../05-spaces.md) / [Communities](../06-communities.md) — private records + group-controlled DIDs, which both slot into the same handler you just mounted
-- [Sync](../07-sync.md) — reactive client-side subscriptions (`createWatchStore`) wrapped in Svelte `$state`
+- [Feeds](../04-feeds.md) — personalized timelines via follow + target collections
+- [Auth](../05-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
+- [Spaces](../06-spaces.md) / [Communities](../07-communities.md) — private records + group-controlled DIDs, which both slot into the same handler you just mounted
+- [Sync](../08-sync.md) — reactive client-side subscriptions (`createWatchStore`) wrapped in Svelte `$state`
 
 ## Common gotchas
 

@@ -45,6 +45,20 @@ pnpm dev
 
 Dev mode uses a loopback OAuth client — no public URL, no Cloudflare resources, no secrets in CF. Verify in the browser that login works against a real PDS before continuing.
 
+### Custom env vars at runtime — use `.dev.vars`, not `.env`
+
+`.env` is read by Vite for *app code* at build/dev time. `platform.env.MY_VAR` (Cloudflare bindings, used by anything in `+server.ts`, `+page.server.ts`, `repo.remote.ts`, etc.) reads from **wrangler bindings**, not `.env`. In `pnpm dev` (vite + miniflare), wrangler bindings come from a gitignored `.dev.vars` file at the project root:
+
+```
+# .dev.vars
+PODCAST_INDEX_KEY=xxxxx
+PODCAST_INDEX_SECRET=yyyyy
+```
+
+Then `platform.env.PODCAST_INDEX_KEY` works in dev. For production, set the same names via `npx wrangler secret put PODCAST_INDEX_KEY`.
+
+`.dev.vars` is already covered by the starter's `.gitignore` (matches `.env.*`), but double-check before committing.
+
 ---
 
 ## Phase 2 — Apply the user's answers
@@ -108,13 +122,15 @@ Three secrets needed in production. **Never put these in `wrangler.jsonc` `vars`
 
 ```sh
 # 1. CLIENT_ASSERTION_KEY — OAuth client signing key (JWK JSON)
-pnpm env:generate-key | npx wrangler secret put CLIENT_ASSERTION_KEY
+# `--silent` is critical: without it pnpm 10 prepends its `> name@version: …` header
+# to stdout and the secret value gets corrupted. Production then 500s on JSON.parse.
+pnpm --silent env:generate-key | npx wrangler secret put CLIENT_ASSERTION_KEY
 
 # 2. COOKIE_SECRET — HMAC for signed session cookies
-pnpm env:generate-secret | npx wrangler secret put COOKIE_SECRET
+pnpm --silent env:generate-secret | npx wrangler secret put COOKIE_SECRET
 
 # 3. CRON_SECRET — bearer the scheduled handler uses to call /api/cron
-pnpm env:generate-secret | npx wrangler secret put CRON_SECRET
+pnpm --silent env:generate-secret | npx wrangler secret put CRON_SECRET
 ```
 
 `OAUTH_PUBLIC_URL` is a `var` (already set in Phase 2), not a secret — it's the public URL.
@@ -133,6 +149,8 @@ For a new lexicon under the user's namespace:
 4. Add the collection to `src/lib/contrail.config.ts` (and `src/lib/atproto/settings.ts` if it's writable from the app).
 5. `pnpm generate:pull` — regenerates `lex.config.js` from the contrail config, pulls referenced NSIDs, emits types into `src/lexicon-types/`.
 
+> **Expected warnings:** `pnpm generate:pull` prints `lexicon authority not found` for any NSID under your namespace that isn't published yet. The local JSON is still used and types are still emitted — these warnings are harmless until you run `contrail-lex publish`.
+
 ---
 
 ## Phase 6 — Deploy + backfill
@@ -142,6 +160,10 @@ pnpm build
 npx wrangler deploy
 pnpm backfill:remote   # one-shot historical backfill from Jetstream
 ```
+
+> **Expected warnings during backfill:** wrangler may print `--env=production not configured`. Harmless — the script still runs against the deployed worker. Ignore.
+
+> **After deploying, hard-refresh the browser** (Cmd/Ctrl+Shift+R). Cloudflare caches `_app/immutable/*.js` chunks aggressively; if the user reports "the fix didn't take", it's almost always a stale chunk.
 
 After deploy, the cron trigger (`*/1 * * * *` in `wrangler.jsonc`) keeps the index fresh.
 
@@ -153,11 +175,24 @@ Sanity check: hit `https://<deployed-url>/xrpc/<namespace>.<collection>.listReco
 
 **Before composing any UI, invoke `Skill(skill: 'impeccable', args: 'craft')`.** This produces components shape-first using the design guidelines created by `impeccable teach` in Phase 0. It's what stops the output from defaulting to generic AI aesthetics. Run it once per significant UI surface (home page, settings page, feature flow) — not per component.
 
-**Default to [foxui](https://flo-bit.dev/ui-kit/docs/llms.txt).** It's already a dependency (`@foxui/core`, `@foxui/social`, `@foxui/time`) and ships components specifically built for atproto apps — `AtprotoLoginModal`, `GithubCorner`, `RelativeTime`, profile/handle helpers, etc. Using foxui means the OAuth login flow, profile rendering, and social bits all "just work" without you reinventing them. Fetch the llms.txt above before composing UI.
+### The starter is foxui-free by default
 
-If foxui's look doesn't fit the design guidelines from Phase 0, **build custom components but don't reinvent the structure.** First read the foxui source for the component you're replacing (e.g. how `AtprotoLoginModal` handles the handle-input → PDS-resolution → redirect flow). Re-create with your own styling, but keep the data flow and prop shapes the same — atproto OAuth has subtle requirements (loopback vs. confidential client, redirect URIs, scope handling) that foxui already gets right.
+`src/routes/+page.svelte`, `+layout.svelte`, and `src/lib/atproto/ui/LoginModal.svelte` are all hand-rolled with plain Tailwind v4. **Custom styling is the path of least resistance** — there's no foxui component to fight or override; just edit the markup. Tailwind v4 is set up, and `bits-ui` is also pre-installed if you need accessible headless primitives.
 
-Tailwind v4 is set up, so utility classes work out of the box. The `bits-ui` primitives (also already a dependency) are a good base for accessible, headless components if you're going custom.
+### Optional: opt back into [foxui](https://flo-bit.dev/ui-kit/docs/llms.txt)
+
+`@foxui/core`, `@foxui/social`, `@foxui/time` are still in `package.json` deps (so no `pnpm add` needed) — foxui ships polished atproto-specific components: `AtprotoLoginModal`, `GithubCorner`, `RelativeTime`, profile/handle helpers, theme tokens. Worth using *if* the design direction from Phase 0 fits foxui's look, since they handle OAuth subtleties (loopback vs. confidential client, redirect URIs, scope handling) correctly.
+
+**To use foxui:**
+1. Add these two lines to `src/app.css` (a comment in the file shows you exactly where):
+   ```css
+   @import '@foxui/core/theme.css';
+   @source "../node_modules/@foxui";
+   ```
+   Without **both** lines, foxui components mount but render invisibly — Tailwind doesn't scan their classes. This is a frequent silent-failure mode.
+2. Import + use components as normal. See [foxui's repo](https://github.com/flo-bit/foxui) for prop shapes.
+
+Mixing modes (some foxui, some custom) is fine — but the moment any `@foxui/*` component is in use, both `app.css` lines must be present.
 
 **After building, optional finishing skills** — invoke when the work calls for them, not as a checklist:
 

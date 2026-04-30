@@ -35,7 +35,7 @@ public_only: { collection: "com.example.public", allowInSpaces: false }
 
 ## Auth
 
-Spaces use the standard contrail auth surface — service-auth JWTs for third-party apps, in-process server clients for your own loaders, invite tokens for anonymous read-grant links. See [Auth](./04-auth.md) for the full picture.
+Spaces use the standard contrail auth surface — service-auth JWTs for third-party apps, in-process server clients for your own loaders, invite tokens for anonymous read-grant links. See [Auth](./05-auth.md) for the full picture.
 
 Space-specific wiring:
 
@@ -55,7 +55,7 @@ Filters, sorts, hydration, and references work across all three. Records from a 
 
 ## Invites
 
-First-class primitive — see [Auth § Invite tokens](./04-auth.md#invite-tokens) for the mechanism. Space-specific: create via `com.example.space.invite.create`, redeem via `.redeem` (membership grant) or `?inviteToken=...` query param (read-only bearer grant).
+First-class primitive — see [Auth § Invite tokens](./05-auth.md#invite-tokens) for the mechanism. Space-specific: create via `com.example.space.invite.create`, redeem via `.redeem` (membership grant) or `?inviteToken=...` query param (read-only bearer grant).
 
 ## XRPCs
 

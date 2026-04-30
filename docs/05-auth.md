@@ -93,7 +93,7 @@ createWatchStore({
 });
 ```
 
-Each reconnect mints a fresh ticket, so expiry doesn't matter for long-lived subscriptions. See [Sync](./07-sync.md) for the full flow.
+Each reconnect mints a fresh ticket, so expiry doesn't matter for long-lived subscriptions. See [Sync](./08-sync.md) for the full flow.
 
 ## OAuth permission sets
 

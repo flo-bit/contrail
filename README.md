@@ -74,7 +74,7 @@ the worker keeps itself fresh from now on via the cron. hit:
 GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
 ```
 
-returns every `community.lexicon.calendar.event` record published anywhere on atproto that matches, as JSON. that's it — no PDS setup, no lexicon publishing, no relay configuration. everything scales from there: add filters, add full-text search, add more collections, turn on [spaces](https://github.com/flo-bit/contrail/blob/main/docs/05-spaces.md) for private records, mount the handler in sveltekit instead, swap the adapter for postgres.
+returns every `community.lexicon.calendar.event` record published anywhere on atproto that matches, as JSON. that's it — no PDS setup, no lexicon publishing, no relay configuration. everything scales from there: add filters, add full-text search, add more collections, turn on [spaces](https://github.com/flo-bit/contrail/blob/main/docs/06-spaces.md) for private records, mount the handler in sveltekit instead, swap the adapter for postgres.
 
 **not using workers?** same library, different `db`. see [adapters](https://github.com/flo-bit/contrail/blob/main/docs/01-indexing.md#adapters) for node:sqlite and postgres.
 
@@ -83,11 +83,12 @@ returns every `community.lexicon.calendar.event` record published anywhere on at
 - [Indexing](https://github.com/flo-bit/contrail/blob/main/docs/01-indexing.md) — the core: collections, ingestion, adapters
 - [Querying](https://github.com/flo-bit/contrail/blob/main/docs/02-querying.md) — filters, sorts, hydration, search, pagination
 - [Lexicons](https://github.com/flo-bit/contrail/blob/main/docs/03-lexicons.md) — `contrail-lex` CLI, codegen, publishing
-- [Auth](https://github.com/flo-bit/contrail/blob/main/docs/04-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
-- [Spaces](https://github.com/flo-bit/contrail/blob/main/docs/05-spaces.md) — permissioned records stored by the appview
-- [Communities](https://github.com/flo-bit/contrail/blob/main/docs/06-communities.md) — group-controlled atproto DIDs
-- [Sync](https://github.com/flo-bit/contrail/blob/main/docs/07-sync.md) — reactive client-side store over `watchRecords`
-- [Labels](https://github.com/flo-bit/contrail/blob/main/docs/08-labels.md) — atproto-native moderation hydration from external labelers
+- [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/04-feeds.md) — personalized timelines via follow + target collections
+- [Auth](https://github.com/flo-bit/contrail/blob/main/docs/05-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
+- [Spaces](https://github.com/flo-bit/contrail/blob/main/docs/06-spaces.md) — permissioned records stored by the appview
+- [Communities](https://github.com/flo-bit/contrail/blob/main/docs/07-communities.md) — group-controlled atproto DIDs
+- [Sync](https://github.com/flo-bit/contrail/blob/main/docs/08-sync.md) — reactive client-side store over `watchRecords`
+- [Labels](https://github.com/flo-bit/contrail/blob/main/docs/09-labels.md) — atproto-native moderation hydration from external labelers
 - Frameworks: [SvelteKit + Cloudflare](https://github.com/flo-bit/contrail/blob/main/docs/frameworks/sveltekit-cloudflare.md)
 
 ## Packages

@@ -4,6 +4,8 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@import '@foxui/core/theme.css';
-
-@source "../node_modules/@foxui";
+/* If you import any @foxui/* component (Button, AtprotoLoginModal, etc.), add:
+ *   @import '@foxui/core/theme.css';
+ *   @source "../node_modules/@foxui";
+ * Without both lines foxui components mount but render invisibly because Tailwind
+ * doesn't scan their classes. The default starter is foxui-free, so they're omitted. */

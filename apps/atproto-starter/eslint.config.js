@@ -27,7 +27,8 @@ export default ts.config(
 
 		languageOptions: {
 			parserOptions: {
-				parser: ts.parser
+				parser: ts.parser,
+				tsconfigRootDir: import.meta.dirname
 			}
 		}
 	}

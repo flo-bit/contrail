@@ -35,6 +35,7 @@
 		"@atcute/tid": "^1.1.2",
 		"@cloudflare/workers-types": "^4.20260317.1",
 		"@eslint/compat": "^2.0.3",
+		"@types/node": "^22.0.0",
 		"@eslint/js": "^10.0.1",
 		"@sveltejs/adapter-cloudflare": "^7.2.8",
 		"@sveltejs/kit": "^2.55.0",

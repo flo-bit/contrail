@@ -93,7 +93,7 @@ export async function getDetailedProfile(data?: { did?: Did; client?: Client }) 
 /**
  * Creates an AT Protocol client for a user's PDS.
  */
-export async function getClient({ did }: { did: Did }) {
+export async function getPDSClient({ did }: { did: Did }) {
 	const pds = await getPDS(did);
 	if (!pds) throw new Error('PDS not found');
 
@@ -128,7 +128,7 @@ export async function listRecords({
 		throw new Error('Missing did for listRecords');
 	}
 
-	client ??= await getClient({ did });
+	client ??= await getPDSClient({ did });
 
 	const allRecords = [];
 
@@ -177,7 +177,7 @@ export async function getRecord({
 		throw new Error('Missing did for getRecord');
 	}
 
-	client ??= await getClient({ did });
+	client ??= await getPDSClient({ did });
 
 	const record = await client.get('com.atproto.repo.getRecord', {
 		params: {
@@ -288,7 +288,7 @@ export async function describeRepo({ client, did }: { client?: Client; did?: Did
 	if (!did) {
 		throw new Error('Error describeRepo: No did');
 	}
-	client ??= await getClient({ did });
+	client ??= await getPDSClient({ did });
 
 	const repo = await client.get('com.atproto.repo.describeRepo', {
 		params: {
