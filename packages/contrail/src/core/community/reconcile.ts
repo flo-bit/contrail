@@ -1,13 +1,18 @@
-import type { StorageAdapter as SpacesAdapter } from "../spaces/types";
+import type { SpaceAuthority } from "../spaces/types";
 import type { CommunityAdapter } from "./adapter";
 import { flattenEffectiveMembers } from "./acl";
 
 /** Reconcile `spaces_members` for `spaceUri` to match the flattened effective
  *  member set derived from `community_access_levels`. Also re-reconciles any
- *  spaces that delegate to this one (reverse-graph). */
+ *  spaces that delegate to this one (reverse-graph).
+ *
+ *  Takes a {@link SpaceAuthority} (not a full `StorageAdapter`) — the
+ *  reconciler only needs member-level operations, so depending on the
+ *  narrower interface keeps the dependency direction clean and proves we
+ *  could swap in a non-Contrail authority. */
 export async function reconcile(
   community: CommunityAdapter,
-  spaces: SpacesAdapter,
+  spaces: SpaceAuthority,
   spaceUri: string,
   byDid: string,
   opts: { depth?: number; maxReverseDepth?: number } = {}

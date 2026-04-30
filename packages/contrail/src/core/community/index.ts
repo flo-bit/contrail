@@ -21,6 +21,8 @@ export {
 export { CredentialCipher } from "./credentials";
 export { resolveEffectiveLevel, flattenEffectiveMembers, wouldCycle } from "./acl";
 export { reconcile } from "./reconcile";
+export { createCommunityInviteHandler } from "./invite-handler";
+export { createCommunityWhoamiExtension } from "./whoami";
 export { initCommunitySchema, buildCommunitySchema } from "./schema";
 export { resolveIdentity, createPdsSession } from "./pds";
 export {

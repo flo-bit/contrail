@@ -11,7 +11,6 @@ import {
 } from "./auth";
 import { nextTid } from "./tid";
 import { hashInviteToken } from "../invite/token";
-import { resolveEffectiveLevel } from "../community/acl";
 import { buildSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
@@ -26,11 +25,27 @@ import { blobKey } from "./blob-adapter";
 import { collectBlobCids } from "./blob-refs";
 import { create as createCid, toString as cidToString } from "@atcute/cid";
 
+/** Optional hook to extend `<ns>.spaceExt.whoami` with extra fields when a
+ *  module above spaces (e.g. community) wants to override the default
+ *  binary-membership response. If the hook returns a non-null object, that
+ *  object is the entire response body. If null, falls through to the
+ *  default behavior (just `isOwner`/`isMember`).
+ *
+ *  Spaces stays community-agnostic: any consumer can plug in here. */
+export type WhoamiExtension = (input: {
+  spaceUri: string;
+  callerDid: string;
+  isOwner: boolean;
+  ownerDid: string;
+}) => Promise<Record<string, unknown> | null>;
+
 export interface SpacesRoutesOptions {
   /** Provide a custom middleware (e.g. for tests). If omitted and authority is set, a real one is built. */
   authMiddleware?: MiddlewareHandler;
   /** Storage adapter override. Defaults to HostedAdapter(db). */
   adapter?: StorageAdapter;
+  /** Optional whoami extension; see {@link WhoamiExtension}. */
+  whoamiExtension?: WhoamiExtension;
 }
 
 /** Umbrella registration: wires both the authority and the record-host
@@ -43,8 +58,7 @@ export function registerSpacesRoutes(
   db: Database,
   config: ContrailConfig,
   options: SpacesRoutesOptions = {},
-  ctx?: { adapter: StorageAdapter; verifier: import("@atcute/xrpc-server/auth").ServiceJwtVerifier } | null,
-  community?: import("../community/adapter").CommunityAdapter | null
+  ctx?: { adapter: StorageAdapter; verifier: import("@atcute/xrpc-server/auth").ServiceJwtVerifier } | null
 ): void {
   const spacesConfig = config.spaces;
   if (!spacesConfig) return;
@@ -55,7 +69,7 @@ export function registerSpacesRoutes(
   const verifier = ctx?.verifier ?? buildVerifier(authorityConfig);
   const auth = options.authMiddleware ?? createServiceAuthMiddleware(verifier);
 
-  registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, community ?? null);
+  registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, options.whoamiExtension);
 
   if (spacesConfig.recordHost) {
     registerRecordHostRoutes(app, adapter, adapter, spacesConfig.recordHost, config, auth);
@@ -70,7 +84,7 @@ export function registerAuthorityRoutes(
   authorityConfig: AuthorityConfig,
   config: ContrailConfig,
   auth: MiddlewareHandler,
-  community: import("../community/adapter").CommunityAdapter | null
+  whoamiExtension?: WhoamiExtension
 ): void {
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
@@ -243,8 +257,8 @@ export function registerAuthorityRoutes(
   });
 
   // Unified whoami — `<ns>.spaceExt.whoami?spaceUri=X` → { isOwner, isMember,
-  // accessLevel? }. `accessLevel` is present only when the target space is
-  // community-owned; for user-owned spaces membership is binary.
+  // ... }. Extra fields (e.g. accessLevel for community-owned spaces) come
+  // from the optional whoamiExtension hook; without one, response is binary.
   app.get(`/xrpc/${SPACE_EXT}.whoami`, auth, async (c) => {
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
@@ -254,20 +268,17 @@ export function registerAuthorityRoutes(
 
     const isOwner = space.ownerDid === sa.issuer;
 
-    // Community-owned space: resolve through the access-level ladder. The
-    // reconciler keeps spaces_members in sync, so isMember derives from the
-    // effective level directly.
-    const isCommunity = community ? !!(await community.getCommunity(space.ownerDid)) : false;
-    if (isCommunity) {
-      const level = await resolveEffectiveLevel(community!, spaceUri, sa.issuer);
-      return c.json({
+    if (whoamiExtension) {
+      const ext = await whoamiExtension({
+        spaceUri,
+        callerDid: sa.issuer,
         isOwner,
-        isMember: isOwner || !!level,
-        accessLevel: level,
+        ownerDid: space.ownerDid,
       });
+      if (ext) return c.json(ext);
     }
 
-    // User-owned space: binary membership.
+    // Default: binary membership.
     if (isOwner) return c.json({ isOwner: true, isMember: true });
     const member = await authority.getMember(spaceUri, sa.issuer);
     return c.json({ isOwner: false, isMember: !!member });

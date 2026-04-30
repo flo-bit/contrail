@@ -15,6 +15,8 @@ import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
 import { registerCommunityRoutes } from "../community/router";
 import type { CommunityRoutesOptions } from "../community/router";
 import { CommunityAdapter } from "../community/adapter";
+import { createCommunityInviteHandler } from "../community/invite-handler";
+import { createCommunityWhoamiExtension } from "../community/whoami";
 import { registerRealtimeRoutes } from "../realtime/router";
 import type { RealtimeRoutesOptions } from "../realtime/router";
 import { registerInviteRoutes } from "../invite/router";
@@ -129,6 +131,12 @@ export function createApp(
           }
         : null;
 
+  // Community is wired up at this layer, not from inside spaces / invite —
+  // those modules consume injected hooks, not community internals. The
+  // adapter is shared across every call site that needs it (publishing
+  // wrapper, collection routes, whoami extension, invite handler, realtime).
+  const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+
   // Realtime pubsub is built whenever realtime is configured — independent of
   // spaces. With spaces, the spaces adapter is wrapped so private record/member
   // events publish to space:/community: topics. Without spaces, only public
@@ -141,7 +149,6 @@ export function createApp(
         queueBound: config.realtime.queueBound,
       });
     if (spacesCtx) {
-      const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
       const isCommunityDid = communityAdapter
         ? cachedIsCommunityDid(communityAdapter)
         : undefined;
@@ -153,19 +160,25 @@ export function createApp(
   }
 
   registerAdminRoutes(app, db, config);
-  const communityAdapterForCollection = config.community
-    ? new CommunityAdapter(spacesDb)
-    : null;
+
   registerCollectionRoutes(app, db, config, spacesCtx, {
     pubsub: realtimePubsub,
-    community: communityAdapterForCollection,
+    community: communityAdapter,
   });
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
-  const communityAdapterForSpaces = config.community && spacesCtx
-    ? new CommunityAdapter(spacesDb)
-    : null;
-  registerSpacesRoutes(app, spacesDb, config, options.spaces, spacesCtx, communityAdapterForSpaces);
+
+  // Spaces routes — get a whoami extension when community is configured so
+  // community-owned spaces get an `accessLevel` field.
+  const spacesOptions = {
+    ...options.spaces,
+    whoamiExtension:
+      options.spaces?.whoamiExtension ??
+      (communityAdapter
+        ? createCommunityWhoamiExtension({ community: communityAdapter })
+        : undefined),
+  };
+  registerSpacesRoutes(app, spacesDb, config, spacesOptions, spacesCtx);
 
   if (config.community && spacesCtx) {
     // Community routes reuse the spaces service-auth middleware (same JWT verifier).
@@ -184,12 +197,18 @@ export function createApp(
 
   if (config.spaces?.authority && spacesCtx) {
     // Unified invite surface: one `<ns>.invite.*` family that dispatches on
-    // space ownership (user-owned → addMember; community-owned → grant).
+    // space ownership (user-owned → addMember; community-owned → grant via
+    // an injected community-invite handler).
     const authMiddleware =
       options.spaces?.authMiddleware ??
       createServiceAuthMiddleware(spacesCtx.verifier);
-    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
-    registerInviteRoutes(app, config, spacesCtx.adapter, communityAdapter, { authMiddleware });
+    const inviteHandler = communityAdapter
+      ? createCommunityInviteHandler({
+          community: communityAdapter,
+          authority: spacesCtx.adapter,
+        })
+      : null;
+    registerInviteRoutes(app, config, spacesCtx.adapter, inviteHandler, { authMiddleware });
   }
 
   if (config.realtime && realtimePubsub) {
@@ -202,7 +221,6 @@ export function createApp(
         options.spaces?.authMiddleware ??
         createServiceAuthMiddleware(spacesCtx.verifier)
       : null;
-    const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
     registerRealtimeRoutes(app, config, spacesCtx?.adapter ?? null, communityAdapter, {
       authMiddleware,
       pubsub: realtimePubsub,

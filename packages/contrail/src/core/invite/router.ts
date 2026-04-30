@@ -2,36 +2,31 @@
  *  user-owned and community-owned spaces. Dispatches on space ownership.
  *
  *    - User-owned space  → `kind` in create, `addMember` on redeem, owner-only.
- *    - Community-owned   → `accessLevel` in create, `grant` on redeem,
- *                          manager+ with "cannot grant higher than self".
+ *    - Community-owned   → routed to a {@link CommunityInviteHandler} provided
+ *                          by the community module (or null when community is
+ *                          not configured).
  *
  *  Storage stays separate (`spaces_invites` vs `community_invites` tables) —
  *  schemas differ enough that unifying them would be net-negative. The token
- *  primitive and HTTP dance are shared. */
+ *  primitive and HTTP dance are shared. invite/router has zero imports from
+ *  community/ — coupling is via the {@link CommunityInviteHandler} interface. */
 
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { ContrailConfig } from "../types";
 import type { ServiceAuth } from "../spaces/auth";
-import type { StorageAdapter } from "../spaces/types";
+import type { SpaceAuthority } from "../spaces/types";
 import type { InviteKind, InviteRow } from "../spaces/types";
-import type { CommunityAdapter } from "../community/adapter";
-import type { CommunityInviteRow, AccessLevel } from "../community/types";
-import { isAccessLevel, rankOf } from "../community/types";
 import { hashInviteToken, mintInviteToken } from "./token";
-import { resolveEffectiveLevel } from "../community/acl";
-import { reconcile } from "../community/reconcile";
+import type { CommunityInviteHandler, HandlerResponse } from "./community-handler";
 
 export interface InviteRoutesOptions {
   authMiddleware: MiddlewareHandler;
 }
 
-/** Shape returned to clients — `kind` (user-owned space) or `accessLevel`
- *  (community-owned space) is set, never both. */
 interface PublicInviteView {
   tokenHash: string;
   spaceUri: string;
   kind?: InviteKind;
-  accessLevel?: AccessLevel;
   createdBy: string;
   createdAt: number;
   expiresAt: number | null;
@@ -56,26 +51,11 @@ function toSpacesView(row: InviteRow): PublicInviteView {
   };
 }
 
-function toCommunityView(row: CommunityInviteRow): PublicInviteView {
-  return {
-    tokenHash: row.tokenHash,
-    spaceUri: row.spaceUri,
-    accessLevel: row.accessLevel,
-    createdBy: row.createdBy,
-    createdAt: row.createdAt,
-    expiresAt: row.expiresAt,
-    maxUses: row.maxUses,
-    usedCount: row.usedCount,
-    revokedAt: row.revokedAt,
-    note: row.note,
-  };
-}
-
 export function registerInviteRoutes(
   app: Hono,
   config: ContrailConfig,
-  spaces: StorageAdapter,
-  community: CommunityAdapter | null,
+  authority: SpaceAuthority,
+  community: CommunityInviteHandler | null,
   options: InviteRoutesOptions
 ): void {
   if (!config.spaces?.authority) return;
@@ -86,9 +66,9 @@ export function registerInviteRoutes(
   /** Resolve whether a space is community-owned. Returns null if the space
    *  doesn't exist. */
   const classifySpace = async (spaceUri: string) => {
-    const space = await spaces.getSpace(spaceUri);
+    const space = await authority.getSpace(spaceUri);
     if (!space) return null;
-    const isCommunity = community ? !!(await community.getCommunity(space.ownerDid)) : false;
+    const isCommunity = community ? await community.isCommunityOwned(spaceUri) : false;
     return { space, isCommunity };
   };
 
@@ -120,35 +100,15 @@ export function registerInviteRoutes(
 
     if (isCommunity) {
       if (!community) return c.json({ error: "InvalidState" }, 500);
-      if (body.kind) {
-        return c.json(
-          { error: "InvalidRequest", reason: "kind-on-community-space", message: "community spaces take accessLevel, not kind" },
-          400
-        );
-      }
-      if (!body.accessLevel || !isAccessLevel(body.accessLevel)) {
-        return c.json({ error: "InvalidRequest", reason: "accessLevel-required" }, 400);
-      }
-      // Caller must have manager+ on the target space and cannot create an
-      // invite that confers a higher level than their own.
-      const callerLevel = await resolveEffectiveLevel(community, body.spaceUri, sa.issuer);
-      if (!callerLevel || rankOf(callerLevel) < rankOf("manager")) {
-        return c.json({ error: "Forbidden", reason: "manager-required" }, 403);
-      }
-      if (rankOf(body.accessLevel) > rankOf(callerLevel)) {
-        return c.json({ error: "Forbidden", reason: "cannot-grant-higher-than-self" }, 403);
-      }
-      const { token, tokenHash } = await mintInviteToken();
-      const row = await community.createInvite({
+      return relay(c, await community.create({
         spaceUri: body.spaceUri,
-        tokenHash,
+        callerDid: sa.issuer,
         accessLevel: body.accessLevel,
-        createdBy: sa.issuer,
+        kind: body.kind,
         expiresAt: body.expiresAt ?? null,
         maxUses: body.maxUses ?? null,
         note: body.note ?? null,
-      });
-      return c.json({ token, invite: toCommunityView(row) });
+      }));
     }
 
     // User-owned space.
@@ -166,7 +126,7 @@ export function registerInviteRoutes(
       return c.json({ error: "InvalidRequest", message: "kind must be 'join', 'read', or 'read-join'" }, 400);
     }
     const { token, tokenHash } = await mintInviteToken();
-    const invite = await spaces.createInvite({
+    const invite = await authority.createInvite({
       spaceUri: body.spaceUri,
       tokenHash,
       kind,
@@ -189,18 +149,17 @@ export function registerInviteRoutes(
     const { space, isCommunity } = classified;
 
     if (isCommunity) {
-      const callerLevel = await resolveEffectiveLevel(community!, spaceUri, sa.issuer);
-      if (!callerLevel || rankOf(callerLevel) < rankOf("manager")) {
-        return c.json({ error: "Forbidden", reason: "manager-required" }, 403);
-      }
-      const rows = await community!.listInvites(spaceUri, { includeRevoked });
-      return c.json({ invites: rows.map(toCommunityView) });
+      return relay(c, await community!.list({
+        spaceUri,
+        callerDid: sa.issuer,
+        includeRevoked,
+      }));
     }
 
     if (space.ownerDid !== sa.issuer) {
       return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
     }
-    const rows = await spaces.listInvites(spaceUri, { includeRevoked });
+    const rows = await authority.listInvites(spaceUri, { includeRevoked });
     return c.json({ invites: rows.map(toSpacesView) });
   });
 
@@ -213,54 +172,39 @@ export function registerInviteRoutes(
       return c.json({ error: "InvalidRequest", message: "tokenHash required" }, 400);
     }
 
-    // When the caller passes spaceUri we do an auth check up front so the
-    // response doesn't leak token existence. Community revokers may also be
-    // the invite creator (even without manager+), which is resolved after.
     if (body.spaceUri) {
       const classified = await classifySpace(body.spaceUri);
       if (!classified) return c.json({ error: "NotFound" }, 404);
       if (classified.isCommunity) {
-        const level = await resolveEffectiveLevel(community!, body.spaceUri, sa.issuer);
-        const managerOrHigher = !!level && rankOf(level) >= rankOf("manager");
-        if (!managerOrHigher) {
-          const crow = await community!.getInvite(body.tokenHash);
-          if (!crow || crow.createdBy !== sa.issuer) {
-            return c.json({ error: "Forbidden", reason: "creator-or-manager-required" }, 403);
-          }
-        }
-        const ok = await community!.revokeInvite(body.tokenHash);
-        return c.json({ ok });
+        return relay(c, await community!.revoke({
+          spaceUri: body.spaceUri,
+          tokenHash: body.tokenHash,
+          callerDid: sa.issuer,
+        }));
       }
       if (classified.space.ownerDid !== sa.issuer) {
         return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
       }
-      const ok = await spaces.revokeInvite(body.tokenHash);
+      const ok = await authority.revokeInvite(body.tokenHash);
       return c.json({ ok });
     }
 
-    // No spaceUri provided — infer from the invite row.
+    // No spaceUri — try the community handler first (it returns null if the
+    // token isn't a community invite), then fall back to the user-owned path.
     if (community) {
-      const crow = await community.getInvite(body.tokenHash);
-      if (crow) {
-        let allowed = crow.createdBy === sa.issuer;
-        if (!allowed) {
-          const level = await resolveEffectiveLevel(community, crow.spaceUri, sa.issuer);
-          allowed = !!level && rankOf(level) >= rankOf("manager");
-        }
-        if (!allowed) {
-          return c.json({ error: "Forbidden", reason: "creator-or-manager-required" }, 403);
-        }
-        const ok = await community.revokeInvite(body.tokenHash);
-        return c.json({ ok });
-      }
+      const r = await community.tryRevokeByToken({
+        tokenHash: body.tokenHash,
+        callerDid: sa.issuer,
+      });
+      if (r) return relay(c, r);
     }
-    const srow = await spaces.getInvite(body.tokenHash);
+    const srow = await authority.getInvite(body.tokenHash);
     if (!srow) return c.json({ error: "NotFound" }, 404);
-    const space = await spaces.getSpace(srow.spaceUri);
+    const space = await authority.getSpace(srow.spaceUri);
     if (space && space.ownerDid !== sa.issuer) {
       return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
     }
-    const ok = await spaces.revokeInvite(body.tokenHash);
+    const ok = await authority.revokeInvite(body.tokenHash);
     return c.json({ ok });
   });
 
@@ -273,41 +217,30 @@ export function registerInviteRoutes(
     const tokenHash = await hashInviteToken(body.token);
     const now = Date.now();
 
-    // Try community first (it's atomic — returns null if not consumable).
+    // Try community first (atomic — null if not a community invite).
     if (community) {
-      const cinvite = await community.redeemInvite(tokenHash, now);
-      if (cinvite) {
-        const space = await spaces.getSpace(cinvite.spaceUri);
-        if (!space) {
-          return c.json({ error: "NotFound", reason: "space-not-found" }, 404);
-        }
-        // The token itself is the authorization: creator (manager+) pre-signed
-        // "anyone with this token gets level X". Grant directly, attributing
-        // to the creator so audit trails make sense.
-        await community.grant({
-          spaceUri: cinvite.spaceUri,
-          subjectDid: sa.issuer,
-          accessLevel: cinvite.accessLevel,
-          grantedBy: cinvite.createdBy,
-        });
-        await reconcile(community, spaces, cinvite.spaceUri, cinvite.createdBy);
-        return c.json({
-          spaceUri: cinvite.spaceUri,
-          accessLevel: cinvite.accessLevel,
-          communityDid: space.ownerDid,
-        });
-      }
+      const r = await community.tryRedeem({
+        tokenHash,
+        callerDid: sa.issuer,
+        now,
+      });
+      if (r) return relay(c, r);
     }
 
-    // Fall back to the spaces (user-owned) path. The spaces redeem filter
-    // already restricts to `kind IN ('join','read-join')` at the SQL level.
-    const sinvite = await spaces.redeemInvite(tokenHash, now);
+    // Fall back to the user-owned spaces path. The redeem filter at the SQL
+    // level already restricts to `kind IN ('join','read-join')`.
+    const sinvite = await authority.redeemInvite(tokenHash, now);
     if (!sinvite) {
       return c.json({ error: "InvalidInvite", reason: "expired-revoked-or-exhausted" }, 400);
     }
-    await spaces.addMember(sinvite.spaceUri, sa.issuer, sinvite.createdBy);
+    await authority.addMember(sinvite.spaceUri, sa.issuer, sinvite.createdBy);
     return c.json({ spaceUri: sinvite.spaceUri, kind: sinvite.kind });
   });
+}
+
+/** Forward a community-handler response to the wire. */
+function relay(c: Context, r: HandlerResponse) {
+  return c.json(r.body, r.status as Parameters<typeof c.json>[1]);
 }
 
 function getAuth(c: Context): ServiceAuth {
