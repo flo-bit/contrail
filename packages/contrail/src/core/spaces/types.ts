@@ -25,8 +25,13 @@ export interface SpacesBlobsConfig {
 export const DEFAULT_BLOB_MAX_SIZE = 2 * 1024 * 1024;
 export const DEFAULT_BLOB_GC_ORPHAN_AFTER_MS = 24 * 60 * 60 * 1000;
 
-export interface SpacesConfig {
-  /** NSID that identifies the kind of space this service hosts, e.g. "tools.atmo.event.space". */
+/** Configuration for the **space authority** role: holds the member list,
+ *  signs credentials (later phases), and gates space-management operations.
+ *  In a fully-split deployment, the authority can run in a different process
+ *  (or even a different operator) than the record host. */
+export interface AuthorityConfig {
+  /** NSID that identifies the kind of space this authority hosts,
+   *  e.g. "tools.atmo.event.space". */
   type: string;
   /** Service DID that service-auth tokens must target (aud claim). */
   serviceDid: string;
@@ -35,8 +40,27 @@ export interface SpacesConfig {
   /** DID document resolver for service-auth JWT verification.
    *  Defaults to a composite PLC + did:web resolver if omitted. */
   resolver?: DidDocumentResolver;
+}
+
+/** Configuration for the **record host** role: stores per-space records and
+ *  blobs and serves reads. Verifies space credentials (later phases) on
+ *  incoming traffic. */
+export interface RecordHostConfig {
   /** Blob-upload backend. When omitted, blob XRPCs are not exposed. */
   blobs?: SpacesBlobsConfig;
+}
+
+/** Spaces config — host an authority, a record host, or both.
+ *  Today both run in one process and most deployments will set both; the
+ *  shape is split now so phase 5 can run them independently without churning
+ *  every consumer's config. */
+export interface SpacesConfig {
+  /** Space-authority config — member list, credentials (later), space
+   *  management. Required for any space to exist. */
+  authority?: AuthorityConfig;
+  /** Record-host config — record + blob storage. Required for records to be
+   *  written/read on this deployment. */
+  recordHost?: RecordHostConfig;
 }
 
 export interface SpaceRow {
@@ -145,7 +169,13 @@ export interface ListBlobsResult {
   cursor?: string;
 }
 
-export interface StorageAdapter {
+/** **Space authority** interface — owner of the space's ACL state and
+ *  (eventually) credential issuer. Holds the member list, manages invites,
+ *  governs space lifecycle and app policy. Does NOT touch records or blobs.
+ *
+ *  In a fully-split deployment this is a separate service; today the
+ *  HostedAdapter implements both this and {@link RecordHost} against one DB. */
+export interface SpaceAuthority {
   // Space lifecycle
   createSpace(space: Omit<SpaceRow, "createdAt" | "deletedAt">): Promise<SpaceRow>;
   getSpace(spaceUri: string): Promise<SpaceRow | null>;
@@ -167,7 +197,7 @@ export interface StorageAdapter {
     addedBy: string | null
   ): Promise<void>;
 
-  // Invites
+  // Invites (token primitive — issued by the authority, scoped to a space)
   createInvite(input: CreateInviteInput): Promise<InviteRow>;
   listInvites(spaceUri: string, options?: { includeRevoked?: boolean }): Promise<InviteRow[]>;
   revokeInvite(tokenHash: string): Promise<boolean>;
@@ -176,7 +206,16 @@ export interface StorageAdapter {
   /** Atomically mark a join-capable invite as used. Returns the row if usable
    *  (kind allows join, not expired/revoked/exhausted), null otherwise. */
   redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null>;
+}
 
+/** **Record host** interface — stores records and blobs for a space. Trusts
+ *  the authority's ACL: in later phases, validates incoming credentials
+ *  rather than calling out for a member check.
+ *
+ *  Read-side note: today the record host needs `getSpace` to know the space
+ *  exists at all (and for app-policy checks before permissioned writes). When
+ *  enrollment lands (phase 5), this becomes a local lookup instead. */
+export interface RecordHost {
   // Records
   putRecord(record: StoredRecord): Promise<void>;
   getRecord(spaceUri: string, collection: string, authorDid: string, rkey: string): Promise<StoredRecord | null>;
@@ -193,6 +232,12 @@ export interface StorageAdapter {
    *  record JSON in this space. Capped at `limit` to bound a single GC pass. */
   findOrphanBlobs(spaceUri: string, cutoff: number, limit: number): Promise<BlobMetaRow[]>;
 }
+
+/** Combined adapter. Used internally where a single object satisfies both
+ *  roles (today's HostedAdapter, the community reconciler, the realtime
+ *  publishing wrapper). Phases 5+ replace consumers of this with two
+ *  injected interfaces. */
+export type StorageAdapter = SpaceAuthority & RecordHost;
 
 export interface AdapterContext {
   db: Database;

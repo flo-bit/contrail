@@ -307,7 +307,7 @@ export async function initSchema(
 
   await db.batch(all.map((s) => db.prepare(s)));
 
-  if (config.spaces) {
+  if (config.spaces?.authority || config.spaces?.recordHost) {
     await applySpacesSchema(spacesSharesMainDb ? db : spacesDb!, config, dialect);
   }
 

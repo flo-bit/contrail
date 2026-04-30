@@ -43,12 +43,16 @@ function build(env: Env): Bundle {
 	const config: ContrailConfig = {
 		...baseConfig,
 		spaces: {
-			type: 'tools.atmo.chat.space',
-			serviceDid: env.SERVICE_DID,
-			blobs: {
-				adapter: blobAdapter,
-				maxSize: 2 * 1024 * 1024,
-				accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+			authority: {
+				type: 'tools.atmo.chat.space',
+				serviceDid: env.SERVICE_DID
+			},
+			recordHost: {
+				blobs: {
+					adapter: blobAdapter,
+					maxSize: 2 * 1024 * 1024,
+					accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+				}
 			}
 		},
 		community: {

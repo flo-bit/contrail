@@ -21,9 +21,13 @@ function makeConfig(blobs: MemoryBlobAdapter, maxSize = 2 * 1024 * 1024): Contra
       photo: { collection: "app.event.photo" },
     },
     spaces: {
-      type: "tools.atmo.event.space",
-      serviceDid: "did:web:test.example#svc",
-      blobs: { adapter: blobs, maxSize },
+      authority: {
+        type: "tools.atmo.event.space",
+        serviceDid: "did:web:test.example#svc",
+      },
+      recordHost: {
+        blobs: { adapter: blobs, maxSize },
+      },
     },
   };
 }
@@ -51,7 +55,7 @@ async function makeApp(
   const resolved = resolveConfig(cfg);
   await initSchema(db, resolved);
   const app = createApp(db, resolved, {
-    spaces: { authMiddleware: fakeAuth(cfg.spaces!.serviceDid) },
+    spaces: { authMiddleware: fakeAuth(cfg.spaces!.authority!.serviceDid) },
   });
   return { app, db, config: resolved };
 }

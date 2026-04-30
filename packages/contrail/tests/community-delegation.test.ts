@@ -20,8 +20,11 @@ const CONFIG: ContrailConfig = {
   namespace: "test.comm",
   collections: { message: { collection: "app.event.message" } },
   spaces: {
-    type: "tools.atmo.event.space",
-    serviceDid: "did:web:test.example#svc",
+    authority: {
+      type: "tools.atmo.event.space",
+      serviceDid: "did:web:test.example#svc",
+    },
+    recordHost: {},
   },
   community: {
     masterKey: MASTER_KEY,
@@ -68,7 +71,7 @@ function fakeAuth(): MiddlewareHandler {
   return async (c, next) => {
     const did = c.req.header("X-Test-Did");
     if (!did) return c.json({ error: "AuthRequired" }, 401);
-    c.set("serviceAuth", { issuer: did, audience: CONFIG.spaces!.serviceDid, lxm: undefined });
+    c.set("serviceAuth", { issuer: did, audience: CONFIG.spaces!.authority!.serviceDid, lxm: undefined });
     await next();
   };
 }

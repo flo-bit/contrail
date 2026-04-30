@@ -39,6 +39,10 @@ export type { PersistentIngestOptions } from "./core/persistent";
 // Spaces
 export type {
   SpacesConfig,
+  AuthorityConfig,
+  RecordHostConfig,
+  SpaceAuthority,
+  RecordHost,
   AppPolicy,
   AppPolicyMode,
   SpaceRow,

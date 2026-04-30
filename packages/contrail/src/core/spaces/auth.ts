@@ -7,16 +7,17 @@ import {
   type DidDocumentResolver,
 } from "@atcute/identity-resolver";
 import type { Did, Nsid } from "@atcute/lexicons";
-import type { SpacesConfig } from "./types";
+import type { AuthorityConfig } from "./types";
 import { readInProcess } from "./in-process";
 
 export { ServiceJwtVerifier };
 
-/** Build a ServiceJwtVerifier from a SpacesConfig, using the configured
- *  resolver or a default PLC+Web composite. */
-export function buildVerifier(spaces: SpacesConfig): ServiceJwtVerifier {
+/** Build a ServiceJwtVerifier from an AuthorityConfig, using the configured
+ *  resolver or a default PLC+Web composite. The verifier checks that incoming
+ *  JWTs target this authority's serviceDid (aud claim). */
+export function buildVerifier(authority: AuthorityConfig): ServiceJwtVerifier {
   const resolver =
-    spaces.resolver ??
+    authority.resolver ??
     new CompositeDidDocumentResolver({
       methods: {
         plc: new PlcDidDocumentResolver(),
@@ -24,7 +25,7 @@ export function buildVerifier(spaces: SpacesConfig): ServiceJwtVerifier {
       },
     });
   return new ServiceJwtVerifier({
-    serviceDid: spaces.serviceDid as Did,
+    serviceDid: authority.serviceDid as Did,
     resolver,
   });
 }

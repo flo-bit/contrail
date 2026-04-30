@@ -8,7 +8,6 @@ import {
   checkInviteReadGrant,
   createServiceAuthMiddleware,
   extractInviteToken,
-  verifyServiceAuthRequest,
 } from "./auth";
 import { nextTid } from "./tid";
 import { hashInviteToken } from "../invite/token";
@@ -16,22 +15,29 @@ import { resolveEffectiveLevel } from "../community/acl";
 import { buildSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
+  type AuthorityConfig,
+  type RecordHostConfig,
+  type RecordHost,
+  type SpaceAuthority,
   type SpaceRow,
-  type SpacesConfig,
   type StorageAdapter,
 } from "./types";
 import { blobKey } from "./blob-adapter";
 import { collectBlobCids } from "./blob-refs";
 import { create as createCid, toString as cidToString } from "@atcute/cid";
-import type { Did } from "@atcute/lexicons";
 
 export interface SpacesRoutesOptions {
-  /** Provide a custom middleware (e.g. for tests). If omitted and spaces.resolver is set, a real one is built. */
+  /** Provide a custom middleware (e.g. for tests). If omitted and authority is set, a real one is built. */
   authMiddleware?: MiddlewareHandler;
   /** Storage adapter override. Defaults to HostedAdapter(db). */
   adapter?: StorageAdapter;
 }
 
+/** Umbrella registration: wires both the authority and the record-host
+ *  routes against the same adapter. Today's deployments enable both via
+ *  `config.spaces.authority` and `config.spaces.recordHost`. Either may be
+ *  omitted in future split deployments — phase 5 lifts the assumption that
+ *  one process runs both. */
 export function registerSpacesRoutes(
   app: Hono,
   db: Database,
@@ -42,45 +48,30 @@ export function registerSpacesRoutes(
 ): void {
   const spacesConfig = config.spaces;
   if (!spacesConfig) return;
+  const authorityConfig = spacesConfig.authority;
+  if (!authorityConfig) return;
 
   const adapter = options.adapter ?? ctx?.adapter ?? new HostedAdapter(db, config);
-  const verifier = ctx?.verifier ?? buildVerifier(spacesConfig);
+  const verifier = ctx?.verifier ?? buildVerifier(authorityConfig);
   const auth = options.authMiddleware ?? createServiceAuthMiddleware(verifier);
 
-  /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
-   *  present so anonymous bearer reads don't 401 before the route handler can
-   *  validate the token. The route handler is responsible for actually checking
-   *  the token (via `authorizeRead`). */
-  const readAuth: MiddlewareHandler = async (c, next) => {
-    if (extractInviteToken(c.req.raw)) {
-      await next();
-      return;
-    }
-    return auth(c, next);
-  };
+  registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, community ?? null);
 
-  /** Authorize a read request: either a valid service-auth JWT (which also
-   *  identifies the caller for member checks downstream) or a valid read-grant
-   *  invite token bearer (`?inviteToken=...` or
-   *  `Authorization: Bearer atmo-invite:<token>`). */
-  async function authorizeRead(
-    c: Context,
-    spaceUri: string
-  ): Promise<{ via: "token" } | { via: "jwt"; sa: ServiceAuth } | Response> {
-    const rawToken = extractInviteToken(c.req.raw);
-    if (rawToken) {
-      const ok = await checkInviteReadGrant(adapter, rawToken, spaceUri, hashInviteToken);
-      if (!ok) return c.json({ error: "Forbidden", reason: "invalid-invite-token" }, 403);
-      return { via: "token" };
-    }
-    const sa = c.get("serviceAuth") as ServiceAuth | undefined;
-    if (sa) return { via: "jwt", sa };
-    return c.json(
-      { error: "AuthRequired", message: "JWT or read-grant invite token required" },
-      401
-    );
+  if (spacesConfig.recordHost) {
+    registerRecordHostRoutes(app, adapter, adapter, spacesConfig.recordHost, config, auth);
   }
+}
 
+/** Register the **space authority** XRPC surface — space lifecycle, member
+ *  list, app policy, whoami. Does NOT touch records or blobs. */
+export function registerAuthorityRoutes(
+  app: Hono,
+  authority: SpaceAuthority,
+  authorityConfig: AuthorityConfig,
+  config: ContrailConfig,
+  auth: MiddlewareHandler,
+  community: import("../community/adapter").CommunityAdapter | null
+): void {
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
    *  templates at `lexicon-templates/spaces/*` that the generator instantiates
@@ -89,7 +80,8 @@ export function registerSpacesRoutes(
   const SPACE = `${config.namespace}.space`;
   const SPACE_EXT = `${config.namespace}.spaceExt`;
 
-  // Read endpoints
+  // ---- Read endpoints ----
+
   app.get(`/xrpc/${SPACE}.listSpaces`, auth, async (c) => {
     const sa = getAuth(c);
     const scope = c.req.query("scope") ?? "member"; // "member" | "owner"
@@ -98,14 +90,14 @@ export function registerSpacesRoutes(
     const cursor = c.req.query("cursor") ?? undefined;
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
 
-    const opts: Parameters<typeof adapter.listSpaces>[0] = { type, cursor, limit };
+    const opts: Parameters<typeof authority.listSpaces>[0] = { type, cursor, limit };
     if (scope === "owner") opts.ownerDid = sa.issuer;
     else {
       opts.memberDid = sa.issuer;
       if (owner) opts.ownerDid = owner; // narrow to spaces owned by this DID
     }
 
-    const result = await adapter.listSpaces(opts);
+    const result = await authority.listSpaces(opts);
     return c.json({
       spaces: result.spaces.map((s) => publicSpaceView(s, s.ownerDid === sa.issuer)),
       cursor: result.cursor,
@@ -116,25 +108,36 @@ export function registerSpacesRoutes(
     const sa = getAuth(c);
     const spaceUri = c.req.query("spaceUri");
     if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
-    const space = await adapter.getSpace(spaceUri);
+    const space = await authority.getSpace(spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
     const isOwner = space.ownerDid === sa.issuer;
-    const member = isOwner ? null : await adapter.getMember(spaceUri, sa.issuer);
+    const member = isOwner ? null : await authority.getMember(spaceUri, sa.issuer);
     if (!isOwner && !member) {
       return c.json({ error: "Forbidden", reason: "not-member" }, 403);
     }
-    const members = await adapter.listMembers(spaceUri);
+    const members = await authority.listMembers(spaceUri);
     return c.json({ members });
   });
+
+  /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
+   *  present so anonymous bearer reads don't 401 before the route handler can
+   *  validate the token. */
+  const readAuth: MiddlewareHandler = async (c, next) => {
+    if (extractInviteToken(c.req.raw)) {
+      await next();
+      return;
+    }
+    return auth(c, next);
+  };
 
   app.get(`/xrpc/${SPACE}.getSpace`, readAuth, async (c) => {
     const uri = c.req.query("uri");
     if (!uri) return c.json({ error: "InvalidRequest", message: "uri required" }, 400);
-    const space = await adapter.getSpace(uri);
+    const space = await authority.getSpace(uri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const authz = await authorizeRead(c, uri);
+    const authz = await authorizeRead(c, authority, uri);
     if (authz instanceof Response) return authz;
 
     if (authz.via === "token") {
@@ -144,12 +147,157 @@ export function registerSpacesRoutes(
 
     const sa = authz.sa;
     const isOwner = sa.issuer === space.ownerDid;
-    const member = isOwner ? null : await adapter.getMember(uri, sa.issuer);
+    const member = isOwner ? null : await authority.getMember(uri, sa.issuer);
     if (!isOwner && !member) {
       return c.json({ error: "Forbidden", reason: "not-member" }, 403);
     }
     return c.json({ space: publicSpaceView(space, isOwner) });
   });
+
+  // ---- Space management (owner-gated) ----
+
+  app.post(`/xrpc/${SPACE}.createSpace`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      type?: string;
+      key?: string;
+      appPolicy?: SpaceRow["appPolicy"];
+      appPolicyRef?: string;
+    };
+
+    const type = body.type ?? authorityConfig.type;
+    const key = body.key ?? nextTid();
+    const uri = buildSpaceUri({ ownerDid: sa.issuer, type, key });
+
+    const existing = await authority.getSpace(uri);
+    if (existing) return c.json({ error: "AlreadyExists", uri }, 409);
+
+    const space = await authority.createSpace({
+      uri,
+      ownerDid: sa.issuer,
+      type,
+      key,
+      serviceDid: authorityConfig.serviceDid,
+      appPolicyRef: body.appPolicyRef ?? null,
+      appPolicy: body.appPolicy ?? authorityConfig.defaultAppPolicy ?? null,
+    });
+    // Owner is implicit; we still write a row so membership queries are uniform.
+    await authority.addMember(uri, sa.issuer, sa.issuer);
+
+    return c.json({ space: publicSpaceView(space, true) });
+  });
+
+  app.post(`/xrpc/${SPACE}.addMember`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; did?: string }
+      | null;
+    if (!body?.spaceUri || !body.did) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
+    }
+    const space = await authority.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+    await authority.addMember(body.spaceUri, body.did, sa.issuer);
+    return c.json({ ok: true });
+  });
+
+  app.post(`/xrpc/${SPACE}.removeMember`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; did?: string }
+      | null;
+    if (!body?.spaceUri || !body.did) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
+    }
+    const space = await authority.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid !== sa.issuer) {
+      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
+    }
+    if (body.did === space.ownerDid) {
+      return c.json({ error: "InvalidRequest", reason: "cannot-remove-owner" }, 400);
+    }
+    await authority.removeMember(body.spaceUri, body.did);
+    return c.json({ ok: true });
+  });
+
+  app.post(`/xrpc/${SPACE}.leaveSpace`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as { spaceUri?: string } | null;
+    if (!body?.spaceUri) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    }
+    const space = await authority.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    if (space.ownerDid === sa.issuer) {
+      return c.json(
+        { error: "InvalidRequest", reason: "owner-cannot-leave", message: "Owner cannot leave; delete the space instead" },
+        400
+      );
+    }
+    await authority.removeMember(body.spaceUri, sa.issuer);
+    return c.json({ ok: true });
+  });
+
+  // Unified whoami — `<ns>.spaceExt.whoami?spaceUri=X` → { isOwner, isMember,
+  // accessLevel? }. `accessLevel` is present only when the target space is
+  // community-owned; for user-owned spaces membership is binary.
+  app.get(`/xrpc/${SPACE_EXT}.whoami`, auth, async (c) => {
+    const sa = getAuth(c);
+    const spaceUri = c.req.query("spaceUri");
+    if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    const space = await authority.getSpace(spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+
+    const isOwner = space.ownerDid === sa.issuer;
+
+    // Community-owned space: resolve through the access-level ladder. The
+    // reconciler keeps spaces_members in sync, so isMember derives from the
+    // effective level directly.
+    const isCommunity = community ? !!(await community.getCommunity(space.ownerDid)) : false;
+    if (isCommunity) {
+      const level = await resolveEffectiveLevel(community!, spaceUri, sa.issuer);
+      return c.json({
+        isOwner,
+        isMember: isOwner || !!level,
+        accessLevel: level,
+      });
+    }
+
+    // User-owned space: binary membership.
+    if (isOwner) return c.json({ isOwner: true, isMember: true });
+    const member = await authority.getMember(spaceUri, sa.issuer);
+    return c.json({ isOwner: false, isMember: !!member });
+  });
+}
+
+/** Register the **record host** XRPC surface — record + blob CRUD. Today
+ *  consults the authority for membership / app-policy checks at write time;
+ *  phase 3 adds a credential verifier that replaces those calls in
+ *  split-deployment configurations. */
+export function registerRecordHostRoutes(
+  app: Hono,
+  recordHost: RecordHost,
+  authority: SpaceAuthority,
+  recordHostConfig: RecordHostConfig,
+  config: ContrailConfig,
+  auth: MiddlewareHandler
+): void {
+  const SPACE = `${config.namespace}.space`;
+
+  /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
+   *  present so anonymous bearer reads don't 401 before the route handler can
+   *  validate the token. */
+  const readAuth: MiddlewareHandler = async (c, next) => {
+    if (extractInviteToken(c.req.raw)) {
+      await next();
+      return;
+    }
+    return auth(c, next);
+  };
 
   app.get(`/xrpc/${SPACE}.listRecords`, readAuth, async (c) => {
     const spaceUri = c.req.query("spaceUri");
@@ -157,15 +305,15 @@ export function registerSpacesRoutes(
     if (!spaceUri || !collection) {
       return c.json({ error: "InvalidRequest", message: "spaceUri and collection required" }, 400);
     }
-    const space = await adapter.getSpace(spaceUri);
+    const space = await authority.getSpace(spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const authz = await authorizeRead(c, spaceUri);
+    const authz = await authorizeRead(c, authority, spaceUri);
     if (authz instanceof Response) return authz;
 
     if (authz.via === "jwt") {
       const sa = authz.sa;
-      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const member = await authority.getMember(spaceUri, sa.issuer);
       const result = checkAccess({
         op: "read",
         space,
@@ -178,7 +326,7 @@ export function registerSpacesRoutes(
       }
     }
 
-    const list = await adapter.listRecords(spaceUri, collection, {
+    const list = await recordHost.listRecords(spaceUri, collection, {
       byUser: c.req.query("byUser") ?? undefined,
       cursor: c.req.query("cursor") ?? undefined,
       limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
@@ -194,15 +342,15 @@ export function registerSpacesRoutes(
     if (!spaceUri || !collection || !author || !rkey) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, author, rkey required" }, 400);
     }
-    const space = await adapter.getSpace(spaceUri);
+    const space = await authority.getSpace(spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const authz = await authorizeRead(c, spaceUri);
+    const authz = await authorizeRead(c, authority, spaceUri);
     if (authz instanceof Response) return authz;
 
     if (authz.via === "jwt") {
       const sa = authz.sa;
-      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const member = await authority.getMember(spaceUri, sa.issuer);
       const result = checkAccess({
         op: "read",
         space,
@@ -214,7 +362,7 @@ export function registerSpacesRoutes(
       if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
     }
 
-    const record = await adapter.getRecord(spaceUri, collection, author, rkey);
+    const record = await recordHost.getRecord(spaceUri, collection, author, rkey);
     if (!record) return c.json({ error: "NotFound" }, 404);
     return c.json({ record });
   });
@@ -228,10 +376,10 @@ export function registerSpacesRoutes(
     if (!body?.spaceUri || !body.collection || !body.record) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, record required" }, 400);
     }
-    const space = await adapter.getSpace(body.spaceUri);
+    const space = await authority.getSpace(body.spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await adapter.getMember(body.spaceUri, sa.issuer);
+    const member = await authority.getMember(body.spaceUri, sa.issuer);
     const result = checkAccess({
       op: "write",
       space,
@@ -245,10 +393,10 @@ export function registerSpacesRoutes(
     // uploaded into this space. This mirrors how PDSes require uploadBlob
     // before putRecord, and prevents forging refs to blobs the caller never
     // actually claimed.
-    if (spacesConfig.blobs) {
+    if (recordHostConfig.blobs) {
       const cids = collectBlobCids(body.record);
       for (const cid of cids) {
-        const meta = await adapter.getBlobMeta(body.spaceUri, cid);
+        const meta = await recordHost.getBlobMeta(body.spaceUri, cid);
         if (!meta) {
           return c.json(
             {
@@ -264,7 +412,7 @@ export function registerSpacesRoutes(
 
     const rkey = body.rkey ?? nextTid();
     const now = Date.now();
-    await adapter.putRecord({
+    await recordHost.putRecord({
       spaceUri: body.spaceUri,
       collection: body.collection,
       authorDid: sa.issuer,
@@ -284,10 +432,10 @@ export function registerSpacesRoutes(
     if (!body?.spaceUri || !body.collection || !body.rkey) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, rkey required" }, 400);
     }
-    const space = await adapter.getSpace(body.spaceUri);
+    const space = await authority.getSpace(body.spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await adapter.getMember(body.spaceUri, sa.issuer);
+    const member = await authority.getMember(body.spaceUri, sa.issuer);
     const result = checkAccess({
       op: "delete",
       space,
@@ -298,13 +446,13 @@ export function registerSpacesRoutes(
     });
     if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
 
-    await adapter.deleteRecord(body.spaceUri, body.collection, sa.issuer, body.rkey);
+    await recordHost.deleteRecord(body.spaceUri, body.collection, sa.issuer, body.rkey);
     return c.json({ ok: true });
   });
 
   // Blobs (only registered when a blob adapter is configured)
-  if (spacesConfig.blobs) {
-    const blobsCfg = spacesConfig.blobs;
+  if (recordHostConfig.blobs) {
+    const blobsCfg = recordHostConfig.blobs;
     const blobAdapter = blobsCfg.adapter;
     const maxSize = blobsCfg.maxSize ?? DEFAULT_BLOB_MAX_SIZE;
     const accept = blobsCfg.accept;
@@ -315,10 +463,10 @@ export function registerSpacesRoutes(
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
       }
-      const space = await adapter.getSpace(spaceUri);
+      const space = await authority.getSpace(spaceUri);
       if (!space) return c.json({ error: "NotFound" }, 404);
 
-      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const member = await authority.getMember(spaceUri, sa.issuer);
       const aclResult = checkAccess({
         op: "write",
         space,
@@ -360,7 +508,7 @@ export function registerSpacesRoutes(
       const key = await blobKey(spaceUri, cidString);
 
       await blobAdapter.put(key, bytes, { mimeType, size: bytes.byteLength });
-      await adapter.putBlobMeta({
+      await recordHost.putBlobMeta({
         spaceUri,
         cid: cidString,
         mimeType,
@@ -385,15 +533,15 @@ export function registerSpacesRoutes(
       if (!spaceUri || !cid) {
         return c.json({ error: "InvalidRequest", message: "spaceUri and cid required" }, 400);
       }
-      const space = await adapter.getSpace(spaceUri);
+      const space = await authority.getSpace(spaceUri);
       if (!space) return c.json({ error: "NotFound" }, 404);
 
-      const authz = await authorizeRead(c, spaceUri);
+      const authz = await authorizeRead(c, authority, spaceUri);
       if (authz instanceof Response) return authz;
 
       if (authz.via === "jwt") {
         const sa = authz.sa;
-        const member = await adapter.getMember(spaceUri, sa.issuer);
+        const member = await authority.getMember(spaceUri, sa.issuer);
         const aclResult = checkAccess({
           op: "read",
           space,
@@ -406,7 +554,7 @@ export function registerSpacesRoutes(
         }
       }
 
-      const meta = await adapter.getBlobMeta(spaceUri, cid);
+      const meta = await recordHost.getBlobMeta(spaceUri, cid);
       if (!meta) return c.json({ error: "NotFound" }, 404);
       const key = await blobKey(spaceUri, cid);
       const bytes = await blobAdapter.get(key);
@@ -426,10 +574,10 @@ export function registerSpacesRoutes(
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
       }
-      const space = await adapter.getSpace(spaceUri);
+      const space = await authority.getSpace(spaceUri);
       if (!space) return c.json({ error: "NotFound" }, 404);
 
-      const member = await adapter.getMember(spaceUri, sa.issuer);
+      const member = await authority.getMember(spaceUri, sa.issuer);
       const aclResult = checkAccess({
         op: "read",
         space,
@@ -441,7 +589,7 @@ export function registerSpacesRoutes(
         return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
       }
 
-      const result = await adapter.listBlobMeta(spaceUri, {
+      const result = await recordHost.listBlobMeta(spaceUri, {
         byUser: c.req.query("byUser") ?? undefined,
         cursor: c.req.query("cursor") ?? undefined,
         limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
@@ -449,132 +597,28 @@ export function registerSpacesRoutes(
       return c.json(result);
     });
   }
-
-  // Space management (owner-gated)
-  app.post(`/xrpc/${SPACE}.createSpace`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => ({}))) as {
-      type?: string;
-      key?: string;
-      appPolicy?: SpaceRow["appPolicy"];
-      appPolicyRef?: string;
-    };
-
-    const type = body.type ?? spacesConfig.type;
-    const key = body.key ?? nextTid();
-    const uri = buildSpaceUri({ ownerDid: sa.issuer, type, key });
-
-    const existing = await adapter.getSpace(uri);
-    if (existing) return c.json({ error: "AlreadyExists", uri }, 409);
-
-    const space = await adapter.createSpace({
-      uri,
-      ownerDid: sa.issuer,
-      type,
-      key,
-      serviceDid: spacesConfig.serviceDid,
-      appPolicyRef: body.appPolicyRef ?? null,
-      appPolicy: body.appPolicy ?? spacesConfig.defaultAppPolicy ?? null,
-    });
-    // Owner is implicit; we still write a row so membership queries are uniform.
-    await adapter.addMember(uri, sa.issuer, sa.issuer);
-
-    return c.json({ space: publicSpaceView(space, true) });
-  });
-
-  // Invites live under `<ns>.invite.*` — see src/core/invite/router.ts. The
-  // unified surface dispatches on space ownership.
-
-  app.post(`/xrpc/${SPACE}.addMember`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; did?: string }
-      | null;
-    if (!body?.spaceUri || !body.did) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-    await adapter.addMember(body.spaceUri, body.did, sa.issuer);
-    return c.json({ ok: true });
-  });
-
-  app.post(`/xrpc/${SPACE}.removeMember`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as
-      | { spaceUri?: string; did?: string }
-      | null;
-    if (!body?.spaceUri || !body.did) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri and did required" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid !== sa.issuer) {
-      return c.json({ error: "Forbidden", reason: "not-owner" }, 403);
-    }
-    if (body.did === space.ownerDid) {
-      return c.json({ error: "InvalidRequest", reason: "cannot-remove-owner" }, 400);
-    }
-    await adapter.removeMember(body.spaceUri, body.did);
-    return c.json({ ok: true });
-  });
-
-  app.post(`/xrpc/${SPACE}.leaveSpace`, auth, async (c) => {
-    const sa = getAuth(c);
-    const body = (await c.req.json().catch(() => null)) as { spaceUri?: string } | null;
-    if (!body?.spaceUri) {
-      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
-    }
-    const space = await adapter.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-    if (space.ownerDid === sa.issuer) {
-      return c.json(
-        { error: "InvalidRequest", reason: "owner-cannot-leave", message: "Owner cannot leave; delete the space instead" },
-        400
-      );
-    }
-    await adapter.removeMember(body.spaceUri, sa.issuer);
-    return c.json({ ok: true });
-  });
-
-  // Unified whoami — `<ns>.spaceExt.whoami?spaceUri=X` → { isOwner, isMember,
-  // accessLevel? }. `accessLevel` is present only when the target space is
-  // community-owned; for user-owned spaces membership is binary.
-  app.get(`/xrpc/${SPACE_EXT}.whoami`, auth, async (c) => {
-    const sa = getAuth(c);
-    const spaceUri = c.req.query("spaceUri");
-    if (!spaceUri) return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
-    const space = await adapter.getSpace(spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
-
-    const isOwner = space.ownerDid === sa.issuer;
-
-    // Community-owned space: resolve through the access-level ladder. The
-    // reconciler keeps spaces_members in sync, so isMember derives from the
-    // effective level directly.
-    const isCommunity = community ? !!(await community.getCommunity(space.ownerDid)) : false;
-    if (isCommunity) {
-      const level = await resolveEffectiveLevel(community!, spaceUri, sa.issuer);
-      return c.json({
-        isOwner,
-        isMember: isOwner || !!level,
-        accessLevel: level,
-      });
-    }
-
-    // User-owned space: binary membership.
-    if (isOwner) return c.json({ isOwner: true, isMember: true });
-    const member = await adapter.getMember(spaceUri, sa.issuer);
-    return c.json({ isOwner: false, isMember: !!member });
-  });
 }
 
-function buildAuthMiddleware(spaces: SpacesConfig): MiddlewareHandler {
-  const verifier = buildVerifier(spaces);
-  return createServiceAuthMiddleware(verifier);
+/** Authorize a read request: either a valid service-auth JWT (which also
+ *  identifies the caller for member checks downstream) or a valid read-grant
+ *  invite token bearer. */
+async function authorizeRead(
+  c: Context,
+  authority: SpaceAuthority,
+  spaceUri: string
+): Promise<{ via: "token" } | { via: "jwt"; sa: ServiceAuth } | Response> {
+  const rawToken = extractInviteToken(c.req.raw);
+  if (rawToken) {
+    const ok = await checkInviteReadGrant(authority, rawToken, spaceUri, hashInviteToken);
+    if (!ok) return c.json({ error: "Forbidden", reason: "invalid-invite-token" }, 403);
+    return { via: "token" };
+  }
+  const sa = c.get("serviceAuth") as ServiceAuth | undefined;
+  if (sa) return { via: "jwt", sa };
+  return c.json(
+    { error: "AuthRequired", message: "JWT or read-grant invite token required" },
+    401
+  );
 }
 
 function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {
@@ -582,7 +626,6 @@ function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {
   if (!auth) throw new Error("service auth not set");
   return auth;
 }
-
 
 function publicSpaceView(space: SpaceRow, forOwner: boolean) {
   return {
@@ -596,4 +639,3 @@ function publicSpaceView(space: SpaceRow, forOwner: boolean) {
     ...(forOwner ? { appPolicy: space.appPolicy } : {}),
   };
 }
-

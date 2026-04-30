@@ -115,14 +115,17 @@ export function createApp(
 
   // Shared spaces context — verifier + adapter — reused by both the per-collection
   // routes (for `?spaceUri=...` dispatch) and the `<ns>.space.*` routes.
+  // Built when an authority is configured (spaces are gated on the authority,
+  // not the record host — a record-host-only deployment still needs an
+  // authority somewhere, just possibly external).
   const spacesDb = options.spacesDb ?? db;
   let spacesCtx: SpacesContext | null =
     options.spacesCtx !== undefined
       ? options.spacesCtx
-      : config.spaces
+      : config.spaces?.authority
         ? {
             adapter: options.spaces?.adapter ?? new HostedAdapter(spacesDb, config),
-            verifier: buildVerifier(config.spaces),
+            verifier: buildVerifier(config.spaces.authority),
           }
         : null;
 
@@ -179,7 +182,7 @@ export function createApp(
     );
   }
 
-  if (config.spaces && spacesCtx) {
+  if (config.spaces?.authority && spacesCtx) {
     // Unified invite surface: one `<ns>.invite.*` family that dispatches on
     // space ownership (user-owned → addMember; community-owned → grant).
     const authMiddleware =

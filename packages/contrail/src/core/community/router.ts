@@ -45,8 +45,8 @@ export function registerCommunityRoutes(
 ): void {
   const cfg = config.community;
   if (!cfg) return;
-  if (!config.spaces) {
-    throw new Error("community module requires spaces to be enabled in config");
+  if (!config.spaces?.authority) {
+    throw new Error("community module requires spaces.authority to be enabled in config");
   }
 
   const community =
@@ -64,8 +64,8 @@ export function registerCommunityRoutes(
     })();
 
   const NS = `${config.namespace}.community`;
-  const spaceType = config.spaces.type;
-  const spaceServiceDid = cfg.serviceDid ?? config.spaces.serviceDid;
+  const spaceType = config.spaces.authority.type;
+  const spaceServiceDid = cfg.serviceDid ?? config.spaces.authority.serviceDid;
 
   // ==========================================================================
   // Community lifecycle

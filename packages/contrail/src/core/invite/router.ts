@@ -78,7 +78,7 @@ export function registerInviteRoutes(
   community: CommunityAdapter | null,
   options: InviteRoutesOptions
 ): void {
-  if (!config.spaces) return;
+  if (!config.spaces?.authority) return;
 
   const NS = `${config.namespace}.invite`;
   const auth = options.authMiddleware;

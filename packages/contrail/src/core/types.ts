@@ -390,9 +390,9 @@ export function validateConfig(config: ContrailConfig): void {
     }
   }
 
-  if (config.community && !config.spaces) {
+  if (config.community && !config.spaces?.authority) {
     throw new Error(
-      "Invalid config: `community` requires `spaces`. Community-owned spaces reuse the spaces storage adapter."
+      "Invalid config: `community` requires `spaces.authority`. Community-owned spaces reuse the spaces storage adapter."
     );
   }
 }
