@@ -7,6 +7,7 @@ import { createApp } from "../src/core/router";
 import { resolveConfig } from "../src/core/types";
 import type { ContrailConfig } from "../src/core/types";
 import type { RealtimeEvent } from "../src/core/realtime/types";
+import { createCommunityIntegration } from "@atmo-dev/contrail-community";
 
 const ALICE = "did:plc:alice";
 const BOB = "did:plc:bob";
@@ -72,9 +73,11 @@ function fakeAuth(): MiddlewareHandler {
 async function makeApp(): Promise<Hono> {
   const db = createSqliteDatabase(":memory:");
   const resolved = resolveConfig(CONFIG);
-  await initSchema(db, resolved);
+  const community = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
   return createApp(db, resolved, {
     spaces: { authMiddleware: fakeAuth() },
+    community,
   });
 }
 

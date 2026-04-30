@@ -21,27 +21,43 @@ import {
 import type { PubSub } from "./core/realtime/types";
 import { InMemoryPubSub } from "./core/realtime/in-memory";
 import { createApp, type CreateAppOptions } from "./core/router";
+import type { CommunityIntegration } from "./core/community-integration";
 import type { Hono } from "hono";
 
-export interface ContrailOptions extends ContrailConfig {
+/** Note: `community` is shadowed from ContrailConfig (where it's the
+ *  user-supplied config blob, typed as `unknown`) to be the pre-built
+ *  integration object the Contrail instance actually consumes. */
+export interface ContrailOptions extends Omit<ContrailConfig, "community"> {
   db?: Database;
   /** Optional separate DB for permissioned spaces tables. Defaults to `db`. */
   spacesDb?: Database;
+  /** Optional user-supplied community config blob. Same shape as
+   *  ContrailConfig.community — the community integration reads this
+   *  via `config.community`. */
+  community?: unknown;
+  /** Optional pre-built community integration. When set, the Contrail
+   *  instance applies its schema during `init()` and forwards it to
+   *  `createApp` so community routes / hooks are wired automatically.
+   *  Construct via `createCommunityIntegration(...)` from
+   *  `@atmo-dev/contrail-community`. */
+  communityIntegration?: CommunityIntegration;
 }
 
 export class Contrail {
   readonly config: ResolvedContrailConfig;
   private _db?: Database;
   private _spacesDb?: Database;
+  private _community?: CommunityIntegration;
   private _ingestState: IngestState = createIngestState();
   private _pubsub: PubSub | null = null;
 
   constructor(options: ContrailOptions) {
-    const { db, spacesDb, ...configInput } = options;
-    this.config = resolveConfig(configInput);
+    const { db, spacesDb, communityIntegration, ...configInput } = options;
+    this.config = resolveConfig(configInput as ContrailConfig);
     validateConfig(this.config);
     this._db = db;
     this._spacesDb = spacesDb;
+    this._community = communityIntegration;
     // Build the pubsub instance up-front so ingestion and HTTP routes share
     // it. Caller overrides via `config.realtime.pubsub` (e.g. DurableObject).
     if (this.config.realtime) {
@@ -72,7 +88,8 @@ export class Contrail {
   async init(db?: Database, spacesDb?: Database): Promise<void> {
     const main = this.getDb(db);
     const spaces = spacesDb ?? this._spacesDb;
-    await initSchema(main, this.config, { spacesDb: spaces });
+    const extraSchemas = this._community ? [this._community.applySchema] : [];
+    await initSchema(main, this.config, { spacesDb: spaces, extraSchemas });
   }
 
   /** Query records from a collection. */
@@ -273,6 +290,8 @@ export class Contrail {
     return createApp(main, this.config, {
       ...appOpts,
       spacesDb: spaces,
+      // Per-call community override falls back to the constructor's.
+      community: appOpts.community ?? this._community ?? null,
       realtime: { ...appOpts.realtime, pubsub: this._pubsub ?? undefined },
     });
   }

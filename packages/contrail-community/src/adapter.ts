@@ -1,4 +1,4 @@
-import type { Database } from "../types";
+import type { Database } from "@atmo-dev/contrail";
 import type {
   AccessLevel,
   AccessLevelRow,

@@ -78,6 +78,7 @@
     "jiti": "^2.4.0"
   },
   "devDependencies": {
+    "@atmo-dev/contrail-community": "workspace:*",
     "@cloudflare/workers-types": "^4.20250124.0",
     "@types/node": "^25.5.0",
     "@types/pg": "^8.20.0",

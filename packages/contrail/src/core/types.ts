@@ -155,9 +155,11 @@ export interface ContrailConfig {
   notify?: boolean | string;
   /** Permissioned spaces configuration. When set, the service exposes space XRPCs. */
   spaces?: import("./spaces/types").SpacesConfig;
-  /** Community module configuration. When set, the service exposes community XRPCs
-   *  for managing community-owned spaces and tiered access levels. Requires `spaces`. */
-  community?: import("./community/types").CommunityConfig;
+  /** Community module configuration. Typed by the community package via
+   *  declaration merging — contrail core only knows it's "something the
+   *  community package consumes." Set when wiring community via
+   *  `createCommunityIntegration({ ... })`. Requires `spaces.authority`. */
+  community?: unknown;
   /** Realtime module configuration. When set, the service exposes ticket + SSE/WS
    *  subscribe XRPCs, and wraps the spaces adapter to publish events after writes. */
   realtime?: import("./realtime/types").RealtimeConfig;

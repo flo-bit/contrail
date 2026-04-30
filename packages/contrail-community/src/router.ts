@@ -1,9 +1,11 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import type { ContrailConfig, Database } from "../types";
-import type { ServiceAuth } from "../spaces/auth";
-import type { StorageAdapter as SpacesAdapter } from "../spaces/types";
-import { buildSpaceUri } from "../spaces/uri";
-import { HostedAdapter } from "../spaces/adapter";
+import type {
+  ContrailConfig,
+  Database,
+  ServiceAuth,
+  StorageAdapter as SpacesAdapter,
+} from "@atmo-dev/contrail";
+import { buildSpaceUri, HostedAdapter } from "@atmo-dev/contrail";
 import { CommunityAdapter } from "./adapter";
 import { CredentialCipher } from "./credentials";
 import { resolveIdentity, createPdsSession } from "./pds";
@@ -43,7 +45,7 @@ export function registerCommunityRoutes(
     verifier: ServiceJwtVerifier;
   } | null
 ): void {
-  const cfg = config.community;
+  const cfg = config.community as import("./types").CommunityConfig | undefined;
   if (!cfg) return;
   if (!config.spaces?.authority) {
     throw new Error("community module requires spaces.authority to be enabled in config");

@@ -1,4 +1,4 @@
-import type { Database } from "../types";
+import type { Database } from "@atmo-dev/contrail";
 import type { DidDocumentResolver } from "@atcute/identity-resolver";
 
 /** Access level a subject (did or group-space) has on a given space.

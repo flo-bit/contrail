@@ -12,11 +12,7 @@ import { buildVerifier, createServiceAuthMiddleware } from "../spaces/auth";
 import { HostedAdapter } from "../spaces/adapter";
 import type { StorageAdapter } from "../spaces/types";
 import type { ServiceJwtVerifier } from "@atcute/xrpc-server/auth";
-import { registerCommunityRoutes } from "../community/router";
-import type { CommunityRoutesOptions } from "../community/router";
-import { CommunityAdapter } from "../community/adapter";
-import { createCommunityInviteHandler } from "../community/invite-handler";
-import { createCommunityWhoamiExtension } from "../community/whoami";
+import type { CommunityIntegration } from "../community-integration";
 import { registerRealtimeRoutes } from "../realtime/router";
 import type { RealtimeRoutesOptions } from "../realtime/router";
 import { registerInviteRoutes } from "../invite/router";
@@ -28,6 +24,7 @@ import { resolveProfiles } from "./profiles";
 import { backfillUser } from "../backfill";
 import { selectAcceptedLabelers } from "../labels/select";
 import { hydrateLabels } from "../labels/hydrate";
+import type { MiddlewareHandler } from "hono";
 
 export interface SpacesContext {
   adapter: StorageAdapter;
@@ -36,7 +33,13 @@ export interface SpacesContext {
 
 export interface CreateAppOptions {
   spaces?: SpacesRoutesOptions;
-  community?: CommunityRoutesOptions;
+  /** Pre-built community integration. Construct via the community package's
+   *  `createCommunityIntegration({ ... })`. When set, contrail wires
+   *  community whoami extension, invite handler, route registration, etc.
+   *  When omitted, deployment runs without community features. */
+  community?: CommunityIntegration | null;
+  /** Auth middleware override for community routes (rare — mostly for tests). */
+  communityAuthMiddleware?: MiddlewareHandler;
   realtime?: Partial<RealtimeRoutesOptions>;
   /** Separate DB for the spaces tables. Defaults to `db`. */
   spacesDb?: Database;
@@ -131,11 +134,11 @@ export function createApp(
           }
         : null;
 
-  // Community is wired up at this layer, not from inside spaces / invite —
-  // those modules consume injected hooks, not community internals. The
-  // adapter is shared across every call site that needs it (publishing
-  // wrapper, collection routes, whoami extension, invite handler, realtime).
-  const communityAdapter = config.community ? new CommunityAdapter(spacesDb) : null;
+  // Community is provided as a pre-built integration — contrail core never
+  // imports from the community package. The integration object is opaque;
+  // we just pass through its probe / whoamiExtension / inviteHandler /
+  // registerRoutes hooks at the right wiring points.
+  const community = options.community ?? null;
 
   // Realtime pubsub is built whenever realtime is configured — independent of
   // spaces. With spaces, the spaces adapter is wrapped so private record/member
@@ -149,8 +152,8 @@ export function createApp(
         queueBound: config.realtime.queueBound,
       });
     if (spacesCtx) {
-      const isCommunityDid = communityAdapter
-        ? cachedIsCommunityDid(communityAdapter)
+      const isCommunityDid = community
+        ? cachedIsCommunityDid(community.probe)
         : undefined;
       spacesCtx = {
         ...spacesCtx,
@@ -163,52 +166,43 @@ export function createApp(
 
   registerCollectionRoutes(app, db, config, spacesCtx, {
     pubsub: realtimePubsub,
-    community: communityAdapter,
+    community: community?.probe ?? null,
   });
   registerFeedRoutes(app, db, config);
   registerNotifyRoute(app, db, config);
 
-  // Spaces routes — get a whoami extension when community is configured so
-  // community-owned spaces get an `accessLevel` field.
+  // Spaces routes — get a whoami extension from the community integration
+  // when one's wired so community-owned spaces get an `accessLevel` field.
   const spacesOptions = {
     ...options.spaces,
     whoamiExtension:
-      options.spaces?.whoamiExtension ??
-      (communityAdapter
-        ? createCommunityWhoamiExtension({ community: communityAdapter })
-        : undefined),
+      options.spaces?.whoamiExtension ?? community?.whoamiExtension,
   };
   registerSpacesRoutes(app, spacesDb, config, spacesOptions, spacesCtx);
 
-  if (config.community && spacesCtx) {
+  if (community && spacesCtx) {
     // Community routes reuse the spaces service-auth middleware (same JWT verifier).
     const authMiddleware =
-      options.community?.authMiddleware ??
+      options.communityAuthMiddleware ??
       options.spaces?.authMiddleware ??
       createServiceAuthMiddleware(spacesCtx.verifier);
-    registerCommunityRoutes(
-      app,
-      spacesDb,
-      config,
-      { ...options.community, authMiddleware },
-      { spacesAdapter: spacesCtx.adapter, verifier: spacesCtx.verifier }
-    );
+    community.registerRoutes(app, { authMiddleware });
   }
 
   if (config.spaces?.authority && spacesCtx) {
     // Unified invite surface: one `<ns>.invite.*` family that dispatches on
     // space ownership (user-owned → addMember; community-owned → grant via
-    // an injected community-invite handler).
+    // the integration's invite handler).
     const authMiddleware =
       options.spaces?.authMiddleware ??
       createServiceAuthMiddleware(spacesCtx.verifier);
-    const inviteHandler = communityAdapter
-      ? createCommunityInviteHandler({
-          community: communityAdapter,
-          authority: spacesCtx.adapter,
-        })
-      : null;
-    registerInviteRoutes(app, config, spacesCtx.adapter, inviteHandler, { authMiddleware });
+    registerInviteRoutes(
+      app,
+      config,
+      spacesCtx.adapter,
+      community?.inviteHandler ?? null,
+      { authMiddleware }
+    );
   }
 
   if (config.realtime && realtimePubsub) {
@@ -221,17 +215,23 @@ export function createApp(
         options.spaces?.authMiddleware ??
         createServiceAuthMiddleware(spacesCtx.verifier)
       : null;
-    registerRealtimeRoutes(app, config, spacesCtx?.adapter ?? null, communityAdapter, {
-      authMiddleware,
-      pubsub: realtimePubsub,
-    });
+    registerRealtimeRoutes(
+      app,
+      config,
+      spacesCtx?.adapter ?? null,
+      community?.probe ?? null,
+      {
+        authMiddleware,
+        pubsub: realtimePubsub,
+      }
+    );
   }
 
   return app;
 }
 
 function cachedIsCommunityDid(
-  community: CommunityAdapter
+  probe: import("../community-integration").CommunityProbe
 ): (did: string) => Promise<boolean> {
   const TTL = 60_000;
   const cache = new Map<string, { value: boolean; expires: number }>();
@@ -239,7 +239,7 @@ function cachedIsCommunityDid(
     const now = Date.now();
     const hit = cache.get(did);
     if (hit && hit.expires > now) return hit.value;
-    const row = await community.getCommunity(did);
+    const row = await probe.getCommunity(did);
     const value = row != null;
     cache.set(did, { value, expires: now + TTL });
     return value;

@@ -2,7 +2,7 @@
  *  for community-owned spaces. Returns null for non-community spaces so the
  *  spaces module's default binary-membership logic runs. */
 
-import type { WhoamiExtension } from "../spaces/router";
+import type { WhoamiExtension } from "@atmo-dev/contrail";
 import type { CommunityAdapter } from "./adapter";
 import { resolveEffectiveLevel } from "./acl";
 

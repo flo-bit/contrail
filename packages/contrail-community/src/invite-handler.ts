@@ -5,10 +5,10 @@
 import type {
   CommunityInviteHandler,
   HandlerResponse,
-} from "../invite/community-handler";
-import { mintInviteToken } from "../invite/token";
+  SpaceAuthority,
+} from "@atmo-dev/contrail";
+import { mintInviteToken } from "@atmo-dev/contrail";
 import type { CommunityAdapter } from "./adapter";
-import type { SpaceAuthority } from "../spaces/types";
 import { resolveEffectiveLevel } from "./acl";
 import { reconcile } from "./reconcile";
 import type { AccessLevel, CommunityInviteRow } from "./types";

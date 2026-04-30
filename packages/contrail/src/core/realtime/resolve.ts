@@ -12,8 +12,7 @@
  *                            (not yet implemented). */
 
 import type { StorageAdapter } from "../spaces/types";
-import type { CommunityAdapter } from "../community/adapter";
-import { resolveReachableSpaces } from "../community/acl";
+import type { CommunityProbe } from "../community-integration";
 import { spaceTopic, parseCommunityTopic, parseSpaceTopic } from "./types";
 
 export interface TopicResolutionContext {
@@ -22,7 +21,7 @@ export interface TopicResolutionContext {
    *  (`collection:`, `actor:`) still resolve. */
   spaces: StorageAdapter | null;
   /** May be null if the community module is not enabled. */
-  community: CommunityAdapter | null;
+  community: CommunityProbe | null;
 }
 
 export interface TopicResolution {
@@ -63,7 +62,7 @@ export async function resolveTopicForCaller(
     }
     const row = await ctx.community.getCommunity(communityDid);
     if (!row) return { ok: false, error: "NotFound", reason: "community-not-found" };
-    const reachable = await resolveReachableSpaces(ctx.community, callerDid);
+    const reachable = await ctx.community.resolveReachableSpaces(callerDid);
     // Filter to spaces owned by THIS community — reachable may include spaces
     // from other communities via cross-community delegation.
     const ownedList = await ctx.spaces.listSpaces({ ownerDid: communityDid, limit: 1000 });

@@ -35,3 +35,9 @@ export {
   jwkToDidKey,
 } from "./plc";
 export type { KeyPair, GenesisOpInput, UnsignedGenesisOp, SignedGenesisOp } from "./plc";
+
+// The headline export — wire community into a contrail app via:
+//   const community = createCommunityIntegration({ db, config });
+//   const app = createApp(db, config, { community });
+export { createCommunityIntegration } from "./integration";
+export type { CommunityIntegrationOptions } from "./integration";

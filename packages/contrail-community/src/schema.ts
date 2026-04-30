@@ -1,6 +1,5 @@
-import type { Database } from "../types";
-import { getDialect } from "../dialect";
-import type { SqlDialect } from "../dialect";
+import type { Database, SqlDialect } from "@atmo-dev/contrail";
+import { getDialect } from "@atmo-dev/contrail";
 
 export function buildCommunitySchema(dialect: SqlDialect): string[] {
   return [

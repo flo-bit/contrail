@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { createApp } from "../src/core/router";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { initSchema } from "@atmo-dev/contrail";
+import { createApp } from "@atmo-dev/contrail";
+import { resolveConfig } from "@atmo-dev/contrail";
+import type { ContrailConfig } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "../src/integration";
 
 const ALICE = "did:plc:alice";
 const BOB = "did:plc:bob";
@@ -93,8 +94,12 @@ function fakeAuth(): MiddlewareHandler {
 async function makeApp(): Promise<Hono> {
   const db = createSqliteDatabase(":memory:");
   const resolved = resolveConfig(CONFIG);
-  await initSchema(db, resolved);
-  return createApp(db, resolved, { spaces: { authMiddleware: fakeAuth() } });
+  const community = createCommunityIntegration({ db, config: resolved });
+  await initSchema(db, resolved, { extraSchemas: [community.applySchema] });
+  return createApp(db, resolved, {
+    spaces: { authMiddleware: fakeAuth() },
+    community,
+  });
 }
 
 function call(

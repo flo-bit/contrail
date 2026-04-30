@@ -60,6 +60,7 @@
 	"dependencies": {
 		"@atcute/jetstream": "^1.1.2",
 		"@atmo-dev/contrail": "workspace:*",
+		"@atmo-dev/contrail-community": "workspace:*",
 		"@atmo-dev/contrail-sync": "workspace:*",
 		"@atmo-dev/contrail-lexicons": "workspace:*",
 		"@foxui/core": "^0.9.1",

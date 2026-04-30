@@ -1,4 +1,4 @@
-import type { SpaceAuthority } from "../spaces/types";
+import type { SpaceAuthority } from "@atmo-dev/contrail";
 import type { CommunityAdapter } from "./adapter";
 import { flattenEffectiveMembers } from "./acl";
 

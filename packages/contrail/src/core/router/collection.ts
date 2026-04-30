@@ -31,7 +31,7 @@ import { DurableObjectPubSub } from "../realtime/durable-object";
 import { TicketSigner, type TicketQuerySpec } from "../realtime/ticket";
 import { resolveTopicForCaller } from "../realtime/resolve";
 import { mergeAsyncIterables } from "../realtime/merge";
-import type { CommunityAdapter } from "../community/adapter";
+import type { CommunityProbe } from "../community-integration";
 import { getRelationField, getNestedValue } from "../types";
 
 /** Scope of a watch stream.
@@ -497,7 +497,7 @@ export function registerCollectionRoutes(
   spacesCtx?: SpacesContext | null,
   options: {
     pubsub?: import("../realtime/types").PubSub | null;
-    community?: CommunityAdapter | null;
+    community?: CommunityProbe | null;
   } = {}
 ): void {
   const ns = config.namespace;

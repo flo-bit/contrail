@@ -4,7 +4,7 @@ import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { ContrailConfig } from "../types";
 import type { ServiceAuth } from "../spaces/auth";
 import type { StorageAdapter } from "../spaces/types";
-import type { CommunityAdapter } from "../community/adapter";
+import type { CommunityProbe } from "../community-integration";
 import { InMemoryPubSub } from "./in-memory";
 import { TicketSigner } from "./ticket";
 import { sseResponse } from "./sse";
@@ -40,7 +40,7 @@ export function registerRealtimeRoutes(
   app: Hono,
   config: ContrailConfig,
   spaces: StorageAdapter | null,
-  community: CommunityAdapter | null,
+  community: CommunityProbe | null,
   options: RealtimeRoutesOptions
 ): void {
   const cfg = config.realtime;

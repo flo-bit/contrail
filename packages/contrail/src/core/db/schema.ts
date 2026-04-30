@@ -11,7 +11,6 @@ import {
 } from "../types";
 import { getSearchableFields } from "../search";
 import { buildSpacesBaseSchema } from "../spaces/schema";
-import { buildCommunitySchema } from "../community/schema";
 import { buildLabelsSchema } from "../labels/schema";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -262,9 +261,17 @@ async function runMigrations(db: Database): Promise<void> {
   }
 }
 
+/** Pluggable schema applier — passed in by extension packages (community,
+ *  third-party plugins) to install their own tables alongside contrail's. */
+export type SchemaModule = (db: Database) => Promise<void>;
+
 export interface InitSchemaOptions {
   /** Separate DB for the spaces tables. Defaults to the main `db`. */
   spacesDb?: Database;
+  /** Extra schema modules to apply after contrail's own DDL. Used by the
+   *  community package to install its tables — contrail core no longer
+   *  imports community schema directly. */
+  extraSchemas?: SchemaModule[];
 }
 
 async function applySpacesSchema(
@@ -311,11 +318,13 @@ export async function initSchema(
     await applySpacesSchema(spacesSharesMainDb ? db : spacesDb!, config, dialect);
   }
 
-  if (config.community) {
-    // Community tables live on the same DB as spaces (they reference space_uri).
-    const target = spacesSharesMainDb ? db : spacesDb!;
-    const communityStmts = buildCommunitySchema(dialect);
-    await target.batch(communityStmts.map((s) => target.prepare(s)));
+  // Extension schemas (e.g. community) — applied to the spacesDb when one's
+  // configured separately, since they typically reference space_uri. The
+  // caller is responsible for routing the schema to the right db; we just
+  // hand it the spaces-or-main DB as a sensible default.
+  const extensionTarget = spacesSharesMainDb ? db : spacesDb!;
+  for (const apply of options.extraSchemas ?? []) {
+    await apply(extensionTarget);
   }
 
   if (config.labels) {
