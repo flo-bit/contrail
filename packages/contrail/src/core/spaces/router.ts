@@ -8,12 +8,14 @@ import {
   checkInviteReadGrant,
   createServiceAuthMiddleware,
   extractInviteToken,
+  extractSpaceCredential,
 } from "./auth";
 import { nextTid } from "./tid";
 import { hashInviteToken } from "../invite/token";
 import { buildSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
+  DEFAULT_CREDENTIAL_TTL_MS,
   type AuthorityConfig,
   type RecordHostConfig,
   type RecordHost,
@@ -23,6 +25,15 @@ import {
 } from "./types";
 import { blobKey } from "./blob-adapter";
 import { collectBlobCids } from "./blob-refs";
+import {
+  createInProcessVerifier,
+  decodeUnverifiedClaims,
+  issueCredential,
+  verifyCredential,
+  type CredentialClaims,
+  type CredentialScope,
+  type CredentialVerifier,
+} from "./credentials";
 import { create as createCid, toString as cidToString } from "@atcute/cid";
 
 /** Optional hook to extend `<ns>.spaceExt.whoami` with extra fields when a
@@ -72,7 +83,16 @@ export function registerSpacesRoutes(
   registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, options.whoamiExtension);
 
   if (spacesConfig.recordHost) {
-    registerRecordHostRoutes(app, adapter, adapter, spacesConfig.recordHost, config, auth);
+    // In-process verifier: when authority and record host are colocated,
+    // the host has direct access to the authority's public key. Phase 4
+    // adds a binding-resolving verifier for split deployments.
+    const verifier = authorityConfig.signing
+      ? createInProcessVerifier({
+          authorityDid: authorityConfig.serviceDid,
+          publicKey: authorityConfig.signing.publicKey,
+        })
+      : undefined;
+    registerRecordHostRoutes(app, adapter, adapter, spacesConfig.recordHost, config, auth, verifier);
   }
 }
 
@@ -157,6 +177,12 @@ export function registerAuthorityRoutes(
     if (authz.via === "token") {
       // Anonymous read-token bearer — show non-owner space view.
       return c.json({ space: publicSpaceView(space, false) });
+    }
+
+    if (authz.via === "credential") {
+      // Credential proves membership; derive isOwner from sub vs ownerDid.
+      const isOwner = authz.claims.sub === space.ownerDid;
+      return c.json({ space: publicSpaceView(space, isOwner) });
     }
 
     const sa = authz.sa;
@@ -283,31 +309,189 @@ export function registerAuthorityRoutes(
     const member = await authority.getMember(spaceUri, sa.issuer);
     return c.json({ isOwner: false, isMember: !!member });
   });
+
+  // ---- Credential endpoints ----
+
+  /** Mint a space credential for a member of `spaceUri`. Caller is identified
+   *  by the JWT issuer; the credential's `sub` is set to that DID. */
+  app.post(`/xrpc/${SPACE}.getCredential`, auth, async (c) => {
+    if (!authorityConfig.signing) {
+      return c.json(
+        { error: "NotImplemented", message: "authority is not configured to sign credentials" },
+        501
+      );
+    }
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as { spaceUri?: string } | null;
+    if (!body?.spaceUri) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
+    }
+    const space = await authority.getSpace(body.spaceUri);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+
+    const isOwner = space.ownerDid === sa.issuer;
+    const member = isOwner ? null : await authority.getMember(body.spaceUri, sa.issuer);
+    if (!isOwner && !member) {
+      return c.json({ error: "Forbidden", reason: "not-member" }, 403);
+    }
+
+    // App policy is checked at credential-issuance time. Existing credentials
+    // remain valid until expiry — that's the spec contract (revocation
+    // bounded by TTL, not synchronous).
+    if (space.appPolicy) {
+      const allowed = checkClientId(space.appPolicy, sa.clientId);
+      if (!allowed) return c.json({ error: "Forbidden", reason: "app-not-allowed" }, 403);
+    }
+
+    const ttl = authorityConfig.credentialTtlMs ?? DEFAULT_CREDENTIAL_TTL_MS;
+    const { credential, expiresAt } = await issueCredential(
+      {
+        iss: authorityConfig.serviceDid,
+        sub: sa.issuer,
+        space: body.spaceUri,
+        scope: "rw",
+        ttlMs: ttl,
+      },
+      authorityConfig.signing
+    );
+    return c.json({ credential, expiresAt });
+  });
+
+  /** Refresh an unexpired credential. Used by long-running clients to extend
+   *  their access without going back through the JWT mint dance. The current
+   *  credential must verify; the bearer must still be a member. */
+  app.post(`/xrpc/${SPACE}.refreshCredential`, async (c) => {
+    if (!authorityConfig.signing) {
+      return c.json(
+        { error: "NotImplemented", message: "authority is not configured to sign credentials" },
+        501
+      );
+    }
+    const body = (await c.req.json().catch(() => null)) as { credential?: string } | null;
+    if (!body?.credential) {
+      return c.json({ error: "InvalidRequest", message: "credential required" }, 400);
+    }
+    const signing = authorityConfig.signing;
+    const claims = await verifyAndAuthorizeRefresh(body.credential, authorityConfig);
+    if ("error" in claims) return c.json(claims, claims.status);
+
+    const space = await authority.getSpace(claims.space);
+    if (!space) return c.json({ error: "NotFound" }, 404);
+    const isOwner = space.ownerDid === claims.sub;
+    const member = isOwner ? null : await authority.getMember(claims.space, claims.sub);
+    if (!isOwner && !member) {
+      return c.json({ error: "Forbidden", reason: "not-member" }, 403);
+    }
+
+    const ttl = authorityConfig.credentialTtlMs ?? DEFAULT_CREDENTIAL_TTL_MS;
+    const { credential, expiresAt } = await issueCredential(
+      {
+        iss: authorityConfig.serviceDid,
+        sub: claims.sub,
+        space: claims.space,
+        scope: claims.scope,
+        ttlMs: ttl,
+      },
+      signing
+    );
+    return c.json({ credential, expiresAt });
+  });
 }
 
-/** Register the **record host** XRPC surface — record + blob CRUD. Today
- *  consults the authority for membership / app-policy checks at write time;
- *  phase 3 adds a credential verifier that replaces those calls in
- *  split-deployment configurations. */
+/** Verify a credential presented at refreshCredential. Returns the claims, or
+ *  an error envelope ready to relay. Different from the record-host verifier
+ *  in two ways: (a) we don't have the expectedSpace yet — we read it from the
+ *  credential itself; (b) we don't enforce a scope. */
+async function verifyAndAuthorizeRefresh(
+  credential: string,
+  authorityConfig: AuthorityConfig
+): Promise<CredentialClaims | { error: string; reason?: string; message?: string; status: 400 | 401 }> {
+  const peek = decodeUnverifiedClaims(credential);
+  if (!peek) return { error: "InvalidRequest", reason: "malformed", status: 400 };
+  if (peek.iss !== authorityConfig.serviceDid) {
+    return { error: "Forbidden", reason: "wrong-issuer", status: 401 };
+  }
+  if (!authorityConfig.signing) {
+    return { error: "InvalidState", status: 401 };
+  }
+  const signing = authorityConfig.signing;
+  const result = await verifyCredential(credential, {
+    expectedSpace: peek.space,
+    resolveKey: async (iss) => (iss === authorityConfig.serviceDid ? signing.publicKey : null),
+  });
+  if (!result.ok) {
+    return { error: "InvalidCredential", reason: result.reason, status: 401 };
+  }
+  return result.claims;
+}
+
+/** App-policy check using just `clientId`. Mirrors `acl.ts:checkAppPolicy`
+ *  but inlined here so the credential-issuance path doesn't need to construct
+ *  a full AclInput. */
+function checkClientId(
+  appPolicy: NonNullable<SpaceRow["appPolicy"]>,
+  clientId: string | undefined
+): boolean {
+  const listed = clientId ? appPolicy.apps.includes(clientId) : false;
+  if (appPolicy.mode === "allow") return !listed;
+  return listed;
+}
+
+/** Register the **record host** XRPC surface — record + blob CRUD.
+ *
+ *  Auth precedence on every route:
+ *    1. `X-Space-Credential` header (if a verifier is wired and the credential
+ *       is valid) — caller DID = credential `sub`, no clientId.
+ *    2. Read-route invite token (`?inviteToken=` or `Bearer atmo-invite:...`).
+ *    3. Service-auth JWT (existing behavior) — caller DID = JWT issuer.
+ *
+ *  When a credential is presented, the record host trusts it: no member
+ *  check, no app-policy check (those happen at issuance time on the
+ *  authority side). Service-auth requests still consult the authority — that
+ *  bridge is what phase 5 cuts when the host/authority split goes runtime. */
 export function registerRecordHostRoutes(
   app: Hono,
   recordHost: RecordHost,
   authority: SpaceAuthority,
   recordHostConfig: RecordHostConfig,
   config: ContrailConfig,
-  auth: MiddlewareHandler
+  auth: MiddlewareHandler,
+  /** Optional credential verifier. When present, the record host accepts
+   *  `X-Space-Credential` as an alternative to a service-auth JWT. */
+  credentialVerifier?: CredentialVerifier
 ): void {
   const SPACE = `${config.namespace}.space`;
 
-  /** Read-route auth: skip the JWT middleware when an `?inviteToken=` is
-   *  present so anonymous bearer reads don't 401 before the route handler can
-   *  validate the token. */
+  /** Auth wrapper: tries credential first, then delegates to JWT auth. */
+  const authWithCredential: MiddlewareHandler = async (c, next) => {
+    const credToken = extractSpaceCredential(c.req.raw);
+    if (credToken) {
+      if (!credentialVerifier) {
+        return c.json(
+          { error: "AuthRequired", reason: "credential-verifier-not-configured" },
+          401
+        );
+      }
+      const result = await credentialVerifier.verify(credToken);
+      if (!result.ok) {
+        return c.json({ error: "AuthRequired", reason: result.reason }, 401);
+      }
+      c.set("spaceCredential", result.claims);
+      await next();
+      return;
+    }
+    return auth(c, next);
+  };
+
+  /** Read-route auth: like {@link authWithCredential} but also short-circuits
+   *  on a read-grant invite token. Token presence skips both credential and
+   *  JWT middlewares; the route handler validates the token via authorizeRead. */
   const readAuth: MiddlewareHandler = async (c, next) => {
     if (extractInviteToken(c.req.raw)) {
       await next();
       return;
     }
-    return auth(c, next);
+    return authWithCredential(c, next);
   };
 
   app.get(`/xrpc/${SPACE}.listRecords`, readAuth, async (c) => {
@@ -336,6 +520,8 @@ export function registerRecordHostRoutes(
         return c.json({ error: "Forbidden", reason: result.reason }, 403);
       }
     }
+    // Credential and token paths are pre-authorized — credential's signature
+    // proves the authority granted access; token validation already happened.
 
     const list = await recordHost.listRecords(spaceUri, collection, {
       byUser: c.req.query("byUser") ?? undefined,
@@ -379,8 +565,7 @@ export function registerRecordHostRoutes(
   });
 
   // Write endpoints
-  app.post(`/xrpc/${SPACE}.putRecord`, auth, async (c) => {
-    const sa = getAuth(c);
+  app.post(`/xrpc/${SPACE}.putRecord`, authWithCredential, async (c) => {
     const body = (await c.req.json().catch(() => null)) as
       | { spaceUri?: string; collection?: string; rkey?: string; record?: Record<string, unknown> }
       | null;
@@ -390,15 +575,20 @@ export function registerRecordHostRoutes(
     const space = await authority.getSpace(body.spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await authority.getMember(body.spaceUri, sa.issuer);
-    const result = checkAccess({
-      op: "write",
-      space,
-      callerDid: sa.issuer,
-      member,
-      clientId: sa.clientId,
-    });
-    if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    const caller = resolveCaller(c, body.spaceUri, "rw");
+    if (caller instanceof Response) return caller;
+
+    if (!caller.viaCredential) {
+      const member = await authority.getMember(body.spaceUri, caller.callerDid);
+      const result = checkAccess({
+        op: "write",
+        space,
+        callerDid: caller.callerDid,
+        member,
+        clientId: caller.clientId,
+      });
+      if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    }
 
     // Validate that every blob referenced by this record has already been
     // uploaded into this space. This mirrors how PDSes require uploadBlob
@@ -426,17 +616,16 @@ export function registerRecordHostRoutes(
     await recordHost.putRecord({
       spaceUri: body.spaceUri,
       collection: body.collection,
-      authorDid: sa.issuer,
+      authorDid: caller.callerDid,
       rkey,
       cid: null,
       record: body.record,
       createdAt: now,
     });
-    return c.json({ rkey, authorDid: sa.issuer, createdAt: now });
+    return c.json({ rkey, authorDid: caller.callerDid, createdAt: now });
   });
 
-  app.post(`/xrpc/${SPACE}.deleteRecord`, auth, async (c) => {
-    const sa = getAuth(c);
+  app.post(`/xrpc/${SPACE}.deleteRecord`, authWithCredential, async (c) => {
     const body = (await c.req.json().catch(() => null)) as
       | { spaceUri?: string; collection?: string; rkey?: string }
       | null;
@@ -446,18 +635,26 @@ export function registerRecordHostRoutes(
     const space = await authority.getSpace(body.spaceUri);
     if (!space) return c.json({ error: "NotFound" }, 404);
 
-    const member = await authority.getMember(body.spaceUri, sa.issuer);
-    const result = checkAccess({
-      op: "delete",
-      space,
-      callerDid: sa.issuer,
-      member,
-      clientId: sa.clientId,
-      targetAuthorDid: sa.issuer,
-    });
-    if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    const caller = resolveCaller(c, body.spaceUri, "rw");
+    if (caller instanceof Response) return caller;
 
-    await recordHost.deleteRecord(body.spaceUri, body.collection, sa.issuer, body.rkey);
+    if (!caller.viaCredential) {
+      const member = await authority.getMember(body.spaceUri, caller.callerDid);
+      const result = checkAccess({
+        op: "delete",
+        space,
+        callerDid: caller.callerDid,
+        member,
+        clientId: caller.clientId,
+        targetAuthorDid: caller.callerDid,
+      });
+      if (!result.allow) return c.json({ error: "Forbidden", reason: result.reason }, 403);
+    }
+    // Credential path: scope=rw is checked in resolveCaller. Delete remains
+    // author-scoped — the credential's `sub` is the caller, and we only
+    // delete records authored by that DID.
+
+    await recordHost.deleteRecord(body.spaceUri, body.collection, caller.callerDid, body.rkey);
     return c.json({ ok: true });
   });
 
@@ -468,8 +665,7 @@ export function registerRecordHostRoutes(
     const maxSize = blobsCfg.maxSize ?? DEFAULT_BLOB_MAX_SIZE;
     const accept = blobsCfg.accept;
 
-    app.post(`/xrpc/${SPACE}.uploadBlob`, auth, async (c) => {
-      const sa = getAuth(c);
+    app.post(`/xrpc/${SPACE}.uploadBlob`, authWithCredential, async (c) => {
       const spaceUri = c.req.query("spaceUri");
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
@@ -477,16 +673,21 @@ export function registerRecordHostRoutes(
       const space = await authority.getSpace(spaceUri);
       if (!space) return c.json({ error: "NotFound" }, 404);
 
-      const member = await authority.getMember(spaceUri, sa.issuer);
-      const aclResult = checkAccess({
-        op: "write",
-        space,
-        callerDid: sa.issuer,
-        member,
-        clientId: sa.clientId,
-      });
-      if (!aclResult.allow) {
-        return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+      const caller = resolveCaller(c, spaceUri, "rw");
+      if (caller instanceof Response) return caller;
+
+      if (!caller.viaCredential) {
+        const member = await authority.getMember(spaceUri, caller.callerDid);
+        const aclResult = checkAccess({
+          op: "write",
+          space,
+          callerDid: caller.callerDid,
+          member,
+          clientId: caller.clientId,
+        });
+        if (!aclResult.allow) {
+          return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+        }
       }
 
       const mimeType = c.req.header("content-type") ?? "application/octet-stream";
@@ -524,7 +725,7 @@ export function registerRecordHostRoutes(
         cid: cidString,
         mimeType,
         size: bytes.byteLength,
-        authorDid: sa.issuer,
+        authorDid: caller.callerDid,
         createdAt: Date.now(),
       });
 
@@ -579,8 +780,7 @@ export function registerRecordHostRoutes(
       });
     });
 
-    app.get(`/xrpc/${SPACE}.listBlobs`, auth, async (c) => {
-      const sa = getAuth(c);
+    app.get(`/xrpc/${SPACE}.listBlobs`, authWithCredential, async (c) => {
       const spaceUri = c.req.query("spaceUri");
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
@@ -588,16 +788,21 @@ export function registerRecordHostRoutes(
       const space = await authority.getSpace(spaceUri);
       if (!space) return c.json({ error: "NotFound" }, 404);
 
-      const member = await authority.getMember(spaceUri, sa.issuer);
-      const aclResult = checkAccess({
-        op: "read",
-        space,
-        callerDid: sa.issuer,
-        member,
-        clientId: sa.clientId,
-      });
-      if (!aclResult.allow) {
-        return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+      const caller = resolveCaller(c, spaceUri, "read");
+      if (caller instanceof Response) return caller;
+
+      if (!caller.viaCredential) {
+        const member = await authority.getMember(spaceUri, caller.callerDid);
+        const aclResult = checkAccess({
+          op: "read",
+          space,
+          callerDid: caller.callerDid,
+          member,
+          clientId: caller.clientId,
+        });
+        if (!aclResult.allow) {
+          return c.json({ error: "Forbidden", reason: aclResult.reason }, 403);
+        }
       }
 
       const result = await recordHost.listBlobMeta(spaceUri, {
@@ -610,14 +815,30 @@ export function registerRecordHostRoutes(
   }
 }
 
-/** Authorize a read request: either a valid service-auth JWT (which also
- *  identifies the caller for member checks downstream) or a valid read-grant
- *  invite token bearer. */
+/** Authorize a read request — three valid paths: a verified space credential
+ *  (set by the credential middleware), a read-grant invite token, or a
+ *  service-auth JWT.
+ *
+ *  Credential and token paths skip the membership check downstream — the
+ *  credential or token IS the proof. The JWT path requires a member check
+ *  in the route handler. */
 async function authorizeRead(
   c: Context,
   authority: SpaceAuthority,
   spaceUri: string
-): Promise<{ via: "token" } | { via: "jwt"; sa: ServiceAuth } | Response> {
+): Promise<
+  | { via: "credential"; claims: CredentialClaims }
+  | { via: "token" }
+  | { via: "jwt"; sa: ServiceAuth }
+  | Response
+> {
+  const cred = c.get("spaceCredential") as CredentialClaims | undefined;
+  if (cred) {
+    if (cred.space !== spaceUri) {
+      return c.json({ error: "Forbidden", reason: "credential-wrong-space" }, 403);
+    }
+    return { via: "credential", claims: cred };
+  }
   const rawToken = extractInviteToken(c.req.raw);
   if (rawToken) {
     const ok = await checkInviteReadGrant(authority, rawToken, spaceUri, hashInviteToken);
@@ -627,9 +848,33 @@ async function authorizeRead(
   const sa = c.get("serviceAuth") as ServiceAuth | undefined;
   if (sa) return { via: "jwt", sa };
   return c.json(
-    { error: "AuthRequired", message: "JWT or read-grant invite token required" },
+    { error: "AuthRequired", message: "JWT, credential, or read-grant invite token required" },
     401
   );
+}
+
+/** Unified caller resolution for write/manage paths on the record host.
+ *  Either a verified credential (set by middleware) or a service-auth JWT.
+ *  When a credential is present, also enforces space-match and the requested
+ *  scope. Returns either a caller envelope or a Response to relay. */
+function resolveCaller(
+  c: Context,
+  requestSpace: string,
+  requiredScope: CredentialScope
+): { callerDid: string; clientId: string | undefined; viaCredential: boolean } | Response {
+  const cred = c.get("spaceCredential") as CredentialClaims | undefined;
+  if (cred) {
+    if (cred.space !== requestSpace) {
+      return c.json({ error: "Forbidden", reason: "credential-wrong-space" }, 403);
+    }
+    if (requiredScope === "rw" && cred.scope !== "rw") {
+      return c.json({ error: "Forbidden", reason: "credential-wrong-scope" }, 403);
+    }
+    return { callerDid: cred.sub, clientId: undefined, viaCredential: true };
+  }
+  const sa = c.get("serviceAuth") as ServiceAuth | undefined;
+  if (!sa) return c.json({ error: "AuthRequired", reason: "no-auth" }, 401);
+  return { callerDid: sa.issuer, clientId: sa.clientId, viaCredential: false };
 }
 
 function getAuth(c: Parameters<MiddlewareHandler>[0]): ServiceAuth {

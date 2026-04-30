@@ -136,6 +136,13 @@ export async function verifyServiceAuthRequest(
   };
 }
 
+/** Pull a space credential off the request — `X-Space-Credential: <jwt>`
+ *  header. Returns the raw token or null. */
+export function extractSpaceCredential(request: Request): string | null {
+  const header = request.headers.get("X-Space-Credential");
+  return header ? header.trim() : null;
+}
+
 /** Pull a read-grant invite token off the request — query string `?inviteToken=`
  *  or `Authorization: Bearer atmo-invite:<token>`. Returns the raw token (not
  *  hashed) or null. Routes hash + look up via the adapter. */

@@ -1,6 +1,7 @@
 import type { Database } from "../types";
 import type { DidDocumentResolver } from "@atcute/identity-resolver";
 import type { BlobAdapter } from "./blob-adapter";
+import type { CredentialKeyMaterial } from "./credentials";
 
 export type AppPolicyMode = "allow" | "deny";
 
@@ -25,21 +26,32 @@ export interface SpacesBlobsConfig {
 export const DEFAULT_BLOB_MAX_SIZE = 2 * 1024 * 1024;
 export const DEFAULT_BLOB_GC_ORPHAN_AFTER_MS = 24 * 60 * 60 * 1000;
 
+/** Default credential lifetime. The rough spec calls for 2–4h; we pick the
+ *  lower bound so revocation (kicked-from-space) is observable within 2h. */
+export const DEFAULT_CREDENTIAL_TTL_MS = 2 * 60 * 60 * 1000;
+
 /** Configuration for the **space authority** role: holds the member list,
- *  signs credentials (later phases), and gates space-management operations.
- *  In a fully-split deployment, the authority can run in a different process
- *  (or even a different operator) than the record host. */
+ *  signs credentials, and gates space-management operations. In a fully-split
+ *  deployment, the authority can run in a different process (or even a
+ *  different operator) than the record host. */
 export interface AuthorityConfig {
   /** NSID that identifies the kind of space this authority hosts,
    *  e.g. "tools.atmo.event.space". */
   type: string;
-  /** Service DID that service-auth tokens must target (aud claim). */
+  /** Service DID that service-auth tokens must target (aud claim) AND that
+   *  signs credentials it issues (`iss` claim on emitted JWTs). */
   serviceDid: string;
   /** Default app policy applied to new spaces. */
   defaultAppPolicy?: AppPolicy;
   /** DID document resolver for service-auth JWT verification.
    *  Defaults to a composite PLC + did:web resolver if omitted. */
   resolver?: DidDocumentResolver;
+  /** Signing key material for issuing space credentials. When omitted,
+   *  `<ns>.space.getCredential` returns 501 NotImplemented and the record
+   *  host's credential-verifying middleware can't be wired up. */
+  signing?: CredentialKeyMaterial;
+  /** Credential lifetime in ms. Defaults to {@link DEFAULT_CREDENTIAL_TTL_MS}. */
+  credentialTtlMs?: number;
 }
 
 /** Configuration for the **record host** role: stores per-space records and

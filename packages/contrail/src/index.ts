@@ -68,6 +68,25 @@ export {
 export type { BlobAdapter, BlobUploadMeta, R2BucketLike } from "./core/spaces/blob-adapter";
 export type { SpacesBlobsConfig, BlobMetaRow } from "./core/spaces/types";
 
+// Space credentials
+export {
+  generateAuthoritySigningKey,
+  signCredential,
+  issueCredential,
+  verifyCredential,
+  decodeUnverifiedClaims,
+  createInProcessVerifier,
+} from "./core/spaces/credentials";
+export type {
+  CredentialClaims,
+  CredentialKeyMaterial,
+  CredentialScope,
+  CredentialVerifier,
+  VerifyOk,
+  VerifyErr,
+  VerifyOptions,
+} from "./core/spaces/credentials";
+
 // Realtime
 export type {
   PubSub,
