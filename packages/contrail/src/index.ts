@@ -91,6 +91,7 @@ export type {
 // Binding + key resolution
 export {
   createLocalBindingResolver,
+  createEnrollmentBindingResolver,
   createOwnerSelfBindingResolver,
   createCompositeBindingResolver,
   createPdsBindingResolver,
@@ -100,6 +101,15 @@ export {
   createCompositeKeyResolver,
 } from "./core/spaces/binding";
 export type { BindingResolver, KeyResolver } from "./core/spaces/binding";
+
+// Route registration — exposed for split deployments where authority and
+// record host run as separate Hono apps. Consumers wire them onto bare Honos
+// individually instead of going through createApp's umbrella.
+export {
+  registerAuthorityRoutes,
+  registerRecordHostRoutes,
+} from "./core/spaces/router";
+export type { EnrollmentRow } from "./core/spaces/types";
 
 // Realtime
 export type {

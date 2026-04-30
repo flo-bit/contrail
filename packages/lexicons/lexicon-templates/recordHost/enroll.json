@@ -1,0 +1,39 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.recordHost.enroll",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Enroll a space on this record host. The host stores `(spaceUri, authority)` in its local enrollment table; subsequent record / blob operations for this space go through, and the credential verifier uses the enrolled authority as the canonical binding source. Caller must be either the space owner OR the declared authority — the host treats either as a sufficient signal of consent. Idempotent: re-enrolling updates the authority binding.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["spaceUri", "authority"],
+          "properties": {
+            "spaceUri": { "type": "string" },
+            "authority": {
+              "type": "string",
+              "format": "did",
+              "description": "DID authorized to sign credentials for this space."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": {
+            "ok": { "type": "boolean" }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "Forbidden", "description": "Caller is neither the space owner nor the declared authority." }
+      ]
+    }
+  }
+}

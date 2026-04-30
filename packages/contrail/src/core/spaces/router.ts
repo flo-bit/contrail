@@ -12,7 +12,7 @@ import {
 } from "./auth";
 import { nextTid } from "./tid";
 import { hashInviteToken } from "../invite/token";
-import { buildSpaceUri } from "./uri";
+import { buildSpaceUri, parseSpaceUri } from "./uri";
 import {
   DEFAULT_BLOB_MAX_SIZE,
   DEFAULT_CREDENTIAL_TTL_MS,
@@ -35,6 +35,8 @@ import {
   type CredentialVerifier,
 } from "./credentials";
 import {
+  createCompositeBindingResolver,
+  createEnrollmentBindingResolver,
   createLocalBindingResolver,
   createLocalKeyResolver,
 } from "./binding";
@@ -90,21 +92,39 @@ export function registerSpacesRoutes(
   const verifier = ctx?.verifier ?? buildVerifier(authorityConfig);
   const auth = options.authMiddleware ?? createServiceAuthMiddleware(verifier);
 
-  registerAuthorityRoutes(app, adapter, authorityConfig, config, auth, options.whoamiExtension);
+  // When the record host is colocated, hand it to the authority so
+  // createSpace can auto-enroll. This is the in-process default —
+  // single-call createSpace gives you a usable space without requiring an
+  // explicit `recordHost.enroll` afterward. Split deployments don't get
+  // this convenience; their createSpace caller (or operator) has to call
+  // enroll on the remote host explicitly.
+  const localRecordHost = spacesConfig.recordHost ? adapter : null;
+  registerAuthorityRoutes(
+    app,
+    adapter,
+    authorityConfig,
+    config,
+    auth,
+    options.whoamiExtension,
+    localRecordHost
+  );
 
   if (spacesConfig.recordHost) {
-    // Build the default in-process verifier when the authority can sign:
-    // Local binding (always points at the configured authority) + Local
-    // key resolver (knows the authority's public key directly). Caller
-    // can override via `options.credentialVerifier` to accept external
-    // authorities — wire in PDS-record / DID-doc resolvers there.
+    // Default in-process verifier: enrollment is the canonical binding
+    // source (matches the host's local consent), with Local-binding as a
+    // fallback for the case where the authority's createSpace ran but
+    // auto-enroll was bypassed. Local key resolver knows the local
+    // authority's public key. Caller overrides via
+    // `options.credentialVerifier` to accept external authorities — wire
+    // in DID-doc key resolvers there.
     const verifier =
       options.credentialVerifier ??
       (authorityConfig.signing
         ? createBindingCredentialVerifier({
-            bindings: createLocalBindingResolver({
-              authorityDid: authorityConfig.serviceDid,
-            }),
+            bindings: createCompositeBindingResolver([
+              createEnrollmentBindingResolver({ recordHost: adapter }),
+              createLocalBindingResolver({ authorityDid: authorityConfig.serviceDid }),
+            ]),
             keys: createLocalKeyResolver({
               authorityDid: authorityConfig.serviceDid,
               publicKey: authorityConfig.signing.publicKey,
@@ -116,14 +136,20 @@ export function registerSpacesRoutes(
 }
 
 /** Register the **space authority** XRPC surface — space lifecycle, member
- *  list, app policy, whoami. Does NOT touch records or blobs. */
+ *  list, app policy, whoami. Does NOT touch records or blobs.
+ *
+ *  When a `localRecordHost` is passed, the authority's `createSpace` handler
+ *  also enrolls the new space on that host — convenient for in-process
+ *  deployments where the same operator runs both roles. Split deployments
+ *  pass `null` and arrange enrollment explicitly via `recordHost.enroll`. */
 export function registerAuthorityRoutes(
   app: Hono,
   authority: SpaceAuthority,
   authorityConfig: AuthorityConfig,
   config: ContrailConfig,
   auth: MiddlewareHandler,
-  whoamiExtension?: WhoamiExtension
+  whoamiExtension?: WhoamiExtension,
+  localRecordHost?: RecordHost | null
 ): void {
   /** Space endpoints are emitted per-deployment under the configured namespace;
    *  the deployment owns and publishes its own lexicons. The library ships
@@ -242,6 +268,19 @@ export function registerAuthorityRoutes(
     });
     // Owner is implicit; we still write a row so membership queries are uniform.
     await authority.addMember(uri, sa.issuer, sa.issuer);
+
+    // Auto-enroll the space on the colocated record host (if any). Without
+    // this, putRecord/listRecords would 404 with "not-enrolled" until the
+    // caller explicitly hit recordHost.enroll. Idempotent (ON CONFLICT
+    // UPDATE), so calling enroll again later is harmless.
+    if (localRecordHost) {
+      await localRecordHost.enroll({
+        spaceUri: uri,
+        authorityDid: authorityConfig.serviceDid,
+        enrolledAt: Date.now(),
+        enrolledBy: sa.issuer,
+      });
+    }
 
     return c.json({ space: publicSpaceView(space, true) });
   });
@@ -513,20 +552,79 @@ export function registerRecordHostRoutes(
     return authWithCredential(c, next);
   };
 
+  /** Hard gate on every record-host operation: the space must be enrolled.
+   *  Returns the enrollment row, or a Response to relay. */
+  async function requireEnrollment(
+    c: Context,
+    spaceUri: string
+  ): Promise<{ authorityDid: string } | Response> {
+    const enrollment = await recordHost.getEnrollment(spaceUri);
+    if (!enrollment) {
+      return c.json(
+        { error: "NotFound", reason: "not-enrolled", message: "space is not enrolled on this record host" },
+        404
+      );
+    }
+    return enrollment;
+  }
+
+  // ---- Enrollment endpoint ----
+  //
+  // Authorize a space onto this record host. Caller must be either the space
+  // owner OR the declared authority — the host treats either as a sufficient
+  // signal of consent. Idempotent: re-enrolling the same space updates the
+  // authority binding.
+  const RECORD_HOST = `${config.namespace}.recordHost`;
+
+  app.post(`/xrpc/${RECORD_HOST}.enroll`, auth, async (c) => {
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | { spaceUri?: string; authority?: string }
+      | null;
+    if (!body?.spaceUri || !body.authority) {
+      return c.json({ error: "InvalidRequest", message: "spaceUri and authority required" }, 400);
+    }
+    const parts = parseSpaceUri(body.spaceUri);
+    if (!parts) {
+      return c.json({ error: "InvalidRequest", reason: "malformed-uri" }, 400);
+    }
+    const callerIsOwner = sa.issuer === parts.ownerDid;
+    const callerIsAuthority = sa.issuer === body.authority;
+    if (!callerIsOwner && !callerIsAuthority) {
+      return c.json(
+        { error: "Forbidden", reason: "not-owner-or-authority" },
+        403
+      );
+    }
+    await recordHost.enroll({
+      spaceUri: body.spaceUri,
+      authorityDid: body.authority,
+      enrolledAt: Date.now(),
+      enrolledBy: sa.issuer,
+    });
+    return c.json({ ok: true });
+  });
+
   app.get(`/xrpc/${SPACE}.listRecords`, readAuth, async (c) => {
     const spaceUri = c.req.query("spaceUri");
     const collection = c.req.query("collection");
     if (!spaceUri || !collection) {
       return c.json({ error: "InvalidRequest", message: "spaceUri and collection required" }, 400);
     }
-    const space = await authority.getSpace(spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
+    const enrollment = await requireEnrollment(c, spaceUri);
+    if (enrollment instanceof Response) return enrollment;
 
     const authz = await authorizeRead(c, authority, spaceUri);
     if (authz instanceof Response) return authz;
 
     if (authz.via === "jwt") {
+      // JWT path consults the authority for member + app-policy checks.
+      // Split deployments where the host has no live authority will degrade
+      // here (getSpace returns null) and return 404, which is correct: a
+      // host that can't reach an authority can't validate JWT membership.
       const sa = authz.sa;
+      const space = await authority.getSpace(spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
       const member = await authority.getMember(spaceUri, sa.issuer);
       const result = checkAccess({
         op: "read",
@@ -558,14 +656,16 @@ export function registerRecordHostRoutes(
     if (!spaceUri || !collection || !author || !rkey) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, author, rkey required" }, 400);
     }
-    const space = await authority.getSpace(spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
+    const enrollment = await requireEnrollment(c, spaceUri);
+    if (enrollment instanceof Response) return enrollment;
 
     const authz = await authorizeRead(c, authority, spaceUri);
     if (authz instanceof Response) return authz;
 
     if (authz.via === "jwt") {
       const sa = authz.sa;
+      const space = await authority.getSpace(spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
       const member = await authority.getMember(spaceUri, sa.issuer);
       const result = checkAccess({
         op: "read",
@@ -591,13 +691,16 @@ export function registerRecordHostRoutes(
     if (!body?.spaceUri || !body.collection || !body.record) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, record required" }, 400);
     }
-    const space = await authority.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
+    const enrollment = await requireEnrollment(c, body.spaceUri);
+    if (enrollment instanceof Response) return enrollment;
 
     const caller = resolveCaller(c, body.spaceUri, "rw");
     if (caller instanceof Response) return caller;
 
     if (!caller.viaCredential) {
+      // JWT path needs authority access for member + app-policy checks.
+      const space = await authority.getSpace(body.spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
       const member = await authority.getMember(body.spaceUri, caller.callerDid);
       const result = checkAccess({
         op: "write",
@@ -651,13 +754,15 @@ export function registerRecordHostRoutes(
     if (!body?.spaceUri || !body.collection || !body.rkey) {
       return c.json({ error: "InvalidRequest", message: "spaceUri, collection, rkey required" }, 400);
     }
-    const space = await authority.getSpace(body.spaceUri);
-    if (!space) return c.json({ error: "NotFound" }, 404);
+    const enrollment = await requireEnrollment(c, body.spaceUri);
+    if (enrollment instanceof Response) return enrollment;
 
     const caller = resolveCaller(c, body.spaceUri, "rw");
     if (caller instanceof Response) return caller;
 
     if (!caller.viaCredential) {
+      const space = await authority.getSpace(body.spaceUri);
+      if (!space) return c.json({ error: "NotFound" }, 404);
       const member = await authority.getMember(body.spaceUri, caller.callerDid);
       const result = checkAccess({
         op: "delete",
@@ -689,13 +794,15 @@ export function registerRecordHostRoutes(
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
       }
-      const space = await authority.getSpace(spaceUri);
-      if (!space) return c.json({ error: "NotFound" }, 404);
+      const enrollment = await requireEnrollment(c, spaceUri);
+      if (enrollment instanceof Response) return enrollment;
 
       const caller = resolveCaller(c, spaceUri, "rw");
       if (caller instanceof Response) return caller;
 
       if (!caller.viaCredential) {
+        const space = await authority.getSpace(spaceUri);
+        if (!space) return c.json({ error: "NotFound" }, 404);
         const member = await authority.getMember(spaceUri, caller.callerDid);
         const aclResult = checkAccess({
           op: "write",
@@ -764,14 +871,16 @@ export function registerRecordHostRoutes(
       if (!spaceUri || !cid) {
         return c.json({ error: "InvalidRequest", message: "spaceUri and cid required" }, 400);
       }
-      const space = await authority.getSpace(spaceUri);
-      if (!space) return c.json({ error: "NotFound" }, 404);
+      const enrollment = await requireEnrollment(c, spaceUri);
+      if (enrollment instanceof Response) return enrollment;
 
       const authz = await authorizeRead(c, authority, spaceUri);
       if (authz instanceof Response) return authz;
 
       if (authz.via === "jwt") {
         const sa = authz.sa;
+        const space = await authority.getSpace(spaceUri);
+        if (!space) return c.json({ error: "NotFound" }, 404);
         const member = await authority.getMember(spaceUri, sa.issuer);
         const aclResult = checkAccess({
           op: "read",
@@ -804,13 +913,15 @@ export function registerRecordHostRoutes(
       if (!spaceUri) {
         return c.json({ error: "InvalidRequest", message: "spaceUri required" }, 400);
       }
-      const space = await authority.getSpace(spaceUri);
-      if (!space) return c.json({ error: "NotFound" }, 404);
+      const enrollment = await requireEnrollment(c, spaceUri);
+      if (enrollment instanceof Response) return enrollment;
 
       const caller = resolveCaller(c, spaceUri, "read");
       if (caller instanceof Response) return caller;
 
       if (!caller.viaCredential) {
+        const space = await authority.getSpace(spaceUri);
+        if (!space) return c.json({ error: "NotFound" }, 404);
         const member = await authority.getMember(spaceUri, caller.callerDid);
         const aclResult = checkAccess({
           op: "read",

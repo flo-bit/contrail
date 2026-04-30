@@ -19,6 +19,7 @@
 import type { DidDocumentResolver } from "@atcute/identity-resolver";
 import type { Did } from "@atcute/lexicons";
 import { parseSpaceUri } from "./uri";
+import type { RecordHost } from "./types";
 
 export interface BindingResolver {
   /** Resolve the DID authorized to sign credentials for this space. Returns
@@ -48,6 +49,23 @@ export function createLocalBindingResolver(args: {
   return {
     async resolveAuthority() {
       return authorityDid;
+    },
+  };
+}
+
+/** Reads the record host's local enrollment table. This is the *canonical*
+ *  binding source on a record host: the host owner explicitly consented to a
+ *  given authority for a given space (via the `recordHost.enroll` endpoint
+ *  or auto-enrollment from the authority's createSpace). PDS-record /
+ *  DID-doc resolvers are out-of-band discovery aids; the enrollment is what
+ *  actually gates whether records get stored here. */
+export function createEnrollmentBindingResolver(args: {
+  recordHost: RecordHost;
+}): BindingResolver {
+  return {
+    async resolveAuthority(spaceUri) {
+      const e = await args.recordHost.getEnrollment(spaceUri);
+      return e?.authorityDid ?? null;
     },
   };
 }

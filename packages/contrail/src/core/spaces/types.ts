@@ -170,6 +170,17 @@ export interface BlobMetaRow {
   createdAt: number;
 }
 
+/** Local cache on the record host: this space is accepted here, and `authority_did`
+ *  is the DID authorized to sign credentials for it. Populated via the
+ *  `recordHost.enroll` endpoint or auto-populated by the authority's
+ *  createSpace when both roles run in one process. */
+export interface EnrollmentRow {
+  spaceUri: string;
+  authorityDid: string;
+  enrolledAt: number;
+  enrolledBy: string;
+}
+
 export interface ListBlobsOptions {
   byUser?: string;
   cursor?: string;
@@ -220,14 +231,20 @@ export interface SpaceAuthority {
   redeemInvite(tokenHash: string, now: number): Promise<InviteRow | null>;
 }
 
-/** **Record host** interface — stores records and blobs for a space. Trusts
- *  the authority's ACL: in later phases, validates incoming credentials
- *  rather than calling out for a member check.
+/** **Record host** interface — stores records and blobs for a space, plus
+ *  the local enrollment table that decides which spaces this host accepts.
  *
- *  Read-side note: today the record host needs `getSpace` to know the space
- *  exists at all (and for app-policy checks before permissioned writes). When
- *  enrollment lands (phase 5), this becomes a local lookup instead. */
+ *  Trust model: the host trusts whatever credential the authority signs, so
+ *  long as the authority is the one named in the local enrollment for this
+ *  space. Enrollment is the consent step — the host owner agrees to spend
+ *  storage on a given space, scoped to a specific authority. */
 export interface RecordHost {
+  // Enrollment
+  enroll(input: EnrollmentRow): Promise<void>;
+  getEnrollment(spaceUri: string): Promise<EnrollmentRow | null>;
+  listEnrollments(options?: { authorityDid?: string; limit?: number }): Promise<EnrollmentRow[]>;
+  removeEnrollment(spaceUri: string): Promise<void>;
+
   // Records
   putRecord(record: StoredRecord): Promise<void>;
   getRecord(spaceUri: string, collection: string, authorDid: string, rkey: string): Promise<StoredRecord | null>;

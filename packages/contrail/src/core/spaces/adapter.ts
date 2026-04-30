@@ -13,6 +13,7 @@ import type {
   BlobMetaRow,
   CollectionCount,
   CreateInviteInput,
+  EnrollmentRow,
   InviteKind,
   InviteRow,
   ListBlobsOptions,
@@ -74,6 +75,15 @@ function mapBlobMetaRow(row: any): BlobMetaRow {
     size: Number(row.size),
     authorDid: row.author_did,
     createdAt: toNum(row.created_at),
+  };
+}
+
+function mapEnrollmentRow(row: any): EnrollmentRow {
+  return {
+    spaceUri: row.space_uri,
+    authorityDid: row.authority_did,
+    enrolledAt: toNum(row.enrolled_at),
+    enrolledBy: row.enrolled_by,
   };
 }
 
@@ -360,6 +370,55 @@ export class HostedAdapter implements StorageAdapter {
       .bind(tokenHash)
       .first<any>();
     return row ? mapInviteRow(row) : null;
+  }
+
+  async enroll(input: EnrollmentRow): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO record_host_enrollments (space_uri, authority_did, enrolled_at, enrolled_by)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (space_uri) DO UPDATE SET
+           authority_did = excluded.authority_did,
+           enrolled_at = excluded.enrolled_at,
+           enrolled_by = excluded.enrolled_by`
+      )
+      .bind(input.spaceUri, input.authorityDid, input.enrolledAt, input.enrolledBy)
+      .run();
+  }
+
+  async getEnrollment(spaceUri: string): Promise<EnrollmentRow | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM record_host_enrollments WHERE space_uri = ?`)
+      .bind(spaceUri)
+      .first<any>();
+    return row ? mapEnrollmentRow(row) : null;
+  }
+
+  async listEnrollments(
+    options: { authorityDid?: string; limit?: number } = {}
+  ): Promise<EnrollmentRow[]> {
+    const limit = Math.min(options.limit ?? 200, 1000);
+    if (options.authorityDid) {
+      const { results } = await this.db
+        .prepare(
+          `SELECT * FROM record_host_enrollments WHERE authority_did = ? ORDER BY enrolled_at DESC LIMIT ?`
+        )
+        .bind(options.authorityDid, limit)
+        .all<any>();
+      return results.map(mapEnrollmentRow);
+    }
+    const { results } = await this.db
+      .prepare(`SELECT * FROM record_host_enrollments ORDER BY enrolled_at DESC LIMIT ?`)
+      .bind(limit)
+      .all<any>();
+    return results.map(mapEnrollmentRow);
+  }
+
+  async removeEnrollment(spaceUri: string): Promise<void> {
+    await this.db
+      .prepare(`DELETE FROM record_host_enrollments WHERE space_uri = ?`)
+      .bind(spaceUri)
+      .run();
   }
 
   async putRecord(record: StoredRecord): Promise<void> {

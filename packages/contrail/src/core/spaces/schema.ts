@@ -59,6 +59,18 @@ export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
       note TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_spaces_invites_space ON spaces_invites(space_uri, created_at DESC)`,
+
+    // Record-host enrollment table — the host's local cache of "spaces I
+    // accept records for, and which authority signs credentials for each."
+    // Filled by the recordHost.enroll endpoint, or auto-populated by the
+    // authority's createSpace when both roles run in the same process.
+    `CREATE TABLE IF NOT EXISTS record_host_enrollments (
+      space_uri TEXT PRIMARY KEY,
+      authority_did TEXT NOT NULL,
+      enrolled_at ${dialect.bigintType} NOT NULL,
+      enrolled_by TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_enrollments_authority ON record_host_enrollments(authority_did)`,
   ];
 }
 
