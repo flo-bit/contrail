@@ -6,6 +6,9 @@ import type {
   CommunityMode,
   CommunityRow,
   CreateCommunityInviteInput,
+  CreateProvisionAttemptInput,
+  ProvisionAttemptRow,
+  ProvisionStatus,
 } from "./types";
 
 function toNum(v: unknown): number {
@@ -384,6 +387,159 @@ export class CommunityAdapter {
       .first<any>();
     return row ? mapCommunityInviteRow(row) : null;
   }
+
+  // ---- Provision attempts ------------------------------------------------
+
+  async createProvisionAttempt(input: CreateProvisionAttemptInput): Promise<void> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO provision_attempts (
+          attempt_id, did, status, pds_endpoint, handle, email, invite_code,
+          encrypted_signing_key, encrypted_rotation_key,
+          created_at, updated_at
+        ) VALUES (?, ?, 'keys_generated', ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        input.attemptId,
+        input.did,
+        input.pdsEndpoint,
+        input.handle,
+        input.email,
+        input.inviteCode ?? null,
+        input.encryptedSigningKey,
+        input.encryptedRotationKey,
+        now,
+        now
+      )
+      .run();
+  }
+
+  async getProvisionAttempt(attemptId: string): Promise<ProvisionAttemptRow | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM provision_attempts WHERE attempt_id = ?`)
+      .bind(attemptId)
+      .first<Record<string, any>>();
+    return row ? rowToProvisionAttempt(row) : null;
+  }
+
+  async updateProvisionStatus(
+    attemptId: string,
+    status: ProvisionStatus,
+    opts: { lastError?: string; encryptedPassword?: string } = {}
+  ): Promise<void> {
+    const now = Date.now();
+    const stampCol = ({
+      genesis_submitted: "genesis_submitted_at",
+      account_created: "account_created_at",
+      did_doc_updated: "did_doc_updated_at",
+      activated: "activated_at",
+    } as Record<string, string | undefined>)[status];
+
+    const sets: string[] = [`status = ?`, `updated_at = ?`];
+    const args: any[] = [status, now];
+    if (stampCol) {
+      sets.push(`${stampCol} = ?`);
+      args.push(now);
+    }
+    if (opts.lastError !== undefined) {
+      sets.push(`last_error = ?`);
+      args.push(opts.lastError);
+    }
+    if (opts.encryptedPassword !== undefined) {
+      sets.push(`encrypted_password = ?`);
+      args.push(opts.encryptedPassword);
+    }
+    args.push(attemptId);
+
+    await this.db
+      .prepare(`UPDATE provision_attempts SET ${sets.join(", ")} WHERE attempt_id = ?`)
+      .bind(...args)
+      .run();
+  }
+
+  async listProvisionAttemptsByStatus(
+    status: ProvisionStatus,
+    olderThanMs: number = 0
+  ): Promise<ProvisionAttemptRow[]> {
+    const cutoff = Date.now() - olderThanMs;
+    const rows = await this.db
+      .prepare(
+        `SELECT * FROM provision_attempts WHERE status = ? AND updated_at <= ? ORDER BY updated_at ASC`
+      )
+      .bind(status, cutoff)
+      .all<Record<string, any>>();
+    return rows.results.map(rowToProvisionAttempt);
+  }
+
+  // ---- Community sessions cache -----------------------------------------
+
+  async getSession(communityDid: string): Promise<{
+    accessJwt: string;
+    refreshJwt: string;
+    accessExp: number;
+  } | null> {
+    const r = await this.db
+      .prepare(
+        `SELECT access_jwt, refresh_jwt, access_exp FROM community_sessions WHERE community_did = ?`
+      )
+      .bind(communityDid)
+      .first<{ access_jwt: string; refresh_jwt: string; access_exp: number }>();
+    if (!r) return null;
+    return {
+      accessJwt: r.access_jwt,
+      refreshJwt: r.refresh_jwt,
+      accessExp: Number(r.access_exp),
+    };
+  }
+
+  async upsertSession(
+    communityDid: string,
+    s: { accessJwt: string; refreshJwt: string; accessExp: number }
+  ): Promise<void> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO community_sessions (community_did, access_jwt, refresh_jwt, access_exp, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (community_did) DO UPDATE SET
+           access_jwt = excluded.access_jwt,
+           refresh_jwt = excluded.refresh_jwt,
+           access_exp = excluded.access_exp,
+           updated_at = excluded.updated_at`
+      )
+      .bind(communityDid, s.accessJwt, s.refreshJwt, s.accessExp, now)
+      .run();
+  }
+
+  async clearSession(communityDid: string): Promise<void> {
+    await this.db
+      .prepare(`DELETE FROM community_sessions WHERE community_did = ?`)
+      .bind(communityDid)
+      .run();
+  }
+}
+
+function rowToProvisionAttempt(r: Record<string, any>): ProvisionAttemptRow {
+  return {
+    attemptId: r.attempt_id,
+    did: r.did,
+    status: r.status as ProvisionStatus,
+    pdsEndpoint: r.pds_endpoint,
+    handle: r.handle,
+    email: r.email,
+    inviteCode: r.invite_code ?? null,
+    encryptedSigningKey: r.encrypted_signing_key ?? null,
+    encryptedRotationKey: r.encrypted_rotation_key ?? null,
+    encryptedPassword: r.encrypted_password ?? null,
+    genesisSubmittedAt: r.genesis_submitted_at == null ? null : Number(r.genesis_submitted_at),
+    accountCreatedAt: r.account_created_at == null ? null : Number(r.account_created_at),
+    didDocUpdatedAt: r.did_doc_updated_at == null ? null : Number(r.did_doc_updated_at),
+    activatedAt: r.activated_at == null ? null : Number(r.activated_at),
+    lastError: r.last_error ?? null,
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
 }
 
 function mapCommunityInviteRow(row: any): CommunityInviteRow {
