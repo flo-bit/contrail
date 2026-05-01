@@ -127,6 +127,15 @@ export {
   flattenEffectiveMembers,
   wouldCycle,
   reconcile,
+  initCommunitySchema,
+  resolveIdentity,
+  createPdsSession,
+  pdsCreateAccount,
+  pdsGetRecommendedDidCredentials,
+  pdsActivateAccount,
+  submitGenesisOp,
+  getLastOpCid,
+  ProvisionOrchestrator,
 } from "./core/community";
 export type {
   CommunityConfig,
@@ -137,4 +146,12 @@ export type {
   AccessLevel,
   AccessLevelRow,
   ReservedKey,
+  PdsCreateAccountBody,
+  PdsCreateAccountResult,
+  RecommendedDidCredentials,
+  PdsCreateSessionResult,
+  PdsClient,
+  PlcClient,
+  ProvisionInput,
+  ProvisionResult,
 } from "./core/community";

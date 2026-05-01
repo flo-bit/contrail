@@ -220,6 +220,28 @@ export async function cidForOp(
   return "b" + base32Lower(cidBytes);
 }
 
+/** Fetch the CID of the most recent op in a DID's PLC log. Used by the
+ *  provision recovery sweeper to obtain the genesis op's CID at resume time
+ *  (we can't recompute it locally because ECDSA signatures are randomized). */
+export async function getLastOpCid(
+  plcDirectory: string,
+  did: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<string> {
+  const f = opts.fetch ?? fetch;
+  const url = `${plcDirectory.replace(/\/$/, "")}/${did}/log/last`;
+  const res = await f(url);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PLC log/last failed (${res.status}): ${text}`);
+  }
+  const body = (await res.json()) as { cid?: string };
+  if (!body.cid) {
+    throw new Error("PLC log/last response missing cid");
+  }
+  return body.cid;
+}
+
 /** Submit a signed genesis op to the PLC directory. */
 export async function submitGenesisOp(
   plcDirectory: string,

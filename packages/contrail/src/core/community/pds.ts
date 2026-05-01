@@ -20,6 +20,20 @@ export interface PdsSession {
   did: string;
 }
 
+/** Full result of `com.atproto.server.createSession`, including the optional
+ *  `active`/`status` fields a PDS returns when the account is deactivated.
+ *  Used by the provision sweeper to detect resumable rows: a 200 response with
+ *  `active: false, status: "deactivated"` means the account exists on the PDS
+ *  and we can pick up at step 3. */
+export interface PdsCreateSessionResult {
+  did: string;
+  handle: string;
+  accessJwt: string;
+  refreshJwt: string;
+  active?: boolean;
+  status?: string;
+}
+
 function defaultResolver(): DidDocumentResolver {
   return new CompositeDidDocumentResolver({
     methods: {
@@ -100,6 +114,50 @@ async function resolveHandleToDid(handle: string, f: typeof fetch): Promise<stri
     /* fall through */
   }
   throw new Error(`could not resolve handle ${handle}`);
+}
+
+/** Decode the `exp` claim from a JWT's payload (in seconds since epoch). Used
+ *  by the session cache to decide if a cached access token is still usable.
+ *  Returns 0 if the claim is missing or the token is malformed — callers should
+ *  treat 0 as "expired, refresh now". Avoids `Buffer` so it works in Workers. */
+export function decodeJwtExp(jwt: string): number {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return 0;
+  const payload = parts[1]!;
+  const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (padded.length % 4)) % 4);
+  try {
+    const json = atob(padded + padding);
+    const claims = JSON.parse(json) as { exp?: number };
+    return Number(claims.exp ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** POST com.atproto.server.refreshSession with the refresh JWT in Authorization.
+ *  Returns null on any non-200 — callers fall back to `createPdsSession`. */
+export async function tryRefreshSession(input: {
+  pdsUrl: string;
+  refreshJwt: string;
+  fetch?: typeof fetch;
+}): Promise<{ accessJwt: string; refreshJwt: string; accessExp: number } | null> {
+  const f = input.fetch ?? fetch;
+  const url = `${input.pdsUrl.replace(/\/$/, "")}/xrpc/com.atproto.server.refreshSession`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${input.refreshJwt}` },
+  });
+  if (res.status !== 200) return null;
+  const body = (await res.json().catch(() => null)) as
+    | { accessJwt?: string; refreshJwt?: string }
+    | null;
+  if (!body?.accessJwt || !body.refreshJwt) return null;
+  return {
+    accessJwt: body.accessJwt,
+    refreshJwt: body.refreshJwt,
+    accessExp: decodeJwtExp(body.accessJwt),
+  };
 }
 
 /** Create an atproto session on the given PDS using identifier + app password.

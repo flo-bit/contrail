@@ -54,6 +54,19 @@ export interface CreateMintedCommunityInput {
   createdBy: string;
 }
 
+export interface CreateProvisionedCommunityInput {
+  did: string;
+  pdsEndpoint: string;
+  handle: string;
+  /** Encrypted PDS app password — already-encrypted base64 envelope. The
+   *  orchestrator persisted this on the provision_attempts row at step 2;
+   *  the route handler hands it through so we keep one source of truth for
+   *  the credential and avoid round-tripping the plaintext password through
+   *  the adapter. */
+  appPasswordEncrypted: string;
+  createdBy: string;
+}
+
 export interface GrantInput {
   spaceUri: string;
   subjectDid?: string;
@@ -88,6 +101,35 @@ export class CommunityAdapter {
       mode: "adopt",
       pdsEndpoint: input.pdsEndpoint,
       identifier: input.identifier,
+      createdBy: input.createdBy,
+      createdAt: now,
+      deletedAt: null,
+    };
+  }
+
+  async createFromProvisioned(
+    input: CreateProvisionedCommunityInput
+  ): Promise<CommunityRow> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO communities (did, mode, pds_endpoint, app_password_encrypted, identifier, created_by, created_at)
+         VALUES (?, 'provision', ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        input.did,
+        input.pdsEndpoint,
+        input.appPasswordEncrypted,
+        input.handle,
+        input.createdBy,
+        now
+      )
+      .run();
+    return {
+      did: input.did,
+      mode: "provision",
+      pdsEndpoint: input.pdsEndpoint,
+      identifier: input.handle,
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
