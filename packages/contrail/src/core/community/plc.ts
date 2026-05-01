@@ -201,11 +201,15 @@ export async function signUpdateOp(
   return { ...unsigned, sig: bytesToB64url(sigBytes) };
 }
 
-/** Compute the CIDv1 for a signed op (genesis or update).
+/** Compute the CIDv1 for a signed op (genesis, update, or tombstone).
  *  CIDv1 (0x01) + dag-cbor codec (0x71) + sha2-256 (0x12 0x20) + hash,
- *  base32-lower with multibase "b" prefix. */
+ *  base32-lower with multibase "b" prefix.
+ *
+ *  The tombstone shape ({type, prev, sig}) is a strict subset of update —
+ *  the DAG-CBOR encoder accepts all three uniformly, and PLC computes its
+ *  stored CID from the same canonical encoding. */
 export async function cidForOp(
-  signedOp: SignedGenesisOp | SignedUpdateOp
+  signedOp: SignedGenesisOp | SignedUpdateOp | SignedTombstoneOp
 ): Promise<string> {
   const encoded = encodeDagCbor(signedOp);
   const hash = new Uint8Array(
@@ -222,7 +226,13 @@ export async function cidForOp(
 
 /** Fetch the CID of the most recent op in a DID's PLC log. Used during
  *  provision recovery to obtain the genesis op's CID at resume time (we can't
- *  recompute it locally because ECDSA signatures are randomized). */
+ *  recompute it locally because ECDSA signatures are randomized) and by the
+ *  reap CLI to chain a tombstone onto the latest op.
+ *
+ *  PLC's `/log/last` endpoint returns the bare signed op object — no envelope,
+ *  no `cid` field. We compute the CID locally with the same DAG-CBOR encoder
+ *  cidForOp uses; PLC computes its stored CID identically, so the result
+ *  matches the entry's CID in `/log/audit`. */
 export async function getLastOpCid(
   plcDirectory: string,
   did: string,
@@ -235,11 +245,11 @@ export async function getLastOpCid(
     const text = await res.text().catch(() => "");
     throw new Error(`PLC log/last failed (${res.status}): ${text}`);
   }
-  const body = (await res.json()) as { cid?: string };
-  if (!body.cid) {
-    throw new Error("PLC log/last response missing cid");
-  }
-  return body.cid;
+  const op = (await res.json()) as
+    | SignedGenesisOp
+    | SignedUpdateOp
+    | SignedTombstoneOp;
+  return cidForOp(op);
 }
 
 // ============================================================================

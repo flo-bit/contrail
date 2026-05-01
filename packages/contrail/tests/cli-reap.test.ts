@@ -7,6 +7,8 @@ import {
   buildTombstoneOp,
   signTombstoneOp,
   submitTombstoneOp,
+  cidForOp,
+  type SignedGenesisOp,
 } from "../src/core/community/plc";
 import { runReap } from "../src/cli/commands/reap";
 import type { Database } from "../src/core/types";
@@ -60,11 +62,25 @@ interface PlcCall {
   body: any;
 }
 
+/** Stand-in for what PLC's `/log/last` actually returns: the bare signed op
+ *  object, no envelope. `getLastOpCid` computes the CID locally via cidForOp. */
+const FAKE_LAST_OP: SignedGenesisOp = {
+  type: "plc_operation",
+  prev: null,
+  rotationKeys: ["did:key:zQ3shfakerotation00000000000000000000000000000000000"],
+  verificationMethods: { atproto: "did:key:zQ3shfakeverif00000000000000000000000000000000000000" },
+  alsoKnownAs: ["at://fixture.pds.test"],
+  services: {
+    atproto_pds: { type: "AtprotoPersonalDataServer", endpoint: "https://pds.test" },
+  },
+  sig: "fakesigfakesigfakesigfakesigfakesigfakesigfakesigfakesigfakesigfakesigfakesigfakesigfak",
+};
+
 function makeFakeFetch(calls: PlcCall[]): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/log/last")) {
-      return new Response(JSON.stringify({ cid: "bafyreigenesisprev" }), {
+      return new Response(JSON.stringify(FAKE_LAST_OP), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -178,7 +194,7 @@ describe("runReap (cli reap)", () => {
     expect(calls[0]!.url).toBe("https://plc.test/did:plc:orphan");
     expect(calls[0]!.method).toBe("POST");
     expect(calls[0]!.body.type).toBe("plc_tombstone");
-    expect(calls[0]!.body.prev).toBe("bafyreigenesisprev");
+    expect(calls[0]!.body.prev).toBe(await cidForOp(FAKE_LAST_OP));
     expect(typeof calls[0]!.body.sig).toBe("string");
 
     // Original row removed from provision_attempts.

@@ -140,10 +140,7 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
 
     const unsigned = buildTombstoneOp(prev);
     const signed = await signTombstoneOp(unsigned, rotationJwk);
-    // Tombstone ops have type 'plc_tombstone'; cidForOp's signed-op union is
-    // typed for genesis/update, but the CBOR encoder doesn't care — cast to
-    // re-use the existing CID derivation.
-    const opCid = await cidForOp(signed as never);
+    const opCid = await cidForOp(signed);
 
     if (opts.dryRun) {
       opts.logger.log(

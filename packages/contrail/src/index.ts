@@ -140,6 +140,7 @@ export {
   buildTombstoneOp,
   signTombstoneOp,
   submitTombstoneOp,
+  cidForOp,
   ProvisionOrchestrator,
 } from "./core/community";
 export type {
