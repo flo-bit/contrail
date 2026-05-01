@@ -23,6 +23,7 @@ describe("provision_attempts adapter", () => {
       inviteCode: "code-1",
       encryptedSigningKey: "sk-enc",
       encryptedRotationKey: "rk-enc",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
 
     const row = await adapter.getProvisionAttempt("a1");
@@ -60,6 +61,7 @@ describe("provision_attempts adapter", () => {
       email: "noinv@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
     const row = await adapter.getProvisionAttempt("a-no-invite");
     expect(row?.inviteCode).toBeNull();
@@ -74,6 +76,7 @@ describe("provision_attempts adapter", () => {
       email: "abc@x.test",
       encryptedSigningKey: "sk-enc",
       encryptedRotationKey: "rk-enc",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
 
     const initial = await adapter.getProvisionAttempt("a1");
@@ -116,6 +119,7 @@ describe("provision_attempts adapter", () => {
       email: "pwd@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
     expect((await adapter.getProvisionAttempt("a-pwd"))?.encryptedPassword).toBeNull();
 
@@ -137,6 +141,7 @@ describe("provision_attempts adapter", () => {
         email: `${id}@x.test`,
         encryptedSigningKey: "sk",
         encryptedRotationKey: "rk",
+        callerRotationDidKey: "did:key:zCallerStub",
       });
     }
     await adapter.updateProvisionStatus("a2", "genesis_submitted");
@@ -157,6 +162,7 @@ describe("provision_attempts adapter", () => {
       email: "fresh@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
     // A huge cutoff means "only return rows older than 1 hour" — fresh row excluded.
     const stale = await adapter.listProvisionAttemptsByStatus("keys_generated", 60 * 60 * 1000);
@@ -172,6 +178,7 @@ describe("provision_attempts adapter", () => {
       email: "first@x.test",
       encryptedSigningKey: "sk",
       encryptedRotationKey: "rk",
+      callerRotationDidKey: "did:key:zCallerStub",
     });
     await expect(
       adapter.createProvisionAttempt({
@@ -182,6 +189,7 @@ describe("provision_attempts adapter", () => {
         email: "second@x.test",
         encryptedSigningKey: "sk",
         encryptedRotationKey: "rk",
+        callerRotationDidKey: "did:key:zCallerStub",
       })
     ).rejects.toThrow();
   });

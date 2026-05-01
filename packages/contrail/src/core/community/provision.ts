@@ -26,7 +26,6 @@ import { decodeJwtExp } from "./pds";
 import { mintServiceAuthJwt } from "./service-auth";
 import type { CommunityAdapter } from "./adapter";
 import type { CredentialCipher } from "./credentials";
-import type { CustodyMode } from "./types";
 
 export interface PlcClient {
   submit(did: string, op: any): Promise<unknown>;
@@ -93,23 +92,21 @@ export interface ProvisionInput {
   email: string;
   password: string;
   inviteCode?: string;
-  /** Optional caller-supplied rotation public key (did:key:z…). When present,
-   *  switches the flow to self-sovereign custody: the caller's key occupies
-   *  rotationKeys[0] in the genesis op, Contrail's generated key is the
-   *  subordinate, and after activation Contrail mints a revocable app password
-   *  (via createAppPassword) for ongoing publishing instead of persisting the
-   *  user's account password. */
-  rotationKey?: string;
+  /** Caller-supplied rotation public key (did:key:z…). Sits at rotationKeys[0]
+   *  in the genesis op; Contrail's generated key is the subordinate at [1].
+   *  After activation Contrail mints a revocable app password (via
+   *  createAppPassword) for ongoing publishing — the user's account password
+   *  is never persisted. */
+  rotationKey: string;
 }
 
 export interface ProvisionResult {
   attemptId: string;
   did: string;
   status: "activated";
-  /** Only present in self-sovereign custody mode. The caller is expected to
-   *  store these — Contrail does NOT retain the user's root password once the
-   *  app password has been minted. */
-  rootCredentials?: {
+  /** The caller is expected to store these — Contrail does NOT retain the
+   *  user's root password once the app password has been minted. */
+  rootCredentials: {
     handle: string;
     password: string;
     recoveryHint: string;
@@ -122,38 +119,33 @@ export class ProvisionOrchestrator {
   async provision(input: ProvisionInput): Promise<ProvisionResult> {
     const { adapter, cipher, plc, pds, pdsDid } = this.deps;
 
-    const custodyMode: CustodyMode = input.rotationKey ? "self_sovereign" : "managed";
-    if (input.rotationKey !== undefined && !isDidKeyZ(input.rotationKey)) {
+    if (!isDidKeyZ(input.rotationKey)) {
       throw new Error(
         `rotationKey must be a did:key:z… string (got: ${input.rotationKey.slice(0, 24)}…)`
       );
     }
 
-    // Idempotent retry path. The C3 contract: a caller that gets a 5xx with
-    // an attemptId can re-invoke provision with the SAME attemptId and the
-    // orchestrator picks up where it left off. The shape we recover from
-    // here is a self-sovereign attempt that completed activation but whose
-    // post-activation createAppPassword failed (no encryptedPassword stored).
-    // Other partial states (e.g. status='account_created') are out of scope
-    // for this fix — they should use resumeFromAccountCreated.
+    // Idempotent retry: a caller that gets a 5xx with an attemptId can
+    // re-invoke provision with the SAME attemptId and the orchestrator picks
+    // up where it left off. The shape we recover from here is an attempt that
+    // completed activation but whose post-activation createAppPassword failed
+    // (no encryptedPassword stored). Other partial states
+    // (e.g. status='account_created') are out of scope — they should use
+    // resumeFromAccountCreated.
     const existing = await adapter.getProvisionAttempt(input.attemptId);
     if (existing) {
-      if (
-        existing.status === "activated" &&
-        existing.custodyMode === "self_sovereign" &&
-        !existing.encryptedPassword
-      ) {
+      if (existing.status === "activated" && !existing.encryptedPassword) {
         return this.retryAppPasswordOnly(input, existing);
       }
       throw new Error(
         `provision attempt ${input.attemptId} already exists at status="${existing.status}"; ` +
-          `retry is only supported for self-sovereign attempts that failed at createAppPassword`
+          `retry is only supported for attempts that failed at createAppPassword`
       );
     }
 
-    // Step 0: keys + persist. In self-sovereign mode, Contrail still generates
-    // a SUBORDINATE rotation key (rotationKeys[1]) so it retains a path to
-    // submit subsequent PLC ops. The caller's key sits at rotationKeys[0].
+    // Step 0: keys + persist. Contrail generates a SUBORDINATE rotation key
+    // (rotationKeys[1]) so it retains a path to submit subsequent PLC ops;
+    // the caller's key sits at rotationKeys[0].
     const signingKey = await generateKeyPair();
     const contrailRotation = await generateKeyPair();
     const encryptedSigning = await cipher.encrypt(
@@ -163,13 +155,8 @@ export class ProvisionOrchestrator {
       JSON.stringify(contrailRotation.privateJwk)
     );
 
-    const genesisRotationKeys =
-      custodyMode === "self_sovereign"
-        ? [input.rotationKey!, contrailRotation.publicDidKey]
-        : [contrailRotation.publicDidKey];
-
     const unsigned = buildGenesisOp({
-      rotationKeys: genesisRotationKeys,
+      rotationKeys: [input.rotationKey, contrailRotation.publicDidKey],
       verificationMethodAtproto: signingKey.publicDidKey,
       alsoKnownAs: [`at://${input.handle}`],
       services: {
@@ -179,9 +166,8 @@ export class ProvisionOrchestrator {
         },
       },
     });
-    // Genesis is signed with Contrail's rotation key — it's a valid signer in
-    // both modes (rotationKeys[0] in managed, rotationKeys[1] in self-sovereign;
-    // either way, it's listed so PLC accepts the signature).
+    // Genesis is signed with Contrail's subordinate rotation key — it's listed
+    // at rotationKeys[1] so PLC accepts the signature.
     const signedGenesis = await signGenesisOp(unsigned, contrailRotation.privateJwk);
     const did = await computeDidPlc(signedGenesis);
 
@@ -194,9 +180,7 @@ export class ProvisionOrchestrator {
       inviteCode: input.inviteCode ?? null,
       encryptedSigningKey: encryptedSigning,
       encryptedRotationKey: encryptedRotation,
-      custodyMode,
-      callerRotationDidKey:
-        custodyMode === "self_sovereign" ? input.rotationKey! : null,
+      callerRotationDidKey: input.rotationKey,
     });
 
     // Step 1: PLC genesis
@@ -236,17 +220,7 @@ export class ProvisionOrchestrator {
           inviteCode: input.inviteCode,
         },
       });
-      // Managed mode persists the user's account password as the publishing
-      // credential. Self-sovereign mode does NOT persist it here — we'll mint
-      // a separate app password after activation and persist that instead.
-      if (custodyMode === "managed") {
-        const encryptedPassword = await cipher.encrypt(input.password);
-        await adapter.updateProvisionStatus(input.attemptId, "account_created", {
-          encryptedPassword,
-        });
-      } else {
-        await adapter.updateProvisionStatus(input.attemptId, "account_created");
-      }
+      await adapter.updateProvisionStatus(input.attemptId, "account_created");
     } catch (err: any) {
       await adapter.updateProvisionStatus(input.attemptId, "genesis_submitted", {
         lastError: `createAccount: ${err.message}`,
@@ -261,8 +235,7 @@ export class ProvisionOrchestrator {
       accessJwt: session.accessJwt,
       rotationPrivateJwk: contrailRotation.privateJwk,
       rotationPublicDidKey: contrailRotation.publicDidKey,
-      callerRotationPublicDidKey:
-        custodyMode === "self_sovereign" ? input.rotationKey! : null,
+      callerRotationPublicDidKey: input.rotationKey,
       prevCid: await cidForOp(signedGenesis),
     });
 
@@ -275,46 +248,40 @@ export class ProvisionOrchestrator {
       accessExp: decodeJwtExp(session.accessJwt),
     });
 
-    // Self-sovereign post-step: mint a revocable app password so we can
-    // publish without holding the user's root password. Failure here leaves
-    // the row at status=activated (the account IS activated upstream) with a
-    // last_error breadcrumb; the caller can retry the same provision call
-    // with the same attemptId and it will pick up at createAppPassword only
-    // (see retryAppPasswordOnly).
-    if (custodyMode === "self_sovereign") {
-      try {
-        const minted = await pds.createAppPassword({
-          pdsUrl: input.pdsEndpoint,
-          accessJwt: session.accessJwt,
-          name: `contrail-${input.attemptId}`,
-        });
-        const encryptedPassword = await cipher.encrypt(minted.password);
-        await adapter.updateProvisionStatus(input.attemptId, "activated", {
-          encryptedPassword,
-        });
-      } catch (err: any) {
-        await adapter.updateProvisionStatus(input.attemptId, "activated", {
-          lastError: `createAppPassword: ${err.message}`,
-        });
-        // Wrap the error so the route handler / log readers see immediately
-        // that this is the recoverable retry case, not a generic PDS failure.
-        throw new Error(`createAppPassword: ${err.message}`);
-      }
-
-      return {
-        attemptId: input.attemptId,
-        did,
-        status: "activated",
-        rootCredentials: {
-          handle: input.handle,
-          password: input.password,
-          recoveryHint:
-            "store this — Contrail does not retain it",
-        },
-      };
+    // Mint a revocable app password so we can publish without holding the
+    // user's root password. Failure here leaves the row at status=activated
+    // (the account IS activated upstream) with a last_error breadcrumb; the
+    // caller can retry with the same attemptId and it will pick up at
+    // createAppPassword only (see retryAppPasswordOnly).
+    try {
+      const minted = await pds.createAppPassword({
+        pdsUrl: input.pdsEndpoint,
+        accessJwt: session.accessJwt,
+        name: `contrail-${input.attemptId}`,
+      });
+      const encryptedPassword = await cipher.encrypt(minted.password);
+      await adapter.updateProvisionStatus(input.attemptId, "activated", {
+        encryptedPassword,
+      });
+    } catch (err: any) {
+      await adapter.updateProvisionStatus(input.attemptId, "activated", {
+        lastError: `createAppPassword: ${err.message}`,
+      });
+      // Wrap the error so the route handler / log readers see immediately
+      // that this is the recoverable retry case, not a generic PDS failure.
+      throw new Error(`createAppPassword: ${err.message}`);
     }
 
-    return { attemptId: input.attemptId, did, status: "activated" };
+    return {
+      attemptId: input.attemptId,
+      did,
+      status: "activated",
+      rootCredentials: {
+        handle: input.handle,
+        password: input.password,
+        recoveryHint: "store this — Contrail does not retain it",
+      },
+    };
   }
 
   /** C3 retry path. Triggered when provision() is called with an attemptId
@@ -432,11 +399,10 @@ export class ProvisionOrchestrator {
     accessJwt: string;
     rotationPrivateJwk: JsonWebKey;
     rotationPublicDidKey: string;
-    /** Caller-supplied rotation public did:key (self-sovereign mode). When
-     *  present, kept at index 0 of the update op's rotationKeys so the caller
-     *  retains highest-priority rotation authority on the DID. Null/undefined
-     *  for managed mode. */
-    callerRotationPublicDidKey?: string | null;
+    /** Caller-supplied rotation public did:key. Kept at index 0 of the update
+     *  op's rotationKeys so the caller retains highest-priority rotation
+     *  authority on the DID. */
+    callerRotationPublicDidKey: string;
     prevCid: string;
   }): Promise<void> {
     const { adapter, plc, pds } = this.deps;
@@ -447,9 +413,7 @@ export class ProvisionOrchestrator {
         pdsUrl: args.pdsEndpoint,
         accessJwt: args.accessJwt,
       });
-      const baseRotationKeys = args.callerRotationPublicDidKey
-        ? [args.callerRotationPublicDidKey, args.rotationPublicDidKey]
-        : [args.rotationPublicDidKey];
+      const baseRotationKeys = [args.callerRotationPublicDidKey, args.rotationPublicDidKey];
       const updatedRotationKeys = [
         ...baseRotationKeys,
         ...recommended.rotationKeys.filter((k) => !baseRotationKeys.includes(k)),

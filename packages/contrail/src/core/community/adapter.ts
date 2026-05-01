@@ -7,7 +7,6 @@ import type {
   CommunityRow,
   CreateCommunityInviteInput,
   CreateProvisionAttemptInput,
-  CustodyMode,
   ProvisionAttemptRow,
   ProvisionStatus,
 } from "./types";
@@ -22,7 +21,6 @@ function mapCommunityRow(row: any): CommunityRow {
     mode: row.mode as CommunityMode,
     pdsEndpoint: row.pds_endpoint ?? null,
     identifier: row.identifier ?? null,
-    custodyMode: (row.custody_mode ?? null) as CustodyMode | null,
     createdBy: row.created_by,
     createdAt: toNum(row.created_at),
     deletedAt: row.deleted_at == null ? null : toNum(row.deleted_at),
@@ -61,17 +59,11 @@ export interface CreateProvisionedCommunityInput {
   pdsEndpoint: string;
   handle: string;
   /** Encrypted PDS app password — already-encrypted base64 envelope. The
-   *  orchestrator persisted this on the provision_attempts row at step 2
-   *  (managed) or after a post-activation `createAppPassword` call
-   *  (self_sovereign); the route handler hands it through so we keep one
-   *  source of truth for the credential and avoid round-tripping the
-   *  plaintext password through the adapter. */
+   *  orchestrator persisted this on the provision_attempts row after a
+   *  post-activation `createAppPassword` call; the route handler hands it
+   *  through so we keep one source of truth for the credential and avoid
+   *  round-tripping the plaintext password through the adapter. */
   appPasswordEncrypted: string;
-  /** Custody mode the provision attempt was created with. Defaults to
-   *  `"managed"` for backwards compatibility with callers (and tests) that
-   *  pre-date custody mode tracking; the route handler always sets this
-   *  explicitly from the provision_attempts row. */
-  custodyMode?: CustodyMode;
   createdBy: string;
 }
 
@@ -109,7 +101,6 @@ export class CommunityAdapter {
       mode: "adopt",
       pdsEndpoint: input.pdsEndpoint,
       identifier: input.identifier,
-      custodyMode: null,
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
@@ -120,18 +111,16 @@ export class CommunityAdapter {
     input: CreateProvisionedCommunityInput
   ): Promise<CommunityRow> {
     const now = Date.now();
-    const custodyMode = input.custodyMode ?? "managed";
     await this.db
       .prepare(
-        `INSERT INTO communities (did, mode, pds_endpoint, app_password_encrypted, identifier, custody_mode, created_by, created_at)
-         VALUES (?, 'provision', ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO communities (did, mode, pds_endpoint, app_password_encrypted, identifier, created_by, created_at)
+         VALUES (?, 'provision', ?, ?, ?, ?, ?)`
       )
       .bind(
         input.did,
         input.pdsEndpoint,
         input.appPasswordEncrypted,
         input.handle,
-        custodyMode,
         input.createdBy,
         now
       )
@@ -141,7 +130,6 @@ export class CommunityAdapter {
       mode: "provision",
       pdsEndpoint: input.pdsEndpoint,
       identifier: input.handle,
-      custodyMode,
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
@@ -168,7 +156,6 @@ export class CommunityAdapter {
       mode: "mint",
       pdsEndpoint: null,
       identifier: null,
-      custodyMode: null,
       createdBy: input.createdBy,
       createdAt: now,
       deletedAt: null,
@@ -451,9 +438,9 @@ export class CommunityAdapter {
       .prepare(
         `INSERT INTO provision_attempts (
           attempt_id, did, status, pds_endpoint, handle, email, invite_code,
-          encrypted_signing_key, encrypted_rotation_key, custody_mode,
+          encrypted_signing_key, encrypted_rotation_key,
           caller_rotation_did_key, created_at, updated_at
-        ) VALUES (?, ?, 'keys_generated', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, 'keys_generated', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         input.attemptId,
@@ -464,8 +451,7 @@ export class CommunityAdapter {
         input.inviteCode ?? null,
         input.encryptedSigningKey,
         input.encryptedRotationKey,
-        input.custodyMode ?? "managed",
-        input.callerRotationDidKey ?? null,
+        input.callerRotationDidKey,
         now,
         now
       )
@@ -542,9 +528,9 @@ export class CommunityAdapter {
       .prepare(
         `INSERT INTO provision_attempts_orphaned_archive (
           attempt_id, did, pds_endpoint, handle, email, invite_code,
-          custody_mode, last_status, last_error,
+          last_status, last_error,
           archived_at, tombstone_op_cid, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         row.attempt_id,
@@ -553,7 +539,6 @@ export class CommunityAdapter {
         row.handle,
         row.email,
         row.invite_code ?? null,
-        row.custody_mode ?? null,
         row.status,
         row.last_error ?? null,
         now,
@@ -641,7 +626,6 @@ function rowToProvisionAttempt(r: Record<string, any>): ProvisionAttemptRow {
     encryptedSigningKey: r.encrypted_signing_key ?? null,
     encryptedRotationKey: r.encrypted_rotation_key ?? null,
     encryptedPassword: r.encrypted_password ?? null,
-    custodyMode: (r.custody_mode ?? "managed") as CustodyMode,
     callerRotationDidKey: r.caller_rotation_did_key ?? null,
     genesisSubmittedAt: r.genesis_submitted_at == null ? null : Number(r.genesis_submitted_at),
     accountCreatedAt: r.account_created_at == null ? null : Number(r.account_created_at),

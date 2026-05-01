@@ -241,17 +241,22 @@ export function registerCommunityRoutes(
           rotationKey?: string;
         }
       | null;
-    if (!body?.handle || !body.email || !body.password || !body.pdsEndpoint) {
+    if (
+      !body?.handle ||
+      !body.email ||
+      !body.password ||
+      !body.pdsEndpoint ||
+      !body.rotationKey
+    ) {
       return c.json(
         {
           error: "InvalidRequest",
-          message: "handle, email, password, pdsEndpoint required",
+          message: "handle, email, password, pdsEndpoint, rotationKey required",
         },
         400
       );
     }
     if (
-      body.rotationKey !== undefined &&
       !(typeof body.rotationKey === "string" && body.rotationKey.startsWith("did:key:z"))
     ) {
       return c.json(
@@ -319,8 +324,6 @@ export function registerCommunityRoutes(
 
     // Hand the already-encrypted password from the provision_attempts row to
     // the communities row, keeping a single source of truth for the credential.
-    // The custody_mode also flows from the attempt row so the route never
-    // fabricates a default — every provisioned community is explicitly tagged.
     const attempt = await community.getProvisionAttempt(attemptId);
     if (!attempt?.encryptedPassword) {
       return c.json(
@@ -337,7 +340,6 @@ export function registerCommunityRoutes(
       pdsEndpoint: body.pdsEndpoint,
       handle: body.handle,
       appPasswordEncrypted: attempt.encryptedPassword,
-      custodyMode: attempt.custodyMode,
       createdBy: sa.issuer,
     });
 

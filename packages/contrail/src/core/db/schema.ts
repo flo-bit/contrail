@@ -250,9 +250,6 @@ const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
   "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
-  // CREATE IF NOT EXISTS in buildCommunitySchema short-circuits on an
-  // existing pre-PR communities table, so we have to ALTER explicitly.
-  "ALTER TABLE communities ADD COLUMN custody_mode TEXT",
 ];
 
 async function runMigrations(db: Database): Promise<void> {

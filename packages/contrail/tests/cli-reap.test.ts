@@ -36,6 +36,7 @@ async function seedAttempt(
     email: `${opts.attemptId}@x.test`,
     encryptedSigningKey: await cipher.encrypt("{}"),
     encryptedRotationKey: encryptedRotation,
+    callerRotationDidKey: kp.publicDidKey,
   });
   if (opts.status !== "keys_generated") {
     // Walk the row to its target status. We bypass updateProvisionStatus's

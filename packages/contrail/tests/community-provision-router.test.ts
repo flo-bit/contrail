@@ -89,6 +89,13 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url === `${PDS_ENDPOINT}/xrpc/com.atproto.server.activateAccount` && method === "POST") {
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }
+  // PDS createAppPassword (post-activation, mints publishing credential).
+  if (url === `${PDS_ENDPOINT}/xrpc/com.atproto.server.createAppPassword` && method === "POST") {
+    return new Response(
+      JSON.stringify({ name: body.name, password: "minted-app-pw" }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  }
 
   return new Response(`unmocked: ${method} ${url}`, { status: 404 });
 }
@@ -155,6 +162,7 @@ describe("POST /xrpc/{ns}.community.provision", () => {
       email: "x@x.test",
       password: "p",
       pdsEndpoint: PDS_ENDPOINT,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(401);
   });
@@ -174,6 +182,7 @@ describe("POST /xrpc/{ns}.community.provision", () => {
       password: "secret",
       inviteCode: "code-x",
       pdsEndpoint: PDS_ENDPOINT,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { communityDid: string; status: string };
@@ -225,6 +234,7 @@ describe("POST /xrpc/{ns}.community.provision", () => {
       email: "audtest@x.test",
       password: "secret",
       pdsEndpoint: PDS_ENDPOINT,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
 

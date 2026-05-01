@@ -23,15 +23,6 @@ export function isAccessLevel(v: unknown): v is AccessLevel {
 
 export type CommunityMode = "adopt" | "mint" | "provision";
 
-/** Who holds the rotation private key for a provisioned community.
- *  - `managed`: Contrail generated and stores the only rotation key. Simpler
- *    UX; Contrail can fully recover the DID at any time.
- *  - `self_sovereign`: caller supplied their own rotation public key. Contrail
- *    holds a SUBORDINATE rotation key as `rotationKeys[1]` and uses a minted
- *    app password for ongoing publishing. The caller can recover the DID
- *    independently if Contrail is unavailable. */
-export type CustodyMode = "managed" | "self_sovereign";
-
 export const PROVISION_STATUSES = [
   "keys_generated",
   "genesis_submitted",
@@ -53,11 +44,9 @@ export interface ProvisionAttemptRow {
   encryptedSigningKey: string | null;
   encryptedRotationKey: string | null;
   encryptedPassword: string | null;
-  custodyMode: CustodyMode;
-  /** For self-sovereign attempts only: the caller-supplied rotation public
-   *  did:key, persisted so PLC update ops can keep it as rotationKeys[0]
-   *  during recovery / resume. Null for managed mode. */
-  callerRotationDidKey: string | null;
+  /** Caller-supplied rotation public did:key, persisted so PLC update ops
+   *  (initial + resume) can keep it as rotationKeys[0]. */
+  callerRotationDidKey: string;
   genesisSubmittedAt: number | null;
   accountCreatedAt: number | null;
   didDocUpdatedAt: number | null;
@@ -76,14 +65,9 @@ export interface CreateProvisionAttemptInput {
   inviteCode?: string | null;
   encryptedSigningKey: string;
   encryptedRotationKey: string;
-  /** Defaults to `"managed"` for backwards compatibility with callers (and
-   *  tests) that pre-date custody mode tracking. The orchestrator always sets
-   *  this explicitly. */
-  custodyMode?: CustodyMode;
-  /** For self-sovereign attempts: the caller-supplied rotation public did:key.
-   *  The orchestrator persists this so PLC update ops (initial + resume) can
-   *  keep it as rotationKeys[0]. Null/undefined for managed mode. */
-  callerRotationDidKey?: string | null;
+  /** Caller-supplied rotation public did:key. The orchestrator persists this
+   *  so PLC update ops (initial + resume) can keep it as rotationKeys[0]. */
+  callerRotationDidKey: string;
 }
 
 export interface CommunityConfig {
@@ -116,9 +100,6 @@ export interface CommunityRow {
   mode: CommunityMode;
   pdsEndpoint: string | null;
   identifier: string | null;
-  /** Only meaningful for `mode = 'provision'`. Null for legacy adopt/mint rows
-   *  and for older provisioned rows that pre-date custody-mode tracking. */
-  custodyMode: CustodyMode | null;
   createdBy: string;
   createdAt: number;
   deletedAt: number | null;

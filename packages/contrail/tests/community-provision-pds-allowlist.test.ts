@@ -62,6 +62,12 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url === `${ALLOWED_PDS}/xrpc/com.atproto.server.activateAccount` && method === "POST") {
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }
+  if (url === `${ALLOWED_PDS}/xrpc/com.atproto.server.createAppPassword` && method === "POST") {
+    return new Response(
+      JSON.stringify({ name: body.name, password: "minted-app-pw" }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  }
   return new Response(`unmocked: ${method} ${url}`, { status: 404 });
 }
 
@@ -117,6 +123,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       email: "x@x.test",
       password: "secret",
       pdsEndpoint: ATTACKER_PDS,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(400);
     const j = (await res.json()) as { error: string; message: string };
@@ -132,6 +139,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       password: "secret",
       inviteCode: "code-x",
       pdsEndpoint: ALLOWED_PDS,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
   });
@@ -144,6 +152,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       password: "secret",
       inviteCode: "code-x",
       pdsEndpoint: ALLOWED_PDS,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
   });
@@ -156,6 +165,7 @@ describe("provision pdsEndpoint allowlist (M3)", () => {
       password: "secret",
       inviteCode: "code-x",
       pdsEndpoint: ALLOWED_PDS,
+      rotationKey: "did:key:zStubCallerRotationKey",
     });
     expect(res.status).toBe(200);
   });

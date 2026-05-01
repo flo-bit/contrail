@@ -6,6 +6,8 @@ import { ProvisionOrchestrator } from "../src/core/community/provision";
 import { generateKeyPair } from "../src/core/community/plc";
 import { createTestDbWithSchema } from "./helpers";
 
+const STUB_ROTATION_KEY = "did:key:zStubCallerRotationKeyForTests";
+
 function mockPlc(opts: { lastOpCid?: string } = {}) {
   const ops: any[] = [];
   return {
@@ -46,6 +48,9 @@ function mockPds() {
     async activateAccount() {
       return;
     },
+    async createAppPassword() {
+      return { password: "minted-app-pw" };
+    },
   };
 }
 
@@ -75,6 +80,7 @@ describe("ProvisionOrchestrator", () => {
       email: "h@x.test",
       password: "p",
       inviteCode: "code",
+      rotationKey: STUB_ROTATION_KEY,
     });
 
     expect(result.did).toBeTruthy();
@@ -102,6 +108,7 @@ describe("ProvisionOrchestrator", () => {
       email: "h@x.test",
       password: "p",
       inviteCode: "code",
+      rotationKey: STUB_ROTATION_KEY,
     });
 
     const cached = await adapter.getSession(result.did);
@@ -136,6 +143,9 @@ describe("ProvisionOrchestrator", () => {
         };
       },
       async activateAccount() {},
+      async createAppPassword() {
+        return { password: "minted" };
+      },
     };
 
     const orch = new ProvisionOrchestrator({
@@ -151,6 +161,7 @@ describe("ProvisionOrchestrator", () => {
       handle: "h.test",
       email: "h@x.test",
       password: "p",
+      rotationKey: STUB_ROTATION_KEY,
     });
     expect(createCalled).toBe(true);
   });
@@ -178,6 +189,7 @@ describe("ProvisionOrchestrator", () => {
         handle: "h.test",
         email: "h@x.test",
         password: "p",
+        rotationKey: STUB_ROTATION_KEY,
       })
     ).rejects.toThrow(/bad invite/);
     const row = await adapter.getProvisionAttempt("a1");
@@ -201,6 +213,7 @@ describe("ProvisionOrchestrator", () => {
       email: "h@x.test",
       encryptedSigningKey: encryptedSigning,
       encryptedRotationKey: encryptedRotation,
+      callerRotationDidKey: rotationKey.publicDidKey,
     });
     await adapter.updateProvisionStatus("a1", "genesis_submitted");
     await adapter.updateProvisionStatus("a1", "account_created", {
@@ -230,6 +243,9 @@ describe("ProvisionOrchestrator", () => {
       async activateAccount(input: { pdsUrl: string; accessJwt: string }) {
         expect(input.accessJwt).toBe("AT");
         activateCalled = true;
+      },
+      async createAppPassword() {
+        throw new Error("resume must not call createAppPassword");
       },
     };
 

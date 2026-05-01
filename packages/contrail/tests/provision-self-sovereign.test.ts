@@ -62,7 +62,7 @@ function mockPds(opts: { mintedPassword?: string } = {}) {
   };
 }
 
-describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
+describe("ProvisionOrchestrator — caller-supplied rotation key", () => {
   let adapter: CommunityAdapter;
   let cipher: CredentialCipher;
   beforeEach(async () => {
@@ -72,7 +72,7 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     adapter = new CommunityAdapter(db);
   });
 
-  it("self-sovereign: genesis includes caller rotation key, mints app password, response carries rootCredentials", async () => {
+  it("genesis includes caller rotation key, mints app password, response carries rootCredentials", async () => {
     const callerKeyPair = await generateKeyPair();
     const callerRotationDidKey = callerKeyPair.publicDidKey;
     const userPassword = "user-supplied-root-pw";
@@ -109,11 +109,10 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     expect(result.rootCredentials!.handle).toBe("h.test");
     expect(typeof result.rootCredentials!.recoveryHint).toBe("string");
 
-    // Persisted attempt row carries the new mode + activated status.
+    // Persisted attempt row reaches activated status.
     const row = await adapter.getProvisionAttempt("ss1");
     expect(row).toBeTruthy();
     expect(row!.status).toBe("activated");
-    expect(row!.custodyMode).toBe("self_sovereign");
 
     // Genesis op submitted to PLC has BOTH rotation keys, with the caller's first.
     expect(plc.ops.length).toBeGreaterThanOrEqual(1);
@@ -153,50 +152,7 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     }
   });
 
-  it("managed (no rotationKey): rootCredentials undefined, encrypted_password is the user's password, custodyMode='managed'", async () => {
-    const userPassword = "user-supplied-pw";
-
-    const plc = mockPlc();
-    const pds = mockPds();
-
-    const orch = new ProvisionOrchestrator({
-      adapter,
-      cipher,
-      plc,
-      pds,
-      pdsDid: "did:web:pds.test",
-    });
-
-    const result = await orch.provision({
-      attemptId: "m1",
-      pdsEndpoint: "https://pds.test",
-      handle: "h.test",
-      email: "h@x.test",
-      password: userPassword,
-      inviteCode: "code",
-    });
-
-    expect(result.status).toBe("activated");
-    expect(result.rootCredentials).toBeUndefined();
-
-    const row = await adapter.getProvisionAttempt("m1");
-    expect(row).toBeTruthy();
-    expect(row!.custodyMode).toBe("managed");
-
-    // The genesis op for managed mode has only one rotation key (contrail's).
-    const genesis = plc.ops[0]!.op;
-    expect(genesis.rotationKeys.length).toBe(1);
-
-    // createAppPassword must NOT be called in managed mode.
-    expect(pds.calls.createAppPassword.length).toBe(0);
-
-    // encrypted_password decrypts to the user's password (existing behavior).
-    expect(row!.encryptedPassword).toBeTruthy();
-    const decryptedPw = await cipher.decryptString(row!.encryptedPassword!);
-    expect(decryptedPw).toBe(userPassword);
-  });
-
-  it("self-sovereign: PLC update op preserves caller's rotation key at index 0", async () => {
+  it("PLC update op preserves caller's rotation key at index 0", async () => {
     // H2 regression guard. The update op (plc.ops[1]) must keep the caller's
     // did:key as rotationKeys[0]. Without threading it through
     // runUpdateAndActivate, the caller's key is dropped and Contrail's
@@ -239,34 +195,7 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     expect(update.rotationKeys).toContain("did:key:zPdsRot");
   });
 
-  it("managed mode: PLC update op rotationKeys are contrail subordinate + recommended (no caller key)", async () => {
-    const plc = mockPlc();
-    const pds = mockPds();
-
-    const orch = new ProvisionOrchestrator({
-      adapter,
-      cipher,
-      plc,
-      pds,
-      pdsDid: "did:web:pds.test",
-    });
-
-    await orch.provision({
-      attemptId: "m-update",
-      pdsEndpoint: "https://pds.test",
-      handle: "h.test",
-      email: "h@x.test",
-      password: "pw",
-    });
-
-    expect(plc.ops.length).toBeGreaterThanOrEqual(2);
-    const update = plc.ops[1]!.op;
-    // Two distinct keys: contrail subordinate (rotationKeys[0]) + recommended.
-    expect(update.rotationKeys.length).toBe(2);
-    expect(update.rotationKeys).toContain("did:key:zPdsRot");
-  });
-
-  it("self-sovereign: createAppPassword failure persists last_error at status=activated and throws (no encryptedPassword)", async () => {
+  it("createAppPassword failure persists last_error at status=activated and throws (no encryptedPassword)", async () => {
     const callerKeyPair = await generateKeyPair();
     const plc = mockPlc();
     const pds = {
@@ -302,7 +231,7 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     expect(row!.lastError).toMatch(/createAppPassword/);
   });
 
-  it("self-sovereign: retry with same attemptId after createAppPassword failure picks up at createAppPassword (no re-mint, no re-createAccount)", async () => {
+  it("retry with same attemptId after createAppPassword failure picks up at createAppPassword (no re-mint, no re-createAccount)", async () => {
     // Simulate the failure-then-retry shape: a first provision call got all
     // the way to createAppPassword and failed; the caller retries with the
     // same attemptId. The orchestrator must NOT re-submit PLC ops, NOT
