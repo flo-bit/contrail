@@ -98,6 +98,14 @@ export interface CommunityConfig {
   resolver?: DidDocumentResolver;
   /** Optional override for the fetch implementation (useful for tests). */
   fetch?: typeof fetch;
+  /** Allowlist of PDS endpoints accepted by `community.provision`. When set
+   *  to a non-empty array, callers must supply a `pdsEndpoint` that matches
+   *  one of these entries exactly; other values are rejected before any PLC
+   *  op is signed. Undefined or empty array → no restriction (back-compat).
+   *  Operators running on a public/multi-tenant Contrail SHOULD set this so
+   *  callers can't mint PLC entries pointing at attacker-controlled PDSes
+   *  signed by Contrail's rotation key. */
+  allowedPdsEndpoints?: string[];
 }
 
 /** Public view of a community row. Encrypted credentials are not included here

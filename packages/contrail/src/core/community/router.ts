@@ -262,6 +262,17 @@ export function registerCommunityRoutes(
       );
     }
 
+    const allowed = cfg.allowedPdsEndpoints;
+    if (allowed && allowed.length > 0 && !allowed.includes(body.pdsEndpoint)) {
+      return c.json(
+        {
+          error: "InvalidRequest",
+          message: `pdsEndpoint not in allowlist`,
+        },
+        400
+      );
+    }
+
     // TODO: production should resolve the target PDS's DID dynamically (via
     // com.atproto.server.describeServer on body.pdsEndpoint) so the
     // service-auth JWT's `aud` matches what the PDS publishes for itself.
