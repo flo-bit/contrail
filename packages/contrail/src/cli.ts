@@ -10,6 +10,7 @@ import { registerBackfill } from "./cli/commands/backfill.js";
 import { registerRefresh } from "./cli/commands/refresh.js";
 import { registerDev } from "./cli/commands/dev.js";
 import { registerAppendScheduled } from "./cli/commands/append-scheduled.js";
+import { registerReap } from "./cli/commands/reap.js";
 
 const cli = cac("contrail");
 
@@ -17,6 +18,7 @@ registerBackfill(cli);
 registerRefresh(cli);
 registerDev(cli);
 registerAppendScheduled(cli);
+registerReap(cli);
 
 cli.help();
 

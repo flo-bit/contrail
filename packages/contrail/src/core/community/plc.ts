@@ -220,9 +220,9 @@ export async function cidForOp(
   return "b" + base32Lower(cidBytes);
 }
 
-/** Fetch the CID of the most recent op in a DID's PLC log. Used by the
- *  provision recovery sweeper to obtain the genesis op's CID at resume time
- *  (we can't recompute it locally because ECDSA signatures are randomized). */
+/** Fetch the CID of the most recent op in a DID's PLC log. Used during
+ *  provision recovery to obtain the genesis op's CID at resume time (we can't
+ *  recompute it locally because ECDSA signatures are randomized). */
 export async function getLastOpCid(
   plcDirectory: string,
   did: string,
@@ -240,6 +240,57 @@ export async function getLastOpCid(
     throw new Error("PLC log/last response missing cid");
   }
   return body.cid;
+}
+
+// ============================================================================
+// Tombstone op construction
+// A tombstone op marks a DID's PLC log as terminated — no further ops will be
+// accepted. Used by `contrail reap` to clean up DIDs whose PDS account is
+// permanently unrecoverable.
+// ============================================================================
+
+export interface UnsignedTombstoneOp {
+  type: "plc_tombstone";
+  prev: string;
+}
+
+export interface SignedTombstoneOp extends UnsignedTombstoneOp {
+  sig: string; // base64url, unpadded
+}
+
+export function buildTombstoneOp(prev: string): UnsignedTombstoneOp {
+  return { type: "plc_tombstone", prev };
+}
+
+/** Sign a tombstone op with a rotation key's private JWK. */
+export async function signTombstoneOp(
+  op: UnsignedTombstoneOp,
+  signerPrivateJwk: JsonWebKey
+): Promise<SignedTombstoneOp> {
+  const encoded = encodeDagCbor(op);
+  const sigBytes = await signBytes(signerPrivateJwk, encoded);
+  return { ...op, sig: bytesToB64url(sigBytes) };
+}
+
+/** Submit a signed tombstone op to the PLC directory. PLC accepts genesis,
+ *  update, and tombstone ops at the same `${plcDirectory}/${did}` endpoint. */
+export async function submitTombstoneOp(
+  plcDirectory: string,
+  did: string,
+  signedOp: SignedTombstoneOp,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<void> {
+  const f = opts.fetch ?? fetch;
+  const url = `${plcDirectory.replace(/\/$/, "")}/${did}`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(signedOp),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PLC tombstone submit failed (${res.status}): ${text}`);
+  }
 }
 
 /** Submit a signed genesis op to the PLC directory. */

@@ -22,9 +22,9 @@ export interface PdsSession {
 
 /** Full result of `com.atproto.server.createSession`, including the optional
  *  `active`/`status` fields a PDS returns when the account is deactivated.
- *  Used by the provision sweeper to detect resumable rows: a 200 response with
- *  `active: false, status: "deactivated"` means the account exists on the PDS
- *  and we can pick up at step 3. */
+ *  An operator-run recovery probe uses these to distinguish a resumable row
+ *  (`active: false, status: "deactivated"` → pick up at step 3) from an
+ *  orphan (createSession 401 → no PDS account exists). */
 export interface PdsCreateSessionResult {
   did: string;
   handle: string;

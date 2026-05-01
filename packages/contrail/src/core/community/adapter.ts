@@ -515,6 +515,58 @@ export class CommunityAdapter {
       .run();
   }
 
+  /** Convenience wrapper: list every row currently in `orphaned` status. */
+  async listOrphanedAttempts(): Promise<ProvisionAttemptRow[]> {
+    return this.listProvisionAttemptsByStatus("orphaned", 0);
+  }
+
+  /** Move an orphaned provision_attempts row into the archive table. The row
+   *  must already be in `orphaned` status — callers (the `contrail reap`
+   *  command) check that. The copy is best-effort atomic per row: insert into
+   *  the archive first, then delete from the live table. If the delete fails,
+   *  the archive row records the attempt and the live row is still present
+   *  for retry. */
+  async archiveOrphanedAttempt(
+    attemptId: string,
+    opts: { tombstoneOpCid?: string | null; notes?: string | null } = {}
+  ): Promise<void> {
+    const row = await this.db
+      .prepare(`SELECT * FROM provision_attempts WHERE attempt_id = ?`)
+      .bind(attemptId)
+      .first<Record<string, any>>();
+    if (!row) {
+      throw new Error(`provision_attempt not found: ${attemptId}`);
+    }
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO provision_attempts_orphaned_archive (
+          attempt_id, did, pds_endpoint, handle, email, invite_code,
+          custody_mode, last_status, last_error,
+          archived_at, tombstone_op_cid, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        row.attempt_id,
+        row.did,
+        row.pds_endpoint,
+        row.handle,
+        row.email,
+        row.invite_code ?? null,
+        row.custody_mode ?? null,
+        row.status,
+        row.last_error ?? null,
+        now,
+        opts.tombstoneOpCid ?? null,
+        opts.notes ?? null
+      )
+      .run();
+    await this.db
+      .prepare(`DELETE FROM provision_attempts WHERE attempt_id = ?`)
+      .bind(attemptId)
+      .run();
+  }
+
   async listProvisionAttemptsByStatus(
     status: ProvisionStatus,
     olderThanMs: number = 0

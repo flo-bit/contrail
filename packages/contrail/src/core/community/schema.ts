@@ -77,6 +77,22 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
     `CREATE INDEX IF NOT EXISTS idx_provision_attempts_status ON provision_attempts(status, updated_at DESC)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_provision_attempts_did ON provision_attempts(did)`,
 
+    `CREATE TABLE IF NOT EXISTS provision_attempts_orphaned_archive (
+      attempt_id TEXT PRIMARY KEY NOT NULL,
+      did TEXT NOT NULL,
+      pds_endpoint TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      email TEXT NOT NULL,
+      invite_code TEXT,
+      custody_mode TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      archived_at ${dialect.bigintType} NOT NULL,
+      tombstone_op_cid TEXT,
+      notes TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_provision_attempts_orphaned_archive_archived_at ON provision_attempts_orphaned_archive(archived_at DESC)`,
+
     `CREATE TABLE IF NOT EXISTS community_sessions (
       community_did TEXT PRIMARY KEY NOT NULL,
       access_jwt TEXT NOT NULL,

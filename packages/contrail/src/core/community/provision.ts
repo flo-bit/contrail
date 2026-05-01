@@ -1,6 +1,6 @@
 /** Provision orchestrator: runs the 5-RPC flow (genesis → createAccount →
  *  recommendedCreds → PLC update → activate), persisting status after each
- *  step so the recovery sweeper can resume from any point.
+ *  step so a stuck attempt can be resumed via `resumeFromAccountCreated`.
  *
  *  Steps and persisted statuses:
  *    Step 0  generate keys + persist row                       → keys_generated
@@ -274,9 +274,9 @@ export class ProvisionOrchestrator {
 
   /** Resume a stuck attempt that already advanced past createAccount.
    *  Picks up at step 3, fetches the genesis CID from the PLC directory, and
-   *  drives steps 4-5 to completion. The caller (sweeper) provides the
-   *  accessJwt obtained from a fresh createSession against the deactivated
-   *  account. */
+   *  drives steps 4-5 to completion. Caller obtains the accessJwt via a fresh
+   *  createSession against the deactivated account (typically an operator-run
+   *  recovery script). */
   async resumeFromAccountCreated(
     attemptId: string,
     accessJwt: string

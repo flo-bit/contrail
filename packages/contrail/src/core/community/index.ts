@@ -48,6 +48,9 @@ export {
   signUpdateOp,
   cidForOp,
   getLastOpCid,
+  buildTombstoneOp,
+  signTombstoneOp,
+  submitTombstoneOp,
 } from "./plc";
 export type {
   KeyPair,
@@ -57,6 +60,8 @@ export type {
   UpdateOpInput,
   UnsignedUpdateOp,
   SignedUpdateOp,
+  UnsignedTombstoneOp,
+  SignedTombstoneOp,
 } from "./plc";
 export { ProvisionOrchestrator } from "./provision";
 export type {

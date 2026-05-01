@@ -137,6 +137,9 @@ export {
   generateKeyPair,
   submitGenesisOp,
   getLastOpCid,
+  buildTombstoneOp,
+  signTombstoneOp,
+  submitTombstoneOp,
   ProvisionOrchestrator,
 } from "./core/community";
 export type {
