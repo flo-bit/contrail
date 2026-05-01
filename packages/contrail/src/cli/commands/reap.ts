@@ -65,6 +65,11 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
     errors: 0,
   };
 
+  // Safety default: an operator who omits the flag must NOT trigger
+  // irrevocable PLC tombstones. Real action requires an explicit
+  // `dryRun: false` (CLI: `--no-dry-run`).
+  const dryRun = opts.dryRun ?? true;
+
   const hasAttemptId = !!opts.attemptId;
   const hasAllOrphaned = !!opts.allOrphaned;
   if (!hasAttemptId && !hasAllOrphaned) {
@@ -142,7 +147,7 @@ export async function runReap(opts: RunReapOptions): Promise<RunReapResult> {
     const signed = await signTombstoneOp(unsigned, rotationJwk);
     const opCid = await cidForOp(signed);
 
-    if (opts.dryRun) {
+    if (dryRun) {
       opts.logger.log(
         `  [dry-run] would submit tombstone (op cid=${opCid}, prev=${prev})`
       );
@@ -219,7 +224,11 @@ export function registerReap(cli: CAC): void {
     .option("--all-orphaned", "Reap every row with status=orphaned")
     .option(
       "--dry-run",
-      "Print what would be tombstoned without submitting to PLC"
+      "Print what would be tombstoned without submitting to PLC (DEFAULT)"
+    )
+    .option(
+      "--no-dry-run",
+      "Actually submit tombstones to PLC. Irrevocable. Required for real runs."
     )
     .option("--yes", "Auto-confirm prompts")
     .action(async (options: ReapOpts) => {

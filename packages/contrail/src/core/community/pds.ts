@@ -194,6 +194,37 @@ export async function createPdsSession(
   };
 }
 
+export interface PdsDescribeServerResult {
+  did: string;
+  /** Other fields (availableUserDomains, contact, links, inviteCodeRequired)
+   *  are returned by the PDS but unused by Contrail's provisioning flow. */
+  [key: string]: unknown;
+}
+
+/** Calls `com.atproto.server.describeServer` on the target PDS to discover
+ *  the DID it publishes for itself. Used as `aud` in the service-auth JWT for
+ *  `createAccount`; the PDS verifies the audience matches its own DID and
+ *  rejects with `BadJwtAudience` otherwise. Resolving dynamically (instead of
+ *  hardcoding to a config value) is what allows a single Contrail instance
+ *  to mint communities on multiple PDSes. */
+export async function pdsDescribeServer(
+  pdsEndpoint: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<PdsDescribeServerResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.describeServer`;
+  const res = await f(url);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`describeServer failed (${res.status}): ${text}`);
+  }
+  const body = (await res.json()) as PdsDescribeServerResult;
+  if (!body?.did || typeof body.did !== "string") {
+    throw new Error("describeServer response missing required `did` field");
+  }
+  return body;
+}
+
 export interface PdsCreateAccountBody {
   handle: string;
   did: string;

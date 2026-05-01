@@ -250,6 +250,9 @@ const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
   "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
+  // CREATE IF NOT EXISTS in buildCommunitySchema short-circuits on an
+  // existing pre-PR communities table, so we have to ALTER explicitly.
+  "ALTER TABLE communities ADD COLUMN custody_mode TEXT",
 ];
 
 async function runMigrations(db: Database): Promise<void> {
@@ -316,6 +319,12 @@ export async function initSchema(
     const target = spacesSharesMainDb ? db : spacesDb!;
     const communityStmts = buildCommunitySchema(dialect);
     await target.batch(communityStmts.map((s) => target.prepare(s)));
+    // When community lives on a separate DB from `db`, the runMigrations(db)
+    // call below won't touch community tables. Run migrations on `target` too;
+    // the swallow-on-error pattern makes ALTERs against absent tables a no-op.
+    if (target !== db) {
+      await runMigrations(target);
+    }
   }
 
   if (config.labels) {

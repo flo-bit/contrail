@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { initSchema } from "../src/core/db/schema";
 import { initCommunitySchema } from "../src/core/community/schema";
+import { resolveConfig } from "../src/core/types";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 
 describe("initSchema", () => {
@@ -117,5 +118,72 @@ describe("community_sessions schema", () => {
       "refresh_jwt",
       "updated_at",
     ]);
+  });
+});
+
+describe("communities table migration (custody_mode)", () => {
+  it("adds custody_mode column when upgrading from pre-PR shape", async () => {
+    // Simulate an existing prod deployment: communities table from BEFORE
+    // this PR (no custody_mode column). The CREATE IF NOT EXISTS in the new
+    // schema will short-circuit on this existing table — only the migration
+    // can add the column.
+    const db = createTestDb();
+    await db
+      .prepare(
+        `CREATE TABLE communities (
+          did TEXT PRIMARY KEY,
+          mode TEXT NOT NULL,
+          pds_endpoint TEXT,
+          app_password_encrypted TEXT,
+          identifier TEXT,
+          signing_key_encrypted TEXT,
+          rotation_key_encrypted TEXT,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        )`
+      )
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO communities (did, mode, created_by, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .bind("did:plc:legacy", "owned", "did:plc:owner", 1000)
+      .run();
+
+    // Run the full schema init (the path real deployments take on upgrade).
+    // initSchema only runs the community migration when config.community is
+    // set, so include a minimal community config.
+    const upgradeConfig = resolveConfig({
+      ...TEST_CONFIG,
+      community: { masterKey: new Uint8Array(32) },
+    });
+    await initSchema(db, upgradeConfig);
+
+    const cols = await db
+      .prepare("PRAGMA table_info(communities)")
+      .all<{ name: string }>();
+    const colNames = cols.results.map((c) => c.name);
+    expect(colNames).toContain("custody_mode");
+
+    // Existing row still readable; new column reads as NULL.
+    const legacy = await db
+      .prepare("SELECT custody_mode FROM communities WHERE did = ?")
+      .bind("did:plc:legacy")
+      .first<{ custody_mode: string | null }>();
+    expect(legacy?.custody_mode).toBeNull();
+
+    // New rows can write to custody_mode.
+    await db
+      .prepare(
+        "INSERT INTO communities (did, mode, custody_mode, created_by, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+      .bind("did:plc:fresh", "owned", "self_sovereign", "did:plc:owner", 2000)
+      .run();
+    const fresh = await db
+      .prepare("SELECT custody_mode FROM communities WHERE did = ?")
+      .bind("did:plc:fresh")
+      .first<{ custody_mode: string }>();
+    expect(fresh?.custody_mode).toBe("self_sovereign");
   });
 });

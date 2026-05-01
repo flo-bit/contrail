@@ -266,6 +266,147 @@ describe("ProvisionOrchestrator — self-sovereign custody mode", () => {
     expect(update.rotationKeys).toContain("did:key:zPdsRot");
   });
 
+  it("self-sovereign: createAppPassword failure persists last_error at status=activated and throws (no encryptedPassword)", async () => {
+    const callerKeyPair = await generateKeyPair();
+    const plc = mockPlc();
+    const pds = {
+      ...mockPds(),
+      async createAppPassword(_: any) {
+        throw new Error("PDS rejected: rate limited");
+      },
+    };
+
+    const orch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc,
+      pds: pds as any,
+      pdsDid: "did:web:pds.test",
+    });
+
+    await expect(
+      orch.provision({
+        attemptId: "ss-fail",
+        pdsEndpoint: "https://pds.test",
+        handle: "h.test",
+        email: "h@x.test",
+        password: "pw",
+        rotationKey: callerKeyPair.publicDidKey,
+      })
+    ).rejects.toThrow(/createAppPassword/);
+
+    const row = await adapter.getProvisionAttempt("ss-fail");
+    expect(row).toBeTruthy();
+    expect(row!.status).toBe("activated");
+    expect(row!.encryptedPassword).toBeFalsy();
+    expect(row!.lastError).toMatch(/createAppPassword/);
+  });
+
+  it("self-sovereign: retry with same attemptId after createAppPassword failure picks up at createAppPassword (no re-mint, no re-createAccount)", async () => {
+    // Simulate the failure-then-retry shape: a first provision call got all
+    // the way to createAppPassword and failed; the caller retries with the
+    // same attemptId. The orchestrator must NOT re-submit PLC ops, NOT
+    // re-call createAccount, only run createAppPassword.
+    const callerKeyPair = await generateKeyPair();
+    const callerDidKey = callerKeyPair.publicDidKey;
+    const mintedPassword = "minted-on-retry-99";
+
+    // First attempt: createAppPassword throws; everything else succeeds.
+    const firstPds = {
+      ...mockPds(),
+      async createAppPassword(_: any) {
+        throw new Error("PDS transient: 503");
+      },
+    };
+    const firstPlc = mockPlc();
+    const firstOrch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc: firstPlc,
+      pds: firstPlc && (firstPds as any),
+      pdsDid: "did:web:pds.test",
+    });
+    await expect(
+      firstOrch.provision({
+        attemptId: "ss-retry",
+        pdsEndpoint: "https://pds.test",
+        handle: "h.test",
+        email: "h@x.test",
+        password: "user-root-pw",
+        rotationKey: callerDidKey,
+      })
+    ).rejects.toThrow();
+
+    // Sanity: row is in the failure state we expect.
+    const failRow = await adapter.getProvisionAttempt("ss-retry");
+    expect(failRow!.status).toBe("activated");
+    expect(failRow!.encryptedPassword).toBeFalsy();
+    expect(firstPlc.ops.length).toBe(2); // genesis + update
+
+    // Second attempt with the SAME attemptId. Use a fresh mock that would
+    // EXPLODE if createAccount or any PLC op was re-issued.
+    const retryPlc = {
+      ops: [] as Array<{ did: string; op: any }>,
+      async submit(_did: string, _op: any) {
+        throw new Error("retry must not re-submit PLC ops");
+      },
+      async getLastOpCid() {
+        return "bafyretryguard";
+      },
+    };
+    const retryAppPasswordCalls: any[] = [];
+    const retryPds = {
+      async createAccount() {
+        throw new Error("retry must not re-call createAccount");
+      },
+      async getRecommendedDidCredentials() {
+        throw new Error("retry must not re-fetch recommended creds");
+      },
+      async activateAccount() {
+        throw new Error("retry must not re-activate");
+      },
+      async createAppPassword(input: any) {
+        retryAppPasswordCalls.push(input);
+        return { password: mintedPassword };
+      },
+      async createSession(input: { pdsUrl: string; identifier: string; password: string }) {
+        // Verify the retry uses the user's root password to obtain a fresh
+        // accessJwt (the cached one from the failed attempt may have expired).
+        expect(input.password).toBe("user-root-pw");
+        return { accessJwt: "AT-fresh", refreshJwt: "RT-fresh", did: "did:plc:x" };
+      },
+    };
+    const retryOrch = new ProvisionOrchestrator({
+      adapter,
+      cipher,
+      plc: retryPlc as any,
+      pds: retryPds as any,
+      pdsDid: "did:web:pds.test",
+    });
+
+    const result = await retryOrch.provision({
+      attemptId: "ss-retry",
+      pdsEndpoint: "https://pds.test",
+      handle: "h.test",
+      email: "h@x.test",
+      password: "user-root-pw",
+      rotationKey: callerDidKey,
+    });
+
+    // Retry succeeded.
+    expect(result.status).toBe("activated");
+    expect(result.did).toBe(failRow!.did); // SAME DID, not a new one
+    expect(result.rootCredentials).toBeDefined();
+    expect(retryAppPasswordCalls.length).toBe(1);
+
+    // Row now has the encrypted (minted) password.
+    const finalRow = await adapter.getProvisionAttempt("ss-retry");
+    expect(finalRow!.status).toBe("activated");
+    expect(finalRow!.encryptedPassword).toBeTruthy();
+    const decrypted = await cipher.decryptString(finalRow!.encryptedPassword!);
+    expect(decrypted).toBe(mintedPassword);
+  });
+
   it("rejects rotationKey that is not did:key:z…", async () => {
     const orch = new ProvisionOrchestrator({
       adapter,

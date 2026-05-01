@@ -20,6 +20,12 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   const method = init?.method ?? "GET";
   const body = init?.body ? JSON.parse(init.body as string) : {};
 
+  if (url === `${ALLOWED_PDS}/xrpc/com.atproto.server.describeServer`) {
+    return new Response(JSON.stringify({ did: "did:web:allowed.pds.test" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
   if (url.startsWith(`${PLC_DIRECTORY}/`) && !url.endsWith("/log/last") && method === "POST") {
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }

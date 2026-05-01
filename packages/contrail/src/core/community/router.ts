@@ -25,6 +25,7 @@ import {
   pdsGetRecommendedDidCredentials,
   pdsActivateAccount,
   pdsCreateAppPassword,
+  pdsDescribeServer,
 } from "./pds";
 import {
   ProvisionOrchestrator,
@@ -273,12 +274,26 @@ export function registerCommunityRoutes(
       );
     }
 
-    // TODO: production should resolve the target PDS's DID dynamically (via
-    // com.atproto.server.describeServer on body.pdsEndpoint) so the
-    // service-auth JWT's `aud` matches what the PDS publishes for itself.
-    // Using cfg.serviceDid here is a stopgap that works against tests where
-    // the PDS is mocked via cfg.fetch.
-    const pdsDid = cfg.serviceDid ?? config.spaces!.serviceDid;
+    // Resolve the target PDS's DID dynamically. The service-auth JWT's `aud`
+    // must match what the PDS publishes for itself via describeServer; the
+    // PDS rejects with BadJwtAudience otherwise. This is what allows a
+    // single Contrail to mint communities on multiple PDSes — using a
+    // cfg-pinned value would force a 1:1 Contrail-to-PDS deployment.
+    let pdsDid: string;
+    try {
+      const described = await pdsDescribeServer(body.pdsEndpoint, {
+        fetch: cfg.fetch,
+      });
+      pdsDid = described.did;
+    } catch (err: any) {
+      return c.json(
+        {
+          error: "PdsUnreachable",
+          message: `describeServer failed for ${body.pdsEndpoint}: ${err.message}`,
+        },
+        502
+      );
+    }
     const orchestrator = buildOrchestrator(cfg, community, cipher, pdsDid);
 
     const attemptId = body.attemptId ?? crypto.randomUUID();
@@ -294,8 +309,10 @@ export function registerCommunityRoutes(
         rotationKey: body.rotationKey,
       });
     } catch (err: any) {
+      // attemptId must always come back to the caller so they can retry
+      // idempotently (see the C3 retry path in ProvisionOrchestrator).
       return c.json(
-        { error: "ProvisioningFailed", message: err.message },
+        { error: "ProvisioningFailed", message: err.message, attemptId },
         502
       );
     }
@@ -1190,6 +1207,8 @@ function buildOrchestrator(
       const r = await pdsCreateAppPassword(pdsUrl, accessJwt, name, fetchOpts);
       return { password: r.password };
     },
+    createSession: ({ pdsUrl, identifier, password }) =>
+      createPdsSession(pdsUrl, identifier, password, fetchOpts),
   };
 
   return new ProvisionOrchestrator({ adapter, cipher, plc, pds, pdsDid });

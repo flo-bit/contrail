@@ -185,6 +185,7 @@ describe("runReap (cli reap)", () => {
       logger: { log: () => {}, error: () => {} },
       yes: true,
       attemptId: "a-orphan",
+      dryRun: false,
     });
 
     expect(result.ok).toBe(true);
@@ -244,6 +245,7 @@ describe("runReap (cli reap)", () => {
       logger: { log: () => {}, error: () => {} },
       yes: true,
       allOrphaned: true,
+      dryRun: false,
     });
 
     expect(result.ok).toBe(true);
@@ -257,6 +259,33 @@ describe("runReap (cli reap)", () => {
     // The activated row is untouched.
     const live = await adapter.getProvisionAttempt("live");
     expect(live?.status).toBe("activated");
+  });
+
+  it("defaults to dry-run when dryRun is unspecified (safety default)", async () => {
+    await seedAttempt(db, adapter, cipher, {
+      attemptId: "a-orphan",
+      did: "did:plc:orphan",
+      status: "orphaned",
+    });
+
+    const calls: PlcCall[] = [];
+    const result = await runReap({
+      adapter,
+      cipher,
+      plcDirectory: "https://plc.test",
+      fetch: makeFakeFetch(calls),
+      logger: { log: () => {}, error: () => {} },
+      yes: true,
+      attemptId: "a-orphan",
+      // dryRun INTENTIONALLY OMITTED — must default to dry-run.
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.reaped).toBe(0);
+    expect(result.dryRunSkipped).toBe(1);
+    expect(calls.length).toBe(0);
+    const row = await adapter.getProvisionAttempt("a-orphan");
+    expect(row?.status).toBe("orphaned");
   });
 
   it("refuses to reap a non-orphaned row passed via --attempt-id", async () => {

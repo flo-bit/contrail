@@ -65,6 +65,16 @@ export interface PdsClient {
     accessJwt: string;
     name: string;
   }): Promise<{ password: string }>;
+  /** Used only by the C3 retry path: when a provision call failed at
+   *  createAppPassword, retrying with the same attemptId needs a fresh
+   *  accessJwt. The session-cache JWT from the failed attempt may have
+   *  expired by the time the caller retries. Optional — non-retry callers
+   *  never invoke this. */
+  createSession?(input: {
+    pdsUrl: string;
+    identifier: string;
+    password: string;
+  }): Promise<{ accessJwt: string; refreshJwt: string; did: string }>;
 }
 
 export interface ProvisionOrchestratorDeps {
@@ -116,6 +126,28 @@ export class ProvisionOrchestrator {
     if (input.rotationKey !== undefined && !isDidKeyZ(input.rotationKey)) {
       throw new Error(
         `rotationKey must be a did:key:z… string (got: ${input.rotationKey.slice(0, 24)}…)`
+      );
+    }
+
+    // Idempotent retry path. The C3 contract: a caller that gets a 5xx with
+    // an attemptId can re-invoke provision with the SAME attemptId and the
+    // orchestrator picks up where it left off. The shape we recover from
+    // here is a self-sovereign attempt that completed activation but whose
+    // post-activation createAppPassword failed (no encryptedPassword stored).
+    // Other partial states (e.g. status='account_created') are out of scope
+    // for this fix — they should use resumeFromAccountCreated.
+    const existing = await adapter.getProvisionAttempt(input.attemptId);
+    if (existing) {
+      if (
+        existing.status === "activated" &&
+        existing.custodyMode === "self_sovereign" &&
+        !existing.encryptedPassword
+      ) {
+        return this.retryAppPasswordOnly(input, existing);
+      }
+      throw new Error(
+        `provision attempt ${input.attemptId} already exists at status="${existing.status}"; ` +
+          `retry is only supported for self-sovereign attempts that failed at createAppPassword`
       );
     }
 
@@ -246,8 +278,9 @@ export class ProvisionOrchestrator {
     // Self-sovereign post-step: mint a revocable app password so we can
     // publish without holding the user's root password. Failure here leaves
     // the row at status=activated (the account IS activated upstream) with a
-    // last_error breadcrumb; the caller's rootCredentials are still useful
-    // and the failure is recoverable by an out-of-band reauth.
+    // last_error breadcrumb; the caller can retry the same provision call
+    // with the same attemptId and it will pick up at createAppPassword only
+    // (see retryAppPasswordOnly).
     if (custodyMode === "self_sovereign") {
       try {
         const minted = await pds.createAppPassword({
@@ -263,7 +296,9 @@ export class ProvisionOrchestrator {
         await adapter.updateProvisionStatus(input.attemptId, "activated", {
           lastError: `createAppPassword: ${err.message}`,
         });
-        throw err;
+        // Wrap the error so the route handler / log readers see immediately
+        // that this is the recoverable retry case, not a generic PDS failure.
+        throw new Error(`createAppPassword: ${err.message}`);
       }
 
       return {
@@ -280,6 +315,68 @@ export class ProvisionOrchestrator {
     }
 
     return { attemptId: input.attemptId, did, status: "activated" };
+  }
+
+  /** C3 retry path. Triggered when provision() is called with an attemptId
+   *  whose row is at status='activated' + custodyMode='self_sovereign' + no
+   *  encrypted_password. The DID is already on PLC; the PDS account is
+   *  already created and activated; only the post-activation app-password
+   *  mint failed. We need a fresh accessJwt (the cached one may have
+   *  expired by the time the caller retries), then re-run createAppPassword. */
+  private async retryAppPasswordOnly(
+    input: ProvisionInput,
+    existing: NonNullable<Awaited<ReturnType<CommunityAdapter["getProvisionAttempt"]>>>
+  ): Promise<ProvisionResult> {
+    const { adapter, cipher, pds } = this.deps;
+    if (!pds.createSession) {
+      throw new Error(
+        "retry path requires PdsClient.createSession to be wired (production buildOrchestrator does this; tests must stub it)"
+      );
+    }
+
+    const session = await pds.createSession({
+      pdsUrl: existing.pdsEndpoint,
+      identifier: input.handle,
+      password: input.password,
+    });
+
+    let mintedPassword: string;
+    try {
+      const minted = await pds.createAppPassword({
+        pdsUrl: existing.pdsEndpoint,
+        accessJwt: session.accessJwt,
+        name: `contrail-${input.attemptId}`,
+      });
+      mintedPassword = minted.password;
+    } catch (err: any) {
+      await adapter.updateProvisionStatus(input.attemptId, "activated", {
+        lastError: `createAppPassword (retry): ${err.message}`,
+      });
+      throw new Error(`createAppPassword (retry): ${err.message}`);
+    }
+
+    const encryptedPassword = await cipher.encrypt(mintedPassword);
+    await adapter.updateProvisionStatus(input.attemptId, "activated", {
+      encryptedPassword,
+    });
+    // Refresh the session cache with the JWTs we just obtained, so the
+    // first publish for this community doesn't need another createSession.
+    await adapter.upsertSession(existing.did, {
+      accessJwt: session.accessJwt,
+      refreshJwt: session.refreshJwt,
+      accessExp: decodeJwtExp(session.accessJwt),
+    });
+
+    return {
+      attemptId: input.attemptId,
+      did: existing.did,
+      status: "activated",
+      rootCredentials: {
+        handle: input.handle,
+        password: input.password,
+        recoveryHint: "store this — Contrail does not retain it",
+      },
+    };
   }
 
   /** Resume a stuck attempt that already advanced past createAccount.
