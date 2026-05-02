@@ -1,3 +1,4 @@
+import type {} from "@atcute/atproto";
 import { type Did } from "@atcute/lexicons";
 import { isDid, isNsid } from "@atcute/lexicons/syntax";
 

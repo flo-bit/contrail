@@ -1,3 +1,4 @@
+import type {} from "@atcute/atproto";
 /**
  * Fresh refresh: re-walk every known DID's PDS for every configured collection
  * and reconcile against what's in our DB. Unlike `backfillPending`, this
