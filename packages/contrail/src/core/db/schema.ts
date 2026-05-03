@@ -324,6 +324,12 @@ export async function initSchema(
     const target = spacesSharesMainDb ? db : spacesDb!;
     const communityStmts = buildCommunitySchema(dialect);
     await target.batch(communityStmts.map((s) => target.prepare(s)));
+    // When community lives on a separate DB from `db`, the runMigrations(db)
+    // call below won't touch community tables. Run migrations on `target` too;
+    // the swallow-on-error pattern makes ALTERs against absent tables a no-op.
+    if (target !== db) {
+      await runMigrations(target);
+    }
   }
 
   if (config.labels) {

@@ -6,12 +6,22 @@ Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys 
 
 When you want atproto records published under a *shared* identity — a team, a project, a channel — not a single user. Think: a group's published calendar events, a community's published posts.
 
-## Two modes
+## Three modes
 
 - **Minted** — contrail creates a fresh `did:plc` for the community, holds the signing key plus one rotation key (a second rotation key is returned to the creator once for recovery), and publishes from it.
 - **Adopted** — contrail takes over an existing account by holding an **app password** issued from its PDS. The owner's identity, signing key, and rotation keys are unchanged; contrail just gets PDS write access via the app password.
+- **Provisioned** — contrail creates a fresh `did:plc` and a new PDS account. The caller supplies the rotation key; that key is set as the DID's rotation key in PLC. Contrail receives an app password from the new account and publishes through it.
 
-Either way, the result is the same: a DID that multiple members can act through, gated by access levels.
+Whichever the mode, the result is the same shape: a DID that multiple members can act through, gated by access levels.
+
+## Choosing a mode
+
+Two questions typically determine the mode:
+
+1. **Does the community already have a DID?** Yes → **adopt**. No → continue.
+2. **How should records be published?** Contrail signs them directly → **mint**. Contrail uses an app password against a PDS account → **provision**.
+
+The rotation key holder follows from the choice: contrail in mint mode, caller in adopt and provision modes.
 
 ## Access levels
 
@@ -39,16 +49,19 @@ The spaces layer stays ignorant of access levels — it just sees "this DID is a
 
 ## XRPCs
 
-- `com.example.community.mint | adopt | list | delete`
+- `com.example.community.mint | adopt | provision | list | delete`
 - `com.example.community.invite.create | redeem | revoke | list`
 - `com.example.community.setAccessLevel | revoke | listMembers`
 - `com.example.community.space.create | grant | revoke | ...` — community-owned spaces
 - `com.example.community.putRecord | deleteRecord` — publish records as the community DID
 
+The `contrail reap` CLI subcommand tombstones provisioned DIDs in PLC when provisioning fails partway and orphan rows accumulate.
+
 ## What's not here
 
 - No per-record per-level ACLs. Model as spaces.
 - No auto-rotation on key compromise yet.
-- Adoption can be revoked unilaterally by the owner — they revoke the app password on their PDS and contrail loses write access. (Mint mode is the irreversible one: the creator's recovery rotation key, returned once at mint time, is the only path back if contrail's signing/rotation key is compromised.)
+- Adopted and provisioned modes: contrail's write access depends on an app password issued from the PDS, which the rotation-key holder can revoke at any time.
+- Minted mode: contrail holds the signing key and one rotation key. The creator's recovery rotation key, returned once at mint time, is the only key not held by contrail.
 
 The design follows zicklag's [Arbiter design sketch](https://zicklag.leaflet.pub/3mjrvb5pul224) for group management on atproto. The post is an early design note; our implementation will track it as the spec firms up.

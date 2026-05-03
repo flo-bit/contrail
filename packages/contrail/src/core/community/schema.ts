@@ -44,6 +44,59 @@ export function buildCommunitySchema(dialect: SqlDialect): string[] {
       note TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_community_invites_space ON community_invites(space_uri, created_at DESC)`,
+
+    `CREATE TABLE IF NOT EXISTS provision_attempts (
+      attempt_id TEXT PRIMARY KEY NOT NULL,
+      did TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'keys_generated',
+        'genesis_submitted',
+        'account_created',
+        'did_doc_updated',
+        'activated',
+        'orphaned'
+      )),
+      pds_endpoint TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      email TEXT NOT NULL,
+      invite_code TEXT,
+      encrypted_signing_key TEXT,
+      encrypted_rotation_key TEXT,
+      encrypted_password TEXT,
+      caller_rotation_did_key TEXT NOT NULL,
+      genesis_submitted_at ${dialect.bigintType},
+      account_created_at ${dialect.bigintType},
+      did_doc_updated_at ${dialect.bigintType},
+      activated_at ${dialect.bigintType},
+      last_error TEXT,
+      created_at ${dialect.bigintType} NOT NULL,
+      updated_at ${dialect.bigintType} NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_provision_attempts_status ON provision_attempts(status, updated_at DESC)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_provision_attempts_did ON provision_attempts(did)`,
+
+    `CREATE TABLE IF NOT EXISTS provision_attempts_orphaned_archive (
+      attempt_id TEXT PRIMARY KEY NOT NULL,
+      did TEXT NOT NULL,
+      pds_endpoint TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      email TEXT NOT NULL,
+      invite_code TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      archived_at ${dialect.bigintType} NOT NULL,
+      tombstone_op_cid TEXT,
+      notes TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_provision_attempts_orphaned_archive_archived_at ON provision_attempts_orphaned_archive(archived_at DESC)`,
+
+    `CREATE TABLE IF NOT EXISTS community_sessions (
+      community_did TEXT PRIMARY KEY NOT NULL,
+      access_jwt TEXT NOT NULL,
+      refresh_jwt TEXT NOT NULL,
+      access_exp ${dialect.bigintType} NOT NULL,
+      updated_at ${dialect.bigintType} NOT NULL
+    )`,
   ];
 }
 

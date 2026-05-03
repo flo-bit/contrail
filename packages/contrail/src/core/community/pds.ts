@@ -20,6 +20,20 @@ export interface PdsSession {
   did: string;
 }
 
+/** Full result of `com.atproto.server.createSession`, including the optional
+ *  `active`/`status` fields a PDS returns when the account is deactivated.
+ *  An operator-run recovery probe uses these to distinguish a resumable row
+ *  (`active: false, status: "deactivated"` → pick up at step 3) from an
+ *  orphan (createSession 401 → no PDS account exists). */
+export interface PdsCreateSessionResult {
+  did: string;
+  handle: string;
+  accessJwt: string;
+  refreshJwt: string;
+  active?: boolean;
+  status?: string;
+}
+
 function defaultResolver(): DidDocumentResolver {
   return new CompositeDidDocumentResolver({
     methods: {
@@ -102,6 +116,50 @@ async function resolveHandleToDid(handle: string, f: typeof fetch): Promise<stri
   throw new Error(`could not resolve handle ${handle}`);
 }
 
+/** Decode the `exp` claim from a JWT's payload (in seconds since epoch). Used
+ *  by the session cache to decide if a cached access token is still usable.
+ *  Returns 0 if the claim is missing or the token is malformed — callers should
+ *  treat 0 as "expired, refresh now". Avoids `Buffer` so it works in Workers. */
+export function decodeJwtExp(jwt: string): number {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return 0;
+  const payload = parts[1]!;
+  const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (padded.length % 4)) % 4);
+  try {
+    const json = atob(padded + padding);
+    const claims = JSON.parse(json) as { exp?: number };
+    return Number(claims.exp ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** POST com.atproto.server.refreshSession with the refresh JWT in Authorization.
+ *  Returns null on any non-200 — callers fall back to `createPdsSession`. */
+export async function tryRefreshSession(input: {
+  pdsUrl: string;
+  refreshJwt: string;
+  fetch?: typeof fetch;
+}): Promise<{ accessJwt: string; refreshJwt: string; accessExp: number } | null> {
+  const f = input.fetch ?? fetch;
+  const url = `${input.pdsUrl.replace(/\/$/, "")}/xrpc/com.atproto.server.refreshSession`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${input.refreshJwt}` },
+  });
+  if (res.status !== 200) return null;
+  const body = (await res.json().catch(() => null)) as
+    | { accessJwt?: string; refreshJwt?: string }
+    | null;
+  if (!body?.accessJwt || !body.refreshJwt) return null;
+  return {
+    accessJwt: body.accessJwt,
+    refreshJwt: body.refreshJwt,
+    accessExp: decodeJwtExp(body.accessJwt),
+  };
+}
+
 /** Create an atproto session on the given PDS using identifier + app password.
  *  Returns the access/refresh JWTs and the session's DID. */
 export async function createPdsSession(
@@ -134,4 +192,157 @@ export async function createPdsSession(
     refreshJwt: body.refreshJwt,
     did: body.did,
   };
+}
+
+export interface PdsDescribeServerResult {
+  did: string;
+  /** Other fields (availableUserDomains, contact, links, inviteCodeRequired)
+   *  are returned by the PDS but unused by Contrail's provisioning flow. */
+  [key: string]: unknown;
+}
+
+/** Calls `com.atproto.server.describeServer` on the target PDS to discover
+ *  the DID it publishes for itself. Used as `aud` in the service-auth JWT for
+ *  `createAccount`; the PDS verifies the audience matches its own DID and
+ *  rejects with `BadJwtAudience` otherwise. Resolving dynamically (instead of
+ *  hardcoding to a config value) is what allows a single Contrail instance
+ *  to mint communities on multiple PDSes. */
+export async function pdsDescribeServer(
+  pdsEndpoint: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<PdsDescribeServerResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.describeServer`;
+  const res = await f(url);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`describeServer failed (${res.status}): ${text}`);
+  }
+  const body = (await res.json()) as PdsDescribeServerResult;
+  if (!body?.did || typeof body.did !== "string") {
+    throw new Error("describeServer response missing required `did` field");
+  }
+  return body;
+}
+
+export interface PdsCreateAccountBody {
+  handle: string;
+  did: string;
+  email: string;
+  password: string;
+  inviteCode?: string;
+}
+
+export interface PdsCreateAccountResult {
+  did: string;
+  handle: string;
+  accessJwt: string;
+  refreshJwt: string;
+}
+
+/** Calls `com.atproto.server.createAccount` on the target PDS using a
+ *  service-auth JWT (signed by the iss DID's verificationMethod). The PDS
+ *  verifies `requester === did` against the published DID-doc, validates the
+ *  invite, and creates the account in deactivated state. */
+export async function pdsCreateAccount(
+  pdsEndpoint: string,
+  serviceAuthJwt: string,
+  body: PdsCreateAccountBody,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<PdsCreateAccountResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.createAccount`;
+  const res = await f(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${serviceAuthJwt}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`createAccount failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as PdsCreateAccountResult;
+}
+
+export interface RecommendedDidCredentials {
+  rotationKeys: string[];
+  verificationMethods: { atproto: string };
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+/** Calls `com.atproto.identity.getRecommendedDidCredentials` on the target PDS
+ *  using the session's accessJwt (returned by `pdsCreateAccount`, NOT a
+ *  service-auth JWT). Returns the DID-doc fields the PDS would self-publish. */
+export async function pdsGetRecommendedDidCredentials(
+  pdsEndpoint: string,
+  accessJwt: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<RecommendedDidCredentials> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.identity.getRecommendedDidCredentials`;
+  const res = await f(url, {
+    headers: { authorization: `Bearer ${accessJwt}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`getRecommendedDidCredentials failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as RecommendedDidCredentials;
+}
+
+/** Calls `com.atproto.server.activateAccount` on the target PDS using the
+ *  session's accessJwt (returned by `pdsCreateAccount`, NOT a service-auth
+ *  JWT). Resolves on success; throws otherwise. */
+export async function pdsActivateAccount(
+  pdsEndpoint: string,
+  accessJwt: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<void> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.activateAccount`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${accessJwt}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`activateAccount failed (${res.status}): ${text}`);
+  }
+}
+
+export interface PdsCreateAppPasswordResult {
+  name: string;
+  password: string;
+  createdAt: string;
+}
+
+/** Calls `com.atproto.server.createAppPassword` on the target PDS using the
+ *  session's accessJwt. Returns the freshly minted app password. The PDS
+ *  refuses to mint privileged passwords by default — we keep `privileged: false`
+ *  so the credential can be revoked without affecting the root account. */
+export async function pdsCreateAppPassword(
+  pdsEndpoint: string,
+  accessJwt: string,
+  name: string,
+  opts: { fetch?: typeof fetch; privileged?: boolean } = {}
+): Promise<PdsCreateAppPasswordResult> {
+  const f = opts.fetch ?? fetch;
+  const url = `${pdsEndpoint.replace(/\/$/, "")}/xrpc/com.atproto.server.createAppPassword`;
+  const res = await f(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${accessJwt}`,
+    },
+    body: JSON.stringify({ name, privileged: opts.privileged ?? false }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`createAppPassword failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as PdsCreateAppPasswordResult;
 }
