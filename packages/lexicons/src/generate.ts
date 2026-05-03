@@ -1040,12 +1040,16 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     );
     // f.follow is a short name (a key in config.collections), not an NSID — resolve
     // it before pushing into the pull list, otherwise lex-cli pull rejects it as
-    // "must be valid nsid". `follow` is now optional; default to `"follow"`
-    // (auto-added by resolveConfig). Filter out any feed pointing at a
-    // non-existent collection so we never emit an undefined.
+    // "must be valid nsid". When `follow` is unset, contrail's resolveConfig
+    // auto-adds an `app.bsky.graph.follow` collection at runtime; mirror that
+    // here so the generated pull list still includes it.
+    const DEFAULT_FOLLOW_NSID = "app.bsky.graph.follow";
     const feedFollowNsids = config.feeds
       ? Object.values(config.feeds)
-          .map((f) => config.collections[f.follow ?? "follow"]?.collection)
+          .map((f) => {
+            if (!f.follow) return DEFAULT_FOLLOW_NSID;
+            return config.collections[f.follow]?.collection;
+          })
           .filter((nsid): nsid is string => typeof nsid === "string")
       : [];
     const pullNsids = new Set([...collectionNsids, ...profileNsids, ...feedFollowNsids]);
