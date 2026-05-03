@@ -1,5 +1,11 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.3
+
+### Patch Changes
+
+- 9cca8cb: fix: resolve `feeds[*].follow` short names to NSIDs when emitting `lex.config.js`. previously the generator pushed the raw short name (e.g. `"follow"`) into `pull.sources[0].nsids`, causing `lex-cli pull` to fail with `ValitaError: must be valid nsid`. now matches the existing `collections` / `profiles` resolution path; feeds pointing at unknown collections are skipped instead of leaking `undefined`.
+
 ## 0.4.2
 
 ### Patch Changes
