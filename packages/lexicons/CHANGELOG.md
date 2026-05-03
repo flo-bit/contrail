@@ -1,5 +1,13 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.4
+
+### Patch Changes
+
+- 1a6d8cf: Handle the new `FeedConfig.targets` shape (`string | { collection, maxItems? }`) when generating the feed lexicon and computing pull NSIDs, and fall back to the default `"follow"` short name when `FeedConfig.follow` is unset.
+- Updated dependencies [1a6d8cf]
+  - @atmo-dev/contrail@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes
