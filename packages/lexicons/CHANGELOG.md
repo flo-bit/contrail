@@ -1,5 +1,11 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.5
+
+### Patch Changes
+
+- Include `app.bsky.graph.follow` in the generated `lex.config.js` pull list when a feed leaves `FeedConfig.follow` unset. Mirrors the runtime default that `resolveConfig` auto-adds, so `lex-cli pull` fetches the schema instead of skipping it.
+
 ## 0.4.4
 
 ### Patch Changes
