@@ -89,13 +89,15 @@ returns every `community.lexicon.calendar.event` record published anywhere on at
 - [Communities](https://github.com/flo-bit/contrail/blob/main/docs/07-communities.md) — group-controlled atproto DIDs
 - [Sync](https://github.com/flo-bit/contrail/blob/main/docs/08-sync.md) — reactive client-side store over `watchRecords`
 - [Labels](https://github.com/flo-bit/contrail/blob/main/docs/09-labels.md) — atproto-native moderation hydration from external labelers
+- [Deployment shapes](https://github.com/flo-bit/contrail/blob/main/docs/10-deployment-shapes.md) — all-in-one vs split-authority vs split-host configurations
 - Frameworks: [SvelteKit + Cloudflare](https://github.com/flo-bit/contrail/blob/main/docs/frameworks/sveltekit-cloudflare.md)
 
 ## Packages
 
 | Package | |
 |---|---|
-| `@atmo-dev/contrail` | Core library — indexing, XRPC server, spaces, communities, realtime |
+| `@atmo-dev/contrail` | Core library — indexing, XRPC server, spaces, realtime |
+| `@atmo-dev/contrail-community` | Community module — group-controlled DIDs, access-level ladder. Plugs into core via an integration |
 | `@atmo-dev/contrail-sync` | Client-side reactive watch-store with optional IndexedDB cache |
 | `@atmo-dev/contrail-lexicons` | Codegen + `contrail-lex` CLI |
 

@@ -1,0 +1,43 @@
+{
+  "name": "@atmo-dev/contrail-record-host",
+  "version": "0.6.0",
+  "description": "Default record-host implementation for contrail — stores records and blobs for permissioned spaces, enforces local enrollment as the host's consent layer.",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git",
+    "directory": "packages/contrail-record-host"
+  },
+  "keywords": [
+    "atproto",
+    "contrail"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atcute/cid": "^2.4.1",
+    "@atmo-dev/contrail-base": "workspace:*",
+    "hono": "^4.12.8"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3"
+  },
+  "license": "MIT"
+}

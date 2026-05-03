@@ -1,0 +1,103 @@
+import type { ContrailConfig, Database } from "../types";
+import type { SqlDialect } from "../dialect";
+import { getDialect } from "../dialect";
+import {
+  buildCollectionTables,
+  buildDynamicIndexes,
+  buildFtsTables,
+  buildCountColumns,
+} from "../db/schema";
+
+/** Spaces metadata tables — spaces, members, invites. No per-collection tables. */
+export function buildSpacesBaseSchema(dialect: SqlDialect): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS spaces (
+      uri TEXT PRIMARY KEY,
+      owner_did TEXT NOT NULL,
+      type TEXT NOT NULL,
+      key TEXT NOT NULL,
+      service_did TEXT NOT NULL,
+      app_policy_ref TEXT,
+      app_policy ${dialect.recordColumnType},
+      created_at ${dialect.bigintType} NOT NULL,
+      deleted_at ${dialect.bigintType}
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces(owner_did)`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_type ON spaces(type)`,
+
+    `CREATE TABLE IF NOT EXISTS spaces_members (
+      space_uri TEXT NOT NULL,
+      did TEXT NOT NULL,
+      added_at ${dialect.bigintType} NOT NULL,
+      added_by TEXT,
+      PRIMARY KEY (space_uri, did)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_members_did ON spaces_members(did)`,
+
+    `CREATE TABLE IF NOT EXISTS spaces_blobs (
+      space_uri  TEXT NOT NULL,
+      cid        TEXT NOT NULL,
+      mime_type  TEXT NOT NULL,
+      size       INTEGER NOT NULL,
+      author_did TEXT NOT NULL,
+      created_at ${dialect.bigintType} NOT NULL,
+      PRIMARY KEY (space_uri, cid)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_blobs_author ON spaces_blobs(space_uri, author_did)`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_blobs_created ON spaces_blobs(space_uri, created_at)`,
+
+    `CREATE TABLE IF NOT EXISTS spaces_invites (
+      token_hash TEXT PRIMARY KEY,
+      space_uri TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'join',
+      expires_at ${dialect.bigintType},
+      max_uses INTEGER,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL,
+      created_at ${dialect.bigintType} NOT NULL,
+      revoked_at ${dialect.bigintType},
+      note TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_invites_space ON spaces_invites(space_uri, created_at DESC)`,
+
+    // Record-host enrollment table — the host's local cache of "spaces I
+    // accept records for, and which authority signs credentials for each."
+    // Filled by the recordHost.enroll endpoint, or auto-populated by the
+    // authority's createSpace when both roles run in the same process.
+    `CREATE TABLE IF NOT EXISTS record_host_enrollments (
+      space_uri TEXT PRIMARY KEY,
+      authority_did TEXT NOT NULL,
+      enrolled_at ${dialect.bigintType} NOT NULL,
+      enrolled_by TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_enrollments_authority ON record_host_enrollments(authority_did)`,
+  ];
+}
+
+/** Full spaces schema (base + per-collection tables + indexes). For callers
+ *  that need a single array of statements. Note: this does NOT include FTS
+ *  virtual tables or ALTER TABLE count columns — those must be applied with
+ *  try/catch fallbacks and are handled by `initSchema`. */
+export function buildSpacesSchema(db: Database, config?: ContrailConfig): string[] {
+  const dialect = getDialect(db);
+  const base = buildSpacesBaseSchema(dialect);
+  if (!config) return base;
+  return [
+    ...base,
+    ...buildCollectionTables(config, dialect, { forSpaces: true }),
+    ...buildDynamicIndexes(config, dialect, { forSpaces: true }),
+  ];
+}
+
+export async function initSpacesSchema(db: Database, config?: ContrailConfig): Promise<void> {
+  const dialect = getDialect(db);
+  const stmts = buildSpacesSchema(db, config);
+  await db.batch(stmts.map((s) => db.prepare(s)));
+  if (!config) return;
+  for (const stmt of buildFtsTables(config, dialect, { forSpaces: true })) {
+    try { await db.prepare(stmt).run(); } catch { /* ignore */ }
+  }
+  for (const stmt of buildCountColumns(config, { forSpaces: true })) {
+    try { await db.prepare(stmt).run(); } catch { /* ignore */ }
+  }
+}

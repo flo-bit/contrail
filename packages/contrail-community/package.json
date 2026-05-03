@@ -1,0 +1,53 @@
+{
+  "name": "@atmo-dev/contrail-community",
+  "version": "0.4.2",
+  "description": "Community module for contrail — community-owned spaces with tiered access levels (member → moderator → admin), invite tokens, DID provisioning, and the access-level reconciler that keeps spaces_members in sync.",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git",
+    "directory": "packages/contrail-community"
+  },
+  "keywords": [
+    "atproto",
+    "contrail",
+    "community"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@atcute/atproto": "^3.1.10",
+    "@atcute/cbor": "^2.3.2",
+    "@atcute/identity": "^1.1.4",
+    "@atcute/identity-resolver": "^1.2.2",
+    "@atcute/lexicons": "^1.2.9",
+    "@atcute/xrpc-server": "^0.1.12",
+    "@atmo-dev/contrail": "workspace:*",
+    "@atmo-dev/contrail-base": "workspace:*",
+    "hono": "^4.12.8"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.0"
+  },
+  "license": "MIT"
+}

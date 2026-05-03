@@ -8,21 +8,27 @@ import type { Database } from "../src/core/types";
 // the `pages` map below.
 const pages = new Map<string, Array<{ uri: string; cid: string; value: object }>>();
 
-vi.mock("../src/core/client", () => ({
-  getClient: vi.fn(async (did: string) => ({
-    get: async (
-      _method: string,
-      opts: { params: { repo: string; collection: string; cursor?: string } }
-    ) => {
-      const key = `${opts.params.repo}|${opts.params.collection}`;
-      // Single page per (did, collection); cursor triggers empty page = done.
-      if (opts.params.cursor) return { ok: true, data: { records: [], cursor: undefined } };
-      const records = pages.get(key) ?? [];
-      return { ok: true, data: { records, cursor: undefined } };
-    },
-  })),
-  getPDS: vi.fn(),
-}));
+// `getClient` lives in @atmo-dev/contrail-base after the package split.
+// `refresh` (now in contrail-appview) imports it via its own shim that
+// ultimately resolves to base — so we mock the base export directly.
+vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
+  return {
+    ...actual,
+    getClient: vi.fn(async (_did: string) => ({
+      get: async (
+        _method: string,
+        opts: { params: { repo: string; collection: string; cursor?: string } }
+      ) => {
+        const key = `${opts.params.repo}|${opts.params.collection}`;
+        if (opts.params.cursor) return { ok: true, data: { records: [], cursor: undefined } };
+        const records = pages.get(key) ?? [];
+        return { ok: true, data: { records, cursor: undefined } };
+      },
+    })),
+    getPDS: vi.fn(),
+  };
+});
 
 const ALICE = "did:plc:alice";
 const BOB = "did:plc:bob";

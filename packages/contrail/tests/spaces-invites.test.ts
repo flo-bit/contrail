@@ -18,8 +18,11 @@ const CONFIG: ContrailConfig = {
     message: { collection: "app.event.message" },
   },
   spaces: {
-    type: "tools.atmo.event.space",
-    serviceDid: "did:web:test.example#svc",
+    authority: {
+      type: "tools.atmo.event.space",
+      serviceDid: "did:web:test.example#svc",
+    },
+    recordHost: {},
   },
 };
 
@@ -29,7 +32,7 @@ function fakeAuth(): MiddlewareHandler {
     if (!did) return c.json({ error: "AuthRequired" }, 401);
     c.set("serviceAuth", {
       issuer: did,
-      audience: CONFIG.spaces!.serviceDid,
+      audience: CONFIG.spaces!.authority!.serviceDid,
       lxm: undefined,
     });
     await next();

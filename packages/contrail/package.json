@@ -73,6 +73,10 @@
     "@atcute/jetstream": "^1.0.2",
     "@atcute/lexicons": "^1.2.9",
     "@atcute/xrpc-server": "^0.1.12",
+    "@atmo-dev/contrail-appview": "workspace:*",
+    "@atmo-dev/contrail-authority": "workspace:*",
+    "@atmo-dev/contrail-base": "workspace:*",
+    "@atmo-dev/contrail-record-host": "workspace:*",
     "cac": "^7.0.0",
     "hono": "^4.12.8",
     "jiti": "^2.4.0"

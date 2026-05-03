@@ -1,0 +1,41 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.space.getMembershipManifest",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Mint a signed list of every space the caller is a member of (or owns) according to this authority. Appviews can carry the manifest on inbound requests so unioned listRecords queries are filtered against the caller's bounded slice without the appview having to sync the authority's full member list. Same key material as `getCredential`; different payload (an array of space URIs rather than a single space + scope). Truncated to `manifestMaxSpaces` (default 500) — the response sets `truncated: true` when the cap was hit.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["manifest", "expiresAt", "truncated"],
+          "properties": {
+            "manifest": {
+              "type": "string",
+              "description": "Compact JWS (ES256) signed by the authority's key. Payload claims: `iss` (authority DID), `sub` (caller DID), `spaces` (array of space URIs), `iat`, `exp`."
+            },
+            "expiresAt": {
+              "type": "integer",
+              "description": "Expiry as ms since epoch."
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "True if the caller is in more spaces than fit in one manifest. The remainder won't be unioned in queries until the next refresh."
+            }
+          }
+        }
+      },
+      "errors": [
+        { "name": "NotImplemented", "description": "Authority is not configured to sign manifests." }
+      ]
+    }
+  }
+}

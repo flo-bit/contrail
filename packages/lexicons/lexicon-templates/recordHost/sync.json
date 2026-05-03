@@ -1,0 +1,86 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.recordHost.sync",
+  "defs": {
+    "main": {
+      "type": "subscription",
+      "description": "SSE stream of record events for a specific space. Emits a catch-up phase (every record with `time_us > since`, in time_us order) followed by a live phase (record.created / record.deleted as they happen). Cursor checkpoints are emitted after each catch-up batch and after each live event so consumers can persist progress and resume on reconnect. Auth: requires X-Space-Credential whose `space` claim matches `spaceUri`.",
+      "parameters": {
+        "type": "params",
+        "required": ["spaceUri"],
+        "properties": {
+          "spaceUri": {
+            "type": "string",
+            "description": "Space to sync."
+          },
+          "since": {
+            "type": "string",
+            "description": "Opaque cursor (last `value` from a `cursor` event). Server interprets as time_us; events with time_us > since are emitted."
+          }
+        }
+      },
+      "message": {
+        "schema": {
+          "type": "union",
+          "refs": [
+            "#recordCreated",
+            "#recordDeleted",
+            "#cursor"
+          ]
+        }
+      }
+    },
+    "recordCreated": {
+      "type": "object",
+      "required": ["topic", "kind", "payload", "ts"],
+      "properties": {
+        "topic": { "type": "string" },
+        "kind": { "type": "string", "const": "record.created" },
+        "payload": {
+          "type": "object",
+          "required": ["uri", "did", "collection", "rkey", "record", "time_us", "space"],
+          "properties": {
+            "uri": { "type": "string" },
+            "did": { "type": "string", "format": "did" },
+            "collection": { "type": "string", "format": "nsid" },
+            "rkey": { "type": "string" },
+            "cid": { "type": "string", "format": "cid" },
+            "record": { "type": "unknown" },
+            "time_us": { "type": "integer" },
+            "space": { "type": "string" }
+          }
+        },
+        "ts": { "type": "integer" }
+      }
+    },
+    "recordDeleted": {
+      "type": "object",
+      "required": ["topic", "kind", "payload", "ts"],
+      "properties": {
+        "topic": { "type": "string" },
+        "kind": { "type": "string", "const": "record.deleted" },
+        "payload": {
+          "type": "object",
+          "required": ["uri", "did", "collection", "rkey", "space"],
+          "properties": {
+            "uri": { "type": "string" },
+            "did": { "type": "string", "format": "did" },
+            "collection": { "type": "string", "format": "nsid" },
+            "rkey": { "type": "string" },
+            "space": { "type": "string" }
+          }
+        },
+        "ts": { "type": "integer" }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "description": "Checkpoint: persist `value` and pass it as `since` on next reconnect to resume.",
+      "properties": {
+        "kind": { "type": "string", "const": "cursor" },
+        "value": { "type": "string" }
+      }
+    }
+  }
+}

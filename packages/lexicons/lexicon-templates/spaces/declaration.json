@@ -1,0 +1,31 @@
+{
+  "lexicon": 1,
+  "id": "tools.atmo.space.declaration",
+  "description": "PDS-record-as-discovery: when present at `at://<owner>/<type>/<key>` (i.e. paired with the space URI by NSID + rkey), this record declares which DID is authorized to issue credentials for the space and which DID hosts its records. The space owner's PDS write is the cryptographic proof of authorization — the binding resolver fetches this record to verify a credential's `iss` against the user's wishes, no DID-doc edits required. App-defined space-type lexicons MAY embed these fields directly instead of writing a separate record under this NSID.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["authority", "createdAt"],
+        "properties": {
+          "authority": {
+            "type": "string",
+            "format": "did",
+            "description": "DID authorized to sign credentials for this space (`iss` on emitted JWTs). May equal the space owner DID for the self-issuing case."
+          },
+          "recordHost": {
+            "type": "string",
+            "format": "did",
+            "description": "DID of the record host where records for this space live. Clients use this to know where to send writes; verifiers ignore it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

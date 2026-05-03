@@ -4,12 +4,14 @@ import {
 	InMemoryPubSub,
 	MemoryBlobAdapter,
 	R2BlobAdapter,
+	resolveConfig,
 	type BlobAdapter,
 	type ContrailConfig,
 	type DurableObjectNamespace,
 	type PubSub,
 	type R2BucketLike
 } from '@atmo-dev/contrail';
+import { createCommunityIntegration } from '@atmo-dev/contrail-community';
 import { createHandler, createServerClient } from '@atmo-dev/contrail/server';
 import type { Client } from '@atcute/client';
 import { dev } from '$app/environment';
@@ -43,12 +45,16 @@ function build(env: Env): Bundle {
 	const config: ContrailConfig = {
 		...baseConfig,
 		spaces: {
-			type: 'tools.atmo.chat.space',
-			serviceDid: env.SERVICE_DID,
-			blobs: {
-				adapter: blobAdapter,
-				maxSize: 2 * 1024 * 1024,
-				accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+			authority: {
+				type: 'tools.atmo.chat.space',
+				serviceDid: env.SERVICE_DID
+			},
+			recordHost: {
+				blobs: {
+					adapter: blobAdapter,
+					maxSize: 2 * 1024 * 1024,
+					accept: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+				}
 			}
 		},
 		community: {
@@ -61,7 +67,9 @@ function build(env: Env): Bundle {
 		}
 	};
 
-	const contrail = new Contrail(config);
+	const resolved = resolveConfig(config);
+	const communityIntegration = createCommunityIntegration({ db: env.DB, config: resolved });
+	const contrail = new Contrail({ ...config, db: env.DB, communityIntegration });
 	const handle = createHandler(contrail);
 	const ready = contrail.init(env.DB);
 

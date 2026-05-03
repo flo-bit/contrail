@@ -2,6 +2,56 @@
 
 Group-controlled atproto DIDs. A community is a DID whose signing/rotation keys are held by the appview on behalf of multiple members, with tiered access levels. Built on top of [spaces](./06-spaces.md).
 
+Communities live in a separate package — `@atmo-dev/contrail-community` — that plugs into Contrail via an integration object. The contrail core has no knowledge of community-specific concepts; the package wires itself in via injectable hooks (whoami extension, invite handler, route registration, schema).
+
+## Install
+
+```bash
+pnpm add @atmo-dev/contrail @atmo-dev/contrail-community
+```
+
+## Wire it up
+
+Construct the integration once, hand it to `Contrail` (or directly to `createApp`):
+
+```ts
+import { Contrail, resolveConfig, type ContrailConfig } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "@atmo-dev/contrail-community";
+
+const config: ContrailConfig = {
+  namespace: "com.example",
+  collections: { /* ... */ },
+  spaces: {
+    authority: { type: "com.example.event.space", serviceDid: "did:web:example.com", signing },
+    recordHost: {},
+  },
+  community: {
+    masterKey: env.COMMUNITY_MASTER_KEY,  // 32-byte encryption key for stored credentials
+    serviceDid: "did:web:example.com",
+    levels: ["admin", "moderator"],        // ranked, highest-first
+  },
+};
+
+const resolved = resolveConfig(config);
+const communityIntegration = createCommunityIntegration({ db, config: resolved });
+
+const contrail = new Contrail({ ...config, db, communityIntegration });
+await contrail.init();   // applies community schema alongside contrail's own
+```
+
+Or with `createApp` directly:
+
+```ts
+import { createApp, initSchema } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "@atmo-dev/contrail-community";
+
+const community = createCommunityIntegration({ db, config });
+await initSchema(db, config, { extraSchemas: [community.applySchema] });
+const app = createApp(db, config, { community });
+```
+
+Stored credentials (app passwords for adopted communities, signing keys for minted) are envelope-encrypted with `masterKey`. Never ship the placeholder.
+
 ## When to use this
 
 When you want atproto records published under a *shared* identity — a team, a project, a channel — not a single user. Think: a group's published calendar events, a community's published posts.
@@ -15,17 +65,7 @@ Either way, the result is the same: a DID that multiple members can act through,
 
 ## Access levels
 
-Each member has a level (ranked). Levels map to write permissions. Owners can grant/revoke levels. Two reserved levels exist: `owner` and `member`. Your deployment defines the rest:
-
-```ts
-community: {
-  masterKey: ENV.COMMUNITY_MASTER_KEY,  // 32-byte encryption key for stored credentials
-  serviceDid: "did:web:example.com",
-  levels: ["admin", "moderator"],        // ranked, highest-first
-}
-```
-
-Stored credentials (app passwords for adopted communities, signing keys for minted) are envelope-encrypted with `masterKey`. Never ship the placeholder.
+Each member has a level (ranked). Levels map to write permissions. Owners can grant/revoke levels. Two reserved levels exist: `owner` and `member`. Your deployment defines the rest via `config.community.levels`.
 
 ## How it composes with spaces
 
@@ -37,13 +77,18 @@ community.space.grant  { spaceUri, subject: { did: "did:plc:..." }, accessLevel:
 
 The spaces layer stays ignorant of access levels — it just sees "this DID is a member." The community layer projects member × level → membership in specific spaces. Once a DID is a member of a space (through a community grant or otherwise), they have full read + write inside it.
 
+The integration plugs in to two contrail extension points:
+
+- **Whoami** — `<ns>.spaceExt.whoami` returns `accessLevel` for community-owned spaces (the community whoami extension overrides the default binary-membership response).
+- **Invites** — the unified `<ns>.invite.*` family dispatches community-owned spaces through the community invite handler (which uses access levels) and user-owned spaces through the spaces module's binary-membership handler.
+
 ## XRPCs
 
-- `com.example.community.mint | adopt | list | delete`
-- `com.example.community.invite.create | redeem | revoke | list`
-- `com.example.community.setAccessLevel | revoke | listMembers`
-- `com.example.community.space.create | grant | revoke | ...` — community-owned spaces
-- `com.example.community.putRecord | deleteRecord` — publish records as the community DID
+- `<ns>.community.mint | adopt | list | delete`
+- `<ns>.community.invite.create | redeem | revoke | list`
+- `<ns>.community.setAccessLevel | revoke | listMembers`
+- `<ns>.community.space.create | grant | revoke | ...` — community-owned spaces
+- `<ns>.community.putRecord | deleteRecord` — publish records as the community DID
 
 ## What's not here
 

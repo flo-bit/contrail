@@ -11,7 +11,10 @@ const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 // per-collection endpoints. Values are stubs — only the shape matters for codegen.
 const configForGen = {
 	...baseConfig,
-	spaces: { type: 'tools.atmo.chat.space', serviceDid: 'did:web:localhost' },
+	spaces: {
+		authority: { type: 'tools.atmo.chat.space', serviceDid: 'did:web:localhost' },
+		recordHost: {}
+	},
 	community: { masterKey: new Uint8Array(32), serviceDid: 'did:web:localhost' },
 	realtime: { ticketSecret: new Uint8Array(32) }
 };

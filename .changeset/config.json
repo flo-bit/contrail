@@ -3,7 +3,7 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [],
-  "linked": [["@atmo-dev/contrail", "@atmo-dev/contrail-sync"]],
+  "linked": [["@atmo-dev/contrail", "@atmo-dev/contrail-sync", "@atmo-dev/contrail-community"]],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",

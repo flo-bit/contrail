@@ -273,7 +273,10 @@ describe("extractXrpcMethods / listXrpcMethods", () => {
     const config: ContrailConfig = {
       namespace: "test.comm",
       collections: { message: { collection: "app.event.message" } },
-      spaces: { type: "tools.atmo.event.space", serviceDid: "did:web:test.example#svc" },
+      spaces: {
+        authority: { type: "tools.atmo.event.space", serviceDid: "did:web:test.example#svc" },
+        recordHost: {},
+      },
       community: { masterKey: new Uint8Array(32).fill(1) },
       realtime: { ticketSecret: new Uint8Array(32).fill(2) },
     };

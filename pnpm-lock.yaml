@@ -82,6 +82,9 @@ importers:
       '@atmo-dev/contrail':
         specifier: workspace:*
         version: link:../../packages/contrail
+      '@atmo-dev/contrail-community':
+        specifier: workspace:*
+        version: link:../../packages/contrail-community
       '@atmo-dev/contrail-lexicons':
         specifier: workspace:*
         version: link:../../packages/lexicons
@@ -373,6 +376,18 @@ importers:
       '@atcute/xrpc-server':
         specifier: ^0.1.12
         version: 0.1.12
+      '@atmo-dev/contrail-appview':
+        specifier: workspace:*
+        version: link:../contrail-appview
+      '@atmo-dev/contrail-authority':
+        specifier: workspace:*
+        version: link:../contrail-authority
+      '@atmo-dev/contrail-base':
+        specifier: workspace:*
+        version: link:../contrail-base
+      '@atmo-dev/contrail-record-host':
+        specifier: workspace:*
+        version: link:../contrail-record-host
       cac:
         specifier: ^7.0.0
         version: 7.0.0
@@ -407,6 +422,182 @@ importers:
       wrangler:
         specifier: ^4.63.0
         version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
+
+  packages/contrail-appview:
+    dependencies:
+      '@atcute/atproto':
+        specifier: ^3.1.10
+        version: 3.1.11
+      '@atcute/cbor':
+        specifier: ^2.3.2
+        version: 2.3.2
+      '@atcute/cid':
+        specifier: ^2.4.1
+        version: 2.4.1
+      '@atcute/client':
+        specifier: ^4.2.1
+        version: 4.2.1
+      '@atcute/identity':
+        specifier: ^1.1.4
+        version: 1.1.4
+      '@atcute/identity-resolver':
+        specifier: ^1.2.2
+        version: 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/jetstream':
+        specifier: ^1.0.2
+        version: 1.1.2
+      '@atcute/lexicons':
+        specifier: ^1.2.9
+        version: 1.3.0
+      '@atcute/xrpc-server':
+        specifier: ^0.1.12
+        version: 0.1.12
+      '@atmo-dev/contrail-authority':
+        specifier: workspace:*
+        version: link:../contrail-authority
+      '@atmo-dev/contrail-base':
+        specifier: workspace:*
+        version: link:../contrail-base
+      '@atmo-dev/contrail-record-host':
+        specifier: workspace:*
+        version: link:../contrail-record-host
+      hono:
+        specifier: ^4.12.8
+        version: 4.12.15
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.6.0
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/contrail-authority:
+    dependencies:
+      '@atcute/cid':
+        specifier: ^2.4.1
+        version: 2.4.1
+      '@atcute/lexicons':
+        specifier: ^1.2.9
+        version: 1.3.0
+      '@atmo-dev/contrail-base':
+        specifier: workspace:*
+        version: link:../contrail-base
+      hono:
+        specifier: ^4.12.8
+        version: 4.12.15
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/contrail-base:
+    dependencies:
+      '@atcute/atproto':
+        specifier: ^3.1.10
+        version: 3.1.11
+      '@atcute/cid':
+        specifier: ^2.4.1
+        version: 2.4.1
+      '@atcute/client':
+        specifier: ^4.2.1
+        version: 4.2.1
+      '@atcute/identity':
+        specifier: ^1.1.4
+        version: 1.1.4
+      '@atcute/identity-resolver':
+        specifier: ^1.2.2
+        version: 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lexicons':
+        specifier: ^1.2.9
+        version: 1.3.0
+      '@atcute/xrpc-server':
+        specifier: ^0.1.12
+        version: 0.1.12
+      hono:
+        specifier: ^4.12.8
+        version: 4.12.15
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.6.0
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/contrail-community:
+    dependencies:
+      '@atcute/atproto':
+        specifier: ^3.1.10
+        version: 3.1.11
+      '@atcute/cbor':
+        specifier: ^2.3.2
+        version: 2.3.2
+      '@atcute/identity':
+        specifier: ^1.1.4
+        version: 1.1.4
+      '@atcute/identity-resolver':
+        specifier: ^1.2.2
+        version: 1.2.2(@atcute/identity@1.1.4)
+      '@atcute/lexicons':
+        specifier: ^1.2.9
+        version: 1.3.0
+      '@atcute/xrpc-server':
+        specifier: ^0.1.12
+        version: 0.1.12
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../contrail
+      '@atmo-dev/contrail-base':
+        specifier: workspace:*
+        version: link:../contrail-base
+      hono:
+        specifier: ^4.12.8
+        version: 4.12.15
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
+
+  packages/contrail-record-host:
+    dependencies:
+      '@atcute/cid':
+        specifier: ^2.4.1
+        version: 2.4.1
+      '@atmo-dev/contrail-base':
+        specifier: workspace:*
+        version: link:../contrail-base
+      hono:
+        specifier: ^4.12.8
+        version: 4.12.15
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/lexicons:
     dependencies:

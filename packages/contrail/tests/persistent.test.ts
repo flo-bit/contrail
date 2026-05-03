@@ -5,10 +5,14 @@ import { runPersistent } from "../src/core/persistent";
 import { getLastCursor, queryRecords } from "../src/core/db/records";
 import { initSchema } from "../src/core/db/schema";
 
-// Mock identity resolution to avoid network calls in tests
-vi.mock("../src/core/identity", () => ({
-  refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),
-}));
+// Identity helpers live in @atmo-dev/contrail-base post-split. Mock there.
+vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
+  return {
+    ...actual,
+    refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 let db: Database;
 

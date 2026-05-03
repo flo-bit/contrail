@@ -1,0 +1,56 @@
+{
+  "name": "@atmo-dev/contrail-appview",
+  "version": "0.6.0",
+  "description": "Public-records appview for contrail — jetstream ingestion, backfill, query layer, feeds, labels, profiles, per-collection XRPC routes.",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flo-bit/contrail.git",
+    "directory": "packages/contrail-appview"
+  },
+  "keywords": [
+    "atproto",
+    "contrail",
+    "appview",
+    "jetstream"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atcute/atproto": "^3.1.10",
+    "@atcute/cbor": "^2.3.2",
+    "@atcute/cid": "^2.4.1",
+    "@atcute/client": "^4.2.1",
+    "@atcute/identity": "^1.1.4",
+    "@atcute/identity-resolver": "^1.2.2",
+    "@atcute/jetstream": "^1.0.2",
+    "@atcute/lexicons": "^1.2.9",
+    "@atcute/xrpc-server": "^0.1.12",
+    "@atmo-dev/contrail-authority": "workspace:*",
+    "@atmo-dev/contrail-base": "workspace:*",
+    "@atmo-dev/contrail-record-host": "workspace:*",
+    "hono": "^4.12.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3"
+  },
+  "license": "MIT"
+}
