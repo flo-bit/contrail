@@ -285,11 +285,11 @@ export class ProvisionOrchestrator {
   }
 
   /** C3 retry path. Triggered when provision() is called with an attemptId
-   *  whose row is at status='activated' + custodyMode='self_sovereign' + no
-   *  encrypted_password. The DID is already on PLC; the PDS account is
-   *  already created and activated; only the post-activation app-password
-   *  mint failed. We need a fresh accessJwt (the cached one may have
-   *  expired by the time the caller retries), then re-run createAppPassword. */
+   *  whose row is at status='activated' + no encrypted_password. The DID is
+   *  already on PLC; the PDS account is already created and activated; only
+   *  the post-activation app-password mint failed. We need a fresh accessJwt
+   *  (the cached one may have expired by the time the caller retries), then
+   *  re-run createAppPassword. */
   private async retryAppPasswordOnly(
     input: ProvisionInput,
     existing: NonNullable<Awaited<ReturnType<CommunityAdapter["getProvisionAttempt"]>>>
