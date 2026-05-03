@@ -1,8 +1,14 @@
 import { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
-import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS } from "./types";
+import {
+  getCollectionNsids,
+  getDependentNsids,
+  shortNameForNsid,
+  buildFeedTargetCaps,
+} from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
+import { backfillFollowersFromConstellation } from "./constellation";
 
 const BATCH_SIZE = 50;
 const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -27,7 +33,11 @@ export async function ingestEvents(
   cursor: number | null,
   safetyTimeoutMs: number = 25_000,
   knownDids?: Set<string>
-): Promise<{ events: IngestEvent[]; lastCursor: number | null }> {
+): Promise<{
+  events: IngestEvent[];
+  lastCursor: number | null;
+  newlyKnownDids: string[];
+}> {
   const log = getLogger(config);
   const startTimeUs = Date.now() * 1000;
   const deadline = Date.now() + safetyTimeoutMs;
@@ -45,6 +55,7 @@ export async function ingestEvents(
   let connectCount = 0;
   const seenUris = new Map<string, number>(); // uri -> time_us of first occurrence
   const duplicateUris: string[] = [];
+  const newlyKnownDids = new Set<string>();
 
   const subscription = new JetstreamSubscription({
     url: urls,
@@ -81,6 +92,22 @@ export async function ingestEvents(
           if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
           continue;
         }
+        // Subject filter: for collections with subjectField (e.g. follows
+        // pointing at a `subject` DID), drop records whose subject isn't a
+        // DID we care about. Trims network-wide social graph to the
+        // subjects our discoverable users overlap with.
+        const short = shortNameForNsid(config, commit.collection);
+        const subjectField = short
+          ? config.collections[short]?.subjectField
+          : undefined;
+        if (subjectField && commit.operation !== "delete") {
+          const subj = (commit.record as Record<string, unknown> | undefined)?.[
+            subjectField
+          ];
+          if (typeof subj === "string" && !knownDids.has(subj)) {
+            continue;
+          }
+        }
       }
 
       const prev = seenUris.get(uri);
@@ -115,7 +142,10 @@ export async function ingestEvents(
       );
 
       if (knownDids && !dependentCollections.has(commit.collection)) {
-        knownDids.add(event.did);
+        if (!knownDids.has(event.did)) {
+          knownDids.add(event.did);
+          newlyKnownDids.add(event.did);
+        }
       }
     }
 
@@ -172,7 +202,7 @@ export async function ingestEvents(
     );
   }
 
-  return { events: collected, lastCursor };
+  return { events: collected, lastCursor, newlyKnownDids: [...newlyKnownDids] };
 }
 
 // Run a full ingest cycle: init schema, load cursor, ingest, apply, save cursor
@@ -220,7 +250,7 @@ export async function runIngestCycle(
     }
   }
 
-  const { events, lastCursor } = await ingestEvents(
+  const { events, lastCursor, newlyKnownDids } = await ingestEvents(
     config,
     cursor,
     timeoutMs,
@@ -266,13 +296,26 @@ export async function runIngestCycle(
     log.log(`[ingest] no cursor returned from subscription; not saving`);
   }
 
-  // Prune feed items hourly
+  // Newly-discovered DIDs: ask Constellation for back-edges so they
+  // immediately appear in existing followers' feeds (best-effort, opt-out).
+  if (config.feeds && newlyKnownDids.length > 0) {
+    for (const subj of newlyKnownDids) {
+      try {
+        await backfillFollowersFromConstellation(db, config, subj);
+      } catch (err) {
+        log.warn(`[constellation] subject=${subj} failed: ${err}`);
+      }
+    }
+  }
+
+  // Prune feed items hourly, per-target so high-volume targets don't
+  // squeeze out lower-volume ones.
   if (config.feeds && Date.now() - s.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
-    const maxItems = Math.max(
-      ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
-    );
-    const pruned = await pruneFeedItems(db, maxItems);
-    if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+    const caps = buildFeedTargetCaps(config);
+    if (caps.size > 0) {
+      const pruned = await pruneFeedItems(db, caps);
+      if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+    }
     s.lastFeedPruneMs = Date.now();
   }
 

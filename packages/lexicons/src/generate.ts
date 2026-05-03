@@ -401,9 +401,16 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     log("Generating feed endpoint...");
 
     const feedNames = Object.keys(config.feeds);
-    // feedConfig.targets are short names; expose NSIDs in the lexicon since the
-    // `collection` param filters by the record's NSID at the wire level.
-    const allTargets = [...new Set(Object.values(config.feeds).flatMap((f) => f.targets))];
+    // feedConfig.targets are short names (or `{ collection, maxItems? }`);
+    // expose NSIDs in the lexicon since the `collection` param filters by
+    // the record's NSID at the wire level.
+    const allTargets = [
+      ...new Set(
+        Object.values(config.feeds).flatMap((f) =>
+          f.targets.map((t) => (typeof t === "string" ? t : t.collection))
+        )
+      ),
+    ];
     const allTargetNsids = allTargets
       .map((t) => config.collections[t]?.collection)
       .filter((n): n is string => !!n);
@@ -1033,11 +1040,12 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     );
     // f.follow is a short name (a key in config.collections), not an NSID — resolve
     // it before pushing into the pull list, otherwise lex-cli pull rejects it as
-    // "must be valid nsid". Filter out any feed pointing at a non-existent
-    // collection so we never emit an undefined.
+    // "must be valid nsid". `follow` is now optional; default to `"follow"`
+    // (auto-added by resolveConfig). Filter out any feed pointing at a
+    // non-existent collection so we never emit an undefined.
     const feedFollowNsids = config.feeds
       ? Object.values(config.feeds)
-          .map((f) => config.collections[f.follow]?.collection)
+          .map((f) => config.collections[f.follow ?? "follow"]?.collection)
           .filter((nsid): nsid is string => typeof nsid === "string")
       : [];
     const pullNsids = new Set([...collectionNsids, ...profileNsids, ...feedFollowNsids]);

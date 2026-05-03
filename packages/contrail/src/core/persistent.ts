@@ -1,8 +1,15 @@
 import type { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailConfig } from "./types";
-import { getCollectionNsids, getDependentNsids, DEFAULT_FEED_MAX_ITEMS, resolveConfig } from "./types";
+import {
+  getCollectionNsids,
+  getDependentNsids,
+  buildFeedTargetCaps,
+  resolveConfig,
+  shortNameForNsid,
+} from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
 import { refreshStaleIdentities } from "./identity";
+import { backfillFollowersFromConstellation } from "./constellation";
 import { createIngestState } from "./jetstream";
 import type { IngestState } from "./jetstream";
 
@@ -75,6 +82,7 @@ export async function runPersistent(
         collections,
         dependentCollections,
         knownDids,
+        newlyKnownDids: new Set<string>(),
         state,
         log,
         createSubscription: options?.createSubscription,
@@ -101,6 +109,9 @@ interface StreamOptions {
   collections: string[];
   dependentCollections: Set<string>;
   knownDids?: Set<string>;
+  /** DIDs that crossed from unknown→known during this stream's lifetime.
+   *  Drained on each flush so Constellation reverse-lookups can run for them. */
+  newlyKnownDids?: Set<string>;
   state: IngestState;
   log: Logger;
   createSubscription?: (cursor: number | null) => any;
@@ -152,12 +163,25 @@ async function streamAndFlush(
         }
       }
 
+      // Drain newly-known DIDs and ask Constellation for back-edges.
+      if (config.feeds && opts.newlyKnownDids && opts.newlyKnownDids.size > 0) {
+        const drained = [...opts.newlyKnownDids];
+        opts.newlyKnownDids.clear();
+        for (const subj of drained) {
+          try {
+            await backfillFollowersFromConstellation(db, config, subj);
+          } catch (err) {
+            log.warn(`[constellation] subject=${subj} failed: ${err}`);
+          }
+        }
+      }
+
       if (config.feeds && Date.now() - state.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
-        const maxItems = Math.max(
-          ...Object.values(config.feeds).map((f) => f.maxItems ?? DEFAULT_FEED_MAX_ITEMS)
-        );
-        const pruned = await pruneFeedItems(db, maxItems);
-        if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+        const caps = buildFeedTargetCaps(config);
+        if (caps.size > 0) {
+          const pruned = await pruneFeedItems(db, caps);
+          if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+        }
         state.lastFeedPruneMs = Date.now();
       }
 
@@ -208,6 +232,17 @@ async function streamAndFlush(
 
         if (dependentCollections.has(commit.collection) && knownDids) {
           if (!knownDids.has(event.did)) continue;
+          // Subject filter: skip records whose subject DID isn't known.
+          const short = shortNameForNsid(config, commit.collection);
+          const subjectField = short
+            ? config.collections[short]?.subjectField
+            : undefined;
+          if (subjectField && commit.operation !== "delete") {
+            const subj = (commit.record as Record<string, unknown> | undefined)?.[
+              subjectField
+            ];
+            if (typeof subj === "string" && !knownDids.has(subj)) continue;
+          }
         }
 
         const now = Date.now();
@@ -226,7 +261,10 @@ async function streamAndFlush(
         });
 
         if (knownDids && !dependentCollections.has(commit.collection)) {
-          knownDids.add(event.did);
+          if (!knownDids.has(event.did)) {
+            knownDids.add(event.did);
+            opts.newlyKnownDids?.add(event.did);
+          }
         }
       }
 

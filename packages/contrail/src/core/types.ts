@@ -60,16 +60,63 @@ export type PipelineQueryHandler = (
   config: ContrailConfig
 ) => Promise<RecordSource>;
 
+export interface FeedTargetConfig {
+  /** Short name of the target collection. */
+  collection: string;
+  /** Per-target item cap. Falls back to FeedConfig.maxItems if unset. */
+  maxItems?: number;
+}
+
 export interface FeedConfig {
-  /** Short name of the follow collection. */
-  follow: string;
-  /** Short names of target collections to fan out to. */
-  targets: string[];
-  /** Max feed items per user (default: 200). Oldest items are pruned after backfill. */
+  /** Short name of the follow collection. Defaults to "follow"
+   *  (auto-added with NSID `app.bsky.graph.follow`, `discover: false`). */
+  follow?: string;
+  /** Target collections to fan out to. Each entry is either a short name
+   *  or `{ collection, maxItems? }` for per-target caps. */
+  targets: (string | FeedTargetConfig)[];
+  /** Default per-target item cap when a target doesn't specify its own
+   *  (default: 200). Oldest items per (actor, collection) are pruned. */
   maxItems?: number;
 }
 
 export const DEFAULT_FEED_MAX_ITEMS = 200;
+export const DEFAULT_FOLLOW_NSID = "app.bsky.graph.follow";
+export const DEFAULT_FOLLOW_SHORT = "follow";
+
+/** Normalize a feed target entry to FeedTargetConfig. */
+export function normalizeFeedTarget(
+  t: string | FeedTargetConfig
+): FeedTargetConfig {
+  return typeof t === "string" ? { collection: t } : t;
+}
+
+/** Resolve a feed's per-target item cap, falling back to FeedConfig.maxItems then global default. */
+export function feedTargetMaxItems(
+  feed: FeedConfig,
+  target: FeedTargetConfig
+): number {
+  return target.maxItems ?? feed.maxItems ?? DEFAULT_FEED_MAX_ITEMS;
+}
+
+/** Build a Map<target-NSID, maxItems> across all configured feeds, taking the
+ *  largest cap if the same target collection appears in multiple feeds. */
+export function buildFeedTargetCaps(
+  config: ContrailConfig
+): Map<string, number> {
+  const caps = new Map<string, number>();
+  if (!config.feeds) return caps;
+  for (const feed of Object.values(config.feeds)) {
+    for (const t of feed.targets) {
+      const target = normalizeFeedTarget(t);
+      const colCfg = config.collections[target.collection];
+      if (!colCfg) continue;
+      const cap = feedTargetMaxItems(feed, target);
+      const existing = caps.get(colCfg.collection) ?? 0;
+      if (cap > existing) caps.set(colCfg.collection, cap);
+    }
+  }
+  return caps;
+}
 
 export type CollectionMethod = "listRecords" | "getRecord";
 export const DEFAULT_COLLECTION_METHODS: CollectionMethod[] = [
@@ -96,6 +143,16 @@ export interface CollectionConfig {
   /** When spaces are enabled globally, emit a parallel spaces_records_<short> table
    *  so this collection can also live inside spaces. Defaults to true. */
   allowInSpaces?: boolean;
+  /** JSON field on the record used as the canonical event time, parsed and
+   *  written into `time_us` during backfill (and clamped to now). Default
+   *  `"createdAt"`. Set to `false` to disable parsing and keep ingest time. */
+  timeField?: string | false;
+  /** JSON field on the record holding a DID that this record points at
+   *  (e.g. `"subject"` for follows). When set on a `discover: false`
+   *  collection, ingest also drops records whose subject DID is not in
+   *  knownDids — useful for trimming network-wide social graphs to the
+   *  subjects we care about. */
+  subjectField?: string;
 }
 
 export interface ProfileConfig {
@@ -168,7 +225,25 @@ export interface ContrailConfig {
   labels?: import("./labels/types").LabelsConfig;
   /** Customize the auto-generated `<namespace>.authFull` lexicon. */
   permissionSet?: PermissionSetConfig;
+  /** Constellation-backed reverse-follower lookup (default: enabled).
+   *  When a DID is first seen producing a discoverable record, contrail
+   *  queries Constellation for follow records pointing at that DID and
+   *  ingests synthesized rows for any follower already in our identities
+   *  table. Lets newcomers immediately appear in existing users' feeds. */
+  constellation?: ConstellationConfig | false;
 }
+
+export interface ConstellationConfig {
+  /** Override the default Constellation instance URL. */
+  url?: string;
+  /** Sent as the User-Agent header per Constellation's request that
+   *  callers identify themselves. Defaults to `contrail/<namespace>`. */
+  userAgent?: string;
+  /** Set false to disable lookups while keeping the table around. */
+  enabled?: boolean;
+}
+
+export const DEFAULT_CONSTELLATION_URL = "https://constellation.microcosm.blue";
 
 /** Single entry in an atproto permission-set's `permissions` array.
  *  See https://atproto.com/guides/permission-sets for the full schema. */
@@ -216,7 +291,20 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
   const profiles = (config.profiles ?? DEFAULT_PROFILES).map(
     normalizeProfileConfig
   );
-  const collections = { ...config.collections };
+  const collections: Record<string, CollectionConfig> = {};
+
+  // Default `discover: false` for any collection whose NSID lives under the
+  // `app.bsky.*` namespace, since these are external/network-wide records that
+  // would otherwise blow up storage if left discoverable.
+  for (const [short, c] of Object.entries(config.collections)) {
+    collections[short] =
+      c.discover === undefined &&
+      typeof c.collection === "string" &&
+      c.collection.startsWith("app.bsky.")
+        ? { ...c, discover: false }
+        : c;
+  }
+
   for (const p of profiles) {
     const short = p.shortName!;
     if (!collections[short]) {
@@ -224,10 +312,26 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
     }
   }
 
-  // Auto-add follow collections from feed configs as dependent collections if they're
-  // not already listed. Feed config already uses short names so nothing to resolve —
-  // but if the user forgot to declare the follow collection, we can't auto-add it without
-  // knowing its NSID. In that case we warn later via validateConfig.
+  // Auto-add a follow collection for any feed that doesn't declare one.
+  // Default short name `follow` → `app.bsky.graph.follow`, with a `subject`
+  // filter so we only persist follows pointing at known DIDs.
+  const feeds = config.feeds;
+  if (feeds) {
+    const usedFollowShorts = new Set<string>();
+    for (const [, feed] of Object.entries(feeds)) {
+      const shortName = feed.follow ?? DEFAULT_FOLLOW_SHORT;
+      usedFollowShorts.add(shortName);
+    }
+    for (const short of usedFollowShorts) {
+      if (!collections[short]) {
+        collections[short] = {
+          collection: DEFAULT_FOLLOW_NSID,
+          discover: false,
+          subjectField: "subject",
+        };
+      }
+    }
+  }
 
   const base = {
     ...config,
@@ -277,7 +381,11 @@ function _resolveQueryableMaps(config: ContrailConfig): ResolvedMaps {
 
 export function getFeedFollowShortNames(config: ContrailConfig): string[] {
   if (!config.feeds) return [];
-  return [...new Set(Object.values(config.feeds).map((f) => f.follow))];
+  return [
+    ...new Set(
+      Object.values(config.feeds).map((f) => f.follow ?? DEFAULT_FOLLOW_SHORT)
+    ),
+  ];
 }
 
 /** Alias for getFeedFollowShortNames. */
@@ -375,15 +483,17 @@ export function validateConfig(config: ContrailConfig): void {
 
   if (config.feeds) {
     for (const [feedName, feed] of Object.entries(config.feeds)) {
-      if (!config.collections[feed.follow]) {
+      const followShort = feed.follow ?? DEFAULT_FOLLOW_SHORT;
+      if (!config.collections[followShort]) {
         throw new Error(
-          `Feed "${feedName}" references unknown follow collection "${feed.follow}"`
+          `Feed "${feedName}" references unknown follow collection "${followShort}"`
         );
       }
-      for (const target of feed.targets) {
-        if (!config.collections[target]) {
+      for (const t of feed.targets) {
+        const targetShort = normalizeFeedTarget(t).collection;
+        if (!config.collections[targetShort]) {
           throw new Error(
-            `Feed "${feedName}" references unknown target collection "${target}"`
+            `Feed "${feedName}" references unknown target collection "${targetShort}"`
           );
         }
       }

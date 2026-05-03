@@ -214,11 +214,16 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] 
       actor TEXT NOT NULL,
       feed TEXT NOT NULL,
       completed INTEGER NOT NULL DEFAULT 0,
+      retries INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      started_at ${dialect.bigintType},
       PRIMARY KEY (actor, feed)
     )`,
   ];
 
-  const followCollections = new Set(Object.values(config.feeds).map((f) => f.follow));
+  const followCollections = new Set(
+    Object.values(config.feeds).map((f) => f.follow ?? "follow")
+  );
   for (const col of followCollections) {
     const table = recordsTableName(col);
     const safe = sanitizeName(col);
@@ -250,6 +255,9 @@ const MIGRATIONS = [
   "ALTER TABLE backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE backfills ADD COLUMN last_error TEXT",
   "ALTER TABLE spaces_invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'join'",
+  "ALTER TABLE feed_backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE feed_backfills ADD COLUMN last_error TEXT",
+  "ALTER TABLE feed_backfills ADD COLUMN started_at BIGINT",
 ];
 
 async function runMigrations(db: Database): Promise<void> {
