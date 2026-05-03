@@ -373,3 +373,81 @@ describe("manifest emission (lexicons/generated/index.ts)", () => {
     }
   });
 });
+
+describe("runtime files: lex.config.js pull NSIDs", () => {
+  let workdir: string;
+
+  beforeAll(() => {
+    workdir = mkdtempSync(join(tmpdir(), "contrail-feedpull-"));
+  });
+  afterAll(() => {
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  function readPullNsids(): string[] {
+    const lexConfig = readFileSync(join(workdir, "lex.config.js"), "utf-8");
+    const match = lexConfig.match(/nsids:\s*(\[[\s\S]*?\])/);
+    if (!match) throw new Error("could not locate pull nsids array in lex.config.js");
+    return JSON.parse(match[1]);
+  }
+
+  it("resolves feed.follow short names to NSIDs (regression: lex-cli pull rejects bare short names)", () => {
+    const config: ContrailConfig = {
+      namespace: "test.app",
+      collections: {
+        follow: { collection: "app.bsky.graph.follow" },
+        event: { collection: "community.lexicon.calendar.event" },
+      },
+      feeds: {
+        network: { follow: "follow", targets: ["event"] },
+      },
+    };
+
+    generateLexicons({
+      config,
+      rootDir: workdir,
+      lexiconDirs: [],
+      writeRuntimeFiles: true,
+      quiet: true,
+    });
+
+    const nsids = readPullNsids();
+
+    // Every entry must be a valid NSID — at least one dot, and never equal a feed short name.
+    const feedShortNames = Object.keys(config.collections);
+    for (const nsid of nsids) {
+      expect(nsid).toMatch(/\./);
+      expect(feedShortNames).not.toContain(nsid);
+    }
+
+    // The follow collection's NSID is included via the feeds path.
+    expect(nsids).toContain("app.bsky.graph.follow");
+  });
+
+  it("skips feeds whose follow short name is missing from collections (no undefineds in pull list)", () => {
+    const config = {
+      namespace: "test.app",
+      collections: {
+        event: { collection: "community.lexicon.calendar.event" },
+      },
+      feeds: {
+        broken: { follow: "doesNotExist", targets: ["event"] },
+      },
+    } as unknown as ContrailConfig;
+
+    generateLexicons({
+      config,
+      rootDir: workdir,
+      lexiconDirs: [],
+      writeRuntimeFiles: true,
+      quiet: true,
+    });
+
+    const nsids = readPullNsids();
+    for (const nsid of nsids) {
+      expect(typeof nsid).toBe("string");
+      expect(nsid).toMatch(/\./);
+    }
+    expect(nsids).not.toContain("doesNotExist");
+  });
+});
