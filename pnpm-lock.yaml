@@ -45,6 +45,9 @@ importers:
       '@atmo-dev/contrail':
         specifier: workspace:*
         version: link:../../packages/contrail
+      '@atmo-dev/contrail-community':
+        specifier: workspace:*
+        version: link:../../packages/contrail-community
       pg:
         specifier: ^8.20.0
         version: 8.20.0

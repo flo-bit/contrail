@@ -27,7 +27,6 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import pg from "pg";
 import type { Client } from "@atcute/client";
 import "@atcute/atproto";
-import { Contrail } from "@atmo-dev/contrail";
 import { createHandler } from "@atmo-dev/contrail/server";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 import { config as baseConfig } from "../config";
@@ -35,6 +34,7 @@ import {
   createTestAccount,
   createIsolatedSchema,
   createDevnetResolver,
+  setupCommunityContrail,
   createCaller,
   login,
   jsonOr,
@@ -80,14 +80,10 @@ describe("invite e2e (community + user-owned, real JWT)", () => {
     cleanupSchema = iso.cleanup;
     const db = createPostgresDatabase(pool);
 
-    const contrail = new Contrail({
-      ...baseConfig,
+    const contrail = await setupCommunityContrail({
       db,
-      spaces: {
-        type: SPACE_TYPE,
-        serviceDid: CONTRAIL_SERVICE_DID,
-        resolver: createDevnetResolver(),
-      },
+      baseConfig,
+      spaceType: SPACE_TYPE,
       community: {
         serviceDid: CONTRAIL_SERVICE_DID,
         masterKey: TEST_MASTER_KEY,

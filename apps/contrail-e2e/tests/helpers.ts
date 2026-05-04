@@ -12,6 +12,9 @@ import {
   PlcDidDocumentResolver,
 } from "@atcute/identity-resolver";
 import type { Did as AtDid, Nsid } from "@atcute/lexicons";
+import { Contrail, generateAuthoritySigningKey, resolveConfig } from "@atmo-dev/contrail";
+import type { ContrailConfig, Database, SpacesConfig } from "@atmo-dev/contrail";
+import { createCommunityIntegration } from "@atmo-dev/contrail-community";
 
 export type Did = `did:${string}:${string}`;
 
@@ -43,6 +46,61 @@ export function createDevnetResolver() {
     methods: {
       plc: new PlcDidDocumentResolver({ apiUrl: PLC_URL }),
     },
+  });
+}
+
+/**
+ * Build a `spaces` config block in the post-PR30 split shape: authority owns
+ * ACL + credential signing, recordHost owns storage. Tests that previously
+ * passed the flat `{ type, serviceDid, resolver }` shape now get this — the
+ * config validator enforces the split, and `community` requires `authority`.
+ *
+ * Pass the `type` NSID for the kind of space (e.g. "rsvp.atmo.event.space").
+ * A fresh signing key is generated per call so credential issuance works in
+ * the auth tests without leaking key material across suites.
+ */
+export async function makeSpacesConfig(type: string): Promise<SpacesConfig> {
+  return {
+    authority: {
+      type,
+      serviceDid: CONTRAIL_SERVICE_DID,
+      signing: await generateAuthoritySigningKey(),
+      resolver: createDevnetResolver(),
+    },
+    recordHost: {},
+  };
+}
+
+/**
+ * Build a Contrail wired with a community integration. Post-PR30, community
+ * routes are not registered by passing a `community` config block alone — the
+ * caller must construct a `CommunityIntegration` from the resolved config and
+ * pass it as `communityIntegration` to the `Contrail` constructor (the same
+ * pattern `createApp({ community })` uses in the contrail-community unit
+ * tests).
+ *
+ * `community` is forwarded into the Contrail config so the integration can
+ * read `masterKey`, `fetch`, etc. through `config.community`.
+ */
+export async function setupCommunityContrail(opts: {
+  db: Database;
+  baseConfig: ContrailConfig;
+  spaceType: string;
+  community: Record<string, unknown>;
+}): Promise<Contrail> {
+  const fullConfig: ContrailConfig = {
+    ...opts.baseConfig,
+    spaces: await makeSpacesConfig(opts.spaceType),
+    community: opts.community,
+  };
+  const integration = createCommunityIntegration({
+    db: opts.db,
+    config: resolveConfig(fullConfig),
+  });
+  return new Contrail({
+    ...fullConfig,
+    db: opts.db,
+    communityIntegration: integration,
   });
 }
 

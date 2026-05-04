@@ -21,7 +21,7 @@ import { config as baseConfig } from "../config";
 import {
   createTestAccount,
   createIsolatedSchema,
-  createDevnetResolver,
+  makeSpacesConfig,
   mintServiceAuthJwt,
   CONTRAIL_SERVICE_DID,
   PDS_URL,
@@ -52,11 +52,7 @@ describe("spaces table isolation", () => {
     const contrail = new Contrail({
       ...baseConfig,
       db,
-      spaces: {
-        type: SPACE_TYPE,
-        serviceDid: CONTRAIL_SERVICE_DID,
-        resolver: createDevnetResolver(),
-      },
+      spaces: await makeSpacesConfig(SPACE_TYPE),
     });
     await contrail.init();
     handle = createHandler(contrail);
