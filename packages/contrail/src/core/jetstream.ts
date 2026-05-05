@@ -7,7 +7,7 @@ import {
   buildFeedTargetCaps,
 } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
-import { refreshStaleIdentities } from "./identity";
+import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
 const BATCH_SIZE = 50;
@@ -37,6 +37,7 @@ export async function ingestEvents(
   events: IngestEvent[];
   lastCursor: number | null;
   newlyKnownDids: string[];
+  identityUpdates: Map<string, string>;
 }> {
   const log = getLogger(config);
   const startTimeUs = Date.now() * 1000;
@@ -56,6 +57,7 @@ export async function ingestEvents(
   const seenUris = new Map<string, number>(); // uri -> time_us of first occurrence
   const duplicateUris: string[] = [];
   const newlyKnownDids = new Set<string>();
+  const identityUpdates = new Map<string, string>();
 
   const subscription = new JetstreamSubscription({
     url: urls,
@@ -86,6 +88,9 @@ export async function ingestEvents(
 
       const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
+      const short = shortNameForNsid(config, commit.collection);
+      const collectionCfg = short ? config.collections[short] : undefined;
+
       if (dependentCollections.has(commit.collection) && knownDids) {
         if (!knownDids.has(event.did)) {
           filteredUnknownDid++;
@@ -96,10 +101,7 @@ export async function ingestEvents(
         // pointing at a `subject` DID), drop records whose subject isn't a
         // DID we care about. Trims network-wide social graph to the
         // subjects our discoverable users overlap with.
-        const short = shortNameForNsid(config, commit.collection);
-        const subjectField = short
-          ? config.collections[short]?.subjectField
-          : undefined;
+        const subjectField = collectionCfg?.subjectField;
         if (subjectField && commit.operation !== "delete") {
           const subj = (commit.record as Record<string, unknown> | undefined)?.[
             subjectField
@@ -108,6 +110,17 @@ export async function ingestEvents(
             continue;
           }
         }
+      }
+
+      if (collectionCfg?.recordFilter && commit.operation !== "delete") {
+        const rec = commit.record as Record<string, unknown> | undefined;
+        let keep = false;
+        try {
+          keep = !!(rec && collectionCfg.recordFilter(rec));
+        } catch (err) {
+          log.warn(`[ingest] recordFilter threw for ${uri}: ${err}`);
+        }
+        if (!keep) continue;
       }
 
       const prev = seenUris.get(uri);
@@ -147,6 +160,8 @@ export async function ingestEvents(
           newlyKnownDids.add(event.did);
         }
       }
+    } else if (event.kind === "identity") {
+      identityUpdates.set(event.did, event.identity.handle);
     }
 
     if (event.time_us >= startTimeUs) {
@@ -202,7 +217,7 @@ export async function ingestEvents(
     );
   }
 
-  return { events: collected, lastCursor, newlyKnownDids: [...newlyKnownDids] };
+  return { events: collected, lastCursor, newlyKnownDids: [...newlyKnownDids], identityUpdates };
 }
 
 // Run a full ingest cycle: init schema, load cursor, ingest, apply, save cursor
@@ -250,7 +265,7 @@ export async function runIngestCycle(
     }
   }
 
-  const { events, lastCursor, newlyKnownDids } = await ingestEvents(
+  const { events, lastCursor, newlyKnownDids, identityUpdates } = await ingestEvents(
     config,
     cursor,
     timeoutMs,
@@ -273,6 +288,19 @@ export async function runIngestCycle(
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
     await applyEvents(db, batch, config, { pubsub });
+  }
+
+  // Apply handle changes from #identity events. UPDATE-only, so unknown
+  // DIDs are no-ops — we don't want to create partial rows lacking PDS.
+  if (identityUpdates.size > 0) {
+    for (const [did, handle] of identityUpdates) {
+      try {
+        await applyIdentityEvent(db, did, handle);
+      } catch (err) {
+        log.warn(`[ingest] identity update failed for ${did}: ${err}`);
+      }
+    }
+    log.log(`[ingest] applied ${identityUpdates.size} identity event(s)`);
   }
 
   // Refresh stale/missing identities for DIDs in this batch

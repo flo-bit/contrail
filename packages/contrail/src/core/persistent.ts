@@ -8,7 +8,7 @@ import {
   shortNameForNsid,
 } from "./types";
 import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
-import { refreshStaleIdentities } from "./identity";
+import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 import { createIngestState } from "./jetstream";
 import type { IngestState } from "./jetstream";
@@ -230,19 +230,30 @@ async function streamAndFlush(
       if (event.kind === "commit") {
         const { commit } = event;
 
+        const short = shortNameForNsid(config, commit.collection);
+        const collectionCfg = short ? config.collections[short] : undefined;
+
         if (dependentCollections.has(commit.collection) && knownDids) {
           if (!knownDids.has(event.did)) continue;
           // Subject filter: skip records whose subject DID isn't known.
-          const short = shortNameForNsid(config, commit.collection);
-          const subjectField = short
-            ? config.collections[short]?.subjectField
-            : undefined;
+          const subjectField = collectionCfg?.subjectField;
           if (subjectField && commit.operation !== "delete") {
             const subj = (commit.record as Record<string, unknown> | undefined)?.[
               subjectField
             ];
             if (typeof subj === "string" && !knownDids.has(subj)) continue;
           }
+        }
+
+        if (collectionCfg?.recordFilter && commit.operation !== "delete") {
+          const rec = commit.record as Record<string, unknown> | undefined;
+          let keep = false;
+          try {
+            keep = !!(rec && collectionCfg.recordFilter(rec));
+          } catch (err) {
+            log.warn(`recordFilter threw for ${commit.collection}/${commit.rkey}: ${err}`);
+          }
+          if (!keep) continue;
         }
 
         const now = Date.now();
@@ -265,6 +276,12 @@ async function streamAndFlush(
             knownDids.add(event.did);
             opts.newlyKnownDids?.add(event.did);
           }
+        }
+      } else if (event.kind === "identity") {
+        try {
+          await applyIdentityEvent(db, event.did, event.identity.handle);
+        } catch (err) {
+          log.warn(`Identity update failed for ${event.did}: ${err}`);
         }
       }
 

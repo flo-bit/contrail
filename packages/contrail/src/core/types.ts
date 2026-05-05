@@ -153,6 +153,14 @@ export interface CollectionConfig {
    *  knownDids — useful for trimming network-wide social graphs to the
    *  subjects we care about. */
   subjectField?: string;
+  /** Per-record predicate run during ingest. Returning false drops the
+   *  record before it hits the buffer / DB. Runs only for create/update;
+   *  deletes always pass through (the delete may target a record that *did*
+   *  pass an earlier version of the filter). Thrown errors are caught,
+   *  logged, and treated as "drop". Note: Jetstream filters only by
+   *  `wantedCollections`, so non-matching records still travel over the wire
+   *  — this trims what gets persisted, not bandwidth. */
+  recordFilter?: (record: Record<string, unknown>) => boolean;
 }
 
 export interface ProfileConfig {

@@ -119,6 +119,24 @@ export async function resolveActor(
   return resolved.did;
 }
 
+/**
+ * Apply a handle change from a Jetstream `#identity` event.
+ *
+ * UPDATE-only — does not create a row for unknown DIDs (we'd lack PDS, and
+ * partial rows confuse the rest of the pipeline). PDS column is left
+ * untouched; it gets refreshed lazily via `getPDS` / next slingshot resolve.
+ */
+export async function applyIdentityEvent(
+  db: Database,
+  did: string,
+  handle: string
+): Promise<void> {
+  await db
+    .prepare("UPDATE identities SET handle = ?, resolved_at = ? WHERE did = ?")
+    .bind(handle, Date.now(), did)
+    .run();
+}
+
 export async function refreshStaleIdentities(
   db: Database,
   dids: string[]
