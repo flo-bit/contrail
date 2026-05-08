@@ -9,9 +9,7 @@ import { HostedAdapter } from "./adapter";
 import {
   buildVerifier,
   createBindingCredentialVerifier,
-  createCompositeBindingResolver,
   createEnrollmentBindingResolver,
-  createLocalBindingResolver,
   createLocalKeyResolver,
   createServiceAuthMiddleware,
 } from "@atmo-dev/contrail-base";
@@ -71,18 +69,11 @@ export function registerSpacesRoutes(
   );
 
   if (spacesConfig.recordHost) {
-    // Default in-process verifier: enrollment is the canonical binding
-    // source; Local-binding is a fallback for spaces created but not yet
-    // enrolled. Caller overrides via `options.credentialVerifier` to
-    // accept external authorities.
     const credentialVerifier =
       options.credentialVerifier ??
       (authorityConfig.signing
         ? createBindingCredentialVerifier({
-            bindings: createCompositeBindingResolver([
-              createEnrollmentBindingResolver({ recordHost: adapter }),
-              createLocalBindingResolver({ authorityDid: authorityConfig.serviceDid }),
-            ]),
+            bindings: createEnrollmentBindingResolver({ recordHost: adapter }),
             keys: createLocalKeyResolver({
               authorityDid: authorityConfig.serviceDid,
               publicKey: authorityConfig.signing.publicKey,
