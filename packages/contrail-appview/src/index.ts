@@ -33,6 +33,7 @@ export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/refresh";
 export * from "./core/search";
+export * from "./core/constellation";
 
 // DB
 export * from "./core/db/schema";

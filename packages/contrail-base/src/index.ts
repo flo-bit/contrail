@@ -13,7 +13,7 @@ export * from "./types";
 // Dialect (SqlDialect, getDialect, sqliteDialect, postgresDialect, buildFtsSchema)
 export * from "./dialect";
 
-// Identity (resolveActor, resolveIdentities, refreshStaleIdentities)
+// Identity (resolveActor, resolveIdentities, refreshStaleIdentities, applyIdentityEvent)
 export * from "./identity";
 
 // PDS client helpers (getPDS, getClient)

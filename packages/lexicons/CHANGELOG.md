@@ -1,5 +1,32 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [af24714]
+  - @atmo-dev/contrail@0.6.0
+
+## 0.4.5
+
+### Patch Changes
+
+- Include `app.bsky.graph.follow` in the generated `lex.config.js` pull list when a feed leaves `FeedConfig.follow` unset. Mirrors the runtime default that `resolveConfig` auto-adds, so `lex-cli pull` fetches the schema instead of skipping it.
+
+## 0.4.4
+
+### Patch Changes
+
+- 1a6d8cf: Handle the new `FeedConfig.targets` shape (`string | { collection, maxItems? }`) when generating the feed lexicon and computing pull NSIDs, and fall back to the default `"follow"` short name when `FeedConfig.follow` is unset.
+- Updated dependencies [1a6d8cf]
+  - @atmo-dev/contrail@0.5.0
+
+## 0.4.3
+
+### Patch Changes
+
+- 9cca8cb: fix: resolve `feeds[*].follow` short names to NSIDs when emitting `lex.config.js`. previously the generator pushed the raw short name (e.g. `"follow"`) into `pull.sources[0].nsids`, causing `lex-cli pull` to fail with `ValitaError: must be valid nsid`. now matches the existing `collections` / `profiles` resolution path; feeds pointing at unknown collections are skipped instead of leaking `undefined`.
+
 ## 0.4.2
 
 ### Patch Changes

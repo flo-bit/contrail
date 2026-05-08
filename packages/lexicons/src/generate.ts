@@ -401,9 +401,16 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     log("Generating feed endpoint...");
 
     const feedNames = Object.keys(config.feeds);
-    // feedConfig.targets are short names; expose NSIDs in the lexicon since the
-    // `collection` param filters by the record's NSID at the wire level.
-    const allTargets = [...new Set(Object.values(config.feeds).flatMap((f) => f.targets))];
+    // feedConfig.targets are short names (or `{ collection, maxItems? }`);
+    // expose NSIDs in the lexicon since the `collection` param filters by
+    // the record's NSID at the wire level.
+    const allTargets = [
+      ...new Set(
+        Object.values(config.feeds).flatMap((f) =>
+          f.targets.map((t) => (typeof t === "string" ? t : t.collection))
+        )
+      ),
+    ];
     const allTargetNsids = allTargets
       .map((t) => config.collections[t]?.collection)
       .filter((n): n is string => !!n);
@@ -1031,7 +1038,20 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     const profileNsids: string[] = (config.profiles ?? ["app.bsky.actor.profile"]).map(
       (p) => (typeof p === "string" ? p : p.collection)
     );
-    const feedFollowNsids = config.feeds ? Object.values(config.feeds).map((f) => f.follow) : [];
+    // f.follow is a short name (a key in config.collections), not an NSID — resolve
+    // it before pushing into the pull list, otherwise lex-cli pull rejects it as
+    // "must be valid nsid". When `follow` is unset, contrail's resolveConfig
+    // auto-adds an `app.bsky.graph.follow` collection at runtime; mirror that
+    // here so the generated pull list still includes it.
+    const DEFAULT_FOLLOW_NSID = "app.bsky.graph.follow";
+    const feedFollowNsids = config.feeds
+      ? Object.values(config.feeds)
+          .map((f) => {
+            if (!f.follow) return DEFAULT_FOLLOW_NSID;
+            return config.collections[f.follow]?.collection;
+          })
+          .filter((nsid): nsid is string => typeof nsid === "string")
+      : [];
     const pullNsids = new Set([...collectionNsids, ...profileNsids, ...feedFollowNsids]);
     for (const ref of allRefs) {
       if (!ref.startsWith("com.atproto.")) pullNsids.add(ref);

@@ -18,6 +18,9 @@ import {
   spacesRecordsTableName,
   shortNameForNsid,
   nsidForShortName,
+  normalizeFeedTarget,
+  feedTargetMaxItems,
+  DEFAULT_FOLLOW_SHORT,
 } from "../types";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 import { ftsQueryClause, getDialect } from "../dialect";
@@ -210,10 +213,13 @@ function buildFeedStatements(
   if (!eventShort) return [];
 
   for (const [, feedConfig] of Object.entries(config.feeds)) {
-    const followTable = recordsTableName(feedConfig.follow);
+    const followShort = feedConfig.follow ?? DEFAULT_FOLLOW_SHORT;
+    const followTable = recordsTableName(followShort);
+    const targets = feedConfig.targets.map(normalizeFeedTarget);
+    const targetShorts = targets.map((t) => t.collection);
 
     // Target collection: fan out to followers
-    if (feedConfig.targets.includes(eventShort)) {
+    if (targetShorts.includes(eventShort)) {
       if (event.operation === "create" || event.operation === "update") {
         stmts.push(
           db
@@ -235,14 +241,15 @@ function buildFeedStatements(
     }
 
     // Follow collection: handle follow/unfollow
-    if (eventShort === feedConfig.follow) {
+    if (eventShort === followShort) {
       if (event.operation === "create") {
         const record = event.record ? JSON.parse(event.record) : null;
         const subject = record?.subject;
         if (subject) {
-          for (const targetShort of feedConfig.targets) {
-            const targetTable = recordsTableName(targetShort);
-            const targetNsid = nsidForShortName(config, targetShort) ?? targetShort;
+          for (const target of targets) {
+            const targetTable = recordsTableName(target.collection);
+            const targetNsid = nsidForShortName(config, target.collection) ?? target.collection;
+            const cap = feedTargetMaxItems(feedConfig, target);
             stmts.push(
               db
                 .prepare(
@@ -252,7 +259,7 @@ function buildFeedStatements(
                    FROM ${targetTable} r
                    WHERE r.did = ?
                    ORDER BY r.time_us DESC
-                   LIMIT 100`
+                   LIMIT ${cap}`
                   )
                 )
                 .bind(event.did, targetNsid, subject)
@@ -265,8 +272,8 @@ function buildFeedStatements(
           const parsed = JSON.parse(existingRecord);
           const subject = parsed?.subject;
           if (subject) {
-            for (const targetShort of feedConfig.targets) {
-              const targetTable = recordsTableName(targetShort);
+            for (const target of targets) {
+              const targetTable = recordsTableName(target.collection);
               stmts.push(
                 db
                   .prepare(
@@ -288,22 +295,47 @@ function buildFeedStatements(
 
 // --- Feed pruning ---
 
+/** Prune feed_items per (actor, collection) to the given cap.
+ *
+ * - If `caps` is a number: legacy behavior — global per-actor cap across all collections.
+ * - If `caps` is a Map<collection-NSID, cap>: each collection is pruned independently per actor,
+ *   so high-volume collections (e.g. RSVPs) can't squeeze out lower-volume ones (e.g. events).
+ *   Collections not present in the map are left alone.
+ */
 export async function pruneFeedItems(
   db: Database,
-  maxItems: number
+  caps: number | Map<string, number>
 ): Promise<number> {
-  const result = await db
-    .prepare(
-      `DELETE FROM feed_items WHERE (actor, uri) NOT IN (
-         SELECT actor, uri FROM (
-           SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
-           FROM feed_items
-         ) sub WHERE rn <= ?
-       )`
-    )
-    .bind(maxItems)
-    .run();
-  return (result as any)?.changes ?? 0;
+  if (typeof caps === "number") {
+    const result = await db
+      .prepare(
+        `DELETE FROM feed_items WHERE (actor, uri) NOT IN (
+           SELECT actor, uri FROM (
+             SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
+             FROM feed_items
+           ) sub WHERE rn <= ?
+         )`
+      )
+      .bind(caps)
+      .run();
+    return (result as any)?.changes ?? 0;
+  }
+  let total = 0;
+  for (const [collection, cap] of caps) {
+    const result = await db
+      .prepare(
+        `DELETE FROM feed_items WHERE collection = ? AND (actor, uri) NOT IN (
+           SELECT actor, uri FROM (
+             SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
+             FROM feed_items WHERE collection = ?
+           ) sub WHERE rn <= ?
+         )`
+      )
+      .bind(collection, collection, cap)
+      .run();
+    total += (result as any)?.changes ?? 0;
+  }
+  return total;
 }
 
 // --- Cursor ---

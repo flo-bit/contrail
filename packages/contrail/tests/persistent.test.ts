@@ -1,16 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ContrailConfig, Database } from "../src/core/types";
+import { resolveConfig } from "../src/core/types";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 import { runPersistent } from "../src/core/persistent";
 import { getLastCursor, queryRecords } from "../src/core/db/records";
 import { initSchema } from "../src/core/db/schema";
 
 // Identity helpers live in @atmo-dev/contrail-base post-split. Mock there.
+const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
   return {
     ...actual,
     refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),
+    applyIdentityEvent: (...args: unknown[]) => applyIdentityEventMock(...args),
   };
 });
 
@@ -296,9 +299,79 @@ describe("runPersistent", () => {
     expect(row!.count_rsvp_going).toBe(1);
   });
 
-  it("skips non-commit events", async () => {
+  it("drops records that fail a collection's recordFilter", async () => {
+    // Filter accepts only events whose `name` contains "keep". The other
+    // events have well-formed records but should never reach the DB.
+    const filterConfig = resolveConfig({
+      namespace: "com.example",
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          recordFilter: (r) =>
+            typeof r.name === "string" && r.name.includes("keep"),
+        },
+      },
+    });
+
+    const freshDb = createTestDb();
+    await initSchema(freshDb, filterConfig);
+
     const events = [
-      { kind: "identity" as const, did: "did:plc:someone", time_us: 4000 },
+      {
+        kind: "commit" as const,
+        did: "did:plc:a",
+        time_us: 7000,
+        commit: {
+          collection: "community.lexicon.calendar.event",
+          operation: "create",
+          rkey: "drop1",
+          cid: "c1",
+          record: { name: "drop me", startsAt: "2026-04-01T10:00:00Z", mode: "online" },
+        },
+      },
+      {
+        kind: "commit" as const,
+        did: "did:plc:b",
+        time_us: 7001,
+        commit: {
+          collection: "community.lexicon.calendar.event",
+          operation: "create",
+          rkey: "keep1",
+          cid: "c2",
+          record: { name: "keep this", startsAt: "2026-04-01T10:00:00Z", mode: "online" },
+        },
+      },
+    ];
+
+    const controller = new AbortController();
+    const promise = runPersistent(freshDb, filterConfig, {
+      batchSize: 100,
+      flushIntervalMs: 50,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription(events) as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+    controller.abort();
+    await promise;
+
+    const result = await queryRecords(freshDb, filterConfig, {
+      collection: "community.lexicon.calendar.event",
+      limit: 100,
+    });
+    expect(result.records.length).toBe(1);
+    expect(result.records[0]!.uri).toContain("/keep1");
+  });
+
+  it("skips non-commit events", async () => {
+    applyIdentityEventMock.mockClear();
+    const events = [
+      {
+        kind: "identity" as const,
+        did: "did:plc:someone",
+        time_us: 4000,
+        identity: { did: "did:plc:someone", handle: "newhandle.test", seq: 1, time: "2026-04-01T10:00:00Z" },
+      },
       {
         kind: "commit" as const,
         did: "did:plc:real",
@@ -331,5 +404,12 @@ describe("runPersistent", () => {
       limit: 100,
     });
     expect(result.records.length).toBe(1);
+    // Identity events update the identities table even though they don't
+    // produce records.
+    expect(applyIdentityEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "did:plc:someone",
+      "newhandle.test"
+    );
   });
 });
