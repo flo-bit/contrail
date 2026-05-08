@@ -107,11 +107,9 @@ export function registerRecordHostRoutes(
     if (!parts) {
       return c.json({ error: "InvalidRequest", reason: "malformed-uri" }, 400);
     }
-    const callerIsOwner = sa.issuer === parts.ownerDid;
-    const callerIsAuthority = sa.issuer === body.authority;
-    if (!callerIsOwner && !callerIsAuthority) {
+    if (sa.issuer !== parts.ownerDid) {
       return c.json(
-        { error: "Forbidden", reason: "not-owner-or-authority" },
+        { error: "Forbidden", reason: "not-owner" },
         403
       );
     }

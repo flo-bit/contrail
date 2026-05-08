@@ -127,7 +127,7 @@ describe("auto-enrollment via createSpace", () => {
     expect(((await reenroll.json()) as any).ok).toBe(true);
   });
 
-  it("non-owner / non-authority callers cannot enroll", async () => {
+  it("non-owner callers cannot enroll", async () => {
     const app = await makeApp();
     const create = await call(app, "POST", "/xrpc/test.enroll.space.createSpace", ALICE, {});
     const uri = ((await create.json()) as any).space.uri;
@@ -137,7 +137,7 @@ describe("auto-enrollment via createSpace", () => {
       authority: SERVICE_DID,
     });
     expect(res.status).toBe(403);
-    expect((await res.json()).reason).toBe("not-owner-or-authority");
+    expect((await res.json()).reason).toBe("not-owner");
   });
 });
 
@@ -369,10 +369,10 @@ describe("split deployment — authority and record host on separate apps", () =
     expect((await list.json()).reason).toBe("not-enrolled");
   });
 
-  it("the declared authority can enroll a space without the owner's involvement", async () => {
-    // Scenario: the authority service ('Contrail' in our naming) is a
-    // separate DID and acts on behalf of an owner. The authority can enroll
-    // because phase 5 accepts either owner-or-authority.
+  it("a third party cannot enroll a space by claiming to be the authority", async () => {
+    // Regression: the enroll handler used to accept either owner-signed
+    // OR authority-self-attested calls. That let any DID claim "I am the
+    // authority for ats://<victim>/..." and rebind the space.
     const authorityDb = createSqliteDatabase(":memory:");
     const hostDb = createSqliteDatabase(":memory:");
     const cfg: ContrailConfig = {
@@ -392,11 +392,43 @@ describe("split deployment — authority and record host on separate apps", () =
     const create = await call(authorityApp, "POST", "/xrpc/test.split.space.createSpace", ALICE, {});
     const uri = ((await create.json()) as any).space.uri;
 
-    // Authority service identifies itself via the JWT issuer matching its DID.
+    // SERVICE_DID self-attests as the authority for Alice's space.
+    // Must be rejected — only the owner can enroll.
     const enroll = await call(hostApp, "POST", "/xrpc/test.split.recordHost.enroll", SERVICE_DID, {
       spaceUri: uri,
       authority: SERVICE_DID,
     });
+    expect(enroll.status).toBe(403);
+    expect((await enroll.json()).reason).toBe("not-owner");
+  });
+
+  it("the owner can enroll their space designating a separate authority", async () => {
+    // Positive: the owner-signed path lets Alice point her space at the
+    // configured authority service (the canonical split-deployment flow).
+    const authorityDb = createSqliteDatabase(":memory:");
+    const hostDb = createSqliteDatabase(":memory:");
+    const cfg: ContrailConfig = {
+      namespace: "test.split",
+      collections: { message: { collection: "app.event.message" } },
+      spaces: {
+        authority: { type: "tools.atmo.event.space", serviceDid: SERVICE_DID, signing: SIGNING },
+        recordHost: {},
+      },
+    };
+    const resolved = resolveConfig(cfg);
+    await initSchema(authorityDb, resolved);
+    await initSchema(hostDb, resolved);
+
+    const authorityApp = buildAuthorityApp(authorityDb);
+    const hostApp = buildRecordHostApp(hostDb);
+    const create = await call(authorityApp, "POST", "/xrpc/test.split.space.createSpace", ALICE, {});
+    const uri = ((await create.json()) as any).space.uri;
+
+    const enroll = await call(hostApp, "POST", "/xrpc/test.split.recordHost.enroll", ALICE, {
+      spaceUri: uri,
+      authority: SERVICE_DID,
+    });
     expect(enroll.status).toBe(200);
+    expect(((await enroll.json()) as any).ok).toBe(true);
   });
 });
