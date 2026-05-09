@@ -158,6 +158,72 @@ describe("BindingResolver — PDS record", () => {
     });
     expect(await r.resolveAuthority(SPACE_URI)).toBeNull();
   });
+
+  it("returns null when the record's $type doesn't match the URI's type", async () => {
+    const fetch = mockFetch(
+      new Map([
+        [
+          "https://pds.test/xrpc/com.atproto.repo.getRecord",
+          {
+            value: {
+              $type: "com.attacker.fake.type",
+              authority: "did:web:authority.example",
+              createdAt: "2026-04-30T00:00:00Z",
+            },
+          },
+        ],
+      ])
+    );
+    const r = createPdsBindingResolver({
+      resolver: mockResolver({ pdsEndpoint: "https://pds.test" }),
+      fetch,
+    });
+    expect(await r.resolveAuthority(SPACE_URI)).toBeNull();
+  });
+
+  it("returns null when createdAt is missing or non-string", async () => {
+    const fetch = mockFetch(
+      new Map([
+        [
+          "https://pds.test/xrpc/com.atproto.repo.getRecord",
+          {
+            value: {
+              $type: "com.example.event.space",
+              authority: "did:web:authority.example",
+              // createdAt deliberately omitted
+            },
+          },
+        ],
+      ])
+    );
+    const r = createPdsBindingResolver({
+      resolver: mockResolver({ pdsEndpoint: "https://pds.test" }),
+      fetch,
+    });
+    expect(await r.resolveAuthority(SPACE_URI)).toBeNull();
+  });
+
+  it("returns null when authority isn't a well-formed DID", async () => {
+    const fetch = mockFetch(
+      new Map([
+        [
+          "https://pds.test/xrpc/com.atproto.repo.getRecord",
+          {
+            value: {
+              $type: "com.example.event.space",
+              authority: "did:fake!!://garbage",
+              createdAt: "2026-04-30T00:00:00Z",
+            },
+          },
+        ],
+      ])
+    );
+    const r = createPdsBindingResolver({
+      resolver: mockResolver({ pdsEndpoint: "https://pds.test" }),
+      fetch,
+    });
+    expect(await r.resolveAuthority(SPACE_URI)).toBeNull();
+  });
 });
 
 describe("BindingResolver — DID-doc service entry", () => {

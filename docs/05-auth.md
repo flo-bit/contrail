@@ -190,6 +190,28 @@ No auth needed for:
 
 Public requests skip all verification middleware — no JWT parsing, no DID-doc fetch. Fast path.
 
+## Trust assumptions
+
+Two trust assumptions in the binding layer cannot be closed at the Contrail layer alone. They are listed here so operators picking a binding strategy or onboarding flow can size them against their own threat model.
+
+### DID-doc binding path
+
+The record host can resolve a space's authority from three sources (see [Spaces § Discovery](./06-spaces.md#discovery--binding-resolution)):
+
+- **Local enrollment** — the host's own `record_host_enrollments` table, written via `recordHost.enroll`. Owner-signed; the host has full control over what's stored.
+- **PDS record** — read from the owner's PDS at the space URI.
+- **DID-doc service entry** — read from `service[id="#atproto_space_authority"]` on the owner's DID doc.
+
+The DID-doc path inherits PLC's authorization model: any rotation key on the owner's account can submit an update op rewriting the service entry. There is no per-entry signature or "this entry can only be edited by key X" constraint at the PLC layer.
+
+If the integrity of the space-authority binding needs to exceed what any one of the owner's rotation keys can already do, configure the host to resolve via local enrollment instead, or wait for an upstream signed-binding mechanism. Tracked upstream as [flo-bit/contrail#38](https://github.com/flo-bit/contrail/issues/38).
+
+### Contrail-held PDS app password
+
+Deployments running `community.provision` or `community.adopt` necessarily hold an ATProto app password for the user-owned PDS account so Contrail can write on the community's behalf. ATProto app passwords are unscoped at the PDS layer — they can write any record to the repo, including the `tools.atmo.space.declaration` record (or its embedded equivalent on a space-type record) that drives binding decisions in `createPdsBindingResolver`.
+
+This is an intentional consequence of the managed-community model, not a bug. Operators should treat stored app passwords with the same care as rotation keys, and reach for scoped app passwords (when ATProto adds them) or signed binding records to tighten the model further. Tracked upstream as [flo-bit/contrail#39](https://github.com/flo-bit/contrail/issues/39).
+
 ## How the pieces fit
 
 A typical flow for a third-party app acting as a user in a space:

@@ -141,10 +141,16 @@ export function createPdsBindingResolver(args: {
       }
       if (!res.ok) return null;
       const body = (await res.json().catch(() => null)) as
-        | { value?: { authority?: unknown } }
+        | { value?: { $type?: unknown; authority?: unknown; createdAt?: unknown } }
         | null;
-      const authority = body?.value?.authority;
-      return typeof authority === "string" && authority.startsWith("did:") ? authority : null;
+      const value = body?.value;
+      if (!value) return null;
+      if (value.$type !== parts.type) return null;
+      if (typeof value.createdAt !== "string") return null;
+      const authority = value.authority;
+      if (typeof authority !== "string") return null;
+      if (!/^did:(plc|web):[a-zA-Z0-9._:%-]+(#[a-zA-Z0-9._-]+)?$/.test(authority)) return null;
+      return authority;
     },
   };
 }

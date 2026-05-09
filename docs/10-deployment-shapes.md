@@ -192,6 +192,15 @@ A deployment can act as the authority for spaces it owns *and* a record host for
 
 When in doubt, all-in-one. Splitting is for when you have a real operational reason to separate the two — different teams running them, different latency profiles, different scaling targets, different governance.
 
+## Known trust assumptions
+
+Two assumptions in the binding layer cannot be closed at the Contrail layer alone, and which one applies depends on the shape you pick:
+
+- Deployments wiring `createDidDocBindingResolver` inherit PLC's rotation-key authorization model for the `#atproto_space_authority` service entry. Tracked as [flo-bit/contrail#38](https://github.com/flo-bit/contrail/issues/38).
+- Deployments running `community.provision` or `community.adopt` hold an unscoped ATProto app password for each provisioned PDS account. Tracked as [flo-bit/contrail#39](https://github.com/flo-bit/contrail/issues/39).
+
+See [Auth § Trust assumptions](./05-auth.md#trust-assumptions) for the constraints in detail and what binding source to prefer when those assumptions don't fit your threat model.
+
 ## What's not here
 
 - **Authority migration** — moving a space's authority from DID A to DID B. The architecture supports it (re-enroll on the host with the new authority binding) but no helper API yet.
