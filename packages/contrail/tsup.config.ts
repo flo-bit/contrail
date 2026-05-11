@@ -6,6 +6,7 @@ export default defineConfig({
     "src/server.ts",
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
+    "src/adapters/pglite.ts",
     "src/workers/backfill.ts",
     "src/worker/index.ts",
     "src/cli.ts",
@@ -16,5 +17,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   tsconfig: "tsconfig.build.json",
-  external: ["node:sqlite", "pg", "wrangler"],
+  external: ["node:sqlite", "pg", "@electric-sql/pglite", "wrangler"],
 });

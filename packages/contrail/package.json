@@ -27,6 +27,10 @@
       "types": "./dist/adapters/postgres.d.ts",
       "import": "./dist/adapters/postgres.js"
     },
+    "./pglite": {
+      "types": "./dist/adapters/pglite.d.ts",
+      "import": "./dist/adapters/pglite.js"
+    },
     "./workers": {
       "types": "./dist/workers/backfill.d.ts",
       "import": "./dist/workers/backfill.js"
@@ -89,10 +93,14 @@
   },
   "peerDependencies": {
     "pg": "^8.0.0",
+    "@electric-sql/pglite": "^0.2.0",
     "wrangler": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "pg": {
+      "optional": true
+    },
+    "@electric-sql/pglite": {
       "optional": true
     },
     "wrangler": {
