@@ -1,49 +1,61 @@
 import { type Did } from "@atcute/lexicons";
-import { isDid, isNsid } from "@atcute/lexicons/syntax";
 
 import type { Client } from "@atcute/client";
-import type { ContrailConfig, Database, IngestEvent } from "./types";
+import type { ContrailConfig, Database } from "./types";
 import {
   getDiscoverableNsids,
   getDependentNsids,
   DEFAULT_RELAYS,
-  shortNameForNsid,
 } from "./types";
-import { applyEvents, getLastCursor, saveCursor } from "./db";
+import { getLastCursor, saveCursor } from "./db";
 import { getClient, getPDS } from "./client";
+import { isExcluded, sweepUserFilter } from "./user-filter";
+import {
+  backfillUserCar,
+  markRepoComplete,
+  markRepoFailed,
+} from "./backfill-car";
+import type { BackfillCarOptions } from "./backfill-car";
+import { backfillUserListRecords } from "./backfill-list-records";
+import type { BackfillListRecordsOptions } from "./backfill-list-records";
 
-const DEFAULT_TIME_FIELD = "createdAt";
+const MAX_RETRIES = 5;
+const REQUEST_TIMEOUT_MS = 10_000;
 
-/** Parse the record's canonical time (e.g. createdAt) and return microseconds.
- *  Falls back to `nowUs` when missing/invalid. Clamps to nowUs to avoid
- *  user-controlled future timestamps pinning records at the top of feeds. */
-function recordTimeUs(
-  record: unknown,
-  collection: string,
-  config: ContrailConfig | undefined,
-  nowUs: number
-): number {
-  if (!config) return nowUs;
-  const short = shortNameForNsid(config, collection);
-  const colCfg = short ? config.collections[short] : undefined;
-  const field = colCfg?.timeField ?? DEFAULT_TIME_FIELD;
-  if (field === false) return nowUs;
-  const raw =
-    record && typeof record === "object"
-      ? (record as Record<string, unknown>)[field]
-      : undefined;
-  if (typeof raw !== "string") return nowUs;
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms) || ms <= 0) return nowUs;
-  const us = ms * 1000;
-  return us > nowUs ? nowUs : us;
+async function countExcluded(db: Database): Promise<number> {
+  const r = await db
+    .prepare("SELECT COUNT(*) AS c FROM identities WHERE excluded = 1")
+    .first<{ c: number }>();
+  return Number(r?.c ?? 0);
 }
 
-const PAGE_SIZE = 100;
-const BATCH_SIZE = 100;
-const MAX_RETRIES = 5;
-
-const REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Resolve identities for every DID in `dids` in parallel batches. This
+ * populates the `identities` table and — when `config.userFilter` is set —
+ * lets the filter mark exclusions (and delete the matching `backfills` rows)
+ * BEFORE the per-user backfill loop runs. Without this, excluded users
+ * still pay for a full slingshot resolve + getClient throw cycle inside
+ * each concurrency slot, which is the slow path when most of your population
+ * is filtered out.
+ *
+ * No-op when no filter is configured (the per-user loop already pre-warms
+ * the PDS cache in the background).
+ */
+async function preResolveIdentitiesForFilter(
+  db: Database,
+  config: ContrailConfig,
+  dids: string[],
+  concurrency = 200
+): Promise<void> {
+  if (!config.userFilter || dids.length === 0) return;
+  for (let i = 0; i < dids.length; i += concurrency) {
+    await Promise.allSettled(
+      dids
+        .slice(i, i + concurrency)
+        .map((did) => getPDS(did as Did, db, config).catch(() => {}))
+    );
+  }
+}
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -71,90 +83,58 @@ async function withRetry<T>(
   throw lastError;
 }
 
-/** Drop events whose `subjectField` value is a DID we have no identity for.
- *  One bulk SELECT per call, suitable for use after each backfill page. */
-async function filterEventsBySubject(
-  db: Database,
-  events: IngestEvent[],
-  subjectField: string
-): Promise<IngestEvent[]> {
-  const subjects = new Set<string>();
-  const eventSubjects = new Map<string, string>();
-  for (const e of events) {
-    if (!e.record) continue;
-    let subj: unknown;
-    try {
-      subj = JSON.parse(e.record)?.[subjectField];
-    } catch {
-      continue;
-    }
-    if (typeof subj === "string" && isDid(subj)) {
-      subjects.add(subj);
-      eventSubjects.set(e.uri, subj);
-    }
-  }
-  if (subjects.size === 0) return [];
+export interface BackfillOptions
+  extends BackfillListRecordsOptions,
+    BackfillCarOptions {}
 
-  const known = new Set<string>();
-  const list = [...subjects];
-  const CHUNK = 100;
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const rows = await db
-      .prepare(`SELECT did FROM identities WHERE did IN (${placeholders})`)
-      .bind(...chunk)
-      .all<{ did: string }>();
-    for (const r of rows.results ?? []) known.add(r.did);
-  }
-
-  return events.filter((e) => {
-    const subj = eventSubjects.get(e.uri);
-    return subj !== undefined && known.has(subj);
-  });
+function getBackfillMethod(config?: ContrailConfig): "car" | "listRecords" {
+  return config?.backfillMethod ?? "listRecords";
 }
 
-async function markFailed(
-  db: Database,
-  did: string,
-  collection: string,
-  error: string
-): Promise<void> {
-  await db
-    .prepare(
-      "UPDATE backfills SET retries = retries + 1, last_error = ? WHERE did = ? AND collection = ?"
-    )
-    .bind(error, did, collection)
-    .run();
-}
-
-export interface BackfillOptions {
-  /** Pre-resolved client — avoids redundant PDS lookups when batching by DID */
-  client?: Client;
-  /** Skip replay detection in applyEvents (safe during initial backfill) */
-  skipReplayDetection?: boolean;
-  /** Max retries per request (default: 3). Set to 0 for single-attempt mode. */
-  maxRetries?: number;
-  /** Per-request timeout in ms (default: 10000). */
-  requestTimeout?: number;
-}
-
+/**
+ * Ensure this user's records are backfilled. Dispatches on
+ * `config.backfillMethod`:
+ *   - `"listRecords"` (default): per-collection paginated walk.
+ *   - `"car"`: one CAR fetch covering every configured collection.
+ *
+ * Excluded users (`identities.excluded = 1`) short-circuit to 0.
+ */
 export async function backfillUser(
   db: Database,
   did: string,
   collection: string,
   deadline: number,
-  config?: ContrailConfig,
+  config: ContrailConfig | undefined,
   options?: BackfillOptions
 ): Promise<number> {
   if (Date.now() >= deadline) return 0;
+  if (await isExcluded(db, did)) return 0;
+
+  if (getBackfillMethod(config) === "car") {
+    return backfillUserViaCar(db, did, collection, deadline, config, options);
+  }
+  return backfillUserListRecords(db, did, collection, deadline, config, options);
+}
+
+/** CAR-flavored wrapper that gates on the (did, collection) row but always
+ *  fetches the whole repo. Once the CAR succeeds, every (did, *) row gets
+ *  marked complete in one statement. */
+async function backfillUserViaCar(
+  db: Database,
+  did: string,
+  collection: string,
+  deadline: number,
+  config: ContrailConfig | undefined,
+  options?: BackfillOptions
+): Promise<number> {
+  if (!config) return 0;
 
   const status = await db
     .prepare(
-      "SELECT completed, pds_cursor, retries FROM backfills WHERE did = ? AND collection = ?"
+      "SELECT completed FROM backfills WHERE did = ? AND collection = ?"
     )
     .bind(did, collection)
-    .first<{ completed: number; pds_cursor: string | null; retries: number }>();
+    .first<{ completed: number }>();
 
   if (status?.completed) return 0;
 
@@ -167,142 +147,36 @@ export async function backfillUser(
       .run();
   }
 
-  let currentCursor: string | undefined = status?.pds_cursor ?? undefined;
   const retries = options?.maxRetries ?? 3;
   const timeout = options?.requestTimeout ?? REQUEST_TIMEOUT_MS;
 
-  if (!isDid(did)) {
-    await markFailed(db, did, collection, `Invalid DID: ${did}`);
-    return 0;
-  }
-
-  if (!isNsid(collection)) {
-    await markFailed(db, did, collection, `Invalid NSID: ${collection}`);
-    return 0;
-  }
-
-  let client = options?.client;
-  if (!client) {
-    try {
-      client = await withRetry(
-        () => getClient(did as Did, db),
-        `getClient(${did})`,
-        Math.min(retries, 1),
-        timeout
-      );
-    } catch (err) {
-      await markFailed(db, did, collection, String(err));
-      return 0;
-    }
-  }
-
-  let totalInserted = 0;
-  let done = false;
-
-  // Lookup subject filter once: if this collection declares a subjectField, we
-  // drop records whose subject DID isn't already in our identities table.
-  const collectionShort = config
-    ? shortNameForNsid(config, collection)
-    : undefined;
-  const subjectField = collectionShort
-    ? config?.collections[collectionShort]?.subjectField
-    : undefined;
-
   try {
-    while (Date.now() < deadline) {
-      const response = await withRetry(
-        () =>
-          client!.get("com.atproto.repo.listRecords", {
-            params: {
-              repo: did as Did,
-              collection,
-              limit: PAGE_SIZE,
-              cursor: currentCursor,
-            },
-          }),
-        `listRecords(${did}/${collection})`,
-        retries,
-        timeout
-      );
-      if (!response.ok) {
-        await markFailed(
-          db,
-          did,
-          collection,
-          `listRecords status ${response.status}`
-        );
-        return totalInserted;
-      }
-
-      if (response.data.records.length === 0) {
-        done = true;
-        break;
-      }
-
-      const now = Date.now();
-      const nowUs = now * 1000;
-      let events: IngestEvent[] = response.data.records.map((r) => ({
-        uri: r.uri,
-        did,
-        collection,
-        rkey: r.uri.split("/").pop()!,
-        operation: "create" as const,
-        cid: r.cid,
-        record: JSON.stringify(r.value),
-        time_us: recordTimeUs(r.value, collection, config, nowUs),
-        indexed_at: nowUs,
-      }));
-
-      if (subjectField) {
-        events = await filterEventsBySubject(db, events, subjectField);
-      }
-
-      if (events.length > 0) {
-        await applyEvents(db, events, config, {
-          skipReplayDetection: options?.skipReplayDetection,
-          skipFeedFanout: true,
-        });
-      }
-      totalInserted += events.length;
-
-      currentCursor = response.data.cursor ?? undefined;
-
-      await db
-        .prepare(
-          "UPDATE backfills SET pds_cursor = ? WHERE did = ? AND collection = ?"
-        )
-        .bind(currentCursor ?? null, did, collection)
-        .run();
-
-      if (!currentCursor) {
-        done = true;
-        break;
-      }
-    }
+    const result = await withRetry(
+      () =>
+        backfillUserCar(db, did, deadline, config, {
+          ...options,
+          requestTimeout: timeout,
+        }),
+      `backfillUserCar(${did})`,
+      retries,
+      timeout
+    );
+    return result.inserted;
   } catch (err) {
-    await markFailed(db, did, collection, String(err));
-    return totalInserted;
+    await markRepoFailed(db, did, String(err));
+    return 0;
   }
-
-  if (done) {
-    await db
-      .prepare(
-        "UPDATE backfills SET completed = 1 WHERE did = ? AND collection = ?"
-      )
-      .bind(did, collection)
-      .run();
-  }
-
-  return totalInserted;
 }
 
-// --- Bulk backfill (groups by DID, resolves client once) ---
+// --- Bulk backfill ---
 
 export interface BackfillProgress {
   records: number;
   usersComplete: number;
   usersTotal: number;
   usersFailed: number;
+  /** Identities currently flagged `excluded = 1` (matched `config.userFilter`). */
+  usersExcluded: number;
 }
 
 export interface BackfillAllOptions {
@@ -315,9 +189,6 @@ export async function backfillPending(
   config: ContrailConfig,
   options?: BackfillAllOptions
 ): Promise<number> {
-  const concurrency = options?.concurrency ?? 100;
-  let totalBackfilled = 0;
-
   // Anchor the jetstream cursor to now if it hasn't been set yet, so records
   // emitted during backfill are replayed once jetstream starts.
   if ((await getLastCursor(db)) === null) {
@@ -329,16 +200,87 @@ export async function backfillPending(
     .prepare("UPDATE backfills SET retries = 0 WHERE completed = 0")
     .run();
 
+  // Apply userFilter to all identities — catches users resolved before the
+  // filter was configured. Returns the running excluded count for progress.
+  const log = config.logger ?? console;
+  const sweep = await sweepUserFilter(db, config);
+  if (sweep.newlyExcluded > 0) {
+    log.log?.(
+      `[backfill] userFilter excluded ${sweep.newlyExcluded} new user(s) (${sweep.totalExcluded} total)`
+    );
+  } else if (sweep.totalExcluded > 0) {
+    log.log?.(
+      `[backfill] ${sweep.totalExcluded} user(s) excluded by userFilter (skipped)`
+    );
+  }
+
+  return getBackfillMethod(config) === "car"
+    ? backfillPendingCar(db, config, options, sweep.totalExcluded)
+    : backfillPendingListRecords(db, config, options, sweep.totalExcluded);
+}
+
+/** Per-(did, collection) listRecords loop. Groups by DID so the PDS lookup
+ *  and `getClient` happen once per user. */
+async function backfillPendingListRecords(
+  db: Database,
+  config: ContrailConfig,
+  options?: BackfillAllOptions,
+  usersExcluded = 0
+): Promise<number> {
+  const concurrency = options?.concurrency ?? 100;
+  let totalBackfilled = 0;
+
+  const log = config.logger ?? console;
+
   while (true) {
-    const pending = await db
+    let pending = await db
       .prepare(
-        "SELECT did, collection FROM backfills WHERE completed = 0 AND retries < ? ORDER BY did"
+        `SELECT b.did, b.collection
+         FROM backfills b
+         LEFT JOIN identities i ON i.did = b.did
+         WHERE b.completed = 0 AND b.retries < ? AND COALESCE(i.excluded, 0) = 0
+         ORDER BY b.did`
       )
       .bind(MAX_RETRIES)
       .all<{ did: string; collection: string }>();
 
-    const rows = pending.results ?? [];
+    let rows = pending.results ?? [];
     if (rows.length === 0) break;
+
+    // When userFilter is set, resolve identities upfront for every pending
+    // DID so exclusions take effect (and matching backfills rows get
+    // deleted) before the slow listRecords loop spins up. Then re-query.
+    if (config.userFilter) {
+      const allDids = [...new Set(rows.map((r) => r.did))];
+      const before = Date.now();
+      log.log?.(
+        `[backfill] pre-resolving ${allDids.length} identities to apply userFilter…`
+      );
+      await preResolveIdentitiesForFilter(db, config, allDids);
+      pending = await db
+        .prepare(
+          `SELECT b.did, b.collection
+           FROM backfills b
+           LEFT JOIN identities i ON i.did = b.did
+           WHERE b.completed = 0 AND b.retries < ? AND COALESCE(i.excluded, 0) = 0
+           ORDER BY b.did`
+        )
+        .bind(MAX_RETRIES)
+        .all<{ did: string; collection: string }>();
+      const filteredRows = pending.results ?? [];
+      const droppedDids =
+        allDids.length - new Set(filteredRows.map((r) => r.did)).size;
+      log.log?.(
+        `[backfill] pre-resolve done in ${(
+          (Date.now() - before) /
+          1000
+        ).toFixed(1)}s — ${droppedDids} excluded, ${
+          filteredRows.length
+        } (did, collection) rows remaining`
+      );
+      rows = filteredRows;
+      if (rows.length === 0) break;
+    }
 
     // Group by DID so we resolve PDS once per user
     const byDid = new Map<string, string[]>();
@@ -350,33 +292,42 @@ export async function backfillPending(
 
     const dids = [...byDid.keys()];
 
-    // Resolve PDS endpoints in background (populates in-memory cache)
-    const resolvePromise = (async () => {
-      for (let i = 0; i < dids.length; i += 200) {
-        await Promise.allSettled(
-          dids.slice(i, i + 200).map((did) =>
-            getPDS(did as Did, db).catch(() => {})
-          )
-        );
-      }
-    })();
+    // Resolve PDS endpoints in background (populates in-memory cache).
+    // Skipped when we already pre-resolved above for the filter sweep.
+    const resolvePromise = config.userFilter
+      ? Promise.resolve()
+      : (async () => {
+          for (let i = 0; i < dids.length; i += 200) {
+            await Promise.allSettled(
+              dids.slice(i, i + 200).map((did) =>
+                getPDS(did as Did, db, config).catch(() => {})
+              )
+            );
+          }
+        })();
 
     let roundBackfilled = 0;
     let usersComplete = 0;
     let usersFailed = 0;
-    const failedDids: string[] = [];
+    const failedDids = new Set<string>();
 
     const FAST_TIMEOUT = 3_000;
+    const hasFilter = !!config.userFilter;
 
-    const emitProgress = () =>
+    const emitProgress = async () => {
+      if (hasFilter) usersExcluded = await countExcluded(db);
       options?.onProgress?.({
         records: totalBackfilled + roundBackfilled,
         usersComplete,
         usersTotal: dids.length,
         usersFailed,
+        usersExcluded,
       });
+    };
 
-    // Fast pass: single attempt per user with short timeout
+    // Fast pass: single attempt per user with short timeout. Only count
+    // toward `usersComplete` when *every* collection for the DID succeeds —
+    // partial failures get punted to the retry pass and accounted there.
     for (let i = 0; i < dids.length; i += concurrency) {
       const batch = dids.slice(i, i + concurrency);
 
@@ -385,32 +336,42 @@ export async function backfillPending(
           let client: Client | undefined;
           try {
             client = await withRetry(
-              () => getClient(did as Did, db),
+              () => getClient(did as Did, db, config),
               `getClient(${did})`,
               0,
               FAST_TIMEOUT
             );
           } catch {
-            failedDids.push(did);
+            // Distinguish "filter excluded the user" from a real PDS failure —
+            // the userFilter side-channel marks identities.excluded=1, so a
+            // getClient failure on an excluded DID is a clean skip, not a
+            // failure to retry.
+            if (hasFilter && (await isExcluded(db, did))) {
+              usersComplete++;
+              return 0;
+            }
+            failedDids.add(did);
             return 0;
           }
 
           const cols = byDid.get(did)!;
+          let anyFailed = false;
           const counts = await Promise.all(
             cols.map((col) =>
-              backfillUser(db, did, col, Infinity, config, {
+              backfillUserListRecords(db, did, col, Infinity, config, {
                 client,
                 skipReplayDetection: true,
                 maxRetries: 0,
                 requestTimeout: FAST_TIMEOUT,
               }).catch(() => {
-                failedDids.push(did);
+                anyFailed = true;
                 return 0;
               })
             )
           );
 
-          usersComplete++;
+          if (anyFailed) failedDids.add(did);
+          else usersComplete++;
           return counts.reduce((a, b) => a + b, 0);
         })
       );
@@ -419,13 +380,12 @@ export async function backfillPending(
         if (r.status === "fulfilled") roundBackfilled += r.value;
       }
 
-      emitProgress();
+      await emitProgress();
     }
 
     // Retry pass: failed DIDs get retries with backoff, still in concurrent batches
-    if (failedDids.length > 0) {
-      const uniqueFailed = [...new Set(failedDids)];
-      usersComplete -= uniqueFailed.length; // don't count them yet
+    if (failedDids.size > 0) {
+      const uniqueFailed = [...failedDids];
 
       for (let i = 0; i < uniqueFailed.length; i += concurrency) {
         const batch = uniqueFailed.slice(i, i + concurrency);
@@ -435,13 +395,23 @@ export async function backfillPending(
             let client: Client | undefined;
             try {
               client = await withRetry(
-                () => getClient(did as Did, db),
+                () => getClient(did as Did, db, config),
                 `getClient(${did})`,
                 2
               );
             } catch (err) {
+              // Same exclusion-vs-failure distinction as the fast pass.
+              if (hasFilter && (await isExcluded(db, did))) {
+                usersComplete++;
+                return 0;
+              }
               for (const col of byDid.get(did)!) {
-                await markFailed(db, did, col, String(err));
+                await db
+                  .prepare(
+                    "UPDATE backfills SET retries = retries + 1, last_error = ? WHERE did = ? AND collection = ?"
+                  )
+                  .bind(String(err), did, col)
+                  .run();
               }
               usersFailed++;
               usersComplete++;
@@ -451,7 +421,7 @@ export async function backfillPending(
             const cols = byDid.get(did)!;
             const counts = await Promise.all(
               cols.map((col) =>
-                backfillUser(db, did, col, Infinity, config, {
+                backfillUserListRecords(db, did, col, Infinity, config, {
                   client,
                   skipReplayDetection: true,
                   maxRetries: 2,
@@ -467,7 +437,7 @@ export async function backfillPending(
           if (r.status === "fulfilled") roundBackfilled += r.value;
         }
 
-        emitProgress();
+        await emitProgress();
       }
     }
 
@@ -480,6 +450,181 @@ export async function backfillPending(
 
   return totalBackfilled;
 }
+
+/** Per-DID CAR loop. One `com.atproto.sync.getRepo` call per user covers
+ *  every configured collection in one pass. */
+async function backfillPendingCar(
+  db: Database,
+  config: ContrailConfig,
+  options?: BackfillAllOptions,
+  usersExcluded = 0
+): Promise<number> {
+  const concurrency = options?.concurrency ?? 50;
+  let totalBackfilled = 0;
+
+  const log = config.logger ?? console;
+
+  while (true) {
+    let pending = await db
+      .prepare(
+        `SELECT DISTINCT b.did
+         FROM backfills b
+         LEFT JOIN identities i ON i.did = b.did
+         WHERE b.completed = 0 AND b.retries < ? AND COALESCE(i.excluded, 0) = 0
+         ORDER BY b.did`
+      )
+      .bind(MAX_RETRIES)
+      .all<{ did: string }>();
+
+    let dids = (pending.results ?? []).map((r) => r.did);
+    if (dids.length === 0) break;
+
+    // Pre-resolve identities so userFilter can prune the list before we
+    // start firing CAR fetches.
+    if (config.userFilter) {
+      const before = Date.now();
+      log.log?.(
+        `[backfill] pre-resolving ${dids.length} identities to apply userFilter…`
+      );
+      await preResolveIdentitiesForFilter(db, config, dids);
+      pending = await db
+        .prepare(
+          `SELECT DISTINCT b.did
+           FROM backfills b
+           LEFT JOIN identities i ON i.did = b.did
+           WHERE b.completed = 0 AND b.retries < ? AND COALESCE(i.excluded, 0) = 0
+           ORDER BY b.did`
+        )
+        .bind(MAX_RETRIES)
+        .all<{ did: string }>();
+      const filtered = (pending.results ?? []).map((r) => r.did);
+      log.log?.(
+        `[backfill] pre-resolve done in ${(
+          (Date.now() - before) /
+          1000
+        ).toFixed(1)}s — ${dids.length - filtered.length} excluded, ${
+          filtered.length
+        } users remaining`
+      );
+      dids = filtered;
+      if (dids.length === 0) break;
+    }
+
+    const resolvePromise = config.userFilter
+      ? Promise.resolve()
+      : (async () => {
+          for (let i = 0; i < dids.length; i += 200) {
+            await Promise.allSettled(
+              dids
+                .slice(i, i + 200)
+                .map((did) => getPDS(did as Did, db, config).catch(() => {}))
+            );
+          }
+        })();
+
+    let roundBackfilled = 0;
+    let usersComplete = 0;
+    let usersFailed = 0;
+    const failedDids = new Set<string>();
+
+    const FAST_TIMEOUT = 30_000;
+    const hasFilter = !!config.userFilter;
+
+    const emitProgress = async () => {
+      if (hasFilter) usersExcluded = await countExcluded(db);
+      options?.onProgress?.({
+        records: totalBackfilled + roundBackfilled,
+        usersComplete,
+        usersTotal: dids.length,
+        usersFailed,
+        usersExcluded,
+      });
+    };
+
+    for (let i = 0; i < dids.length; i += concurrency) {
+      const batch = dids.slice(i, i + concurrency);
+
+      const results = await Promise.allSettled(
+        batch.map(async (did) => {
+          try {
+            const r = await backfillUserCar(db, did, Infinity, config, {
+              skipReplayDetection: true,
+              requestTimeout: FAST_TIMEOUT,
+            });
+            usersComplete++;
+            return r.inserted;
+          } catch {
+            // Filter exclusion looks like a "PDS not found" failure here.
+            if (hasFilter && (await isExcluded(db, did))) {
+              usersComplete++;
+              return 0;
+            }
+            failedDids.add(did);
+            return 0;
+          }
+        })
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled") roundBackfilled += r.value;
+      }
+      await emitProgress();
+    }
+
+    if (failedDids.size > 0) {
+      const uniqueFailed = [...failedDids];
+      for (let i = 0; i < uniqueFailed.length; i += concurrency) {
+        const batch = uniqueFailed.slice(i, i + concurrency);
+
+        const results = await Promise.allSettled(
+          batch.map(async (did) => {
+            try {
+              const r = await withRetry(
+                () =>
+                  backfillUserCar(db, did, Infinity, config, {
+                    skipReplayDetection: true,
+                    requestTimeout: FAST_TIMEOUT * 2,
+                  }),
+                `backfillUserCar(${did})`,
+                2,
+                FAST_TIMEOUT * 2
+              );
+              usersComplete++;
+              return r.inserted;
+            } catch (err) {
+              if (hasFilter && (await isExcluded(db, did))) {
+                usersComplete++;
+                return 0;
+              }
+              await markRepoFailed(db, did, String(err));
+              usersFailed++;
+              usersComplete++;
+              return 0;
+            }
+          })
+        );
+
+        for (const r of results) {
+          if (r.status === "fulfilled") roundBackfilled += r.value;
+        }
+        await emitProgress();
+      }
+    }
+
+    await resolvePromise;
+    totalBackfilled += roundBackfilled;
+
+    if (roundBackfilled === 0) break;
+  }
+
+  return totalBackfilled;
+}
+
+// Re-export helpers used outside this module.
+export { backfillUserCar, markRepoComplete, markRepoFailed };
+export type { BackfillCarOptions };
+export { backfillUserListRecords };
+export type { BackfillListRecordsOptions };
 
 // --- Discovery ---
 

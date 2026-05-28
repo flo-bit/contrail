@@ -16,6 +16,9 @@ const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 /** Mutable state that persists across ingest cycles within the same process. */
 export interface IngestState {
   cachedKnownDids?: Set<string>;
+  /** DIDs the configured `userFilter` has marked excluded. Loaded once per
+   *  process, kept in sync via mutations from identity-event handlers. */
+  cachedExcludedDids?: Set<string>;
   schemaInitialized: boolean;
   lastFeedPruneMs: number;
 }
@@ -32,7 +35,8 @@ export async function ingestEvents(
   config: ContrailConfig,
   cursor: number | null,
   safetyTimeoutMs: number = 25_000,
-  knownDids?: Set<string>
+  knownDids?: Set<string>,
+  excludedDids?: Set<string>
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
@@ -85,6 +89,11 @@ export async function ingestEvents(
     if (event.kind === "commit") {
       const { commit } = event;
       totalCommits++;
+
+      // userFilter exclusion list — drop the event regardless of collection
+      if (excludedDids?.has(event.did)) {
+        continue;
+      }
 
       const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
@@ -247,21 +256,36 @@ export async function runIngestCycle(
     }, timeout=${timeoutMs}ms, collections=${collections.join(", ")}`
   );
 
-  // Load known DIDs for filtering dependent collections
+  // Load known DIDs for filtering dependent collections, plus the excluded
+  // set if the user configured a `userFilter`. Both share one query.
   const dependentCollections = getDependentNsids(config);
   let knownDids: Set<string> | undefined;
+  let excludedDids: Set<string> | undefined;
 
-  if (dependentCollections.length > 0) {
-    if (s.cachedKnownDids) {
+  if (dependentCollections.length > 0 || config.userFilter) {
+    if (s.cachedKnownDids && (s.cachedExcludedDids || !config.userFilter)) {
       knownDids = s.cachedKnownDids;
-      log.log(`Using cached known DIDs (${knownDids.size} users)`);
+      excludedDids = s.cachedExcludedDids;
+      log.log(
+        `Using cached identities (${knownDids.size} known, ${
+          excludedDids?.size ?? 0
+        } excluded)`
+      );
     } else {
       const result = await db
-        .prepare("SELECT did FROM identities")
-        .all<{ did: string }>();
-      knownDids = new Set((result.results ?? []).map((r) => r.did));
+        .prepare("SELECT did, excluded FROM identities")
+        .all<{ did: string; excluded: number }>();
+      knownDids = new Set();
+      excludedDids = new Set();
+      for (const r of result.results ?? []) {
+        knownDids.add(r.did);
+        if (r.excluded) excludedDids.add(r.did);
+      }
       s.cachedKnownDids = knownDids;
-      log.log(`Loaded ${knownDids.size} known DIDs from database`);
+      s.cachedExcludedDids = excludedDids;
+      log.log(
+        `Loaded ${knownDids.size} known DIDs (${excludedDids.size} excluded) from database`
+      );
     }
   }
 
@@ -269,7 +293,8 @@ export async function runIngestCycle(
     config,
     cursor,
     timeoutMs,
-    knownDids
+    knownDids,
+    excludedDids
   );
 
   if (events.length > 0) {
@@ -295,7 +320,17 @@ export async function runIngestCycle(
   if (identityUpdates.size > 0) {
     for (const [did, handle] of identityUpdates) {
       try {
-        await applyIdentityEvent(db, did, handle);
+        await applyIdentityEvent(db, did, handle, config);
+        // Re-mirror exclusion state into the cached set if the filter just
+        // flipped it. Cheap one-row read.
+        if (config.userFilter && excludedDids) {
+          const row = await db
+            .prepare("SELECT excluded FROM identities WHERE did = ?")
+            .bind(did)
+            .first<{ excluded: number }>();
+          if (row?.excluded) excludedDids.add(did);
+          else excludedDids.delete(did);
+        }
       } catch (err) {
         log.warn(`[ingest] identity update failed for ${did}: ${err}`);
       }
@@ -307,7 +342,7 @@ export async function runIngestCycle(
   const uniqueDids = [...new Set(events.map((e) => e.did))];
   if (uniqueDids.length > 0) {
     try {
-      await refreshStaleIdentities(db, uniqueDids);
+      await refreshStaleIdentities(db, uniqueDids, config);
     } catch (err) {
       log.warn(`Identity refresh failed: ${err}`);
     }

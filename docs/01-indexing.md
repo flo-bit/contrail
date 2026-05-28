@@ -58,6 +58,50 @@ await contrail.backfill({ concurrency: 100 }); // fetch history for registered D
 
 `backfill()` picks up where it left off across runs — safe to re-run.
 
+### Backfill strategies
+
+Two ways to fetch a user's history. Set `backfillMethod` in your top-level config:
+
+```ts
+{
+  // ...
+  backfillMethod: "listRecords", // default
+  // backfillMethod: "car",
+}
+```
+
+| | `listRecords` (default) | `car` |
+|---|---|---|
+| protocol | `com.atproto.repo.listRecords`, paginated | `com.atproto.sync.getRepo`, streamed CAR |
+| requests | one page per (user, collection) | one fetch per user, all collections |
+| speed | slower | dramatically faster on multi-collection configs / deep histories |
+| bandwidth | per-collection cap | pulls the whole repo even if you only care about one collection |
+| resumable | yes (`backfills.pds_cursor`) | no — failure restarts the user |
+
+If you're indexing a single collection or want a strict per-collection bandwidth cap, stick with `listRecords`. If you index several collections per user, `car` is usually a big win.
+
+### Excluding users (`userFilter`)
+
+Skip users whose handle, DID, or PDS matches a predicate — they won't be backfilled, and their commits get dropped from jetstream.
+
+```ts
+{
+  userFilter: ({ did, handle, pds }) =>
+    handle?.endsWith(".example.com") ?? false,
+}
+```
+
+When the filter returns true:
+
+- `identities.excluded` is flipped to `1` for the user.
+- Pending `backfills` rows for the user are dropped.
+- Future `getPDS` lookups short-circuit (so on-demand backfill no-ops).
+- Jetstream loads the excluded set into memory and drops their commits and identity events.
+
+Filter checks fire whenever an identity is freshly resolved — first PDS lookup, stale-identity refresh, and `#identity` events from jetstream. Handle changes that flip exclusion are picked up on the next identity event.
+
+The filter is sync. `handle` and `pds` may be `null` when called from a path that doesn't have them yet (e.g. a `#identity` event carries handle but not PDS).
+
 ### Workers CLI
 
 For Cloudflare Workers deploys, `@atmo-dev/contrail` ships a `contrail` bin that handles the `wrangler.getPlatformProxy` dance — no script file, no package.json alias needed:
@@ -200,6 +244,8 @@ const db = createPostgresDatabase(pool);
 | `jetstreams` | Bluesky | Jetstream URLs |
 | `relays` | Bluesky | Relay URLs for discovery |
 | `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
+| `backfillMethod` | `"listRecords"` | `"car"` opts into one-fetch-per-user CAR streaming |
+| `userFilter` | — | `(id) => boolean` — `true` excludes the user from indexing |
 | `feeds` | — | See [Feeds](./04-feeds.md) |
 | `spaces` | — | See [Spaces](./06-spaces.md) |
 | `community` | — | See [Communities](./07-communities.md) |

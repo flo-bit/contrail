@@ -239,6 +239,30 @@ export interface ContrailConfig {
    *  ingests synthesized rows for any follower already in our identities
    *  table. Lets newcomers immediately appear in existing users' feeds. */
   constellation?: ConstellationConfig | false;
+  /** Which strategy to use when backfilling a user's existing records.
+   *  - `"listRecords"` (default): paginated `com.atproto.repo.listRecords`
+   *    per (user, collection). Slower but lets you cap bandwidth per
+   *    collection and resume mid-walk via `backfills.pds_cursor`.
+   *  - `"car"`: one `com.atproto.sync.getRepo` call per user, streamed CAR.
+   *    Dramatically faster on users with multiple configured collections,
+   *    but pulls the whole repo even if you only care about one collection. */
+  backfillMethod?: "car" | "listRecords";
+  /** Predicate run after identity resolution. Returning true marks the user
+   *  excluded — their `identities.excluded` column is flipped to 1, any
+   *  pending `backfills` rows are deleted, jetstream drops their commits,
+   *  and future backfill calls short-circuit. Use for e.g. excluding handles
+   *  by suffix or DIDs by deny-list. */
+  userFilter?: (identity: UserFilterInput) => boolean;
+}
+
+export interface UserFilterInput {
+  did: string;
+  /** May be null when the filter is invoked from a path that hasn't
+   *  resolved the handle yet (e.g. some identity event flows). */
+  handle: string | null;
+  /** May be null when the filter is invoked from a path that doesn't carry
+   *  PDS info (e.g. jetstream identity events). */
+  pds: string | null;
 }
 
 export interface ConstellationConfig {

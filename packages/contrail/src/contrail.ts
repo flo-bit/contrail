@@ -188,17 +188,27 @@ export class Contrail {
     // caller hasn't supplied their own. Throttle at 2s so we don't spam in
     // fast/local runs; final summary always prints.
     let effective = options;
+    let lastUsersExcluded = 0;
     if (!options?.onProgress) {
       let lastLogAt = 0;
       effective = {
         ...options,
-        onProgress: ({ records, usersComplete, usersTotal, usersFailed }) => {
+        onProgress: ({
+          records,
+          usersComplete,
+          usersTotal,
+          usersFailed,
+          usersExcluded,
+        }) => {
+          lastUsersExcluded = usersExcluded;
           const now = Date.now();
           if (now - lastLogAt < 2_000) return;
           lastLogAt = now;
           const failStr = usersFailed > 0 ? `, ${usersFailed} failed` : "";
+          const exclStr =
+            usersExcluded > 0 ? `, ${usersExcluded} excluded` : "";
           logger?.log?.(
-            `  ${records} records | ${usersComplete}/${usersTotal} users${failStr}`
+            `  ${records} records | ${usersComplete}/${usersTotal} users${failStr}${exclStr}`
           );
         },
       };
@@ -207,8 +217,10 @@ export class Contrail {
     logger?.log?.("backfilling…");
     const backfilled = await this.backfill(effective, d);
     const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+    const exclSummary =
+      lastUsersExcluded > 0 ? ` (${lastUsersExcluded} excluded)` : "";
     logger?.log?.(
-      `  done: ${backfilled} records across ${discovered.length} users in ${elapsedS}s`
+      `  done: ${backfilled} records across ${discovered.length} users in ${elapsedS}s${exclSummary}`
     );
     return { discovered: discovered.length, backfilled };
   }

@@ -6,7 +6,8 @@ import {
 import { type Did } from "@atcute/lexicons";
 import { Client, simpleFetchHandler } from "@atcute/client";
 import type {} from "@atcute/atproto";
-import type { Database } from "./types";
+import type { ContrailConfig, Database } from "./types";
+import { checkUserFilter } from "./user-filter";
 
 // Slingshot-first PDS resolution with fallback to DID document resolution
 const SLINGSHOT_URL =
@@ -134,7 +135,8 @@ function pdsCacheSet(did: string, pds: string): void {
 
 export async function getPDS(
   did: Did,
-  db?: Database
+  db?: Database,
+  config?: ContrailConfig
 ): Promise<string | undefined> {
   const mem = pdsCacheGet(did);
   if (mem) return mem;
@@ -143,7 +145,7 @@ export async function getPDS(
   const inflight = pdsInflight.get(did);
   if (inflight) return inflight;
 
-  const promise = resolvePDSCached(did, db);
+  const promise = resolvePDSCached(did, db, config);
   pdsInflight.set(did, promise);
   try {
     return await promise;
@@ -154,13 +156,15 @@ export async function getPDS(
 
 async function resolvePDSCached(
   did: Did,
-  db?: Database
+  db?: Database,
+  config?: ContrailConfig
 ): Promise<string | undefined> {
   if (db) {
     const cached = await db
-      .prepare("SELECT pds FROM identities WHERE did = ? AND pds IS NOT NULL")
+      .prepare("SELECT pds, excluded FROM identities WHERE did = ?")
       .bind(did)
-      .first<{ pds: string }>();
+      .first<{ pds: string | null; excluded: number }>();
+    if (cached?.excluded) return undefined;
     if (cached?.pds) {
       pdsCacheSet(did, cached.pds);
       return cached.pds;
@@ -170,8 +174,6 @@ async function resolvePDSCached(
   const resolved = await resolvePDS(did);
   if (!resolved?.pds) return undefined;
 
-  pdsCacheSet(did, resolved.pds);
-
   // Persist to DB for future runs
   if (db) {
     await db
@@ -180,13 +182,29 @@ async function resolvePDSCached(
       )
       .bind(did, resolved.handle, resolved.pds, Date.now())
       .run();
+
+    // Run the configured user filter — if it excludes this user, drop pending
+    // backfill rows and return as if we never resolved a PDS.
+    if (config?.userFilter) {
+      const excluded = await checkUserFilter(
+        db,
+        { did, handle: resolved.handle, pds: resolved.pds },
+        config
+      );
+      if (excluded) return undefined;
+    }
   }
 
+  pdsCacheSet(did, resolved.pds);
   return resolved.pds;
 }
 
-export async function getClient(did: Did, db?: Database): Promise<Client> {
-  const pds = await getPDS(did, db);
+export async function getClient(
+  did: Did,
+  db?: Database,
+  config?: ContrailConfig
+): Promise<Client> {
+  const pds = await getPDS(did, db, config);
   if (!pds) throw new Error(`PDS not found for ${did}`);
   return new Client({
     handler: simpleFetchHandler({ service: pds }),

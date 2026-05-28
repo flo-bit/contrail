@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
   pds TEXT,
-  resolved_at ${dialect.bigintType} NOT NULL
+  resolved_at ${dialect.bigintType} NOT NULL,
+  excluded INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_identities_handle ON identities(handle);
 `;
@@ -258,6 +259,10 @@ const MIGRATIONS = [
   "ALTER TABLE feed_backfills ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE feed_backfills ADD COLUMN last_error TEXT",
   "ALTER TABLE feed_backfills ADD COLUMN started_at BIGINT",
+  "ALTER TABLE identities ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0",
+  // Index references `excluded`, so it has to run *after* the ALTER above.
+  // Both are guarded by `runMigrations`'s try/catch (already-exists is fine).
+  "CREATE INDEX IF NOT EXISTS idx_identities_excluded ON identities(excluded)",
 ];
 
 async function runMigrations(db: Database): Promise<void> {

@@ -1,7 +1,10 @@
 import type { Did } from "@atcute/lexicons";
-import type { Database, Logger } from "./types";
+import type { ContrailConfig, Database } from "./types";
 import { isDid, isHandle } from "@atcute/lexicons/syntax";
 import { resolvePDS } from "./client";
+import { checkUserFilter } from "./user-filter";
+
+export { checkUserFilter, isExcluded } from "./user-filter";
 
 const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -10,6 +13,7 @@ export interface Identity {
   handle: string | null;
   pds: string | null;
   resolved_at: number;
+  excluded?: number;
 }
 
 async function saveIdentity(db: Database, identity: Identity): Promise<void> {
@@ -28,7 +32,8 @@ function isStale(resolvedAt: number): boolean {
 async function fetchAndSave(
   db: Database,
   identifier: string,
-  cached?: Identity | null
+  cached?: Identity | null,
+  config?: ContrailConfig
 ): Promise<Identity> {
   const resolved = await resolvePDS(identifier);
   const identity: Identity = {
@@ -38,21 +43,23 @@ async function fetchAndSave(
     resolved_at: Date.now(),
   };
   await saveIdentity(db, identity);
+  await checkUserFilter(db, identity, config);
   return identity;
 }
 
 export async function resolveIdentity(
   db: Database,
-  did: Did
+  did: Did,
+  config?: ContrailConfig
 ): Promise<Identity> {
   const cached = await db
-    .prepare("SELECT did, handle, pds, resolved_at FROM identities WHERE did = ?")
+    .prepare("SELECT did, handle, pds, resolved_at, excluded FROM identities WHERE did = ?")
     .bind(did)
     .first<Identity>();
 
   if (cached && !isStale(cached.resolved_at)) return cached;
 
-  return fetchAndSave(db, did, cached);
+  return fetchAndSave(db, did, cached, config);
 }
 
 export async function resolveIdentities(
@@ -129,17 +136,23 @@ export async function resolveActor(
 export async function applyIdentityEvent(
   db: Database,
   did: string,
-  handle: string
+  handle: string,
+  config?: ContrailConfig
 ): Promise<void> {
   await db
     .prepare("UPDATE identities SET handle = ?, resolved_at = ? WHERE did = ?")
     .bind(handle, Date.now(), did)
     .run();
+  // Re-check the filter — handle changes can flip exclusion state.
+  if (config?.userFilter) {
+    await checkUserFilter(db, { did, handle, pds: null }, config);
+  }
 }
 
 export async function refreshStaleIdentities(
   db: Database,
-  dids: string[]
+  dids: string[],
+  config?: ContrailConfig
 ): Promise<void> {
   if (dids.length === 0) return;
 
@@ -169,7 +182,7 @@ export async function refreshStaleIdentities(
 
   for (const did of toRefresh) {
     try {
-      await fetchAndSave(db, did);
+      await fetchAndSave(db, did, undefined, config);
     } catch {
       // Silently skip unresolvable identities
     }

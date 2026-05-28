@@ -65,6 +65,7 @@
   },
   "dependencies": {
     "@atcute/atproto": "^3.1.10",
+    "@atcute/car": "^5.1.1",
     "@atcute/cbor": "^2.3.2",
     "@atcute/cid": "^2.4.1",
     "@atcute/client": "^4.2.1",
@@ -72,6 +73,7 @@
     "@atcute/identity-resolver": "^1.2.2",
     "@atcute/jetstream": "^1.0.2",
     "@atcute/lexicons": "^1.2.9",
+    "@atcute/repo": "^0.1.4",
     "@atcute/xrpc-server": "^0.1.12",
     "cac": "^7.0.0",
     "hono": "^4.12.8",
