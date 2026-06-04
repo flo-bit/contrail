@@ -8,7 +8,13 @@ import type {
 import { buildSpaceUri, HostedAdapter } from "@atmo-dev/contrail";
 import { CommunityAdapter } from "./adapter";
 import { CredentialCipher } from "./credentials";
-import { resolveIdentity, createPdsSession } from "./pds";
+import {
+  resolveIdentity,
+  createPdsSession,
+  decodeJwtExp,
+  tryRefreshSession,
+  normalizePdsEndpoint,
+} from "./pds";
 import {
   generateKeyPair,
   buildGenesisOp,
@@ -16,6 +22,18 @@ import {
   computeDidPlc,
   submitGenesisOp,
 } from "./plc";
+import {
+  pdsCreateAccount,
+  pdsGetRecommendedDidCredentials,
+  pdsActivateAccount,
+  pdsCreateAppPassword,
+  pdsDescribeServer,
+} from "./pds";
+import {
+  ProvisionOrchestrator,
+  type PdsClient,
+  type PlcClient,
+} from "./provision";
 import { resolveEffectiveLevel, resolveReachableSpaces, wouldCycle } from "./acl";
 import { reconcile } from "./reconcile";
 import type { AccessLevel } from "./types";
@@ -210,6 +228,188 @@ export function registerCommunityRoutes(
       communityDid: did,
       recoveryKey: creatorRotation.privateJwk,
     });
+  });
+
+  app.post(`/xrpc/${NS}.provision`, auth, async (c) => {
+    // Default-deny gate. Every successful call burns an invite code on the
+    // target PDS and adds a permanent entry to PLC, so the route refuses
+    // unless the operator has explicitly opted in via cfg.allowProvisioning.
+    // Checked BEFORE auth-issued state inspection so an unauthorized op
+    // doesn't even surface that the route exists in a usable form.
+    if (!cfg.allowProvisioning) {
+      return c.json(
+        {
+          error: "ProvisioningDisabled",
+          message: "community.provision is disabled on this Contrail deployment",
+        },
+        403
+      );
+    }
+    const sa = getAuth(c);
+    const body = (await c.req.json().catch(() => null)) as
+      | {
+          attemptId?: string;
+          handle?: string;
+          email?: string;
+          password?: string;
+          inviteCode?: string;
+          pdsEndpoint?: string;
+          rotationKey?: string;
+        }
+      | null;
+    if (
+      !body?.handle ||
+      !body.email ||
+      !body.password ||
+      !body.pdsEndpoint ||
+      !body.rotationKey
+    ) {
+      return c.json(
+        {
+          error: "InvalidRequest",
+          message: "handle, email, password, pdsEndpoint, rotationKey required",
+        },
+        400
+      );
+    }
+    if (
+      !(typeof body.rotationKey === "string" && body.rotationKey.startsWith("did:key:z"))
+    ) {
+      return c.json(
+        {
+          error: "InvalidRequest",
+          message: "rotationKey must be a did:key:z…",
+        },
+        400
+      );
+    }
+
+    let normalizedPdsEndpoint: string;
+    try {
+      normalizedPdsEndpoint = normalizePdsEndpoint(body.pdsEndpoint);
+    } catch {
+      return c.json(
+        {
+          error: "InvalidRequest",
+          message: "pdsEndpoint must be a parseable URL",
+        },
+        400
+      );
+    }
+
+    const allowed = cfg.allowedPdsEndpoints;
+    if (allowed && allowed.length > 0) {
+      const allowedNormalized = allowed.map((e) => {
+        try {
+          return normalizePdsEndpoint(e);
+        } catch {
+          // An unparseable allowlist entry can never match; treat as the
+          // original string so an obvious config typo at least produces a
+          // reject for the caller rather than a server crash.
+          return e;
+        }
+      });
+      if (!allowedNormalized.includes(normalizedPdsEndpoint)) {
+        return c.json(
+          {
+            error: "InvalidRequest",
+            message: `pdsEndpoint not in allowlist`,
+          },
+          400
+        );
+      }
+    }
+    body.pdsEndpoint = normalizedPdsEndpoint;
+
+    // Resolve the target PDS's DID dynamically. The service-auth JWT's `aud`
+    // must match what the PDS publishes for itself via describeServer; the
+    // PDS rejects with BadJwtAudience otherwise. This is what allows a
+    // single Contrail to mint communities on multiple PDSes — using a
+    // cfg-pinned value would force a 1:1 Contrail-to-PDS deployment.
+    let pdsDid: string;
+    try {
+      const described = await pdsDescribeServer(body.pdsEndpoint, {
+        fetch: cfg.fetch,
+      });
+      pdsDid = described.did;
+    } catch (err: any) {
+      return c.json(
+        {
+          error: "PdsUnreachable",
+          message: `describeServer failed for ${body.pdsEndpoint}: ${err.message}`,
+        },
+        502
+      );
+    }
+    const orchestrator = buildOrchestrator(cfg, community, cipher, pdsDid);
+
+    const attemptId = body.attemptId ?? crypto.randomUUID();
+    let result;
+    try {
+      result = await orchestrator.provision({
+        attemptId,
+        pdsEndpoint: body.pdsEndpoint,
+        handle: body.handle,
+        email: body.email,
+        password: body.password,
+        inviteCode: body.inviteCode,
+        rotationKey: body.rotationKey,
+      });
+    } catch (err: any) {
+      // attemptId must always come back to the caller so they can retry
+      // idempotently (see the C3 retry path in ProvisionOrchestrator).
+      return c.json(
+        { error: "ProvisioningFailed", message: err.message, attemptId },
+        502
+      );
+    }
+
+    // Idempotent graduation: if the community row already exists, the first
+    // call already wrote both the row and the reserved spaces. A retry with
+    // the same attemptId should return success without double-creating.
+    const alreadyGraduated = (await community.getCommunity(result.did)) != null;
+    if (!alreadyGraduated) {
+      // Hand the already-encrypted password from the provision_attempts row
+      // to the communities row, keeping a single source of truth for the
+      // credential.
+      const attempt = await community.getProvisionAttempt(attemptId);
+      if (!attempt?.encryptedPassword) {
+        return c.json(
+          {
+            error: "ProvisioningFailed",
+            message: "provision attempt missing encryptedPassword after activation",
+          },
+          502
+        );
+      }
+
+      await community.createFromProvisioned({
+        did: result.did,
+        pdsEndpoint: body.pdsEndpoint,
+        handle: body.handle,
+        appPasswordEncrypted: attempt.encryptedPassword,
+        createdBy: sa.issuer,
+      });
+
+      await bootstrapReservedSpaces({
+        communityDid: result.did,
+        creatorDid: sa.issuer,
+        spaces,
+        community,
+        type: spaceType,
+        serviceDid: spaceServiceDid,
+      });
+    }
+
+    const responseBody: {
+      communityDid: string;
+      status: string;
+      rootCredentials?: { handle: string; password: string; recoveryHint: string };
+    } = { communityDid: result.did, status: result.status };
+    if (result.rootCredentials) {
+      responseBody.rootCredentials = result.rootCredentials;
+    }
+    return c.json(responseBody);
   });
 
   app.post(`/xrpc/${NS}.delete`, auth, async (c) => {
@@ -672,6 +872,8 @@ export function registerCommunityRoutes(
         400
       );
     }
+    // adopt + provision modes both share the credential-proxy publishing path:
+    // both store {pds_endpoint, identifier, app_password_encrypted}. Falls through.
 
     // Caller must be member+ in $publishers.
     const publishersUri = buildSpaceUri({
@@ -695,7 +897,12 @@ export function registerCommunityRoutes(
     let session;
     try {
       const appPassword = await cipher.decryptString(raw.appPasswordEncrypted);
-      session = await createPdsSession(raw.pdsEndpoint, raw.identifier, appPassword, {
+      session = await ensureSession({
+        community,
+        did: body.communityDid,
+        pdsEndpoint: raw.pdsEndpoint,
+        identifier: raw.identifier,
+        password: appPassword,
         fetch: cfg.fetch,
       });
     } catch (err: any) {
@@ -724,6 +931,11 @@ export function registerCommunityRoutes(
         }),
       }
     );
+    if (res.status === 401) {
+      // Stale or revoked session: drop the cache so the next request goes
+      // cold through ensureSession.
+      await community.clearSession(body.communityDid);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return c.json(
@@ -751,6 +963,7 @@ export function registerCommunityRoutes(
     if (row.mode === "mint") {
       return c.json({ error: "NotSupported" }, 400);
     }
+    // adopt + provision: same credential-proxy path; falls through.
 
     const publishersUri = buildSpaceUri({
       ownerDid: body.communityDid,
@@ -769,7 +982,12 @@ export function registerCommunityRoutes(
     let session;
     try {
       const appPassword = await cipher.decryptString(raw.appPasswordEncrypted);
-      session = await createPdsSession(raw.pdsEndpoint, raw.identifier, appPassword, {
+      session = await ensureSession({
+        community,
+        did: body.communityDid,
+        pdsEndpoint: raw.pdsEndpoint,
+        identifier: raw.identifier,
+        password: appPassword,
         fetch: cfg.fetch,
       });
     } catch (err: any) {
@@ -795,6 +1013,9 @@ export function registerCommunityRoutes(
         }),
       }
     );
+    if (res.status === 401) {
+      await community.clearSession(body.communityDid);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return c.json(
@@ -906,14 +1127,20 @@ export function registerCommunityRoutes(
       }
     }
 
-    // Adopted: attempt a session creation.
+    // Adopted + provisioned: both store an app password against an external PDS.
+    // Health = we can still create a session with the stored credentials.
     const raw = await community.getRawCredentials(communityDid);
     if (!raw?.appPasswordEncrypted || !raw.pdsEndpoint || !raw.identifier) {
       return c.json({ status: "expired" });
     }
     try {
       const appPassword = await cipher.decryptString(raw.appPasswordEncrypted);
-      await createPdsSession(raw.pdsEndpoint, raw.identifier, appPassword, {
+      await ensureSession({
+        community,
+        did: communityDid,
+        pdsEndpoint: raw.pdsEndpoint,
+        identifier: raw.identifier,
+        password: appPassword,
         fetch: cfg.fetch,
       });
       return c.json({ status: "healthy" });
@@ -1010,6 +1237,41 @@ function generateKey(): string {
   return out;
 }
 
+/** Build a ProvisionOrchestrator wired with real PDS/PLC clients backed by
+ *  `cfg.fetch` (so tests can stub the network the same way they do for the
+ *  mint/adopt routes). Mirrors the ad-hoc wrapper used in the live e2e test
+ *  at apps/contrail-e2e/tests/provision.test.ts. */
+function buildOrchestrator(
+  cfg: import("./types").CommunityConfig,
+  adapter: CommunityAdapter,
+  cipher: CredentialCipher,
+  pdsDid: string
+): ProvisionOrchestrator {
+  const plcDirectory = cfg.plcDirectory ?? "https://plc.directory";
+  const fetchOpts = { fetch: cfg.fetch };
+
+  const plc: PlcClient = {
+    submit: (did, op) => submitGenesisOp(plcDirectory, did, op as any, fetchOpts),
+  };
+
+  const pds: PdsClient = {
+    createAccount: ({ pdsUrl, serviceAuthJwt, body }) =>
+      pdsCreateAccount(pdsUrl, serviceAuthJwt, body, fetchOpts),
+    getRecommendedDidCredentials: ({ pdsUrl, accessJwt }) =>
+      pdsGetRecommendedDidCredentials(pdsUrl, accessJwt, fetchOpts),
+    activateAccount: ({ pdsUrl, accessJwt }) =>
+      pdsActivateAccount(pdsUrl, accessJwt, fetchOpts),
+    createAppPassword: async ({ pdsUrl, accessJwt, name }) => {
+      const r = await pdsCreateAppPassword(pdsUrl, accessJwt, name, fetchOpts);
+      return { password: r.password };
+    },
+    createSession: ({ pdsUrl, identifier, password }) =>
+      createPdsSession(pdsUrl, identifier, password, fetchOpts),
+  };
+
+  return new ProvisionOrchestrator({ adapter, cipher, plc, pds, pdsDid });
+}
+
 async function bootstrapReservedSpaces(args: {
   communityDid: string;
   creatorDid: string;
@@ -1042,4 +1304,46 @@ async function bootstrapReservedSpaces(args: {
     // Materialize membership: creator is in the space.
     await args.spaces.applyMembershipDiff(uri, [args.creatorDid], [], args.creatorDid);
   }
+}
+
+/** Ensure a usable PDS session for the given community DID. Tries the cached
+ *  session first (with a 30s skew); if expired, tries refresh; if refresh fails
+ *  (or there's no cache), falls back to creating a fresh session with the
+ *  stored app password. The result is always written back to the cache. */
+async function ensureSession(args: {
+  community: CommunityAdapter;
+  did: string;
+  pdsEndpoint: string;
+  identifier: string;
+  password: string;
+  fetch?: typeof fetch;
+}): Promise<{ accessJwt: string; refreshJwt: string }> {
+  const now = Math.floor(Date.now() / 1000);
+  const cached = await args.community.getSession(args.did);
+  if (cached && cached.accessExp > now + 30) {
+    return { accessJwt: cached.accessJwt, refreshJwt: cached.refreshJwt };
+  }
+  if (cached) {
+    const refreshed = await tryRefreshSession({
+      pdsUrl: args.pdsEndpoint,
+      refreshJwt: cached.refreshJwt,
+      fetch: args.fetch,
+    });
+    if (refreshed) {
+      await args.community.upsertSession(args.did, refreshed);
+      return { accessJwt: refreshed.accessJwt, refreshJwt: refreshed.refreshJwt };
+    }
+  }
+  const session = await createPdsSession(
+    args.pdsEndpoint,
+    args.identifier,
+    args.password,
+    { fetch: args.fetch }
+  );
+  await args.community.upsertSession(args.did, {
+    accessJwt: session.accessJwt,
+    refreshJwt: session.refreshJwt,
+    accessExp: decodeJwtExp(session.accessJwt),
+  });
+  return { accessJwt: session.accessJwt, refreshJwt: session.refreshJwt };
 }
