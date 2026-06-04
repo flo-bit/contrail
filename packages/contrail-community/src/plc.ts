@@ -54,7 +54,7 @@ const P256_N = BigInt(
 );
 const P256_N_HALF = P256_N >> 1n;
 
-async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uint8Array> {
+export async function signBytes(privateJwk: JsonWebKey, bytes: Uint8Array): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "jwk",
     privateJwk,
@@ -153,6 +153,154 @@ export async function computeDidPlc(signedOp: SignedGenesisOp): Promise<string> 
   const encoded = encodeDagCbor(signedOp);
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded as BufferSource));
   return "did:plc:" + base32Lower(hash).slice(0, 24);
+}
+
+// ============================================================================
+// Update op construction (subsequent ops chain via `prev`)
+// ============================================================================
+
+export interface UpdateOpInput {
+  prev: string; // CID string of the previous op in the chain
+  rotationKeys: string[];
+  verificationMethodAtproto: string;
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+export interface UnsignedUpdateOp {
+  type: "plc_operation";
+  prev: string;
+  rotationKeys: string[];
+  verificationMethods: { atproto: string };
+  alsoKnownAs: string[];
+  services: Record<string, { type: string; endpoint: string }>;
+}
+
+export interface SignedUpdateOp extends UnsignedUpdateOp {
+  sig: string; // base64url, unpadded
+}
+
+export function buildUpdateOp(input: UpdateOpInput): UnsignedUpdateOp {
+  return {
+    type: "plc_operation",
+    prev: input.prev,
+    rotationKeys: input.rotationKeys,
+    verificationMethods: { atproto: input.verificationMethodAtproto },
+    alsoKnownAs: input.alsoKnownAs,
+    services: input.services,
+  };
+}
+
+/** Sign an update op with a rotation key's private JWK. */
+export async function signUpdateOp(
+  unsigned: UnsignedUpdateOp,
+  signerPrivateJwk: JsonWebKey
+): Promise<SignedUpdateOp> {
+  const encoded = encodeDagCbor(unsigned);
+  const sigBytes = await signBytes(signerPrivateJwk, encoded);
+  return { ...unsigned, sig: bytesToB64url(sigBytes) };
+}
+
+/** Compute the CIDv1 for a signed op (genesis, update, or tombstone).
+ *  CIDv1 (0x01) + dag-cbor codec (0x71) + sha2-256 (0x12 0x20) + hash,
+ *  base32-lower with multibase "b" prefix.
+ *
+ *  The tombstone shape ({type, prev, sig}) is a strict subset of update —
+ *  the DAG-CBOR encoder accepts all three uniformly, and PLC computes its
+ *  stored CID from the same canonical encoding. */
+export async function cidForOp(
+  signedOp: SignedGenesisOp | SignedUpdateOp | SignedTombstoneOp
+): Promise<string> {
+  const encoded = encodeDagCbor(signedOp);
+  const hash = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", encoded as BufferSource)
+  );
+  const cidBytes = new Uint8Array(4 + hash.length);
+  cidBytes[0] = 0x01;
+  cidBytes[1] = 0x71;
+  cidBytes[2] = 0x12;
+  cidBytes[3] = 0x20;
+  cidBytes.set(hash, 4);
+  return "b" + base32Lower(cidBytes);
+}
+
+/** Fetch the CID of the most recent op in a DID's PLC log. Used during
+ *  provision recovery to obtain the genesis op's CID at resume time (we can't
+ *  recompute it locally because ECDSA signatures are randomized) and by the
+ *  reap CLI to chain a tombstone onto the latest op.
+ *
+ *  PLC's `/log/last` endpoint returns the bare signed op object — no envelope,
+ *  no `cid` field. We compute the CID locally with the same DAG-CBOR encoder
+ *  cidForOp uses; PLC computes its stored CID identically, so the result
+ *  matches the entry's CID in `/log/audit`. */
+export async function getLastOpCid(
+  plcDirectory: string,
+  did: string,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<string> {
+  const f = opts.fetch ?? fetch;
+  const url = `${plcDirectory.replace(/\/$/, "")}/${did}/log/last`;
+  const res = await f(url);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PLC log/last failed (${res.status}): ${text}`);
+  }
+  const op = (await res.json()) as
+    | SignedGenesisOp
+    | SignedUpdateOp
+    | SignedTombstoneOp;
+  return cidForOp(op);
+}
+
+// ============================================================================
+// Tombstone op construction
+// A tombstone op marks a DID's PLC log as terminated — no further ops will be
+// accepted. Used by `contrail reap` to clean up DIDs whose PDS account is
+// permanently unrecoverable.
+// ============================================================================
+
+export interface UnsignedTombstoneOp {
+  type: "plc_tombstone";
+  prev: string;
+}
+
+export interface SignedTombstoneOp extends UnsignedTombstoneOp {
+  sig: string; // base64url, unpadded
+}
+
+export function buildTombstoneOp(prev: string): UnsignedTombstoneOp {
+  return { type: "plc_tombstone", prev };
+}
+
+/** Sign a tombstone op with a rotation key's private JWK. */
+export async function signTombstoneOp(
+  op: UnsignedTombstoneOp,
+  signerPrivateJwk: JsonWebKey
+): Promise<SignedTombstoneOp> {
+  const encoded = encodeDagCbor(op);
+  const sigBytes = await signBytes(signerPrivateJwk, encoded);
+  return { ...op, sig: bytesToB64url(sigBytes) };
+}
+
+/** Submit a signed tombstone op to the PLC directory. PLC accepts genesis,
+ *  update, and tombstone ops at the same `${plcDirectory}/${did}` endpoint. */
+export async function submitTombstoneOp(
+  plcDirectory: string,
+  did: string,
+  signedOp: SignedTombstoneOp,
+  opts: { fetch?: typeof fetch } = {}
+): Promise<void> {
+  const f = opts.fetch ?? fetch;
+  const url = `${plcDirectory.replace(/\/$/, "")}/${did}`;
+  const res = await f(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(signedOp),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PLC tombstone submit failed (${res.status}): ${text}`);
+  }
 }
 
 /** Submit a signed genesis op to the PLC directory. */
