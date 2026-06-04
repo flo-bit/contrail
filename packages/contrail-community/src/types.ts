@@ -21,7 +21,47 @@ export function isAccessLevel(v: unknown): v is AccessLevel {
   return typeof v === "string" && ACCESS_LEVELS.includes(v as AccessLevel);
 }
 
-export type CommunityMode = "adopt" | "mint";
+export type CommunityMode = "adopt" | "mint" | "provision";
+
+export const PROVISION_STATUSES = [
+  "keys_generated",
+  "genesis_submitted",
+  "account_created",
+  "did_doc_updated",
+  "activated",
+] as const;
+export type ProvisionStatus = (typeof PROVISION_STATUSES)[number];
+
+export interface ProvisionAttemptRow {
+  attemptId: string;
+  did: string;
+  status: ProvisionStatus;
+  pdsEndpoint: string;
+  handle: string;
+  email: string;
+  inviteCode: string | null;
+  encryptedSigningKey: string | null;
+  encryptedRotationKey: string | null;
+  encryptedPassword: string | null;
+  genesisSubmittedAt: number | null;
+  accountCreatedAt: number | null;
+  didDocUpdatedAt: number | null;
+  activatedAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateProvisionAttemptInput {
+  attemptId: string;
+  did: string;
+  pdsEndpoint: string;
+  handle: string;
+  email: string;
+  inviteCode?: string | null;
+  encryptedSigningKey: string;
+  encryptedRotationKey: string;
+}
 
 export interface CommunityConfig {
   /** Service DID for JWT verification. Falls back to spaces.serviceDid when both modules are enabled. */
@@ -35,6 +75,23 @@ export interface CommunityConfig {
   resolver?: DidDocumentResolver;
   /** Optional override for the fetch implementation (useful for tests). */
   fetch?: typeof fetch;
+  /** Allowlist of PDS endpoints accepted by `community.provision`. When set
+   *  to a non-empty array, callers must supply a `pdsEndpoint` that matches
+   *  one of these entries exactly; other values are rejected before any PLC
+   *  op is signed. Undefined or empty array → no restriction (back-compat).
+   *  Operators running on a public/multi-tenant Contrail SHOULD set this so
+   *  callers can't mint PLC entries pointing at attacker-controlled PDSes
+   *  signed by Contrail's rotation key. */
+  allowedPdsEndpoints?: string[];
+  /** Top-level switch for the `community.provision` route. Default-deny: a
+   *  call with the route present but this flag unset (or false) returns 403
+   *  ProvisioningDisabled BEFORE any PLC/PDS work runs. Set to `true` only
+   *  when the operator has confirmed the upstream auth middleware restricts
+   *  this route to authorized callers — every successful call burns a real
+   *  invite code on the target PDS and adds a permanent entry to PLC.
+   *  `mint` and `adopt` are not gated by this flag; they don't burn external
+   *  resources. */
+  allowProvisioning?: boolean;
 }
 
 /** Public view of a community row. Encrypted credentials are not included here

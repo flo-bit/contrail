@@ -55,3 +55,4 @@ describe("initSchema", () => {
     await initSchema(db, TEST_CONFIG);
   });
 });
+
