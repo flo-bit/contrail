@@ -1,11 +1,119 @@
 # @atmo-dev/contrail
 
+## 0.7.0
+
+### Minor Changes
+
+- 7e3145b: Spaces refactor: split authority + record host into independently runnable
+  roles, add space credentials, extract community into its own package.
+
+  **Breaking — config shape**
+
+  `spaces` is no longer flat — split into `authority` and `recordHost`:
+
+  ```ts
+  // before
+  spaces: {
+    type: "com.example.event.space",
+    serviceDid: "did:web:example.com",
+    blobs: { adapter, maxSize },
+  }
+
+  // after
+  spaces: {
+    authority: {
+      type: "com.example.event.space",
+      serviceDid: "did:web:example.com",
+      signing: await generateAuthoritySigningKey(),
+    },
+    recordHost: {
+      blobs: { adapter, maxSize },
+    },
+  }
+  ```
+
+  **Breaking — community moved to its own package**
+
+  Community has been extracted to `@atmo-dev/contrail-community`. Wire it via
+  `createCommunityIntegration`:
+
+  ```ts
+  import { Contrail, resolveConfig } from "@atmo-dev/contrail";
+  import { createCommunityIntegration } from "@atmo-dev/contrail-community";
+
+  const resolved = resolveConfig(config);
+  const communityIntegration = createCommunityIntegration({
+    db,
+    config: resolved,
+  });
+  const contrail = new Contrail({ ...config, communityIntegration });
+  ```
+
+  The community config (`config.community`) stays the same; only the wiring
+  moves. Imports of `CommunityAdapter`, `registerCommunityRoutes`,
+  `reconcile`, etc. now come from `@atmo-dev/contrail-community` instead of
+  `@atmo-dev/contrail`.
+
+  **New — space credentials (`X-Space-Credential`)**
+
+  The space authority issues short-lived ES256 JWTs (default 2h TTL) via
+  `<ns>.space.getCredential` and `refreshCredential`. The record host accepts
+  them on read/write paths in lieu of per-request service-auth JWTs. Skips
+  DID-doc fetches and member checks; the credential's signature is the proof.
+
+  Generate a signing key once at deploy time:
+
+  ```ts
+  import { generateAuthoritySigningKey } from "@atmo-dev/contrail";
+  const signing = await generateAuthoritySigningKey();
+  // Store the JWK; pass to spaces.authority.signing.
+  ```
+
+  **New — binding resolution**
+
+  Verifiers can resolve "which authority signs for this space?" from three
+  sources, in order: local enrollment table, PDS records at
+  `at://<owner>/<type>/<key>`, DID-doc `#atproto_space_authority` service
+  entry, owner-self fallback. Lets user-owned DIDs authorize a third-party
+  authority via a normal PDS write — no DID-doc surgery.
+
+  **New — independent deployments + enrollment**
+
+  The authority and record host can run as separate processes/operators.
+  A new `<ns>.recordHost.enroll` endpoint lets owners (or authorities)
+  register a space onto a host. In-process deployments auto-enroll on
+  `createSpace`; nothing changes for single-instance setups.
+
+  See `docs/10-deployment-shapes.md` for all-in-one / authority-only /
+  host-only configurations and when to choose each.
+
+  **Migration**
+
+  For most deployments running spaces today, the migration is:
+  1. Update the config: split `spaces.{type, serviceDid, blobs}` into
+     `spaces.authority.{type, serviceDid}` and `spaces.recordHost.{blobs}`.
+  2. Generate and store an authority signing key
+     (`generateAuthoritySigningKey()`); add to `spaces.authority.signing`.
+  3. If using community: install `@atmo-dev/contrail-community`, build
+     `createCommunityIntegration({ db, config })`, pass via
+     `new Contrail({ communityIntegration })` (or `createApp({ community })`).
+
+  Existing service-auth JWT clients keep working as a fallback path.
+  Migrate to space credentials when convenient — exchange a JWT for a
+  credential once via `getCredential`, then reuse it.
+
+### Patch Changes
+
+- @atmo-dev/contrail-base@0.7.0
+- @atmo-dev/contrail-authority@0.7.0
+- @atmo-dev/contrail-record-host@0.7.0
+- @atmo-dev/contrail-appview@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
 
 - af24714: Add per-collection `recordFilter` and apply Jetstream `#identity` handle changes during ingest.
-
   - `CollectionConfig.recordFilter?: (record) => boolean` runs against each create/update during ingest; returning false drops the record before it reaches the DB. Useful for narrowing high-volume collections to just the records you care about (e.g. only `app.bsky.feed.post` records mentioning a particular URL). Deletes are not filtered, so they still tear down any record the filter previously let through. Throws are caught, logged, and treated as drops.
   - Jetstream `#identity` events (handle changes) now flow through to the `identities` table via a new `applyIdentityEvent` helper. UPDATE-only — unknown DIDs are no-ops so we don't materialize partial rows lacking PDS.
 
@@ -71,7 +179,6 @@
   ```
 
   what changed:
-
   - `buildSpaceUri` / `parseSpaceUri` (`@atmo-dev/contrail`) emit / accept `ats://`. anything else returns `null` from `parseSpaceUri`.
   - generated lexicons no longer claim `format: "at-uri"` on `spaceUri` params, on the `space` record-output field, or on `spaceView.uri` — they're plain `string`. (atproto's `at-uri` format would reject `ats://`.) regenerate committed `lexicons/generated/*` with `contrail-lex generate`; downstream `lex-cli generate` then emits `v.string()` instead of `v.resourceUriString()` for those fields.
   - realtime topics are unchanged in shape (`space:<uri>`), but `<uri>` is now an `ats://` URI.
@@ -98,7 +205,6 @@
   ```
 
   changes:
-
   - `#record` def now requires `["uri", "cid", "value"]` (matches atproto's standard `com.atproto.repo.listRecords#record`). `did`/`collection`/`rkey`/`time_us` remain in the response but are optional.
   - `getRecord` top-level output requires `["uri", "value"]` (matches atproto's `com.atproto.repo.getRecord`).
   - profile entries in `?profiles=true` responses use `value` instead of `record` for the profile record body.
@@ -138,7 +244,6 @@
 - ad3a61d: add `contrail dev` — local dev wrapper for cloudflare workers deployments.
 
   replaces `wrangler dev --test-scheduled` + a separate cron-trigger script with one command. on start it:
-
   1. connects to your local D1 via wrangler's `getPlatformProxy`, inspects state
   2. prompts to run `backfillAll` if no completed backfills exist yet
   3. prompts to run `refresh` if the ingest cursor is older than 60 minutes (configurable with `--stale-after`)
@@ -166,7 +271,6 @@
   options: `binding` (D1 binding name, default `"DB"`), `lexicons` (see below), `onInit` (one-shot app-specific setup).
 
   **`/xrpc/<ns>.lexicons` endpoint + `contrail-lex pull-service`** lets consumer apps typegen against a deployed contrail over HTTP, no PDS or DNS required:
-
   - `contrail-lex generate` now emits a barrel `lexicons/generated/index.ts` that imports every lexicon the deployment speaks: generated + pulled + custom. The pulled lexicons are needed so consumer typegen can resolve `$ref`s out of the generated schemas.
   - Pass `{ lexicons }` to `createWorker` (or `createHandler(contrail, { lexicons })`) and the service exposes them at `GET /xrpc/<namespace>.lexicons`.
   - From a consumer app:
@@ -184,7 +288,6 @@
   unlike `backfillAll`, it ignores the `backfills` state table and sweeps fresh. useful after jetstream outages or after leaving a dev deployment idle for days.
 
   each record in each configured collection is classified as:
-
   - **missing** — PDS has it, DB doesn't
   - **stale update** — DB has it with a different CID, _and_ the DB row was written before the ignore window (default 60s, configurable)
   - **in sync** — same CID, or DB row is within the ignore window

@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-authority",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Default space-authority implementation for contrail — member list, invites, app policy, credential issuance. Contrail's binary-membership ACL flavor; for ladder-style access levels see @atmo-dev/contrail-community.",
   "type": "module",
   "sideEffects": false,

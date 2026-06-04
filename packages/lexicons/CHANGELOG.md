@@ -1,5 +1,12 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [7e3145b]
+  - @atmo-dev/contrail@0.7.0
+
 ## 0.4.6
 
 ### Patch Changes
@@ -53,7 +60,6 @@
   ```
 
   what changed:
-
   - `buildSpaceUri` / `parseSpaceUri` (`@atmo-dev/contrail`) emit / accept `ats://`. anything else returns `null` from `parseSpaceUri`.
   - generated lexicons no longer claim `format: "at-uri"` on `spaceUri` params, on the `space` record-output field, or on `spaceView.uri` — they're plain `string`. (atproto's `at-uri` format would reject `ats://`.) regenerate committed `lexicons/generated/*` with `contrail-lex generate`; downstream `lex-cli generate` then emits `v.string()` instead of `v.resourceUriString()` for those fields.
   - realtime topics are unchanged in shape (`space:<uri>`), but `<uri>` is now an `ats://` URI.
@@ -86,7 +92,6 @@
   ```
 
   changes:
-
   - `#record` def now requires `["uri", "cid", "value"]` (matches atproto's standard `com.atproto.repo.listRecords#record`). `did`/`collection`/`rkey`/`time_us` remain in the response but are optional.
   - `getRecord` top-level output requires `["uri", "value"]` (matches atproto's `com.atproto.repo.getRecord`).
   - profile entries in `?profiles=true` responses use `value` instead of `record` for the profile record body.
@@ -110,7 +115,6 @@
   options: `binding` (D1 binding name, default `"DB"`), `lexicons` (see below), `onInit` (one-shot app-specific setup).
 
   **`/xrpc/<ns>.lexicons` endpoint + `contrail-lex pull-service`** lets consumer apps typegen against a deployed contrail over HTTP, no PDS or DNS required:
-
   - `contrail-lex generate` now emits a barrel `lexicons/generated/index.ts` that imports every lexicon the deployment speaks: generated + pulled + custom. The pulled lexicons are needed so consumer typegen can resolve `$ref`s out of the generated schemas.
   - Pass `{ lexicons }` to `createWorker` (or `createHandler(contrail, { lexicons })`) and the service exposes them at `GET /xrpc/<namespace>.lexicons`.
   - From a consumer app:
