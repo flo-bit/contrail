@@ -243,7 +243,7 @@ export function registerFeedRoutes(
       return c.json({ error: "Unknown feed" }, 404);
     }
 
-    const did = await resolveActor(db, actor);
+    const did = await resolveActor(db, actor, config);
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
 
     await maybeBackfillFeed(c, db, config, did, feedName, feedConfig);

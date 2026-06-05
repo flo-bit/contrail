@@ -88,7 +88,7 @@ export function createApp(
     const actor = c.req.query("actor");
     if (!actor) return c.json({ error: "actor parameter required" }, 400);
 
-    const did = await resolveActor(db, actor);
+    const did = await resolveActor(db, actor, config);
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
 
     // Ensure profile records are backfilled

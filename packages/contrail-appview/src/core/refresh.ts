@@ -134,7 +134,7 @@ export async function refresh(
     let client: Client;
     try {
       client = await withTimeout(
-        () => getClient(did as Did, db),
+        () => getClient(did as Did, db, config),
         requestTimeout
       );
     } catch {

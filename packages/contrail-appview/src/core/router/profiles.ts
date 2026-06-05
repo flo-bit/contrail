@@ -85,7 +85,7 @@ export async function resolveProfiles(
   }
 
   // Resolve identities for all DIDs
-  const identities = await resolveIdentities(db, dids);
+  const identities = await resolveIdentities(db, dids, config);
 
   // Fetch missing profile records from PDS on demand
   const missingDids = dids.filter((d) => !result[d]);
@@ -134,7 +134,7 @@ async function fetchMissingProfiles(
         const rkey = configRkey ?? "self";
         const table = recordsTableName(shortName ?? collection);
         try {
-          const pds = await getPDS(did as Did, db);
+          const pds = await getPDS(did as Did, db, config);
           if (!pds) return;
 
           const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);

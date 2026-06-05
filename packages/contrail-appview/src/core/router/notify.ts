@@ -78,7 +78,7 @@ export async function processNotifyUris(
   );
 
   for (const { uri, parsed } of validUris) {
-    const pds = await getPDS(parsed.did as Did, db);
+    const pds = await getPDS(parsed.did as Did, db, config);
     if (!pds) {
       errors.push(`could not resolve PDS for ${parsed.did}`);
       continue;

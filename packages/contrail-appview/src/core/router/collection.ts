@@ -301,7 +301,7 @@ export async function runPipeline(
 
   let did: string | undefined;
   if (actor) {
-    const resolved = await resolveActor(db, actor);
+    const resolved = await resolveActor(db, actor, config);
     if (!resolved) throw new Error("Could not resolve actor");
     did = resolved;
     // backfillUser expects the record NSID (for PDS calls), not the short name.
