@@ -6,6 +6,7 @@ import {
 } from "@atcute/identity-resolver";
 import type { Did } from "@atcute/lexicons";
 import type { Database } from "../types";
+import { validateExternalUrl } from "../client";
 
 /** Optional network-override knobs accepted by labeler-endpoint resolution.
  *  Mirrors the `ContrailConfig.networkOverrides` shape — kept narrow here so
@@ -24,34 +25,11 @@ export interface LabelerResolveOverrides {
 }
 
 /** Reject endpoint URLs that point to private/internal addresses or non-HTTPS.
- *  Mirrors the validator in `core/client.ts` — labeler endpoints should be
- *  publicly reachable for the same reasons PDS endpoints should.
- *
- *  Hosts listed in `additionalAllowedHosts` short-circuit both checks. Match
- *  is exact, case-insensitive (entries are lowercased on compare; `URL.hostname`
- *  is already lowercased), and port-agnostic. */
-export function validateEndpointUrl(
-  url: string,
-  additionalAllowedHosts: string[] = [],
-): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  const host = parsed.hostname;
-  if (additionalAllowedHosts.some((h) => h.toLowerCase() === host)) {
-    return true;
-  }
-  if (parsed.protocol !== "https:") return false;
-  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return false;
-  if (host.startsWith("10.")) return false;
-  if (host.startsWith("192.168.")) return false;
-  if (host.startsWith("169.254.")) return false;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
-  return true;
-}
+ *  Thin alias for the single shared SSRF guard {@link validateExternalUrl} in
+ *  `contrail-base` — labeler endpoints are validated by the exact same rules as
+ *  PDS endpoints, so the allowlist logic must live in one place. Kept exported
+ *  under this name for existing callers/tests. */
+export const validateEndpointUrl = validateExternalUrl;
 
 const DEFAULT_DID_RESOLVER: DidDocumentResolver = new CompositeDidDocumentResolver({
   methods: {

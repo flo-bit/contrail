@@ -19,11 +19,15 @@ export interface ResolvedIdentity {
   pds: string | null;
 }
 
-/** Reject PDS URLs that point to private/internal addresses or non-HTTPS.
+/** Reject external URLs (PDS, labeler, …) that point to private/internal
+ *  addresses or non-HTTPS. The single SSRF guard shared across packages —
+ *  callers MUST route every externally-resolved endpoint through this so the
+ *  allowlist rules live in exactly one place.
+ *
  *  Hostnames in `additionalAllowedHosts` skip both checks. Match is exact,
  *  case-insensitive (allowlist entries are lowercased on compare; `URL.hostname`
  *  is already lowercased), and port-agnostic. */
-function validatePdsUrl(url: string, additionalAllowedHosts?: string[]): boolean {
+export function validateExternalUrl(url: string, additionalAllowedHosts?: string[]): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -104,7 +108,7 @@ export async function resolvePDS(
   const allowed = config?.networkOverrides?.additionalAllowedHosts;
   const result = await resolveViaSlingshot(identifier, slingshotUrl);
   if (result?.pds) {
-    if (!validatePdsUrl(result.pds, allowed)) return { ...result, pds: null };
+    if (!validateExternalUrl(result.pds, allowed)) return { ...result, pds: null };
     return result;
   }
 
@@ -112,7 +116,7 @@ export async function resolvePDS(
   if (identifier.startsWith("did:")) {
     try {
       const pds = await getPDSViaDidDoc(identifier as Did, config);
-      if (pds && validatePdsUrl(pds, allowed)) {
+      if (pds && validateExternalUrl(pds, allowed)) {
         return {
           did: identifier,
           handle: result?.handle ?? null,
@@ -127,7 +131,14 @@ export async function resolvePDS(
   return result;
 }
 
-// In-memory PDS cache with TTL + size limit, plus in-flight deduplication
+// In-memory PDS cache with TTL + size limit, plus in-flight deduplication.
+//
+// Keyed by DID only — this assumes a single, process-wide `networkOverrides`
+// config (the deployment model: one resolver + one SSRF allowlist per process).
+// Every caller in this monorepo now threads the same in-scope `config`, so a
+// config-less and an override-aware resolution can never race for the same DID.
+// If a future deployment ever resolves the same DID under differing overrides
+// in one process, key these caches by an override fingerprint instead.
 const PDS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const PDS_CACHE_MAX = 10_000;
 const pdsCache = new Map<string, { pds: string; at: number }>();
