@@ -1,5 +1,7 @@
 # @atmo-dev/contrail-sync
 
+## 0.8.0
+
 ## 0.7.0
 
 ### Minor Changes
@@ -90,6 +92,7 @@
   **Migration**
 
   For most deployments running spaces today, the migration is:
+
   1. Update the config: split `spaces.{type, serviceDid, blobs}` into
      `spaces.authority.{type, serviceDid}` and `spaces.recordHost.{blobs}`.
   2. Generate and store an authority signing key
@@ -128,6 +131,7 @@
   ```
 
   what changed:
+
   - `buildSpaceUri` / `parseSpaceUri` (`@atmo-dev/contrail`) emit / accept `ats://`. anything else returns `null` from `parseSpaceUri`.
   - generated lexicons no longer claim `format: "at-uri"` on `spaceUri` params, on the `space` record-output field, or on `spaceView.uri` — they're plain `string`. (atproto's `at-uri` format would reject `ats://`.) regenerate committed `lexicons/generated/*` with `contrail-lex generate`; downstream `lex-cli generate` then emits `v.string()` instead of `v.resourceUriString()` for those fields.
   - realtime topics are unchanged in shape (`space:<uri>`), but `<uri>` is now an `ats://` URI.
@@ -154,6 +158,7 @@
   ```
 
   changes:
+
   - `#record` def now requires `["uri", "cid", "value"]` (matches atproto's standard `com.atproto.repo.listRecords#record`). `did`/`collection`/`rkey`/`time_us` remain in the response but are optional.
   - `getRecord` top-level output requires `["uri", "value"]` (matches atproto's `com.atproto.repo.getRecord`).
   - profile entries in `?profiles=true` responses use `value` instead of `record` for the profile record body.

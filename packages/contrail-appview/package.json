@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-appview",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Public-records appview for contrail — jetstream ingestion, backfill, query layer, feeds, labels, profiles, per-collection XRPC routes.",
   "type": "module",
   "sideEffects": false,
