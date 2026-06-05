@@ -21,7 +21,47 @@ export function isAccessLevel(v: unknown): v is AccessLevel {
   return typeof v === "string" && ACCESS_LEVELS.includes(v as AccessLevel);
 }
 
-export type CommunityMode = "adopt" | "mint";
+export type CommunityMode = "adopt" | "mint" | "provision";
+
+export const PROVISION_STATUSES = [
+  "keys_generated",
+  "genesis_submitted",
+  "account_created",
+  "did_doc_updated",
+  "activated",
+] as const;
+export type ProvisionStatus = (typeof PROVISION_STATUSES)[number];
+
+export interface ProvisionAttemptRow {
+  attemptId: string;
+  did: string;
+  status: ProvisionStatus;
+  pdsEndpoint: string;
+  handle: string;
+  email: string;
+  inviteCode: string | null;
+  encryptedSigningKey: string | null;
+  encryptedRotationKey: string | null;
+  encryptedPassword: string | null;
+  genesisSubmittedAt: number | null;
+  accountCreatedAt: number | null;
+  didDocUpdatedAt: number | null;
+  activatedAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateProvisionAttemptInput {
+  attemptId: string;
+  did: string;
+  pdsEndpoint: string;
+  handle: string;
+  email: string;
+  inviteCode?: string | null;
+  encryptedSigningKey: string;
+  encryptedRotationKey: string;
+}
 
 export interface CommunityConfig {
   /** Service DID for JWT verification. Falls back to spaces.serviceDid when both modules are enabled. */
@@ -35,6 +75,37 @@ export interface CommunityConfig {
   resolver?: DidDocumentResolver;
   /** Optional override for the fetch implementation (useful for tests). */
   fetch?: typeof fetch;
+  /** Allowlist of PDS endpoints `community.provision` may create a community
+   *  account on. Callers must supply a `pdsEndpoint` that matches one of these
+   *  entries (after normalization); other values are rejected before any PLC
+   *  op is signed. This gates ONLY provisioning — Contrail still reads/indexes
+   *  records from every PDS on the network; this is not a global PDS filter.
+   *
+   *  Fail-closed: when `allowProvisioning` is true this list MUST be non-empty,
+   *  otherwise `community.provision` is refused. An empty/undefined allowlist
+   *  no longer means "any PDS" — to genuinely accept any caller-supplied
+   *  endpoint, set `allowAnyProvisionPdsEndpoint: true` (a separate, loud
+   *  opt-in). Operators running a public/multi-tenant Contrail MUST keep a
+   *  real allowlist here so callers can't mint PLC entries pointing at
+   *  attacker-controlled PDSes signed by Contrail's rotation key. */
+  allowedProvisionPdsEndpoints?: string[];
+  /** Explicit, loud opt-in to accept ANY caller-supplied `pdsEndpoint` when
+   *  provisioning is enabled. Only honored when `allowProvisioning` is true.
+   *  This is the dangerous mode the allowlist exists to prevent: every
+   *  successful call signs a permanent PLC genesis op pointing at a
+   *  caller-controlled endpoint with Contrail's rotation key. Leave unset
+   *  (or false) on any public/multi-tenant deployment and use
+   *  `allowedProvisionPdsEndpoints` instead. */
+  allowAnyProvisionPdsEndpoint?: boolean;
+  /** Top-level switch for the `community.provision` route. Default-deny: a
+   *  call with the route present but this flag unset (or false) returns 403
+   *  ProvisioningDisabled BEFORE any PLC/PDS work runs. Set to `true` only
+   *  when the operator has confirmed the upstream auth middleware restricts
+   *  this route to authorized callers — every successful call burns a real
+   *  invite code on the target PDS and adds a permanent entry to PLC.
+   *  `mint` and `adopt` are not gated by this flag; they don't burn external
+   *  resources. */
+  allowProvisioning?: boolean;
 }
 
 /** Public view of a community row. Encrypted credentials are not included here

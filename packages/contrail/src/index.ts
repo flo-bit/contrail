@@ -189,5 +189,5 @@ export type { PersistentLabelsOptions } from "./core/labels/subscribe";
 export { resolveLabelerEndpoint } from "./core/labels/resolve";
 
 // Community has moved to @atmo-dev/contrail-community. Import from there:
-//   import { createCommunityIntegration, CommunityAdapter, ... } from "@atmo-dev/contrail-community";
+//   import { createCommunityIntegration, CommunityAdapter, ProvisionOrchestrator, ... } from "@atmo-dev/contrail-community";
 //   const app = createApp(db, config, { community: createCommunityIntegration(...) });

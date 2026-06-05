@@ -16,6 +16,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "contrail-community": "./dist/cli/index.js"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/flo-bit/contrail.git",
@@ -42,9 +45,25 @@
     "@atcute/xrpc-server": "^0.1.12",
     "@atmo-dev/contrail": "workspace:*",
     "@atmo-dev/contrail-base": "workspace:*",
+    "cac": "^7.0.0",
     "hono": "^4.12.8"
   },
+  "peerDependencies": {
+    "pg": "^8.0.0",
+    "wrangler": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "wrangler": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
+    "pg": "^8.20.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.0"
