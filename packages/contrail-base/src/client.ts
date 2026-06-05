@@ -26,7 +26,14 @@ export interface ResolvedIdentity {
  *
  *  Hostnames in `additionalAllowedHosts` skip both checks. Match is exact,
  *  case-insensitive (allowlist entries are lowercased on compare; `URL.hostname`
- *  is already lowercased), and port-agnostic. */
+ *  is already lowercased), and port-agnostic.
+ *
+ *  Scope: best-effort guard against the obvious internal-address classes
+ *  (private/link-local IPv4 literals, localhost, non-HTTPS). It does NOT
+ *  resolve DNS, so a public hostname that resolves to a private address is not
+ *  caught here, and IPv6 / non-canonical IP encodings are only partially
+ *  covered. Defense-in-depth (egress network policy) is expected when resolver
+ *  inputs are fully untrusted. */
 export function validateExternalUrl(url: string, additionalAllowedHosts?: string[]): boolean {
   let parsed: URL;
   try {
