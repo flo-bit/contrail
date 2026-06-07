@@ -338,6 +338,11 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] 
     )`,
     `CREATE INDEX IF NOT EXISTS idx_feed_actor_coll_time ON feed_items(actor, collection, time_us DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_feed_actor_time ON feed_items(actor, time_us DESC)`,
+    // Single-row cursor for the rolling, bounded feed prune (see sweepFeedItems).
+    `CREATE TABLE IF NOT EXISTS feed_prune_cursor (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      actor TEXT
+    )`,
     `CREATE TABLE IF NOT EXISTS feed_backfills (
       actor TEXT NOT NULL,
       feed TEXT NOT NULL,

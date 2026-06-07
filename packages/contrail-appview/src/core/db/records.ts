@@ -295,47 +295,173 @@ function buildFeedStatements(
 
 // --- Feed pruning ---
 
-/** Prune feed_items per (actor, collection) to the given cap.
+/** db.batch chunk size for the sweep — caps statements per transaction. */
+const SWEEP_BATCH_SIZE = 50;
+/** Actor page size for the full-table {@link pruneFeedItems} recovery loop. */
+const FEED_PRUNE_RECOVERY_BATCH = 200;
+
+/**
+ * Build the bounded per-actor cutoff DELETE for one (actor, collection).
  *
- * - If `caps` is a number: legacy behavior — global per-actor cap across all collections.
- * - If `caps` is a Map<collection-NSID, cap>: each collection is pruned independently per actor,
- *   so high-volume collections (e.g. RSVPs) can't squeeze out lower-volume ones (e.g. events).
- *   Collections not present in the map are left alone.
+ * Deletes everything older than the newest `cap` rows, driven directly by
+ * idx_feed_actor_coll_time(actor, collection, time_us DESC). Cost is
+ * O(cap + deleted) — never O(table). This is the ONLY prune shape contrail
+ * issues: an unbounded window/anti-join over the whole table can exhaust D1's
+ * per-query CPU budget and reset the shared Durable Object, which kills any
+ * concurrent read against the same SQLite instance.
+ *
+ * The cutoff is the cap-th newest row (`OFFSET cap - 1`); we delete strictly
+ * older rows. Actors with `cap` or fewer rows: the OFFSET subquery yields no
+ * row, the cutoff is NULL, and `time_us < NULL` matches nothing — a cheap
+ * index no-op. On a tie at the cutoff time_us we keep the extra rows rather
+ * than risk deleting a row we meant to keep (feed_items is a cache; a few over
+ * cap is harmless, dropping a wanted item is not).
+ */
+function actorCutoffDelete(
+  db: Database,
+  actor: string,
+  collection: string,
+  cap: number
+): Statement {
+  // Plain `?` placeholders (bound repeatedly) rather than numbered params, so
+  // the Postgres adapter's positional `?`→`$n` rewrite stays correct.
+  return db
+    .prepare(
+      `DELETE FROM feed_items
+         WHERE actor = ? AND collection = ?
+           AND time_us < (
+             SELECT time_us FROM feed_items
+             WHERE actor = ? AND collection = ?
+             ORDER BY time_us DESC LIMIT 1 OFFSET ?
+           )`
+    )
+    .bind(actor, collection, actor, collection, Math.max(0, cap - 1));
+}
+
+/** Prune a single actor's feed for one collection to `cap`. Bounded O(cap). */
+export async function pruneActorFeed(
+  db: Database,
+  actor: string,
+  collection: string,
+  cap: number
+): Promise<number> {
+  const result = await actorCutoffDelete(db, actor, collection, cap).run();
+  return (result as any)?.changes ?? 0;
+}
+
+export interface FeedSweepResult {
+  /** Rows deleted this slice. */
+  pruned: number;
+  /** Actor to resume after; null once a full pass completed (wrap to start). */
+  nextCursor: string | null;
+  /** True when this slice reached the end of the actor list. */
+  done: boolean;
+}
+
+/**
+ * One bounded slice of a rolling feed-items prune.
+ *
+ * Pages at most `actorBudget` distinct actors (resuming after `cursor`, via the
+ * feed_items (actor, uri) PK) and applies the per-(actor, collection) cutoff
+ * delete for every cap in `caps`. Every issued statement is index-backed and
+ * O(cap), so the slice's per-query CPU stays flat no matter how large
+ * feed_items grows — the property the old global window query lacked.
+ *
+ * Drive it across ticks with a persisted cursor (see getFeedPruneCursor):
+ * feed back `nextCursor` until `done`, at which point the cursor wraps to null
+ * and the next pass starts from the beginning. Because each pass visits every
+ * actor, this doubles as the recovery path for an already-bloated table.
+ */
+export async function sweepFeedItems(
+  db: Database,
+  caps: Map<string, number>,
+  cursor: string | null,
+  actorBudget: number
+): Promise<FeedSweepResult> {
+  if (caps.size === 0 || actorBudget <= 0) {
+    return { pruned: 0, nextCursor: null, done: true };
+  }
+
+  const actorsRes = cursor
+    ? await db
+        .prepare(
+          "SELECT DISTINCT actor FROM feed_items WHERE actor > ? ORDER BY actor LIMIT ?"
+        )
+        .bind(cursor, actorBudget)
+        .all<{ actor: string }>()
+    : await db
+        .prepare("SELECT DISTINCT actor FROM feed_items ORDER BY actor LIMIT ?")
+        .bind(actorBudget)
+        .all<{ actor: string }>();
+
+  const actors = (actorsRes.results ?? []).map((r) => r.actor);
+  if (actors.length === 0) {
+    // Ran off the end (cursor pointed past the last actor) — wrap next tick.
+    return { pruned: 0, nextCursor: null, done: true };
+  }
+
+  const stmts: Statement[] = [];
+  for (const actor of actors) {
+    for (const [collection, cap] of caps) {
+      stmts.push(actorCutoffDelete(db, actor, collection, cap));
+    }
+  }
+
+  let pruned = 0;
+  for (let i = 0; i < stmts.length; i += SWEEP_BATCH_SIZE) {
+    const results = await db.batch(stmts.slice(i, i + SWEEP_BATCH_SIZE));
+    for (const r of results) pruned += (r as any)?.changes ?? 0;
+  }
+
+  // A short page means we exhausted the actor list this slice.
+  const done = actors.length < actorBudget;
+  return { pruned, nextCursor: done ? null : actors[actors.length - 1], done };
+}
+
+/**
+ * Prune the ENTIRE feed_items table to the per-collection `caps` by looping the
+ * bounded {@link sweepFeedItems} until a full pass completes.
+ *
+ * Every statement is O(cap) and safe against D1's per-query CPU limit, but the
+ * statement count is O(distinct actors), so keep this OFF the hot ingest path —
+ * the cron/persistent loops issue a single bounded slice per tick instead. Use
+ * it for one-shot recovery or admin tooling.
  */
 export async function pruneFeedItems(
   db: Database,
-  caps: number | Map<string, number>
+  caps: Map<string, number>
 ): Promise<number> {
-  if (typeof caps === "number") {
-    const result = await db
-      .prepare(
-        `DELETE FROM feed_items WHERE (actor, uri) NOT IN (
-           SELECT actor, uri FROM (
-             SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
-             FROM feed_items
-           ) sub WHERE rn <= ?
-         )`
-      )
-      .bind(caps)
-      .run();
-    return (result as any)?.changes ?? 0;
-  }
   let total = 0;
-  for (const [collection, cap] of caps) {
-    const result = await db
-      .prepare(
-        `DELETE FROM feed_items WHERE collection = ? AND (actor, uri) NOT IN (
-           SELECT actor, uri FROM (
-             SELECT actor, uri, ROW_NUMBER() OVER (PARTITION BY actor ORDER BY time_us DESC) as rn
-             FROM feed_items WHERE collection = ?
-           ) sub WHERE rn <= ?
-         )`
-      )
-      .bind(collection, collection, cap)
-      .run();
-    total += (result as any)?.changes ?? 0;
+  let cursor: string | null = null;
+  for (;;) {
+    const res = await sweepFeedItems(db, caps, cursor, FEED_PRUNE_RECOVERY_BATCH);
+    total += res.pruned;
+    if (res.done) break;
+    cursor = res.nextCursor;
   }
   return total;
+}
+
+// --- Feed prune cursor ---
+
+/** Last actor swept by the rolling feed prune; null = start of a fresh pass. */
+export async function getFeedPruneCursor(db: Database): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT actor FROM feed_prune_cursor WHERE id = 1")
+    .first<{ actor: string | null }>();
+  return row?.actor ?? null;
+}
+
+export async function saveFeedPruneCursor(
+  db: Database,
+  actor: string | null
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO feed_prune_cursor (id, actor) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET actor = excluded.actor"
+    )
+    .bind(actor)
+    .run();
 }
 
 // --- Cursor ---

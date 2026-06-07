@@ -6,22 +6,28 @@ import {
   shortNameForNsid,
   buildFeedTargetCaps,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
+import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
 const BATCH_SIZE = 50;
-const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+/** Distinct actors pruned per ingest tick by the rolling feed sweep. Each
+ *  actor costs a handful of index-backed O(cap) deletes, so this bounds the
+ *  prune's per-tick CPU regardless of how large feed_items grows. */
+export const FEED_PRUNE_SWEEP_ACTORS = 500;
 
 /** Mutable state that persists across ingest cycles within the same process. */
 export interface IngestState {
   cachedKnownDids?: Set<string>;
   schemaInitialized: boolean;
-  lastFeedPruneMs: number;
+  /** Wall-clock of the last feed sweep — used only by the long-lived
+   *  persistent loop to throttle; the recycling cron isolate sweeps every
+   *  tick and relies on the persisted cursor instead. */
+  lastFeedSweepMs: number;
 }
 
 export function createIngestState(): IngestState {
-  return { schemaInitialized: false, lastFeedPruneMs: 0 };
+  return { schemaInitialized: false, lastFeedSweepMs: 0 };
 }
 
 function getLogger(config: ContrailConfig): Logger {
@@ -336,15 +342,25 @@ export async function runIngestCycle(
     }
   }
 
-  // Prune feed items hourly, per-target so high-volume targets don't
-  // squeeze out lower-volume ones.
-  if (config.feeds && Date.now() - s.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
+  // Prune feed_items to per-collection caps with a bounded, cursored sweep.
+  // Every statement is index-backed and O(cap) (see sweepFeedItems), so it can
+  // never exhaust D1's per-query CPU budget and reset the shared DO — unlike
+  // the old global window+anti-join. The cron isolate recycles each tick, so we
+  // persist the sweep cursor in the DB rather than gating on in-memory time,
+  // and run an unconditional bounded slice every tick.
+  if (config.feeds) {
     const caps = buildFeedTargetCaps(config);
     if (caps.size > 0) {
-      const pruned = await pruneFeedItems(db, caps);
-      if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+      const cursor = await getFeedPruneCursor(db);
+      const { pruned, nextCursor } = await sweepFeedItems(
+        db,
+        caps,
+        cursor,
+        FEED_PRUNE_SWEEP_ACTORS
+      );
+      await saveFeedPruneCursor(db, nextCursor);
+      if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
     }
-    s.lastFeedPruneMs = Date.now();
   }
 
   log.log(`[ingest] cycle complete. stored=${events.length}`);
