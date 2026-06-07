@@ -7,13 +7,16 @@ import {
   resolveConfig,
   shortNameForNsid,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents, pruneFeedItems } from "./db";
+import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
-import { createIngestState } from "./jetstream";
+import { createIngestState, FEED_PRUNE_SWEEP_ACTORS } from "./jetstream";
 import type { IngestState } from "./jetstream";
 
-const FEED_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+/** How often the long-lived persistent loop runs a bounded feed sweep. The
+ *  process stays resident, so this in-memory throttle is reliable here (unlike
+ *  the recycling cron isolate). */
+const FEED_SWEEP_INTERVAL_MS = 10_000;
 
 export interface PersistentIngestOptions {
   batchSize?: number;
@@ -176,13 +179,23 @@ async function streamAndFlush(
         }
       }
 
-      if (config.feeds && Date.now() - state.lastFeedPruneMs > FEED_PRUNE_INTERVAL_MS) {
+      // Bounded, cursored feed prune (see sweepFeedItems). This process is
+      // long-lived, so the in-memory interval is a reliable throttle; the
+      // cursor is still persisted so progress carries across restarts.
+      if (config.feeds && Date.now() - state.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS) {
         const caps = buildFeedTargetCaps(config);
         if (caps.size > 0) {
-          const pruned = await pruneFeedItems(db, caps);
-          if (pruned > 0) log.log(`Pruned ${pruned} old feed items`);
+          const cursor = await getFeedPruneCursor(db);
+          const { pruned, nextCursor } = await sweepFeedItems(
+            db,
+            caps,
+            cursor,
+            FEED_PRUNE_SWEEP_ACTORS
+          );
+          await saveFeedPruneCursor(db, nextCursor);
+          if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
         }
-        state.lastFeedPruneMs = Date.now();
+        state.lastFeedSweepMs = Date.now();
       }
 
       log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
