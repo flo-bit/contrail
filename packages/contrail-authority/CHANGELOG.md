@@ -1,5 +1,12 @@
 # @atmo-dev/contrail-authority
 
+## 0.10.0
+
+### Patch Changes
+
+- Updated dependencies [89aee1b]
+  - @atmo-dev/contrail-base@0.10.0
+
 ## 0.9.1
 
 ### Patch Changes

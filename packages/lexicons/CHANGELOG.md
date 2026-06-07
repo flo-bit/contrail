@@ -1,5 +1,11 @@
 # @atmo-dev/contrail-lexicons
 
+## 0.4.11
+
+### Patch Changes
+
+- @atmo-dev/contrail@0.10.0
+
 ## 0.4.10
 
 ### Patch Changes

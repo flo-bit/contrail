@@ -1,5 +1,7 @@
 # @atmo-dev/contrail-sync
 
+## 0.10.0
+
 ## 0.9.1
 
 ## 0.9.0
