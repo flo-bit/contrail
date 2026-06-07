@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-record-host",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Default record-host implementation for contrail — stores records and blobs for permissioned spaces, enforces local enrollment as the host's consent layer.",
   "type": "module",
   "sideEffects": false,
