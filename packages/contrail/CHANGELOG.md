@@ -1,5 +1,15 @@
 # @atmo-dev/contrail
 
+## 0.11.0
+
+### Patch Changes
+
+- Updated dependencies [1aeee9a]
+  - @atmo-dev/contrail-appview@0.11.0
+  - @atmo-dev/contrail-base@0.11.0
+  - @atmo-dev/contrail-authority@0.11.0
+  - @atmo-dev/contrail-record-host@0.11.0
+
 ## 0.10.0
 
 ### Patch Changes
