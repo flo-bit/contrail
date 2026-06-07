@@ -12,6 +12,16 @@ import {
 import { getSearchableFields } from "../search";
 import { buildSpacesBaseSchema } from "../spaces/schema";
 import { buildLabelsSchema } from "../labels/schema";
+import { getMeta, setMeta } from "./meta";
+
+/** Bump when contrail changes schema in a way the generated-DDL hash below
+ *  can't see on its own — chiefly the spaces / community / labels internal
+ *  table shapes (their DDL isn't all enumerated into the fingerprint). Pure
+ *  config-driven changes (collections, feeds, indexes, migrations) bust the
+ *  fingerprint automatically and don't need a bump. */
+export const CONTRAIL_SCHEMA_VERSION = 1;
+
+const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (config as ResolvedContrailConfig)._resolved ?? resolveConfig(config)._resolved;
@@ -19,6 +29,10 @@ function getResolved(config: ContrailConfig): ResolvedMaps {
 
 function buildBaseSchema(dialect: SqlDialect): string {
   return `
+CREATE TABLE IF NOT EXISTS _contrail_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS backfills (
   did TEXT NOT NULL,
   collection TEXT NOT NULL,
@@ -474,6 +488,58 @@ async function applySpacesSchema(
   await applyCountColumns(target, config, { forSpaces: true });
 }
 
+/** Stable, dependency-free 64-bit-ish hash (two seeded FNV-1a passes → hex).
+ *  Sync and Workers-safe (no crypto). Collisions only matter if two *different*
+ *  schemas hash identically AND a deploy transitions between them — negligible,
+ *  and CONTRAIL_SCHEMA_VERSION is the explicit backstop. */
+function hashStrings(parts: string[]): string {
+  const joined = parts.join(" ");
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < joined.length; i++) {
+    const c = joined.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x811c9dc5) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
+/** Fingerprint of everything `initSchema` would apply, so an unchanged schema
+ *  can skip the DDL entirely. Includes the generated core DDL (which already
+ *  reflects collections/feeds/indexes), the count-column + migration set, the
+ *  labels/spaces base DDL when enabled, feature flags, dialect, and the
+ *  version constant. */
+function schemaFingerprint(
+  config: ContrailConfig,
+  dialect: SqlDialect,
+  ddl: {
+    base: string[];
+    collections: string[];
+    indexes: string[];
+    feeds: string[];
+    fts: string[];
+  }
+): string {
+  const hasSpaces = !!(config.spaces?.authority || config.spaces?.recordHost);
+  return hashStrings([
+    `v${CONTRAIL_SCHEMA_VERSION}`,
+    dialect.bigintType,
+    config.community ? "community" : "",
+    config.spaces?.authority ? "spaces.authority" : "",
+    config.spaces?.recordHost ? "spaces.recordHost" : "",
+    config.labels ? "labels" : "",
+    ...ddl.base,
+    ...ddl.collections,
+    ...ddl.indexes,
+    ...ddl.feeds,
+    ...ddl.fts,
+    ...buildCountColumns(config),
+    ...(config.labels ? buildLabelsSchema(dialect) : []),
+    ...(hasSpaces ? buildSpacesBaseSchema(dialect) : []),
+    JSON.stringify(MIGRATIONS),
+  ]);
+}
+
 export async function initSchema(
   db: Database,
   config: ContrailConfig,
@@ -487,6 +553,21 @@ export async function initSchema(
   const indexStatements = buildDynamicIndexes(config, dialect);
   const ftsStatements = buildFtsTables(config, dialect);
   const feedStatements = buildFeedTables(config, dialect);
+
+  // Steady-state fast path: if the schema already on disk matches what we'd
+  // apply, skip every DDL statement after one cheap read. Consumers call
+  // init() once per isolate, and Workers isolates recycle constantly, so
+  // otherwise the first request to each cold isolate pays ~40 sequential DDL
+  // round-trips to the D1 storage object before any real work. The read
+  // tolerates a missing `_contrail_meta` (true first init) and returns null.
+  const fingerprint = schemaFingerprint(config, dialect, {
+    base: baseStatements,
+    collections: collectionStatements,
+    indexes: indexStatements,
+    feeds: feedStatements,
+    fts: ftsStatements,
+  });
+  if ((await getMeta(db, SCHEMA_FINGERPRINT_KEY)) === fingerprint) return;
 
   const spacesDb = options.spacesDb;
   const spacesSharesMainDb = !spacesDb || spacesDb === db;
@@ -541,4 +622,8 @@ export async function initSchema(
   // Idempotent count-column ALTERs + their indexes. Routed through
   // `applyCountColumns` so non-duplicate-column errors propagate.
   await applyCountColumns(db, config);
+
+  // Record the applied fingerprint so future cold starts skip all the DDL
+  // above after a single read. `_contrail_meta` was created by the base DDL.
+  await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
 }

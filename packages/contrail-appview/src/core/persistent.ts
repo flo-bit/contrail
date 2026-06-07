@@ -10,7 +10,7 @@ import {
 import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
-import { createIngestState, FEED_PRUNE_SWEEP_ACTORS } from "./jetstream";
+import { createIngestState, FEED_PRUNE_SWEEP_ACTORS, maybeOptimize } from "./jetstream";
 import type { IngestState } from "./jetstream";
 
 /** How often the long-lived persistent loop runs a bounded feed sweep. The
@@ -197,6 +197,9 @@ async function streamAndFlush(
         }
         state.lastFeedSweepMs = Date.now();
       }
+
+      // Opt-in planner-stat maintenance (gated + persisted cadence).
+      await maybeOptimize(db, config, log);
 
       log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
     } finally {

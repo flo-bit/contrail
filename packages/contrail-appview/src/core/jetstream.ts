@@ -5,8 +5,11 @@ import {
   getDependentNsids,
   shortNameForNsid,
   buildFeedTargetCaps,
+  optimizeEnabled,
+  optimizeIntervalMs,
+  optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
+import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
@@ -15,6 +18,29 @@ const BATCH_SIZE = 50;
  *  actor costs a handful of index-backed O(cap) deletes, so this bounds the
  *  prune's per-tick CPU regardless of how large feed_items grows. */
 export const FEED_PRUNE_SWEEP_ACTORS = 500;
+
+/** `_contrail_meta` key for the persisted optimize cadence (so recycled cron
+ *  isolates don't re-run it every tick — the in-memory-state bug we hit with
+ *  the feed prune). Shared by the persistent loop. */
+export const OPTIMIZE_LAST_MS_KEY = "optimize_last_ms";
+
+/** Run the opt-in planner-stat maintenance if enabled and its persisted
+ *  interval has elapsed. Bounded + no-op on Postgres (see optimizeDatabase).
+ *  Wrapped by callers so a pragma-unsupported environment can't break ingest. */
+export async function maybeOptimize(db: Database, config: ContrailConfig, log: Logger): Promise<void> {
+  if (!optimizeEnabled(config)) return;
+  const last = await getMetaNumber(db, OPTIMIZE_LAST_MS_KEY);
+  if (Date.now() - (last ?? 0) <= optimizeIntervalMs(config)) return;
+  // Claim the interval up front so a failing/unsupported pragma can't re-run
+  // every tick — it retries only after the next interval elapses.
+  await setMeta(db, OPTIMIZE_LAST_MS_KEY, String(Date.now()));
+  try {
+    await optimizeDatabase(db, optimizeAnalysisLimit(config));
+    log.log("[maintenance] refreshed planner stats (PRAGMA optimize)");
+  } catch (err) {
+    log.warn(`[maintenance] optimize failed: ${err}`);
+  }
+}
 
 /** Mutable state that persists across ingest cycles within the same process. */
 export interface IngestState {
@@ -362,6 +388,10 @@ export async function runIngestCycle(
       if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
     }
   }
+
+  // Opt-in planner-stat maintenance (gated + persisted cadence; no-op unless
+  // config.maintenance.optimize is set).
+  await maybeOptimize(db, config, log);
 
   log.log(`[ingest] cycle complete. stored=${events.length}`);
 }

@@ -1,6 +1,7 @@
 import type { ContrailConfig, Database, ResolvedContrailConfig } from "./core/types";
-import { resolveConfig, validateConfig } from "./core/types";
+import { resolveConfig, validateConfig, optimizeAnalysisLimit } from "./core/types";
 import { initSchema } from "./core/db/schema";
+import { optimizeDatabase } from "./core/db";
 import { queryRecords } from "./core/db/records";
 import type { QueryOptions, SortOption } from "./core/db/records";
 import { runIngestCycle, createIngestState } from "./core/jetstream";
@@ -90,6 +91,15 @@ export class Contrail {
     const spaces = spacesDb ?? this._spacesDb;
     const extraSchemas = this._community ? [this._community.applySchema] : [];
     await initSchema(main, this.config, { spacesDb: spaces, extraSchemas });
+  }
+
+  /** Refresh the SQLite query-planner statistics (bounded `PRAGMA optimize`) so
+   *  multi-predicate queries pick the selective index. No-op on Postgres. Safe
+   *  to call on a schedule; the ingest tick runs this automatically when
+   *  `config.maintenance.optimize` is enabled, so most consumers don't need to
+   *  call it directly. */
+  async optimize(db?: Database): Promise<void> {
+    await optimizeDatabase(this.getDb(db), optimizeAnalysisLimit(this.config));
   }
 
   /** Query records from a collection. */

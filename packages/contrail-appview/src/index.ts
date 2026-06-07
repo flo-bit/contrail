@@ -38,6 +38,8 @@ export * from "./core/constellation";
 // DB
 export * from "./core/db/schema";
 export * from "./core/db/records";
+export * from "./core/db/meta";
+export * from "./core/db/optimize";
 // note: ./core/db/index is implicitly covered by the wildcard if we export it
 // — but we don't, since both schema and records may export overlapping names.
 // Tests can import the specifics they need.

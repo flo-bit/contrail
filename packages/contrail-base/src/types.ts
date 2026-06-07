@@ -272,6 +272,49 @@ export interface ContrailConfig {
      *  Example: ["pds.dev.svc.cluster.local"]. */
     additionalAllowedHosts?: string[];
   };
+  /** Optional background database maintenance. All off by default. */
+  maintenance?: MaintenanceConfig;
+}
+
+export interface MaintenanceConfig {
+  /** Periodically refresh the SQLite query planner's statistics so
+   *  multi-predicate queries pick the selective index instead of the planner's
+   *  default heuristic (measured ~50x fewer rows read on a 2-predicate query).
+   *  Off by default — it's a DB write + CPU and shouldn't change behavior for
+   *  existing consumers unless enabled. `true` uses defaults; pass an object to
+   *  tune. No-op on Postgres, where autovacuum/autoanalyze handles this. */
+  optimize?: boolean | MaintenanceOptimizeConfig;
+}
+
+export interface MaintenanceOptimizeConfig {
+  /** Minimum gap between optimize runs (default: 24h). Planner stats change
+   *  slowly, so daily is plenty. */
+  intervalMs?: number;
+  /** `PRAGMA analysis_limit` — bounds the work per run so it can't exceed
+   *  D1's per-query CPU budget and reset the shared DO (default: 400). */
+  analysisLimit?: number;
+}
+
+export const DEFAULT_OPTIMIZE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_ANALYSIS_LIMIT = 400;
+
+/** Whether the opt-in planner-stat maintenance is enabled. */
+export function optimizeEnabled(config: ContrailConfig): boolean {
+  return !!config.maintenance?.optimize;
+}
+
+/** Resolved optimize interval (ms), falling back to the 24h default. */
+export function optimizeIntervalMs(config: ContrailConfig): number {
+  const o = config.maintenance?.optimize;
+  if (o && typeof o === "object" && o.intervalMs != null) return o.intervalMs;
+  return DEFAULT_OPTIMIZE_INTERVAL_MS;
+}
+
+/** Resolved `analysis_limit` for optimize, falling back to the default. */
+export function optimizeAnalysisLimit(config: ContrailConfig): number {
+  const o = config.maintenance?.optimize;
+  if (o && typeof o === "object" && o.analysisLimit != null) return o.analysisLimit;
+  return DEFAULT_ANALYSIS_LIMIT;
 }
 
 export interface ConstellationConfig {
