@@ -149,4 +149,106 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
       jetstream.abort = true;
     }
   });
+
+  it("breaks via 'caught up to present' and returns the batch + cursor when a kept event reaches the live edge", async () => {
+    // `live` is >= ingestEvents' startTimeUs (captured at the call below), so the
+    // 5s safety timeout is irrelevant — the exit must be the caught-up break.
+    const liveUs = Date.now() * 1000 + 5_000_000;
+    jetstream.script = async function* (self) {
+      self.cursor = 1_000_000;
+      yield commitEvent("did:plc:author", "community.lexicon.calendar.event", 1_000_000, "hist");
+      self.cursor = liveUs;
+      yield commitEvent("did:plc:author", "community.lexicon.calendar.event", liveUs, "live");
+      // Must NOT be reached: the caught-up break fires on `live` before this.
+      self.cursor = liveUs + 1_000;
+      yield commitEvent("did:plc:author", "community.lexicon.calendar.event", liveUs + 1_000, "after");
+      await new Promise(() => {});
+    };
+
+    const result = await withTimeout(
+      ingestEvents(discoverableConfig(), 999_999, 5_000),
+      2_000,
+      "caught-up kept",
+    );
+
+    expect(result.events.map((e) => e.rkey)).toEqual(["hist", "live"]);
+    expect(result.lastCursor).toBe(liveUs);
+  });
+
+  it("caught-up break fires even on a filtered live event, deferring a following kept event to the next cycle", async () => {
+    // Behavior change vs the pre-fix loop: filtering now uses early `return`, so
+    // the caught-up check runs after a filtered event too. A filtered event at
+    // the live edge breaks the loop BEFORE the kept event that follows it.
+    // Pre-fix (`continue`) would have skipped the check, collected `evt`, and
+    // broken on it with cursor liveUs+1000.
+    const liveUs = Date.now() * 1000 + 5_000_000;
+    const knownDids = new Set<string>(); // empty -> the follow is filtered (unknown DID)
+    jetstream.script = async function* (self) {
+      self.cursor = liveUs;
+      yield commitEvent("did:plc:stranger", "app.bsky.graph.follow", liveUs, "f1");
+      self.cursor = liveUs + 1_000;
+      yield commitEvent("did:plc:author", "community.lexicon.calendar.event", liveUs + 1_000, "evt");
+      await new Promise(() => {});
+    };
+
+    const result = await withTimeout(
+      ingestEvents(dependentConfig(), 999_999, 5_000, knownDids),
+      2_000,
+      "caught-up filtered",
+    );
+
+    expect(result.events).toHaveLength(0); // kept `evt` deferred, not collected this cycle
+    expect(result.lastCursor).toBe(liveUs); // broke at the filtered event, before `evt`
+  });
+
+  it("collects every event when they flow fast but within the safety timeout (the next()/timeout race drops nothing)", async () => {
+    const N = 25;
+    jetstream.script = async function* (self) {
+      let t = 1_000_000; // all historical, so caught-up never fires; deadline ends it
+      for (let i = 0; i < N; i++) {
+        t += 1_000;
+        self.cursor = t;
+        // A real await before each yield forces next() down the pending-promise
+        // path (not the queue fast-path), so this exercises the race directly.
+        await new Promise((r) => setTimeout(r, 1));
+        yield commitEvent("did:plc:author", "community.lexicon.calendar.event", t, "e" + i);
+      }
+      await new Promise(() => {}); // then quiet -> safety timeout returns the batch
+    };
+
+    const result = await withTimeout(
+      ingestEvents(discoverableConfig(), 999_999, 300),
+      2_000,
+      "fast flow",
+    );
+
+    expect(result.events).toHaveLength(N);
+  });
+
+  it("captures #identity events as handle updates through the ingest path", async () => {
+    jetstream.script = async function* (self) {
+      self.cursor = 1_000_000;
+      yield {
+        kind: "identity" as const,
+        time_us: 1_000_000,
+        did: "did:plc:author",
+        identity: {
+          did: "did:plc:author",
+          handle: "alice.test",
+          seq: 1,
+          time: "2026-04-01T10:00:00Z",
+        },
+      };
+      await new Promise(() => {}); // quiet -> safety timeout returns
+    };
+
+    const result = await withTimeout(
+      ingestEvents(discoverableConfig(), 999_999, 150),
+      2_000,
+      "identity",
+    );
+
+    expect(result.identityUpdates.get("did:plc:author")).toBe("alice.test");
+    expect(result.events).toHaveLength(0); // identity events are not record commits
+  });
 });
