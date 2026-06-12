@@ -228,6 +228,13 @@ export interface ContrailConfig {
   /** Realtime module configuration. When set, the service exposes ticket + SSE/WS
    *  subscribe XRPCs, and wraps the spaces adapter to publish events after writes. */
   realtime?: import("./realtime/types").RealtimeConfig;
+  /** Write-only, post-commit observers of applied records — derived indexes,
+   *  audit logs, webhook fan-outs. Each fires after every `applyEvents()` commit
+   *  on BOTH the live and backfill paths, with failures isolated so a throwing
+   *  sink never blocks ingestion. Distinct from `realtime`, which serves live
+   *  subscribers over a lossy delivery channel and is intentionally silent during
+   *  backfill. Public records only. */
+  sinks?: import("./sinks/types").Sink[];
   /** Labels module configuration. When set, contrail subscribes to the
    *  configured labelers, indexes their labels into a single `labels` table,
    *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile

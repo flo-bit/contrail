@@ -59,6 +59,9 @@ export * from "./community-integration";
 // Labels types
 export * from "./labels/types";
 
+// Sinks (write-only, post-commit observers of applied records)
+export * from "./sinks/types";
+
 // Realtime infrastructure
 export * from "./realtime/types";
 export * from "./realtime/in-memory";
