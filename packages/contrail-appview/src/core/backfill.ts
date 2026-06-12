@@ -262,6 +262,10 @@ export async function backfillUser(
         await applyEvents(db, events, config, {
           skipReplayDetection: options?.skipReplayDetection,
           skipFeedFanout: true,
+          // Realtime pubsub stays off during backfill, but `config.sinks` fire
+          // so a rebuild repopulates derived indexes. Tagged so sinks can
+          // bulk-flush differently from live ingest.
+          phase: "backfill",
         });
       }
       totalInserted += events.length;

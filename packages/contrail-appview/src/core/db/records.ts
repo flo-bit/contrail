@@ -7,6 +7,7 @@ import type {
   IngestEvent,
   RecordRow,
   RecordSource,
+  RecordEvent,
 } from "../types";
 import {
   getNestedValue,
@@ -563,6 +564,9 @@ export async function applyEvents(
      *  (see `realtime/publishing-adapter.ts`); public topics carry public
      *  records only, which is exactly the scope of this function. */
     pubsub?: import("../realtime/types").PubSub;
+    /** Ingest phase forwarded to `config.sinks`. `"live"` for jetstream /
+     *  persistent ingest (default), `"backfill"` for replay / rebuild. */
+    phase?: "live" | "backfill";
   }
 ): Promise<void> {
   if (events.length === 0) return;
@@ -680,6 +684,37 @@ export async function applyEvents(
         };
         await pubsub.publish({ topic: `collection:${e.collection}`, kind: "record.created", payload, ts });
         await pubsub.publish({ topic: `actor:${e.did}`, kind: "record.created", payload, ts });
+      }
+    }
+  }
+
+  // Fan out to write-only sinks (derived indexes, audit logs, webhooks).
+  // Unlike the realtime pubsub above this fires on BOTH the live and backfill
+  // paths (driven by `options.phase`), carries one deduplicated event per
+  // record, and isolates failures so a throwing sink never blocks ingestion.
+  const sinks = config?.sinks;
+  if (sinks && sinks.length > 0) {
+    const records: RecordEvent[] = events.map((e) =>
+      e.operation === "delete"
+        ? { kind: "deleted", uri: e.uri, did: e.did, collection: e.collection, rkey: e.rkey }
+        : {
+            kind: "created",
+            uri: e.uri,
+            did: e.did,
+            collection: e.collection,
+            rkey: e.rkey,
+            cid: e.cid,
+            record: e.record ? safeParseJson(e.record) : {},
+            time_us: e.time_us,
+          }
+    );
+    const ctx = { phase: options?.phase ?? "live" } as const;
+    const logger = config?.logger ?? console;
+    for (const sink of sinks) {
+      try {
+        await sink.onRecords(records, ctx);
+      } catch (err) {
+        logger.error("[sink] onRecords failed", err);
       }
     }
   }
