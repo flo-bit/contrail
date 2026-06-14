@@ -199,16 +199,18 @@ export const DEFAULT_JETSTREAMS = [
  * Shape a configured jetstream list for `@atcute/jetstream`'s `url` option.
  *
  * @atcute distinguishes a string url (one fixed instance) from an array url (a
- * pool of interchangeable instances). For an array it seeds `#lastUsedUrl=''`
- * and rolls the cursor back 10s on the first connect, to absorb clock skew
- * between whichever pooled instances a resumed cursor may have crossed. A string
- * has no such rollback — one instance, no skew.
+ * pool it picks from at random each connect). For an array it seeds
+ * `#lastUsedUrl=''` and rolls the cursor back 10s on the first connect, to absorb
+ * clock skew between whichever pooled instances a resumed cursor may have
+ * crossed. A string takes no rollback: a single instance emits a monotonic
+ * cursor, so resuming at the saved value on that same instance can't skip its own
+ * events — there is no second instance to be skewed against.
  *
  * Contrail's cron ingestion rebuilds the subscription every cycle, so for a
  * single-instance config that "first-connect" rollback fires *every* cycle and
  * redundantly re-ingests the last 10s. Collapsing a one-element pool to a string
- * opts out of a safety margin that single-instance topology never needs; a real
- * pool (2+) is left as an array so the cross-instance rollback is preserved.
+ * matches @atcute's own single-instance semantics and drops that dead margin; a
+ * real pool (2+) stays an array so the cross-instance rollback is preserved.
  */
 export function jetstreamUrlOption(jetstreams: string[]): string | string[] {
   return jetstreams.length === 1 ? jetstreams[0] : jetstreams;
