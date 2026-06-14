@@ -3,6 +3,7 @@ import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
 import {
   getCollectionNsids,
   getDependentNsids,
+  jetstreamUrlOption,
   shortNameForNsid,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
@@ -210,7 +211,10 @@ export async function ingestEvents(
   const identityUpdates = new Map<string, string>();
 
   const subscription = new JetstreamSubscription({
-    url: urls,
+    // A single-instance config is handed over as a string so @atcute skips its
+    // array-only first-connect cursor rollback (see jetstreamUrlOption). On the
+    // cron model that rollback would otherwise re-ingest 10s every cycle.
+    url: jetstreamUrlOption(urls),
     wantedCollections: collections,
     ...(cursor !== null ? { cursor } : {}),
     onConnectionOpen() {
