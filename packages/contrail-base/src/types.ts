@@ -747,6 +747,22 @@ export function shortNameForNsid(
   return undefined;
 }
 
+/** The config key a collection's rows are stored under: its short alias when
+ *  one exists, otherwise the NSID itself when the config is keyed directly by
+ *  NSID. Returns null when the collection is unknown. Use this wherever you need
+ *  the storage key (records insert, FTS, existing-record lookup). Unlike
+ *  {@link shortNameForNsid}, which only reports an alias and so returns
+ *  undefined for NSID-keyed configs. */
+export function resolveCollectionKey(
+  config: ContrailConfig,
+  nsid: string
+): string | null {
+  return (
+    shortNameForNsid(config, nsid) ??
+    (config.collections[nsid] ? nsid : null)
+  );
+}
+
 /** Full NSID for a collection short name. */
 export function nsidForShortName(
   config: ContrailConfig,

@@ -18,6 +18,7 @@ import {
   recordsTableName,
   spacesRecordsTableName,
   shortNameForNsid,
+  resolveCollectionKey,
   nsidForShortName,
   normalizeFeedTarget,
   feedTargetMaxItems,
@@ -166,7 +167,7 @@ function buildFtsStatements(
   // PostgreSQL: tsvector generated column is auto-maintained, no manual FTS sync
   if (getDialect(db).ftsStrategy === "generated-column") return [];
 
-  const short = shortNameForNsid(config, event.collection);
+  const short = resolveCollectionKey(config, event.collection);
   if (!short) return [];
   const colConfig = config.collections[short];
   if (!colConfig) return [];
@@ -513,7 +514,7 @@ export async function lookupExistingRecords(
   // Group by short name (config lookup); skip events for collections not in our config.
   const byShort = new Map<string, string[]>();
   for (const e of events) {
-    const short = config ? shortNameForNsid(config, e.collection) : e.collection;
+    const short = config ? resolveCollectionKey(config, e.collection) : e.collection;
     if (!short) continue;
     const uris = byShort.get(short) ?? [];
     uris.push(e.uri);
@@ -599,11 +600,9 @@ export async function applyEvents(
   const countTargets = new Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>();
 
   for (const e of events) {
-    // Event's collection is an NSID. Look up the short name from config.
-    // If no config or not found, treat collection string as-is (for tests that pre-populate tables).
-    const short = config
-      ? shortNameForNsid(config, e.collection) ?? (config.collections[e.collection] ? e.collection : null)
-      : e.collection;
+    // Event's collection is an NSID. Resolve its storage key from config.
+    // If no config, treat collection string as-is (for tests that pre-populate tables).
+    const short = config ? resolveCollectionKey(config, e.collection) : e.collection;
     if (!short) {
       (config?.logger ?? console).warn(
         `[ingest] drop (unknown collection in applyEvents): ${e.operation} ${e.uri} collection=${e.collection}`
