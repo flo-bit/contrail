@@ -233,6 +233,13 @@ export interface ContrailConfig {
   collections: Record<string, CollectionConfig>;
   profiles?: (string | ProfileConfig)[];
   relays?: string[];
+  /** Jetstream endpoints to ingest from (defaults to {@link DEFAULT_JETSTREAMS}).
+   *  Prefer a single endpoint: one instance has no clock skew, so `@atcute` takes
+   *  no cursor rollback (see {@link jetstreamUrlOption}) — important for the cron
+   *  model, which rebuilds the subscription every cycle. Use 2+ only for failover
+   *  across interchangeable endpoints, and ideally only with a persistent
+   *  connection (`runPersistent`), where the per-switch 10s skew rollback fires
+   *  about once rather than every cycle. */
   jetstreams?: string[];
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
