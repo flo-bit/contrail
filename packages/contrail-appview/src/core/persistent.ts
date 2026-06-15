@@ -4,13 +4,19 @@ import {
   getCollectionNsids,
   getDependentNsids,
   buildFeedTargetCaps,
+  getFeedMutatingNsids,
   resolveConfig,
   shortNameForNsid,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor } from "./db";
+import { initSchema, getLastCursor, saveCursor, applyEvents } from "./db";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
-import { createIngestState, FEED_PRUNE_SWEEP_ACTORS, maybeOptimize } from "./jetstream";
+import {
+  createIngestState,
+  runFeedPruneSlice,
+  FEED_PRUNE_RECOVERY_INTERVAL_MS,
+  maybeOptimize,
+} from "./jetstream";
 import type { IngestState } from "./jetstream";
 
 /** How often the long-lived persistent loop runs a bounded feed sweep. The
@@ -147,61 +153,87 @@ async function streamAndFlush(
   let flushing = false;
 
   const flush = async () => {
-    if (buffer.length === 0 || flushing) return;
+    if (flushing) return;
     flushing = true;
-    const batch = buffer.splice(0);
 
     try {
-      await applyEvents(db, batch, config, { pubsub: opts.pubsub });
+      if (buffer.length > 0) {
+        const batch = buffer.splice(0);
+        await applyEvents(db, batch, config, { pubsub: opts.pubsub });
 
-      const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
-      await saveCursor(db, lastTimeUs);
-
-      const uniqueDids = [...new Set(batch.map((e) => e.did))];
-      if (uniqueDids.length > 0) {
-        try {
-          await refreshStaleIdentities(db, uniqueDids, config);
-        } catch (err) {
-          log.warn(`Identity refresh failed: ${err}`);
+        // A feed can only go over cap right after a feed-mutating record is
+        // applied, so remember whether this batch had one. The sweep below uses
+        // it to prune promptly (see the cron path in jetstream.ts).
+        if (config.feeds) {
+          const feedMutatingNsids = getFeedMutatingNsids(config);
+          if (batch.some((e) => feedMutatingNsids.has(e.collection))) {
+            state.feedDirty = true;
+          }
         }
+
+        const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
+        await saveCursor(db, lastTimeUs);
+
+        const uniqueDids = [...new Set(batch.map((e) => e.did))];
+        if (uniqueDids.length > 0) {
+          try {
+            await refreshStaleIdentities(db, uniqueDids, config);
+          } catch (err) {
+            log.warn(`Identity refresh failed: ${err}`);
+          }
+        }
+
+        // Drain newly-known DIDs and ask Constellation for back-edges.
+        if (config.feeds && opts.newlyKnownDids && opts.newlyKnownDids.size > 0) {
+          const drained = [...opts.newlyKnownDids];
+          opts.newlyKnownDids.clear();
+          for (const subj of drained) {
+            try {
+              await backfillFollowersFromConstellation(db, config, subj);
+            } catch (err) {
+              log.warn(`[constellation] subject=${subj} failed: ${err}`);
+            }
+          }
+        }
+
+        // Opt-in planner-stat maintenance (gated + persisted cadence).
+        await maybeOptimize(db, config, log);
+
+        log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
       }
 
-      // Drain newly-known DIDs and ask Constellation for back-edges.
-      if (config.feeds && opts.newlyKnownDids && opts.newlyKnownDids.size > 0) {
-        const drained = [...opts.newlyKnownDids];
-        opts.newlyKnownDids.clear();
-        for (const subj of drained) {
-          try {
-            await backfillFollowersFromConstellation(db, config, subj);
-          } catch (err) {
-            log.warn(`[constellation] subject=${subj} failed: ${err}`);
+      // Bounded, cursored feed prune (see sweepFeedItems / runFeedPruneSlice).
+      // Runs whether or not this tick had events: ingest-dirty windows prune
+      // promptly (throttled by the sweep interval), and the recovery interval
+      // still fires on a fully idle stream — the timer drives this flush, and
+      // the old "return early when the buffer is empty" path starved recovery,
+      // so over-cap rows from a lowered cap or a bulk import never drained while
+      // the stream was quiet. The recovery clock tracks the last *completed*
+      // full pass (not the last slice), so an overdue pass keeps slicing each
+      // tick until the cursor wraps rather than advancing one slice per interval.
+      if (config.feeds) {
+        const caps = buildFeedTargetCaps(config);
+        if (caps.size > 0) {
+          const now = Date.now();
+          const dirtyDue =
+            state.feedDirty && now - state.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS;
+          const recoveryDue =
+            now - state.lastFullFeedPassMs > FEED_PRUNE_RECOVERY_INTERVAL_MS;
+          if (dirtyDue || recoveryDue) {
+            const { pruned, done } = await runFeedPruneSlice(db, config);
+            if (done) state.lastFullFeedPassMs = now;
+            if (dirtyDue) {
+              state.feedDirty = false;
+              state.lastFeedSweepMs = now;
+            }
+            if (pruned > 0) {
+              log.log(
+                `Pruned ${pruned} feed items (sweep, reason=${dirtyDue ? "ingest" : "recovery"})`
+              );
+            }
           }
         }
       }
-
-      // Bounded, cursored feed prune (see sweepFeedItems). This process is
-      // long-lived, so the in-memory interval is a reliable throttle; the
-      // cursor is still persisted so progress carries across restarts.
-      if (config.feeds && Date.now() - state.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS) {
-        const caps = buildFeedTargetCaps(config);
-        if (caps.size > 0) {
-          const cursor = await getFeedPruneCursor(db);
-          const { pruned, nextCursor } = await sweepFeedItems(
-            db,
-            caps,
-            cursor,
-            FEED_PRUNE_SWEEP_ACTORS
-          );
-          await saveFeedPruneCursor(db, nextCursor);
-          if (pruned > 0) log.log(`Pruned ${pruned} feed items (sweep)`);
-        }
-        state.lastFeedSweepMs = Date.now();
-      }
-
-      // Opt-in planner-stat maintenance (gated + persisted cadence).
-      await maybeOptimize(db, config, log);
-
-      log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
     } finally {
       flushing = false;
     }

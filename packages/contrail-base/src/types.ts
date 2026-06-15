@@ -482,6 +482,27 @@ export function getFeedFollowShortNames(config: ContrailConfig): string[] {
 /** Alias for getFeedFollowShortNames. */
 export const getFeedFollowCollections = getFeedFollowShortNames;
 
+/**
+ * NSIDs whose ingest can mutate `feed_items`: feed *target* collections (a
+ * create/update fans out to followers, a delete tears the item down) and feed
+ * *follow* collections (a follow backfills the follower's feed, an unfollow
+ * removes it). These are the only records that can push a feed over its cap, so
+ * a tick that ingested none of them cannot have created prune work — callers use
+ * this to skip the feed sweep on idle ticks. Returns an empty set when no feeds
+ * are configured. */
+export function getFeedMutatingNsids(config: ContrailConfig): Set<string> {
+  const nsids = new Set<string>();
+  if (!config.feeds) return nsids;
+  for (const targetNsid of buildFeedTargetCaps(config).keys()) {
+    nsids.add(targetNsid);
+  }
+  for (const short of getFeedFollowShortNames(config)) {
+    const nsid = nsidForShortName(config, short);
+    if (nsid) nsids.add(nsid);
+  }
+  return nsids;
+}
+
 // Record types
 
 export interface RecordRow {

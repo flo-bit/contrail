@@ -10,6 +10,7 @@ import {
   getFeedPruneCursor,
   saveFeedPruneCursor,
 } from "../src/core/db/records";
+import { runGatedFeedPrune } from "../src/core/jetstream";
 
 const EVENT = "community.lexicon.calendar.event";
 const RSVP = "community.lexicon.calendar.rsvp";
@@ -185,5 +186,32 @@ describe("pruneFeedItems (full recovery loop)", () => {
       .prepare("SELECT COUNT(*) AS c FROM feed_items")
       .first<{ c: number }>();
     expect(Number(remaining?.c)).toBe(25 * (2 + 3));
+  });
+});
+
+describe("runGatedFeedPrune (recovery gate)", () => {
+  it("sweeps when a full pass is overdue, even with feedTouched=false", async () => {
+    // The persisted recovery clock is unset (0), so a pass is overdue. This is
+    // the path a no-op notify call or an idle stream relies on to make progress.
+    await seed("alice", EVENT, 5); // cap 2
+    await runGatedFeedPrune(db, CONFIG, false);
+    expect(await rows("alice", EVENT)).toHaveLength(2);
+  });
+
+  it("is a no-op when not feed-touched and recovery is not yet due", async () => {
+    // First call completes a pass and stamps the recovery clock to ~now.
+    await runGatedFeedPrune(db, CONFIG, false);
+    // A fresh over-cap actor is left alone: recovery isn't due and nothing was
+    // ingested this call.
+    await seed("bob", EVENT, 5);
+    await runGatedFeedPrune(db, CONFIG, false);
+    expect(await rows("bob", EVENT)).toHaveLength(5);
+  });
+
+  it("sweeps on feedTouched even when recovery is not due", async () => {
+    await runGatedFeedPrune(db, CONFIG, false); // stamp the recovery clock
+    await seed("bob", EVENT, 5);
+    await runGatedFeedPrune(db, CONFIG, true);
+    expect(await rows("bob", EVENT)).toHaveLength(2);
   });
 });

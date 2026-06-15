@@ -87,7 +87,22 @@ Three moments:
 
 ## Pruning
 
-The persistent worker (or cron run) trims `feed_items` per actor down to the largest configured `maxItems` across feeds, keeping newest by `time_us`. There is no per-feed prune — one global cap.
+Feeds are capped: each actor keeps at most `maxItems` rows per target collection (default 200, newest first). Older rows past the cap are deleted by a background cleanup that piggybacks on ingestion — there is no separate prune job.
+
+A few terms used below:
+
+- **Tick** — one cycle of the ingest loop. In cron mode the worker wakes on a schedule (e.g. once a minute) and each wake-up is a tick; in the persistent loop it's each batch flush.
+- **Sweep** — the cleanup that walks `feed_items` actor by actor and deletes whatever is over an actor's cap.
+- **Slice** — a sweep doesn't scan the whole table at once. Each tick it handles a chunk of up to `FEED_PRUNE_SWEEP_ACTORS` actors (default 500). That chunk is one slice.
+- **Cursor / full pass** — a bookmark for the last actor a slice stopped on, so the next slice resumes after it instead of restarting. When the cursor reaches the last actor it *wraps* back to the start; one start-to-end trip is a *full pass*.
+
+**When the sweep runs.** A feed can only go over its cap right after a feed-mutating record (a target fan-out or a follow backfill) is applied, so the sweep is skipped entirely on ticks that ingested nothing feed-relevant. It runs when the current tick — a cron run, a persistent-loop flush, or a `notifyOfUpdate` call — applied a feed-mutating record. As a safety net it also runs on a recovery interval (`FEED_PRUNE_RECOVERY_INTERVAL_MS`, 6h), so rows that went over cap without a fresh ingest (a lowered cap, a bulk import) still get cleaned up — including on a stream that is otherwise idle.
+
+Doing one slice per tick keeps each tick's cost flat no matter how big the table grows. The recovery timer measures from the last *completed full pass* (not the last slice): a fresh pass becomes due one recovery interval after the previous one finished, then advances a slice per tick until the cursor wraps. So a full pass *completes* roughly every `recovery interval + lap time`, where lap time is `ceil(actors / FEED_PRUNE_SWEEP_ACTORS)` ticks — e.g. with 100k actors and one-minute cron ticks, ~6h + ~3h20m. That keeps the whole table draining on a bounded cadence; it is not a hard "fully clean every 6h" guarantee. Raise `FEED_PRUNE_SWEEP_ACTORS` if you need the lap time shorter at large actor counts.
+
+**Fan-out isn't cleaned up instantly.** A slice cleans up whatever actors the cursor lands on next — not specifically the actors whose feeds just changed. So when a popular author posts and fans out to many followers: a follower the cursor *hasn't reached yet* this pass is trimmed later in the same pass (soon), but a follower the cursor has *already passed* waits for the next pass — and on a quiet stream the next pass only starts on the recovery interval. So the worst case for an over-cap follower is roughly one recovery interval (`FEED_PRUNE_RECOVERY_INTERVAL_MS`, 6h), not the next tick.
+
+This is on purpose: an author can have unboundedly many followers, and trimming every one on the spot would either overrun the per-tick request budget (one delete per follower) or overrun D1's per-query CPU limit (one big delete over all of them, which can reset the shared Durable Object). `feed_items` is just a cache, so a follower sitting a little over cap for up to an interval does no harm. Deployments with fewer than `FEED_PRUNE_SWEEP_ACTORS` (500) distinct feed actors clean the whole table on every triggered tick, so they never see this lag at all. Pruning the touched actors directly (instead of the rolling cursor) would remove the lag but trade the bounded per-tick cost for cost proportional to fan-out size; see the issue tracker for that trade-off.
 
 ## Deletes
 

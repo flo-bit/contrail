@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
-import { shortNameForNsid } from "../types";
+import { shortNameForNsid, getFeedMutatingNsids } from "../types";
 import { applyEvents, lookupExistingRecords } from "../db/records";
+import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
@@ -134,6 +135,19 @@ export async function processNotifyUris(
   if (events.length > 0) {
     // Pass pre-fetched existing records so applyEvents skips re-querying
     await applyEvents(db, events, config, { existing });
+  }
+
+  // applyEvents fans these records into feed_items exactly like the cron and
+  // persistent ingest paths, so prune here too — otherwise a notify-only
+  // deployment (no jetstream loop) would never sweep. Run the recovery-aware
+  // gate on every call, not only when records changed: a notify-only deployment
+  // that receives no-op notifications (a same-CID re-notify produces no events)
+  // must still be able to advance an overdue recovery pass. `feedTouched` is
+  // true only when this call actually applied a feed-mutating record.
+  if (config.feeds) {
+    const feedMutatingNsids = getFeedMutatingNsids(config);
+    const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
+    await runGatedFeedPrune(db, config, feedTouched);
   }
 
   return {

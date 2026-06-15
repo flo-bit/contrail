@@ -412,4 +412,50 @@ describe("runPersistent", () => {
       "newhandle.test"
     );
   });
+
+  it("runs the recovery feed sweep on a fully idle stream", async () => {
+    // Regression: the feed sweep used to sit behind flush()'s early return when
+    // the buffer was empty, so over-cap rows (a lowered cap, a bulk import)
+    // never drained while Jetstream was quiet. The recovery clock starts at 0,
+    // so the recovery sweep is due on the first idle timer flush.
+    const EVENT = "community.lexicon.calendar.event";
+    const feedConfig = resolveConfig({
+      namespace: "com.example",
+      collections: { event: { collection: EVENT } },
+      feeds: { main: { targets: [{ collection: "event", maxItems: 2 }] } },
+    });
+    const feedDb = createTestDb();
+    await initSchema(feedDb, feedConfig);
+
+    // Seed five rows for one actor against a cap of two — over cap, predating
+    // any ingest. No events will ever flow on this run.
+    for (let i = 0; i < 5; i++) {
+      await feedDb
+        .prepare(
+          "INSERT INTO feed_items (actor, uri, collection, time_us) VALUES (?, ?, ?, ?)"
+        )
+        .bind("did:plc:alice", `at://did:plc:alice/${EVENT}/${i}`, EVENT, 1000 + i)
+        .run();
+    }
+
+    const controller = new AbortController();
+    const promise = runPersistent(feedDb, feedConfig, {
+      batchSize: 100,
+      flushIntervalMs: 50,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription([]) as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 300));
+    controller.abort();
+    await promise;
+
+    const res = await feedDb
+      .prepare(
+        "SELECT COUNT(*) AS n FROM feed_items WHERE actor = ? AND collection = ?"
+      )
+      .bind("did:plc:alice", EVENT)
+      .first<{ n: number }>();
+    expect(Number(res?.n)).toBe(2);
+  });
 });
