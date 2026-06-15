@@ -5,6 +5,7 @@ import {
   getDependentNsids,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
+  jetstreamUrlOption,
   resolveConfig,
   shortNameForNsid,
 } from "./types";
@@ -138,7 +139,9 @@ async function streamAndFlush(
   const subscription = opts.createSubscription
     ? opts.createSubscription(cursor)
     : new (await import("@atcute/jetstream")).JetstreamSubscription({
-        url: config.jetstreams ?? [],
+        // Single-instance config → string, so @atcute skips its array-only
+        // first-connect cursor rollback (see jetstreamUrlOption).
+        url: jetstreamUrlOption(config.jetstreams ?? []),
         wantedCollections: collections,
         ...(cursor !== null ? { cursor } : {}),
         onConnectionOpen() { log.log("Connected to Jetstream"); },

@@ -3,6 +3,7 @@ import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
 import {
   getCollectionNsids,
   getDependentNsids,
+  jetstreamUrlOption,
   shortNameForNsid,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
@@ -210,7 +211,10 @@ export async function ingestEvents(
   const identityUpdates = new Map<string, string>();
 
   const subscription = new JetstreamSubscription({
-    url: urls,
+    // A single-instance config is handed over as a string so @atcute skips its
+    // array-only first-connect cursor rollback (see jetstreamUrlOption). On the
+    // cron model that rollback would otherwise re-ingest 10s every cycle.
+    url: jetstreamUrlOption(urls),
     wantedCollections: collections,
     ...(cursor !== null ? { cursor } : {}),
     onConnectionOpen() {
@@ -390,9 +394,19 @@ export async function ingestEvents(
   }
 
   if (connectCount > 1) {
-    log.warn(
-      `[ingest] RECONNECTED ${connectCount} times during cycle — each reconnect picks a URL at random and rolls cursor back 10s`
-    );
+    if (urls.length > 1) {
+      // Multi-instance pool: each reconnect picks a URL at random, and @atcute
+      // rolls the cursor back up to 10s on a fresh instance to absorb clock skew.
+      log.warn(
+        `[ingest] RECONNECTED ${connectCount} times during cycle across a ${urls.length}-instance pool — each reconnect picks a URL at random and may roll the cursor back up to 10s (rolled_back=${rolledBackUs}us this cycle)`
+      );
+    } else {
+      // Single fixed instance (see jetstreamUrlOption): reconnects resume on the
+      // same instance from the saved cursor, so there is no rollback.
+      log.log(
+        `[ingest] reconnected ${connectCount} times during cycle to the single fixed instance — no cursor rollback (rolled_back=${rolledBackUs}us)`
+      );
+    }
   }
 
   return { events: collected, lastCursor, newlyKnownDids: [...newlyKnownDids], identityUpdates };

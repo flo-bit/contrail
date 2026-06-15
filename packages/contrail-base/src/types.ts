@@ -195,6 +195,27 @@ export const DEFAULT_JETSTREAMS = [
   "wss://jetstream1.us-east.bsky.network",
 ];
 
+/**
+ * Shape a configured jetstream list for `@atcute/jetstream`'s `url` option.
+ *
+ * @atcute distinguishes a string url (one fixed instance) from an array url (a
+ * pool it picks from at random each connect). For an array it seeds
+ * `#lastUsedUrl=''` and rolls the cursor back 10s on the first connect, to absorb
+ * clock skew between whichever pooled instances a resumed cursor may have
+ * crossed. A string takes no rollback: a single instance emits a monotonic
+ * cursor, so resuming at the saved value on that same instance can't skip its own
+ * events — there is no second instance to be skewed against.
+ *
+ * Contrail's cron ingestion rebuilds the subscription every cycle, so for a
+ * single-instance config that "first-connect" rollback fires *every* cycle and
+ * redundantly re-ingests the last 10s. Collapsing a one-element pool to a string
+ * matches @atcute's own single-instance semantics and drops that dead margin; a
+ * real pool (2+) stays an array so the cross-instance rollback is preserved.
+ */
+export function jetstreamUrlOption(jetstreams: string[]): string | string[] {
+  return jetstreams.length === 1 ? jetstreams[0] : jetstreams;
+}
+
 export const DEFAULT_RELAYS = [
   "https://relay1.us-east.bsky.network"
 ];
@@ -212,6 +233,13 @@ export interface ContrailConfig {
   collections: Record<string, CollectionConfig>;
   profiles?: (string | ProfileConfig)[];
   relays?: string[];
+  /** Jetstream endpoints to ingest from (defaults to {@link DEFAULT_JETSTREAMS}).
+   *  Prefer a single endpoint: one instance has no clock skew, so `@atcute` takes
+   *  no cursor rollback (see {@link jetstreamUrlOption}) — important for the cron
+   *  model, which rebuilds the subscription every cycle. Use 2+ only for failover
+   *  across interchangeable endpoints, and ideally only with a persistent
+   *  connection (`runPersistent`), where the per-switch 10s skew rollback fires
+   *  about once rather than every cycle. */
   jetstreams?: string[];
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
