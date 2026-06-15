@@ -106,7 +106,7 @@ export async function refresh(
   // included because `resolveConfig` adds them to `config.collections`.
   const nsids =
     options?.nsids ??
-    Object.values(config.collections).map((c) => c.collection);
+    Object.entries(config.collections).map(([short, c]) => c.collection ?? short);
 
   const byCollection: Record<string, CollectionStats> = {};
   for (const nsid of nsids) byCollection[nsid] = emptyStats();

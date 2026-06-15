@@ -432,7 +432,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     for (const targetCol of allTargets) {
       const targetConfig = config.collections[targetCol];
       if (!targetConfig) continue;
-      const targetNsid = targetConfig.collection;
+      const targetNsid = targetConfig.collection ?? targetCol;
 
       const merged = targetConfig.queryable ?? {};
 
@@ -503,7 +503,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     for (const targetCol of allTargets) {
       const targetConfig = config.collections[targetCol];
       if (!targetConfig) continue;
-      const targetNsid = targetConfig.collection;
+      const targetNsid = targetConfig.collection ?? targetCol;
 
       const collectionRef = getCollectionLexiconRef(targetNsid);
 
@@ -579,7 +579,7 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
   const resolvedRelationsMap: Record<string, Record<string, { collection: string; groupBy: string; groups: Record<string, string> }>> = {};
 
   for (const [shortName, colConfig] of Object.entries(config.collections)) {
-    const collection = colConfig.collection; // full NSID for lexicon refs
+    const collection = colConfig.collection ?? shortName; // full NSID for lexicon refs
     const collectionRef = getCollectionLexiconRef(collection);
 
     const merged = colConfig.queryable ?? {};
@@ -969,8 +969,8 @@ export function generateLexicons(options: GenerateOptions): Record<string, objec
     // Cross-namespace collections (e.g. `app.bsky.*`) can't appear here —
     // permission-set lexicons can only reference NSIDs in their own namespace —
     // so callers must declare those as separate scopes in the OAuth client config.
-    const autoCollections = Object.values(config.collections)
-      .map((c) => c.collection)
+    const autoCollections = Object.entries(config.collections)
+      .map(([short, c]) => c.collection ?? short)
       .filter((nsid) => nsid === ns || nsid.startsWith(nsPrefix))
       .sort();
 

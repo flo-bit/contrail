@@ -111,8 +111,9 @@ export function buildFeedTargetCaps(
       const colCfg = config.collections[target.collection];
       if (!colCfg) continue;
       const cap = feedTargetMaxItems(feed, target);
-      const existing = caps.get(colCfg.collection) ?? 0;
-      if (cap > existing) caps.set(colCfg.collection, cap);
+      const nsid = colCfg.collection ?? target.collection;
+      const existing = caps.get(nsid) ?? 0;
+      if (cap > existing) caps.set(nsid, cap);
     }
   }
   return caps;
@@ -125,8 +126,10 @@ export const DEFAULT_COLLECTION_METHODS: CollectionMethod[] = [
 ];
 
 export interface CollectionConfig {
-  /** Full NSID of the record type this collection indexes. */
-  collection: string;
+  /** Full NSID of the record type this collection indexes. May be omitted when
+   *  the collection's map key is itself the full NSID (an "NSID-keyed" config);
+   *  `resolveConfig` normalizes the omitted value to that key. */
+  collection?: string;
   /** Include this collection in Jetstream ingest / discovery (default true).
    *  Set false for dependent collections (auto-fetched on demand). */
   discover?: boolean;
@@ -412,14 +415,15 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
   );
   const collections: Record<string, CollectionConfig> = {};
 
-  // Default `discover: false` for any collection whose NSID lives under the
+  // Normalize an omitted `collection` (NSID-keyed config) to the map key, then
+  // default `discover: false` for any collection whose NSID lives under the
   // `app.bsky.*` namespace, since these are external/network-wide records that
   // would otherwise blow up storage if left discoverable.
-  for (const [short, c] of Object.entries(config.collections)) {
+  for (const [short, rawC] of Object.entries(config.collections)) {
+    const c =
+      rawC.collection === undefined ? { ...rawC, collection: short } : rawC;
     collections[short] =
-      c.discover === undefined &&
-      typeof c.collection === "string" &&
-      c.collection.startsWith("app.bsky.")
+      c.discover === undefined && c.collection!.startsWith("app.bsky.")
         ? { ...c, discover: false }
         : c;
   }
@@ -473,7 +477,7 @@ function _resolveQueryableMaps(config: ContrailConfig): ResolvedMaps {
   const nsidToShort: Record<string, string> = {};
 
   for (const [short, colConfig] of Object.entries(config.collections)) {
-    nsidToShort[colConfig.collection] = short;
+    nsidToShort[colConfig.collection ?? short] = short;
 
     if (colConfig.queryable) {
       queryable[short] = colConfig.queryable;
@@ -583,15 +587,15 @@ function validateShortName(short: string): void {
 export function validateConfig(config: ContrailConfig): void {
   const shortNames = new Set<string>();
   for (const [short, colConfig] of Object.entries(config.collections)) {
-    validateShortName(short);
+    // NSID-keyed collections use the map key as the NSID (no short alias), so
+    // the key legitimately contains dots and must skip short-name validation.
+    const nsidKeyed =
+      colConfig.collection === undefined || colConfig.collection === short;
+    if (!nsidKeyed) validateShortName(short);
     if (shortNames.has(short)) {
       throw new Error(`Duplicate collection short name: ${short}`);
     }
     shortNames.add(short);
-
-    if (!colConfig.collection) {
-      throw new Error(`Collection "${short}" is missing required 'collection' field (NSID)`);
-    }
 
     for (const field of Object.keys(colConfig.queryable ?? {})) {
       validateFieldName(field);
@@ -700,9 +704,10 @@ export function getCollectionShortNames(config: ContrailConfig): string[] {
 /** Alias: collection short names (same as getCollectionShortNames). */
 export const getCollectionNames = getCollectionShortNames;
 
-/** All indexed record NSIDs (what Jetstream filters on). */
+/** All indexed record NSIDs (what Jetstream filters on). For NSID-keyed
+ *  collections (omitted `collection`), the map key is the NSID. */
 export function getCollectionNsids(config: ContrailConfig): string[] {
-  return Object.values(config.collections).map((c) => c.collection);
+  return Object.entries(config.collections).map(([short, c]) => c.collection ?? short);
 }
 
 export function getDependentShortNames(config: ContrailConfig): string[] {
@@ -723,15 +728,15 @@ export const getDiscoverableCollections = getDiscoverableShortNames;
 
 /** Short names of collections the user declared with `discover !== false`, mapped to NSIDs. */
 export function getDiscoverableNsids(config: ContrailConfig): string[] {
-  return Object.values(config.collections)
-    .filter((c) => c.discover !== false)
-    .map((c) => c.collection);
+  return Object.entries(config.collections)
+    .filter(([, c]) => c.discover !== false)
+    .map(([short, c]) => c.collection ?? short);
 }
 
 export function getDependentNsids(config: ContrailConfig): string[] {
-  return Object.values(config.collections)
-    .filter((c) => c.discover === false)
-    .map((c) => c.collection);
+  return Object.entries(config.collections)
+    .filter(([, c]) => c.discover === false)
+    .map(([short, c]) => c.collection ?? short);
 }
 
 /** Short name for a record NSID, if known. */
@@ -742,17 +747,36 @@ export function shortNameForNsid(
   const resolved = (config as ResolvedContrailConfig)._resolved;
   if (resolved?.nsidToShort) return resolved.nsidToShort[nsid];
   for (const [short, c] of Object.entries(config.collections)) {
-    if (c.collection === nsid) return short;
+    if ((c.collection ?? short) === nsid) return short;
   }
   return undefined;
 }
 
-/** Full NSID for a collection short name. */
+/** The config key a collection's rows are stored under: its short alias when
+ *  one exists, otherwise the NSID itself when the config is keyed directly by
+ *  NSID. Returns null when the collection is unknown. Use this wherever you need
+ *  the storage key (records insert, FTS, existing-record lookup). Unlike
+ *  {@link shortNameForNsid}, which only reports an alias and so returns
+ *  undefined for NSID-keyed configs. */
+export function resolveCollectionKey(
+  config: ContrailConfig,
+  nsid: string
+): string | null {
+  return (
+    shortNameForNsid(config, nsid) ??
+    (config.collections[nsid] ? nsid : null)
+  );
+}
+
+/** Full NSID for a collection short name. For NSID-keyed collections (omitted
+ *  `collection`), the short name is itself the NSID. */
 export function nsidForShortName(
   config: ContrailConfig,
   short: string
 ): string | undefined {
-  return config.collections[short]?.collection;
+  const c = config.collections[short];
+  if (!c) return undefined;
+  return c.collection ?? short;
 }
 
 /** The methods a collection should expose via XRPC. */

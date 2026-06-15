@@ -118,7 +118,7 @@ async function runFeedBackfill(
     const inserted = await backfillUser(
       db,
       actor,
-      followCfg.collection,
+      followCfg.collection ?? followShort,
       Date.now() + BACKFILL_TIMEOUT_MS,
       config,
       {

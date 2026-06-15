@@ -663,7 +663,7 @@ export function registerCollectionRoutes(
       // Streaming variant — same query shape, SSE'd forever. Opted in via the
       // presence of the realtime module; no explicit method config needed.
       if (pubsub && spacesCtx) {
-        const colNsid = colConfig.collection;
+        const colNsid = colConfig.collection ?? collection;
         const relations = colConfig.relations ?? {};
         const references = colConfig.references ?? {};
         // Map child-NSID → { relName, matchField } so we can route child
@@ -1068,7 +1068,7 @@ export function registerCollectionRoutes(
         const gated = await gateSpaceAccess(c, spaceUri, "read");
         if (gated instanceof Response) return gated;
 
-        const nsid = colConfig.collection;
+        const nsid = colConfig.collection ?? collection;
         const record = await spacesCtx!.adapter.getRecord(spaceUri, nsid, did, rkey);
         if (!record) return c.json({ error: "NotFound" }, 404);
         return c.json({ record });

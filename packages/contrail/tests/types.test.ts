@@ -9,6 +9,9 @@ import {
   getDiscoverableShortNames,
   getDependentShortNames,
   getCollectionNsids,
+  getDiscoverableNsids,
+  getDependentNsids,
+  shortNameForNsid,
 } from "../src/core/types";
 
 describe("validateFieldName", () => {
@@ -197,6 +200,49 @@ describe("resolveConfig", () => {
     });
     expect(resolved._resolved.nsidToShort["test.event"]).toBe("event");
     expect(resolved._resolved.nsidToShort["test.rsvp"]).toBe("rsvp");
+  });
+});
+
+describe("NSID-keyed collections (no short alias / omitted `collection`)", () => {
+  const config = resolveConfig({
+    namespace: "com.example",
+    collections: {
+      "com.example.event": { searchable: ["name"] },
+      "com.example.follow": { discover: false },
+    },
+  });
+
+  it("validateConfig accepts an NSID-keyed config", () => {
+    expect(() =>
+      validateConfig({
+        namespace: "com.example",
+        collections: {
+          "com.example.event": { searchable: ["name"] },
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it("getCollectionNsids returns the config key as the NSID", () => {
+    const nsids = getCollectionNsids(config);
+    expect(nsids).toContain("com.example.event");
+    expect(nsids).toContain("com.example.follow");
+    expect(nsids).not.toContain(undefined);
+  });
+
+  it("getDiscoverableNsids / getDependentNsids split NSID-keyed entries", () => {
+    expect(getDiscoverableNsids(config)).toContain("com.example.event");
+    expect(getDependentNsids(config)).toContain("com.example.follow");
+    expect(getDiscoverableNsids(config)).not.toContain("com.example.follow");
+  });
+
+  it("shortNameForNsid resolves an NSID-keyed collection to its key", () => {
+    expect(shortNameForNsid(config, "com.example.event")).toBe("com.example.event");
+  });
+
+  it("builds nsidToShort for NSID-keyed entries", () => {
+    expect(config._resolved.nsidToShort["com.example.event"]).toBe("com.example.event");
+    expect(config._resolved.nsidToShort["com.example.follow"]).toBe("com.example.follow");
   });
 });
 
