@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-base",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Shared infrastructure for the contrail family of packages — interfaces (SpaceAuthority, RecordHost, CommunityIntegration), credential primitives, binding resolvers, realtime infra, schema scaffolding. No routes, no tables of its own.",
   "type": "module",
   "sideEffects": false,

@@ -1,5 +1,48 @@
 # @atmo-dev/contrail-appview
 
+## 0.12.1
+
+### Patch Changes
+
+- 833a659: Stop running the `feed_items` prune sweep on every ingest tick.
+
+  A feed only exceeds its cap right after a feed-mutating record, so the per-tick sweep was a no-op on the vast majority of ticks yet still issued a cutoff `DELETE` per actor (~98% of all D1 queries on one deployment). It now sweeps only when a feed-mutating collection was ingested, plus a recovery pass that becomes due ~6h after the previous one completed and then laps one slice per tick — including on idle persistent streams and the `notifyOfUpdate` path. New `getFeedMutatingNsids(config)` derives the gating set. See `docs/04-feeds.md` for sweep timing (and why the full-pass cadence is interval + lap time, not a hard 6h) and the fan-out promptness trade-off.
+
+- 74a2d3d: Make NSID-keyed collections work through normal ingestion, not just FTS.
+
+  When a collection is keyed directly by its NSID (no short alias, `collection`
+  field omitted), the value defaulted to `undefined` everywhere it was read. The
+  records insert and FTS sync were patched via `resolveCollectionKey`, but the
+  real ingestion entry points still skipped these collections: `getCollectionNsids`
+  / `getDiscoverableNsids` / `getDependentNsids` produced `undefined` NSIDs (so
+  Jetstream never subscribed and backfill never ran), `shortNameForNsid` returned
+  undefined (so `notify` rejected the URI as "collection not tracked"), and
+  `validateConfig` rejected the config outright (missing `collection`, dotted key
+  failing short-name validation).
+
+  `CollectionConfig.collection` is now optional. `resolveConfig` normalizes an
+  omitted `collection` to the map key, `validateConfig` accepts NSID-keyed entries,
+  and every collection-list / lookup helper resolves the NSID as `collection ?? key`
+  so the behavior is correct on both raw and resolved configs.
+  </content>
+
+- 9e01ada: Persist the jetstream ingest cursor before the identity-refresh tail in `runIngestCycle`.
+
+  `saveCursor` previously ran after `refreshStaleIdentities`, whose per-DID network calls can run long. If the ingest isolate was aborted (e.g. a scheduled-invocation deadline) before the save, the cursor never advanced and the next cycle re-drained the same jetstream window indefinitely. Records are durably applied before this point, so the cursor is now saved first; identity refresh is idempotent and staleness-driven, so deferring it past the save is safe.
+
+- 9894787: Stop re-ingesting the last 10s on every cron cycle for single-instance jetstream configs.
+
+  `@atcute/jetstream` rolls the cursor back 10s on the first connect when given an array `url`, to absorb clock skew across a pool of interchangeable instances. Contrail's cron ingestion rebuilds the subscription every cycle, so for a single-instance config that once-per-session rollback fired every cycle and redundantly re-delivered the last 10s of events. A new `jetstreamUrlOption` helper hands a one-element config to `@atcute` as a string (one fixed instance, no skew, no rollback) while leaving real multi-instance pools as an array so their cross-instance rollback is preserved. Applied at both subscription construction sites (cron `ingestEvents` and the persistent daemon).
+
+  The per-cycle reconnect log is now accurate for single-instance configs: a reconnect to one fixed instance no longer claims to "pick a URL at random and roll the cursor back 10s" (it can't). The warning now fires only for multi-instance pools and reports the actual `rolled_back` value; single-instance reconnects log at info level confirming no rollback.
+
+- Updated dependencies [833a659]
+- Updated dependencies [74a2d3d]
+- Updated dependencies [9894787]
+  - @atmo-dev/contrail-base@0.12.1
+  - @atmo-dev/contrail-record-host@0.12.1
+  - @atmo-dev/contrail-authority@0.12.1
+
 ## 0.12.0
 
 ### Minor Changes

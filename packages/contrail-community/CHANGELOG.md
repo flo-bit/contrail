@@ -1,5 +1,15 @@
 # @atmo-dev/contrail-community
 
+## 0.12.1
+
+### Patch Changes
+
+- Updated dependencies [833a659]
+- Updated dependencies [74a2d3d]
+- Updated dependencies [9894787]
+  - @atmo-dev/contrail-base@0.12.1
+  - @atmo-dev/contrail@0.12.1
+
 ## 0.12.0
 
 ### Patch Changes
