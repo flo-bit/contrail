@@ -385,16 +385,14 @@ export async function runIngestCycle(
     log.log(`[ingest] applied ${identityUpdates.size} identity event(s)`);
   }
 
-  // Refresh stale/missing identities for DIDs in this batch
-  const uniqueDids = [...new Set(events.map((e) => e.did))];
-  if (uniqueDids.length > 0) {
-    try {
-      await refreshStaleIdentities(db, uniqueDids, config);
-    } catch (err) {
-      log.warn(`Identity refresh failed: ${err}`);
-    }
-  }
-
+  // Persist the cursor BEFORE the best-effort enrichment tail below. Records are
+  // already durably applied (applyEvents) and handle changes recorded, so the
+  // cursor's forward progress is real and must be committed now. The steps that
+  // follow — refreshStaleIdentities especially — make per-DID network calls and
+  // can run long; if the cron isolate is aborted (e.g. a scheduled-invocation
+  // deadline) while they run, an un-saved cursor makes the next cycle re-drain the
+  // identical window forever. Identity refresh is idempotent and staleness-driven,
+  // so deferring it past the save costs nothing.
   if (lastCursor !== null) {
     await saveCursor(db, lastCursor);
     log.log(
@@ -404,6 +402,17 @@ export async function runIngestCycle(
     );
   } else {
     log.log(`[ingest] no cursor returned from subscription; not saving`);
+  }
+
+  // Refresh stale/missing identities for DIDs in this batch (best-effort; runs
+  // after the cursor save so its network latency can't strand forward progress).
+  const uniqueDids = [...new Set(events.map((e) => e.did))];
+  if (uniqueDids.length > 0) {
+    try {
+      await refreshStaleIdentities(db, uniqueDids, config);
+    } catch (err) {
+      log.warn(`Identity refresh failed: ${err}`);
+    }
   }
 
   // Newly-discovered DIDs: ask Constellation for back-edges so they
