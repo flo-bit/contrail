@@ -408,7 +408,7 @@ export class HostedRecordHostAdapter implements RecordHost {
           .bind(...params)
           .first<{ count: number }>();
         const count = Number(row?.count ?? 0);
-        if (count > 0) results.push({ collection: colConfig.collection, count });
+        if (count > 0) results.push({ collection: colConfig.collection ?? short, count });
       } catch {
         // table doesn't exist (collection added after init, or allowInSpaces toggled) — skip
       }

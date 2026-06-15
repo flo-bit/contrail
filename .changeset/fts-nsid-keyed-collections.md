@@ -1,13 +1,24 @@
 ---
 "@atmo-dev/contrail-base": patch
 "@atmo-dev/contrail-appview": patch
+"@atmo-dev/contrail-record-host": patch
+"@atmo-dev/contrail-lexicons": patch
 ---
 
-Populate FTS and detect existing records for NSID-keyed collections.
+Make NSID-keyed collections work through normal ingestion, not just FTS.
 
-When a collection is keyed directly by its NSID (no short alias / `collection`
-field), `shortNameForNsid` returns undefined, so the FTS-sync and
-existing-record-lookup paths silently skipped it. Only the records insert had
-the NSID fallback, leaving full-text search empty and replay/update detection
-broken for those collections. Added a `resolveCollectionKey` helper that returns
-the storage key (alias or NSID) and used it at all three sites.
+When a collection is keyed directly by its NSID (no short alias, `collection`
+field omitted), the value defaulted to `undefined` everywhere it was read. The
+records insert and FTS sync were patched via `resolveCollectionKey`, but the
+real ingestion entry points still skipped these collections: `getCollectionNsids`
+/ `getDiscoverableNsids` / `getDependentNsids` produced `undefined` NSIDs (so
+Jetstream never subscribed and backfill never ran), `shortNameForNsid` returned
+undefined (so `notify` rejected the URI as "collection not tracked"), and
+`validateConfig` rejected the config outright (missing `collection`, dotted key
+failing short-name validation).
+
+`CollectionConfig.collection` is now optional. `resolveConfig` normalizes an
+omitted `collection` to the map key, `validateConfig` accepts NSID-keyed entries,
+and every collection-list / lookup helper resolves the NSID as `collection ?? key`
+so the behavior is correct on both raw and resolved configs.
+</content>

@@ -242,7 +242,7 @@ async function streamCatchup(args: {
     if (colCfg.allowInSpaces === false) continue;
     if (isClosed()) return highest;
 
-    const collectionNsid = colCfg.collection;
+    const collectionNsid = colCfg.collection ?? _short;
     const short = shortNameForNsid(config, collectionNsid);
     if (!short) continue;
     const table = spacesRecordsTableName(short);

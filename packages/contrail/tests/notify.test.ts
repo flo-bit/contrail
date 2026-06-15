@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { Database } from "../src/core/types";
-import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { resolveConfig } from "../src/core/types";
+import { applyEvents, createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { initSchema } from "../src/core/db/schema";
 import { parseAtUri } from "../src/core/router/notify";
 import { createApp } from "../src/core/router/index";
 import { queryRecords } from "../src/core/db/records";
@@ -419,6 +421,53 @@ describe("POST notifyOfUpdate", () => {
     const body = await res.json();
     expect(body.indexed).toBe(0);
     expect(body.deleted).toBe(0);
+  });
+
+  it("ingests an NSID-keyed collection end-to-end (no short alias)", async () => {
+    // Config keyed directly by NSID, with `collection` omitted — the shape
+    // PR #59 advertised but that normal ingestion entry points used to skip.
+    const nsidConfig = resolveConfig({
+      namespace: "com.example",
+      notify: true,
+      collections: {
+        "com.example.thing": { queryable: { name: {} } },
+      },
+    });
+    const nsidDb = createTestDb();
+    await initSchema(nsidDb, nsidConfig);
+    const nsidApp = createApp(nsidDb, nsidConfig);
+
+    const did = "did:plc:nsidtest";
+    const uri = `at://${did}/com.example.thing/t1`;
+    const record = { name: "Findable Thing" };
+
+    await nsidDb
+      .prepare(
+        "INSERT OR REPLACE INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)"
+      )
+      .bind(did, "test.handle", "https://pds.example.com", Date.now())
+      .run();
+    mockFetch({ [uri]: { value: record, cid: "bafynsid" } });
+
+    const res = await nsidApp.request("/xrpc/com.example.notifyOfUpdate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uri }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The collection must NOT be rejected as "not tracked", and must ingest.
+    expect(body.errors).toBeUndefined();
+    expect(body.indexed).toBe(1);
+
+    // And the record is retrievable under the NSID-keyed collection.
+    const result = await queryRecords(nsidDb, nsidConfig, {
+      collection: "com.example.thing",
+    });
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].uri).toBe(uri);
+    expect(JSON.parse(result.records[0].record!)).toEqual(record);
   });
 
   it("decrements counts when deleting a relation record", async () => {
