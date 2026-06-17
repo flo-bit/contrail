@@ -1,5 +1,27 @@
 # @atmo-dev/contrail-appview
 
+## 0.12.2
+
+### Patch Changes
+
+- 32ace91: Stop accumulating duplicate FTS rows when records are re-applied during backfill.
+
+  The FTS-sync path only deleted an existing FTS row before inserting when the
+  record was already in `existingMap`. Backfill runs with `skipReplayDetection`,
+  which leaves `existingMap` empty, so every re-applied record looked brand-new
+  and appended another FTS row. The FTS virtual table has no uniqueness
+  constraint, so these accumulated, and the search JOIN fanned each event out into
+  one result row per duplicate. Make the delete-then-insert unconditional so FTS
+  sync is idempotent regardless of replay detection.
+
+  The unconditional delete also evicts a stale FTS row when an update clears all
+  searchable fields: in that case there is no content to re-insert, but the prior
+  row must still be removed so old terms stop matching.
+
+  - @atmo-dev/contrail-base@0.12.2
+  - @atmo-dev/contrail-authority@0.12.2
+  - @atmo-dev/contrail-record-host@0.12.2
+
 ## 0.12.1
 
 ### Patch Changes

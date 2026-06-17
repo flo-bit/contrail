@@ -1,5 +1,12 @@
 # @atmo-dev/contrail-community
 
+## 0.12.2
+
+### Patch Changes
+
+- @atmo-dev/contrail@0.12.2
+- @atmo-dev/contrail-base@0.12.2
+
 ## 0.12.1
 
 ### Patch Changes

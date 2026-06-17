@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail-lexicons",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "description": "Generate atproto lexicon JSON (and optionally TypeScript types via @atcute/lex-cli) from a Contrail config.",
   "type": "module",
   "files": [
