@@ -11,3 +11,7 @@ and appended another FTS row. The FTS virtual table has no uniqueness
 constraint, so these accumulated, and the search JOIN fanned each event out into
 one result row per duplicate. Make the delete-then-insert unconditional so FTS
 sync is idempotent regardless of replay detection.
+
+The unconditional delete also evicts a stale FTS row when an update clears all
+searchable fields: in that case there is no content to re-insert, but the prior
+row must still be removed so old terms stop matching.

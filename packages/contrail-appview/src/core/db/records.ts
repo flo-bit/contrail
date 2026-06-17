@@ -183,18 +183,21 @@ function buildFtsStatements(
     const record = event.record ? JSON.parse(event.record) : null;
     if (!record) return [];
 
-    const content = buildFtsContent(record, fields);
-    if (!content) return [];
-
-    // Always delete-then-insert so FTS sync is idempotent. The FTS virtual table
-    // has no uniqueness constraint, so a bare insert appends a duplicate row when
-    // one already exists. existingMap is unreliable here: backfill runs with
+    // Always delete first so FTS sync is idempotent. The FTS virtual table has no
+    // uniqueness constraint, so a bare insert appends a duplicate row when one
+    // already exists. existingMap is unreliable here: backfill runs with
     // skipReplayDetection, leaving it empty, so a re-applied record would look new
-    // and accumulate duplicate rows that fan out the search JOIN.
+    // and accumulate duplicate rows that fan out the search JOIN. The delete is
+    // unconditional so it also evicts a stale row when an update clears all
+    // searchable fields (content is null); only the re-insert is gated on content.
     stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
-    stmts.push(
-      db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
-    );
+
+    const content = buildFtsContent(record, fields);
+    if (content) {
+      stmts.push(
+        db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
+      );
+    }
   }
 
   return stmts;
