@@ -159,6 +159,40 @@ describe.skipIf(!hasFts)("FTS sync", () => {
     ], SEARCH_CONFIG);
     expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Deletable" })).records).toHaveLength(0);
   });
+
+  it("does not duplicate FTS rows when the same record is re-applied during backfill", async () => {
+    // Backfill passes call applyEvents with skipReplayDetection: true, which leaves
+    // existingMap empty so every record looks brand-new. Re-backfilling the same
+    // record must not append a second FTS row; otherwise the search JOIN fans out
+    // and returns the event more than once (which crashes keyed lists downstream).
+    const event = makeEvent({
+      uri: "at://did:plc:a/community.lexicon.calendar.event/1",
+      collection,
+      rkey: "1",
+      record: { name: "Backfilled Meetup", mode: "online", description: "test" },
+      time_us: 1000,
+    });
+    await applyEvents(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
+    await applyEvents(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
+
+    const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Meetup" });
+    expect(result.records).toHaveLength(1);
+  });
+
+  it("evicts the stale FTS row when an update clears all searchable fields", async () => {
+    // The delete must run unconditionally. If an update leaves every searchable
+    // field empty, buildFtsContent returns null and there is nothing to re-insert,
+    // but the prior FTS row must still be removed so old terms stop matching.
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Searchable Title", mode: "online", description: "find me" }, time_us: 1000 }),
+    ], SEARCH_CONFIG);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" })).records).toHaveLength(1);
+
+    await applyEvents(db, [
+      makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { startsAt: "2026-01-01T00:00:00Z" }, operation: "update", time_us: 2000 }),
+    ], SEARCH_CONFIG);
+    expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" })).records).toHaveLength(0);
+  });
 });
 
 describe.skipIf(!hasFts)("explicit searchable fields", () => {

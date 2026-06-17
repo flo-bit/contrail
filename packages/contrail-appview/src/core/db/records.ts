@@ -161,8 +161,7 @@ function buildBatchCountStatements(
 function buildFtsStatements(
   db: Database,
   event: IngestEvent,
-  config: ContrailConfig,
-  existingMap: Map<string, ExistingRecordInfo>
+  config: ContrailConfig
 ): Statement[] {
   // PostgreSQL: tsvector generated column is auto-maintained, no manual FTS sync
   if (getDialect(db).ftsStrategy === "generated-column") return [];
@@ -184,16 +183,21 @@ function buildFtsStatements(
     const record = event.record ? JSON.parse(event.record) : null;
     if (!record) return [];
 
-    const content = buildFtsContent(record, fields);
-    if (!content) return [];
+    // Always delete first so FTS sync is idempotent. The FTS virtual table has no
+    // uniqueness constraint, so a bare insert appends a duplicate row when one
+    // already exists. existingMap is unreliable here: backfill runs with
+    // skipReplayDetection, leaving it empty, so a re-applied record would look new
+    // and accumulate duplicate rows that fan out the search JOIN. The delete is
+    // unconditional so it also evicts a stale row when an update clears all
+    // searchable fields (content is null); only the re-insert is gated on content.
+    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
 
-    // Only delete existing FTS row if this is an update (record already existed)
-    if (existingMap.has(event.uri)) {
-      stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
+    const content = buildFtsContent(record, fields);
+    if (content) {
+      stmts.push(
+        db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
+      );
     }
-    stmts.push(
-      db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
-    );
   }
 
   return stmts;
@@ -644,7 +648,7 @@ export async function applyEvents(
       if (!isReplay && !options?.skipFeedFanout) {
         batch.push(...buildFeedStatements(db, e, config, existingRecordStrings));
       }
-      batch.push(...buildFtsStatements(db, e, config, existingMap));
+      batch.push(...buildFtsStatements(db, e, config));
     }
   }
 
