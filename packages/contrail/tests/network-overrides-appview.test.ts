@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createApp } from "../src/index";
 import { runIngestCycle } from "../src/index";
-import { __resetPdsCachesForTests } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/core/client";
 import { createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 import type { ContrailConfig } from "../src/index";
 

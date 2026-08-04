@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { ingestRecords } from "../src/index";
-import { __resetPdsCachesForTests } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/core/client";
 import type { Database, IngestEvent } from "../src/index";
 
 const COLL = "com.example.event";

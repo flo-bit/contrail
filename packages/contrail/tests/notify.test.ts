@@ -5,7 +5,7 @@ import { ingestRecords, createTestDb, createTestDbWithSchema, makeEvent, TEST_CO
 import { initSchema } from "../src/index";
 import { parseAtUri } from "../src/index";
 import { createApp } from "../src/index";
-import { queryRecords } from "../src/index";
+import { processNotifyUris, queryRecords } from "../src/index";
 import type { Hono } from "hono";
 
 const NOTIFY_CONFIG = { ...TEST_CONFIG, notify: true };
@@ -141,6 +141,15 @@ describe("POST notifyOfUpdate", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/max 25/);
+  });
+
+  it("enforces the batch limit for programmatic callers too", async () => {
+    const uris = Array.from({ length: 26 }, (_, index) =>
+      `at://did:plc:test/community.lexicon.calendar.event/r${index}`,
+    );
+    await expect(
+      processNotifyUris(db, NOTIFY_CONFIG, uris),
+    ).rejects.toThrow("max 25 URIs");
   });
 
   it("reports error for invalid AT URI", async () => {

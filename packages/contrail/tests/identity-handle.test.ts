@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getPDS, __resetPdsCachesForTests } from "../src/index";
+import { getPDS } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/core/client";
 import { refreshStaleIdentities } from "../src/index";
 import { createTestDbWithSchema } from "./helpers";
 import type { Database } from "../src/index";

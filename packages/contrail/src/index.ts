@@ -6,7 +6,13 @@ export type { AppOptions, ContrailOptions } from "./contrail";
 export * from "./core/types";
 export * from "./core/dialect";
 export * from "./core/identity";
-export * from "./core/client";
+export {
+  getClient,
+  getPDS,
+  resolvePDS,
+  validateExternalUrl,
+} from "./core/client";
+export type { ResolvedIdentity } from "./core/client";
 export * from "./core/sinks/types";
 
 // Ingestion and maintenance.

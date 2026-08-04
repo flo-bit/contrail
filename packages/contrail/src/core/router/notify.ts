@@ -19,6 +19,7 @@ export function parseAtUri(uri: string): { did: string; collection: string; rkey
 }
 
 const NOTIFY_FETCH_TIMEOUT_MS = 5_000;
+export const MAX_NOTIFY_URIS = 25;
 
 type RecordFetchResult =
   | { kind: "found"; value: Record<string, unknown>; cid: string }
@@ -131,6 +132,10 @@ export async function processNotifyUris(
   config: ContrailConfig,
   uris: string[]
 ): Promise<NotifyResult> {
+  if (uris.length > MAX_NOTIFY_URIS) {
+    throw new RangeError(`max ${MAX_NOTIFY_URIS} URIs per request`);
+  }
+
   const events: IngestEvent[] = [];
   const errors: string[] = [];
 
@@ -290,8 +295,8 @@ export function registerNotifyRoute(
       return c.json({ error: "uri or uris required" }, 400);
     }
 
-    if (uris.length > 25) {
-      return c.json({ error: "max 25 URIs per request" }, 400);
+    if (uris.length > MAX_NOTIFY_URIS) {
+      return c.json({ error: `max ${MAX_NOTIFY_URIS} URIs per request` }, 400);
     }
 
     const result = await processNotifyUris(db, config, uris);
