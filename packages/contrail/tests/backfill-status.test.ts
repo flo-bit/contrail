@@ -99,8 +99,9 @@ describe("backfill failure state", () => {
     expect((await getBackfillStatus(db)).accounts).toEqual({
       total: 1,
       complete: 0,
-      pending: 1,
-      unreachable: 1
+      pending: 0,
+      retrying: 1,
+      failed: 0
     });
 
     fetchSpy.mockResolvedValue(
@@ -120,7 +121,8 @@ describe("backfill failure state", () => {
       total: 1,
       complete: 1,
       pending: 0,
-      unreachable: 0
+      retrying: 0,
+      failed: 0
     });
   });
 });
@@ -184,6 +186,89 @@ describe("scheduled backfill retries", () => {
       last_error: null,
       next_retry_at: null
     });
+  });
+
+  it("caps backoff at 48 hours and stops after ten failures", async () => {
+    const db = await createTestDbWithSchema();
+    await db
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind(DID, "backfill.test", "https://pds.test", Date.now())
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO backfills (did, collection, completed, retries, last_error, next_retry_at) VALUES (?, ?, 0, 8, 'unavailable', ?)"
+      )
+      .bind(DID, EVENT, Date.now() - 1)
+      .run();
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: "Unavailable", message: "try later" }),
+        {
+          status: 503,
+          headers: { "content-type": "application/json" }
+        }
+      )
+    );
+
+    const before = Date.now();
+    await retryPendingBackfills(db, TEST_CONFIG, {
+      maxAccounts: 1,
+      maxAttempts: 10
+    });
+    let row = await db
+      .prepare("SELECT retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
+      .bind(DID)
+      .first<{
+        retries: number;
+        next_retry_at: number | null;
+        retry_exhausted: number;
+      }>();
+    expect(row?.retries).toBe(9);
+    expect(row?.retry_exhausted).toBe(0);
+    expect(row?.next_retry_at).toBeGreaterThanOrEqual(
+      before + 48 * 60 * 60_000
+    );
+    expect(row?.next_retry_at).toBeLessThanOrEqual(
+      Date.now() + 48 * 60 * 60_000
+    );
+
+    await db
+      .prepare("UPDATE backfills SET next_retry_at = ? WHERE did = ?")
+      .bind(Date.now() - 1, DID)
+      .run();
+    await retryPendingBackfills(db, TEST_CONFIG, {
+      maxAccounts: 1,
+      maxAttempts: 10
+    });
+    row = await db
+      .prepare("SELECT retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
+      .bind(DID)
+      .first<{
+        retries: number;
+        next_retry_at: number | null;
+        retry_exhausted: number;
+      }>();
+    expect(row).toEqual({
+      retries: 10,
+      next_retry_at: null,
+      retry_exhausted: 1
+    });
+    expect((await getBackfillStatus(db, TEST_CONFIG)).accounts).toEqual({
+      total: 1,
+      complete: 0,
+      pending: 0,
+      retrying: 0,
+      failed: 1
+    });
+
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ records: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    await backfillPending(db, TEST_CONFIG, { maxAttempts: 1 });
+    expect((await getBackfillStatus(db, TEST_CONFIG)).accounts.complete).toBe(1);
   });
 
   it("reports an active run and prevents overlapping retry work", async () => {
@@ -282,7 +367,13 @@ describe("backfill status JSON", () => {
 
     const status = await getBackfillStatus(db, TEST_CONFIG);
     expect(status.state).toBe("complete");
-    expect(status.accounts.unreachable).toBe(1);
+    expect(status.accounts).toEqual({
+      total: 1,
+      complete: 0,
+      pending: 0,
+      retrying: 1,
+      failed: 0
+    });
     expect(status.retries).toEqual({
       scheduled_accounts: 1,
       due_accounts: 0,
@@ -291,7 +382,7 @@ describe("backfill status JSON", () => {
     });
   });
 
-  it("reports known work, unreachable accounts, discovery, records, and cursor", async () => {
+  it("reports mutually exclusive account and collection states", async () => {
     const db = await createTestDbWithSchema();
     await ingestRecords(db, [makeEvent()]);
     await db
@@ -328,15 +419,21 @@ describe("backfill status JSON", () => {
     expect(overview.ingestion.cursor).toBeTypeOf("number");
     expect(overview.backfill).toMatchObject({
       state: "incomplete",
-      known_progress_percent: 40,
+      known_progress_percent: 33.33,
       accounts: {
         total: 3,
         complete: 1,
-        pending: 2,
-        unreachable: 1
+        pending: 1,
+        retrying: 1,
+        failed: 0
       },
-      tasks: { total: 5, complete: 2, pending: 3, failed: 1 },
-      discovery: { total: 2, complete: 1, pending: 1, failed: 1 },
+      discovery: {
+        total: 2,
+        complete: 1,
+        pending: 0,
+        retrying: 1,
+        failed: 0
+      },
       retries: {
         scheduled_accounts: 1,
         due_accounts: 1,
@@ -351,14 +448,16 @@ describe("backfill status JSON", () => {
         collection: EVENT,
         total: 3,
         complete: 1,
-        pending: 2,
-        failed: 1
+        pending: 1,
+        retrying: 1,
+        failed: 0
       },
       {
         collection: RSVP,
         total: 2,
         complete: 1,
         pending: 1,
+        retrying: 0,
         failed: 0
       }
     ]);

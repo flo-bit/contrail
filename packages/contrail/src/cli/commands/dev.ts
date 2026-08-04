@@ -61,7 +61,7 @@ export function registerDev(cli: CAC): void {
             console.log("no backfilled users in the local DB yet.");
           } else {
             console.log(
-              `backfill incomplete: ${backfillStatus.accounts.pending} accounts remain; ${backfillStatus.accounts.unreachable} currently unreachable.`
+              `backfill incomplete: ${backfillStatus.accounts.pending} pending, ${backfillStatus.accounts.retrying} retrying, ${backfillStatus.accounts.failed} failed.`
             );
           }
           if (

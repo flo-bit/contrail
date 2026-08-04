@@ -230,9 +230,10 @@ export class Contrail {
 
     const status = await getBackfillStatus(d, this.config);
     const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
-    if (status.state === "complete" && status.accounts.unreachable > 0) {
+    const unresolved = status.accounts.retrying + status.accounts.failed;
+    if (status.state === "complete" && unresolved > 0) {
       logger?.warn?.(
-        `  done with deferred failures: ${status.accounts.complete}/${status.accounts.total} known accounts complete; ${status.accounts.unreachable} unavailable accounts scheduled for retry (${elapsedS}s)`
+        `  done with deferred failures: ${status.accounts.complete}/${status.accounts.total} known accounts complete; ${status.accounts.retrying} retrying, ${status.accounts.failed} exhausted (${elapsedS}s)`
       );
     } else if (status.state === "complete") {
       logger?.log?.(

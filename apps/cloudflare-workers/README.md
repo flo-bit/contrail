@@ -28,7 +28,7 @@ GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsA
 GET https://<your-worker>.workers.dev/status
 ```
 
-`/status` returns JSON with the live-ingest cursor, indexed record totals, discovery progress, known backfill work, and counts of pending or currently unreachable accounts.
+`/status` returns JSON with the live-ingest cursor, indexed record totals, discovery progress, per-collection progress, and mutually exclusive complete/pending/retrying/failed account counts.
 
 ## local dev
 
@@ -39,13 +39,13 @@ pnpm contrail backfill  # backfill against the local D1 created by wrangler
 
 `pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to start or resume backfill whenever known work remains, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
 
-A failed PDS account stays pending rather than being marked complete. The initial command uses a bounded attempt budget, then records an exponential retry time. The normal one-minute Worker cron retries a small due slice after live ingestion, so dead PDSes cannot monopolize the tick. Rerunning the command forces an immediate bounded pass.
+A failed PDS account stays incomplete rather than being marked complete. The initial command uses a bounded attempt budget, then records an exponential retry time. The normal one-minute Worker cron retries a small due slice after live ingestion, with delays from 15 minutes up to 48 hours and a ten-attempt limit, so dead PDSes cannot monopolize the tick. Rerunning the command resets exhausted rows and forces an immediate bounded pass.
 
 ```bash
 curl http://localhost:8787/status
 ```
 
-This reports the durable state without exposing account DIDs or raw upstream errors. `state: "running"` means a manual or scheduled backfill slice currently owns the database lease. `state: "complete"` means discovery and the initial pass finished; `accounts.unreachable` and `retries` may still show deferred account work that cron will continue retrying.
+This reports the durable state without exposing account DIDs or raw upstream errors. `state: "running"` means a manual or scheduled backfill slice currently owns the database lease. `state: "complete"` means discovery and the initial pass finished; account counts separately show work that is `pending`, `retrying`, or permanently `failed` until an explicit reset.
 
 ## extending
 

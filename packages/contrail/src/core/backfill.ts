@@ -49,8 +49,9 @@ const PAGE_SIZE = 100;
 const DEFAULT_MAX_ATTEMPTS = 5;
 
 const REQUEST_TIMEOUT_MS = 10_000;
-const BACKFILL_RETRY_BASE_MS = 60_000;
-const BACKFILL_RETRY_MAX_MS = 60 * 60_000;
+const BACKFILL_RETRY_BASE_MS = 15 * 60_000;
+const BACKFILL_RETRY_MAX_MS = 48 * 60 * 60_000;
+const DEFAULT_SCHEDULED_MAX_ATTEMPTS = 10;
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -92,7 +93,8 @@ async function markFailed(
   db: Database,
   did: string,
   collection: string,
-  error: unknown
+  error: unknown,
+  exhaustAfterAttempts?: number
 ): Promise<void> {
   const row = await db
     .prepare(
@@ -102,19 +104,22 @@ async function markFailed(
     .first<{ retries: number }>();
   const retries = (row?.retries ?? 0) + 1;
   const now = Date.now();
+  const exhausted =
+    exhaustAfterAttempts !== undefined && retries >= exhaustAfterAttempts;
   const retryDelay = Math.min(
-    BACKFILL_RETRY_BASE_MS * 2 ** Math.min(retries - 1, 6),
+    BACKFILL_RETRY_BASE_MS * 2 ** Math.min(retries - 1, 16),
     BACKFILL_RETRY_MAX_MS
   );
   await db
     .prepare(
-      "UPDATE backfills SET retries = ?, last_error = ?, last_attempt_at = ?, next_retry_at = ? WHERE did = ? AND collection = ?"
+      "UPDATE backfills SET retries = ?, last_error = ?, last_attempt_at = ?, next_retry_at = ?, retry_exhausted = ? WHERE did = ? AND collection = ?"
     )
     .bind(
       retries,
       errorMessage(error),
       now,
-      now + retryDelay,
+      exhausted ? null : now + retryDelay,
+      exhausted ? 1 : 0,
       did,
       collection
     )
@@ -130,6 +135,8 @@ export interface BackfillOptions {
   maxRetries?: number;
   /** Per-request timeout in ms (default: 10000). */
   requestTimeout?: number;
+  /** Mark the row terminal when this consecutive-failure count is reached. */
+  exhaustAfterAttempts?: number;
 }
 
 interface BackfillUserAttempt {
@@ -170,12 +177,24 @@ async function backfillUserAttempt(
   const timeout = options?.requestTimeout ?? REQUEST_TIMEOUT_MS;
 
   if (!isDid(did)) {
-    await markFailed(db, did, collection, `Invalid DID: ${did}`);
+    await markFailed(
+      db,
+      did,
+      collection,
+      `Invalid DID: ${did}`,
+      options?.exhaustAfterAttempts
+    );
     return { records: 0, completed: false };
   }
 
   if (!isNsid(collection)) {
-    await markFailed(db, did, collection, `Invalid NSID: ${collection}`);
+    await markFailed(
+      db,
+      did,
+      collection,
+      `Invalid NSID: ${collection}`,
+      options?.exhaustAfterAttempts
+    );
     return { records: 0, completed: false };
   }
 
@@ -189,7 +208,13 @@ async function backfillUserAttempt(
         timeout
       );
     } catch (err) {
-      await markFailed(db, did, collection, err);
+      await markFailed(
+        db,
+        did,
+        collection,
+        err,
+        options?.exhaustAfterAttempts
+      );
       return { records: 0, completed: false };
     }
   }
@@ -221,7 +246,8 @@ async function backfillUserAttempt(
           db,
           did,
           collection,
-          `listRecords status ${response.status} (${detail})`
+          `listRecords status ${response.status} (${detail})`,
+          options?.exhaustAfterAttempts
         );
         return { records: totalInserted, completed: false };
       }
@@ -261,7 +287,7 @@ async function backfillUserAttempt(
 
       await db
         .prepare(
-          "UPDATE backfills SET pds_cursor = ?, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL WHERE did = ? AND collection = ?"
+          "UPDATE backfills SET pds_cursor = ?, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
         )
         .bind(currentCursor ?? null, now, did, collection)
         .run();
@@ -272,14 +298,20 @@ async function backfillUserAttempt(
       }
     }
   } catch (err) {
-    await markFailed(db, did, collection, err);
+    await markFailed(
+      db,
+      did,
+      collection,
+      err,
+      options?.exhaustAfterAttempts
+    );
     return { records: totalInserted, completed: false };
   }
 
   if (done) {
     await db
       .prepare(
-        "UPDATE backfills SET completed = 1, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL WHERE did = ? AND collection = ?"
+        "UPDATE backfills SET completed = 1, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
       )
       .bind(Date.now(), did, collection)
       .run();
@@ -346,7 +378,9 @@ async function backfillPendingWork(
   // The attempt cap is per invocation. Rows remain incomplete and a later run
   // gets a fresh bounded retry budget.
   await db
-    .prepare("UPDATE backfills SET retries = 0 WHERE completed = 0")
+    .prepare(
+      "UPDATE backfills SET retries = 0, next_retry_at = NULL, retry_exhausted = 0 WHERE completed = 0"
+    )
     .run();
 
   while (true) {
@@ -525,6 +559,8 @@ export async function backfillPending(
 export interface BackfillRetryOptions {
   /** Maximum accounts to attempt in one scheduled slice. Default: 5. */
   maxAccounts?: number;
+  /** Consecutive failures before automatic retries stop. Default: 10. */
+  maxAttempts?: number;
   /** Total wall-clock budget for the slice. Default: 10000ms. */
   timeoutMs?: number;
   /** Deadline for each PDS request within the slice. Default: 3000ms. */
@@ -552,6 +588,10 @@ export async function retryPendingBackfills(
   }
 
   const maxAccounts = positiveInteger(options?.maxAccounts, 5);
+  const maxAttempts = positiveInteger(
+    options?.maxAttempts,
+    DEFAULT_SCHEDULED_MAX_ATTEMPTS
+  );
   const timeoutMs = positiveInteger(options?.timeoutMs, 10_000);
   const requestTimeoutMs = positiveInteger(options?.requestTimeoutMs, 3_000);
   const deadline = Date.now() + timeoutMs;
@@ -563,7 +603,7 @@ export async function retryPendingBackfills(
   try {
     const due = await db
       .prepare(
-        "SELECT did FROM backfills WHERE completed = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) GROUP BY did ORDER BY MIN(COALESCE(next_retry_at, 0)), did LIMIT ?"
+        "SELECT did FROM backfills WHERE completed = 0 AND retry_exhausted = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) GROUP BY did ORDER BY MIN(COALESCE(next_retry_at, 0)), did LIMIT ?"
       )
       .bind(Date.now(), maxAccounts)
       .all<{ did: string }>();
@@ -573,7 +613,7 @@ export async function retryPendingBackfills(
       attempted++;
       const pending = await db
         .prepare(
-          "SELECT collection FROM backfills WHERE did = ? AND completed = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY collection"
+          "SELECT collection FROM backfills WHERE did = ? AND completed = 0 AND retry_exhausted = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY collection"
         )
         .bind(did, Date.now())
         .all<{ collection: string }>();
@@ -590,7 +630,13 @@ export async function retryPendingBackfills(
         );
       } catch (error) {
         for (const collection of collections) {
-          await markFailed(db, did, collection, error);
+          await markFailed(
+            db,
+            did,
+            collection,
+            error,
+            maxAttempts
+          );
         }
         failed++;
         await heartbeatBackfillRun(db, runId);
@@ -609,6 +655,7 @@ export async function retryPendingBackfills(
               requestTimeoutMs,
               Math.max(1, deadline - Date.now())
             ),
+            exhaustAfterAttempts: maxAttempts,
           })
         );
       }

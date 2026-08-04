@@ -5,24 +5,19 @@ interface AggregateRow {
   total: number | string | null;
   complete: number | string | null;
   pending: number | string | null;
+  retrying: number | string | null;
   failed: number | string | null;
-}
-
-export interface BackfillCounts {
-  total: number;
-  complete: number;
-  pending: number;
-  failed: number;
 }
 
 export interface BackfillAccountCounts {
   total: number;
   complete: number;
   pending: number;
-  unreachable: number;
+  retrying: number;
+  failed: number;
 }
 
-export interface BackfillCollectionStatus extends BackfillCounts {
+export interface BackfillCollectionStatus extends BackfillAccountCounts {
   collection: string;
 }
 
@@ -37,8 +32,7 @@ export interface BackfillStatus {
   state: "not_started" | "running" | "incomplete" | "complete";
   known_progress_percent: number;
   accounts: BackfillAccountCounts;
-  tasks: BackfillCounts;
-  discovery: BackfillCounts;
+  discovery: BackfillAccountCounts;
   retries: BackfillRetryStatus;
   collections: BackfillCollectionStatus[];
 }
@@ -47,11 +41,12 @@ function number(value: number | string | null | undefined): number {
   return Number(value ?? 0);
 }
 
-function counts(row: AggregateRow | null): BackfillCounts {
+function counts(row: AggregateRow | null): BackfillAccountCounts {
   return {
     total: number(row?.total),
     complete: number(row?.complete),
     pending: number(row?.pending),
+    retrying: number(row?.retrying),
     failed: number(row?.failed)
   };
 }
@@ -122,8 +117,9 @@ export async function getBackfillStatus(
         `SELECT
           COUNT(*) AS total,
           COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS complete,
-          COALESCE(SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END), 0) AS pending,
-          COALESCE(SUM(CASE WHEN completed = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS failed
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NULL THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS retrying,
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 1 THEN 1 ELSE 0 END), 0) AS failed
         FROM backfills`
       )
       .first<AggregateRow>(),
@@ -132,13 +128,16 @@ export async function getBackfillStatus(
         `SELECT
           COUNT(*) AS total,
           COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS complete,
-          COALESCE(SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END), 0) AS pending,
-          COALESCE(SUM(CASE WHEN completed = 0 AND unreachable = 1 THEN 1 ELSE 0 END), 0) AS failed
+          COALESCE(SUM(CASE WHEN completed = 0 AND has_retrying = 0 AND has_failed = 0 THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN completed = 0 AND (has_retrying = 1 OR (has_failed = 1 AND has_pending = 1)) THEN 1 ELSE 0 END), 0) AS retrying,
+          COALESCE(SUM(CASE WHEN completed = 0 AND has_failed = 1 AND has_pending = 0 AND has_retrying = 0 THEN 1 ELSE 0 END), 0) AS failed
         FROM (
           SELECT
             did,
             MIN(completed) AS completed,
-            MAX(CASE WHEN completed = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END) AS unreachable
+            MAX(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NULL THEN 1 ELSE 0 END) AS has_pending,
+            MAX(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END) AS has_retrying,
+            MAX(CASE WHEN completed = 0 AND retry_exhausted = 1 THEN 1 ELSE 0 END) AS has_failed
           FROM backfills
           GROUP BY did
         ) AS accounts`
@@ -149,8 +148,9 @@ export async function getBackfillStatus(
         `SELECT
           COUNT(*) AS total,
           COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS complete,
-          COALESCE(SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END), 0) AS pending,
-          COALESCE(SUM(CASE WHEN completed = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS failed
+          COALESCE(SUM(CASE WHEN completed = 0 AND last_error IS NULL THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN completed = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS retrying,
+          0 AS failed
         FROM discovery`
       )
       .first<AggregateRow>(),
@@ -160,8 +160,9 @@ export async function getBackfillStatus(
           collection,
           COUNT(*) AS total,
           COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS complete,
-          COALESCE(SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END), 0) AS pending,
-          COALESCE(SUM(CASE WHEN completed = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS failed
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NULL THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS retrying,
+          COALESCE(SUM(CASE WHEN completed = 0 AND retry_exhausted = 1 THEN 1 ELSE 0 END), 0) AS failed
         FROM backfills
         GROUP BY collection
         ORDER BY collection`
@@ -176,7 +177,7 @@ export async function getBackfillStatus(
         FROM (
           SELECT did, MIN(next_retry_at) AS next_retry_at
           FROM backfills
-          WHERE completed = 0 AND last_error IS NOT NULL
+          WHERE completed = 0 AND retry_exhausted = 0 AND last_error IS NOT NULL
           GROUP BY did
         ) AS retry_accounts`
       )
@@ -197,15 +198,9 @@ export async function getBackfillStatus(
       }>()
   ]);
 
-  const tasks = counts(taskRow);
+  const taskCounts = counts(taskRow);
+  const accounts = counts(accountRow);
   const discovery = counts(discoveryRow);
-  const accountCounts = counts(accountRow);
-  const accounts: BackfillAccountCounts = {
-    total: accountCounts.total,
-    complete: accountCounts.complete,
-    pending: accountCounts.pending,
-    unreachable: accountCounts.failed
-  };
   const collections = (collectionRows.results ?? []).map((row) => ({
     collection: row.collection,
     ...counts(row)
@@ -226,6 +221,7 @@ export async function getBackfillStatus(
     next_retry_at: nextRetryAt,
     next_retry_date: nextRetryAt ? new Date(nextRetryAt).toISOString() : null
   };
+
   const expectsDiscovery = config
     ? getDiscoverableNsids(config).length > 0 &&
       (config.relays ?? DEFAULT_RELAYS).length > 0
@@ -236,23 +232,24 @@ export async function getBackfillStatus(
     number(runRow.heartbeat_at) >= now - BACKFILL_RUN_STALE_MS;
   const state = running
     ? "running"
-    : tasks.total === 0 && discovery.total === 0
+    : taskCounts.total === 0 && discovery.total === 0
       ? expectsDiscovery
         ? "not_started"
         : "complete"
-      : discovery.pending > 0
+      : discovery.complete < discovery.total || taskCounts.pending > 0
         ? "incomplete"
-        : tasks.pending === 0 || tasks.failed === tasks.pending
-          ? "complete"
-          : "incomplete";
+        : "complete";
   const knownProgressPercent =
-    tasks.total === 0 ? (state === "complete" ? 100 : 0) : Math.floor((tasks.complete / tasks.total) * 10_000) / 100;
+    accounts.total === 0
+      ? state === "complete"
+        ? 100
+        : 0
+      : Math.floor((accounts.complete / accounts.total) * 10_000) / 100;
 
   return {
     state,
     known_progress_percent: knownProgressPercent,
     accounts,
-    tasks,
     discovery,
     retries,
     collections

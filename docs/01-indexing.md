@@ -58,7 +58,7 @@ await contrail.backfill({ concurrency: 100 }); // fetch history for registered D
 
 `backfill()` picks up each account/collection at its saved PDS cursor. A row is marked complete only after the PDS listing reaches its end. Timeouts, failed identity resolution, `429`, and `5xx` responses leave the row pending with its last error.
 
-Each initial invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. Failed account rows retain their cursors, receive an exponential `next_retry_at`, and remain incomplete. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation forces another bounded pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
+Each initial invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. Failed account rows retain their cursors and receive an exponential `next_retry_at`. Scheduled retries start at 15 minutes, double to a maximum of 48 hours, and stop after ten consecutive failures. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation resets exhausted rows and forces another bounded pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
 
 ### Workers CLI
 
