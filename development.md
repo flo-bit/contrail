@@ -17,6 +17,7 @@ packages/contrail/
 Reference deployments live under `apps/`:
 
 - `cloudflare-workers` — minimal Worker + D1;
+- `benchmark` — disposable local-D1 backfill benchmarks;
 - `postgres` — minimal Node.js + PostgreSQL; and
 - `sveltekit-cloudflare-workers` — SvelteKit + D1.
 
@@ -35,6 +36,7 @@ Focused commands:
 pnpm --filter @atmo-dev/contrail build
 pnpm --filter @atmo-dev/contrail test
 pnpm --filter contrail-cloudflare-workers-example dev
+pnpm bench --config calendar.config.json --concurrency 100
 ```
 
 ## Releasing

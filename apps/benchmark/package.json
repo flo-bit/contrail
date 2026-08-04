@@ -1,0 +1,19 @@
+{
+  "name": "contrail-backfill-benchmark",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node --no-warnings --experimental-strip-types src/bench.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250124.0",
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.84.1"
+  }
+}

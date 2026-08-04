@@ -18,6 +18,25 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  apps/benchmark:
+    dependencies:
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../../packages/contrail
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250124.0
+        version: 4.20260424.1
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.6.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.84.1
+        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
+
   apps/cloudflare-workers:
     dependencies:
       '@atmo-dev/contrail':
