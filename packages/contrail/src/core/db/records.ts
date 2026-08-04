@@ -56,11 +56,26 @@ function getInboundRelations(
  * The map is keyed by `parentCollection:relationName:targetValue` to deduplicate
  * across the entire batch — so 50 RSVPs to the same event produce one recount, not 50.
  */
+type CountTarget = {
+  parentCollection: string;
+  relationName: string;
+  rel: RelationConfig;
+  targetValue: string;
+};
+
+function addCountTarget(
+  targets: Map<string, CountTarget>,
+  target: CountTarget,
+): void {
+  const key = `${target.parentCollection}:${target.relationName}:${target.targetValue}`;
+  if (!targets.has(key)) targets.set(key, target);
+}
+
 function collectCountTargets(
   event: IngestEvent,
   config: ContrailConfig,
   existingRecordJson: string | null,
-  targets: Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>
+  targets: Map<string, CountTarget>
 ): void {
   const childShort = shortNameForNsid(config, event.collection);
   if (!childShort) return;
@@ -86,11 +101,36 @@ function collectCountTargets(
     }
 
     for (const targetValue of values) {
-      const key = `${parentCollection}:${relationName}:${targetValue}`;
-      if (!targets.has(key)) {
-        targets.set(key, { parentCollection, relationName, rel, targetValue });
-      }
+      addCountTarget(targets, {
+        parentCollection,
+        relationName,
+        rel,
+        targetValue,
+      });
     }
+  }
+}
+
+/** Recount a newly arriving parent against children that may already exist. */
+function collectParentCountTargets(
+  event: IngestEvent,
+  config: ContrailConfig,
+  targets: Map<string, CountTarget>,
+): void {
+  if (event.operation === "delete") return;
+  const parentCollection = shortNameForNsid(config, event.collection);
+  if (!parentCollection) return;
+
+  for (const [relationName, rel] of Object.entries(
+    config.collections[parentCollection]?.relations ?? {},
+  )) {
+    if (rel.count === false) continue;
+    addCountTarget(targets, {
+      parentCollection,
+      relationName,
+      rel,
+      targetValue: rel.match === "did" ? event.did : event.uri,
+    });
   }
 }
 
@@ -102,7 +142,7 @@ function collectCountTargets(
 function buildBatchCountStatements(
   db: Database,
   config: ContrailConfig,
-  targets: Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>
+  targets: Map<string, CountTarget>
 ): Statement[] {
   const statements: Statement[] = [];
 
@@ -595,7 +635,7 @@ export async function projectEvents(
   }
 
   // Collect all count recount targets across the batch, deduplicated
-  const countTargets = new Map<string, { parentCollection: string; relationName: string; rel: RelationConfig; targetValue: string }>();
+  const countTargets = new Map<string, CountTarget>();
 
   for (const e of events) {
     // Event's collection is an NSID. Resolve its storage key from config.
@@ -629,6 +669,7 @@ export async function projectEvents(
     // Collect count targets (deduplicated across the whole batch)
     const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
     collectCountTargets(e, config, existingRecordJson, countTargets);
+    collectParentCountTargets(e, config, countTargets);
 
     // Feed fanout still needs replay detection
     const existingInfo = existingMap.get(e.uri);

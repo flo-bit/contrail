@@ -100,6 +100,42 @@ describe("ingestRecords", () => {
     expect(result.records[0].counts!["rsvp"]).toBe(1);
   });
 
+  it("recounts children that arrived before their parent", async () => {
+    const eventUri = "at://did:plc:test/community.lexicon.calendar.event/late";
+
+    await ingestRecords(
+      db,
+      [
+        makeEvent({
+          uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/early",
+          did: "did:plc:user1",
+          collection: "community.lexicon.calendar.rsvp",
+          rkey: "early",
+          record: {
+            subject: { uri: eventUri },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        }),
+      ],
+      TEST_CONFIG,
+    );
+
+    await ingestRecords(
+      db,
+      [makeEvent({ uri: eventUri, rkey: "late", record: { name: "Late" } })],
+      TEST_CONFIG,
+    );
+
+    const row = await db
+      .prepare(
+        "SELECT count_rsvp, count_rsvp_going FROM records_event WHERE uri = ?",
+      )
+      .bind(eventUri)
+      .first<{ count_rsvp: number; count_rsvp_going: number }>();
+
+    expect(row).toEqual({ count_rsvp: 1, count_rsvp_going: 1 });
+  });
+
   it("decrements counts on delete", async () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
     await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);

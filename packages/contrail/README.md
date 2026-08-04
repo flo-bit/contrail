@@ -68,7 +68,7 @@ await contrail.runPersistent({
 });
 ```
 
-After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. The public notification protocol and transient-failure semantics are under active hardening.
+After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. Only an authoritative not-found response deletes local state; rate limits, server errors, timeouts, malformed responses, and network failures leave it unchanged. Authentication and abuse controls for the public HTTP operation remain under design.
 
 ## HTTP
 

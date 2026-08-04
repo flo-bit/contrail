@@ -18,27 +18,99 @@ export function parseAtUri(uri: string): { did: string; collection: string; rkey
   return { did: repo, collection, rkey };
 }
 
-/**
- * Fetch a single record from the user's PDS.
- * Returns the record + cid on success, null if not found.
- */
+const NOTIFY_FETCH_TIMEOUT_MS = 5_000;
+
+type RecordFetchResult =
+  | { kind: "found"; value: Record<string, unknown>; cid: string }
+  | { kind: "not-found" }
+  | { kind: "error"; status?: number; message: string };
+
+/** Fetch one authoritative record without conflating failure with deletion. */
 async function fetchRecordFromPDS(
   pds: string,
   did: string,
   collection: string,
   rkey: string
-): Promise<{ value: unknown; cid: string } | null> {
+): Promise<RecordFetchResult> {
   const url = new URL(`/xrpc/com.atproto.repo.getRecord`, pds);
   url.searchParams.set("repo", did);
   url.searchParams.set("collection", collection);
   url.searchParams.set("rkey", rkey);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) return null;
+  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    NOTIFY_FETCH_TIMEOUT_MS,
+  );
+  try {
+    response = await fetch(url.toString(), { signal: controller.signal });
+  } catch (error) {
+    return {
+      kind: "error",
+      message: controller.signal.aborted
+        ? `PDS request timed out after ${NOTIFY_FETCH_TIMEOUT_MS}ms`
+        : `network failure: ${String(error)}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 
-  const data = (await res.json()) as { value?: unknown; cid?: string };
-  if (!data.value || !data.cid) return null;
-  return { value: data.value, cid: data.cid };
+  if (!response.ok) {
+    const body = await response
+      .json()
+      .catch(() => null) as { error?: unknown; message?: unknown } | null;
+    const errorCode = typeof body?.error === "string" ? body.error : undefined;
+    if (response.status === 404 || errorCode === "RecordNotFound") {
+      return { kind: "not-found" };
+    }
+    const detail =
+      errorCode ??
+      (typeof body?.message === "string" ? body.message : response.statusText);
+    return {
+      kind: "error",
+      status: response.status,
+      message: `PDS returned ${response.status}${detail ? ` (${detail})` : ""}`,
+    };
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error) {
+    return {
+      kind: "error",
+      status: response.status,
+      message: `malformed JSON response: ${String(error)}`,
+    };
+  }
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return {
+      kind: "error",
+      status: response.status,
+      message: "malformed record response",
+    };
+  }
+  const { value, cid } = data as { value?: unknown; cid?: unknown };
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    typeof cid !== "string" ||
+    cid.length === 0
+  ) {
+    return {
+      kind: "error",
+      status: response.status,
+      message: "malformed record response",
+    };
+  }
+  return {
+    kind: "found",
+    value: value as Record<string, unknown>,
+    cid,
+  };
 }
 
 export interface NotifyResult {
@@ -84,9 +156,15 @@ export async function processNotifyUris(
   );
 
   for (const { uri, parsed } of validUris) {
-    const pds = await getPDS(parsed.did as Did, db, config);
+    let pds: string | null | undefined;
+    try {
+      pds = await getPDS(parsed.did as Did, db, config);
+    } catch (error) {
+      errors.push(`${uri}: could not resolve PDS: ${String(error)}`);
+      continue;
+    }
     if (!pds) {
-      errors.push(`could not resolve PDS for ${parsed.did}`);
+      errors.push(`${uri}: could not resolve PDS for ${parsed.did}`);
       continue;
     }
 
@@ -96,16 +174,16 @@ export async function processNotifyUris(
       parsed.collection,
       parsed.rkey
     );
-
-    const now = Date.now() * 1000; // microseconds
     const existingInfo = existing.get(uri);
 
-    if (result) {
-      if (existingInfo?.cid === result.cid) {
-        // Same CID — nothing changed
-        continue;
-      }
+    if (result.kind === "error") {
+      errors.push(`${uri}: ${result.message}`);
+      continue;
+    }
 
+    const now = Date.now() * 1000;
+    if (result.kind === "found") {
+      if (existingInfo?.cid === result.cid) continue;
       events.push(
         createIngestEvent({
           uri,
@@ -120,7 +198,6 @@ export async function processNotifyUris(
         }),
       );
     } else if (existingInfo) {
-      // Record gone from PDS but exists locally — delete it.
       events.push(
         createIngestEvent({
           uri,

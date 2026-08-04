@@ -199,6 +199,6 @@ const db = createPostgresDatabase(pool);
 | `profiles` | `["app.bsky.actor.profile"]` | Profile NSIDs, auto-hydrated via `?profiles=true` |
 | `jetstreams` | Bluesky | Jetstream URLs |
 | `relays` | Bluesky | Relay URLs for discovery |
-| `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
+| `notify` | off | Prefer an in-process call or a secret string requiring `Bearer`; open `true` mode is not recommended |
 | `feeds` | — | See [Feeds](./04-feeds.md) |
 | `labels` | — | See [Labels](./09-labels.md) |
