@@ -8,6 +8,7 @@ interface BackfillOpts {
   remote?: boolean;
   binding: string;
   concurrency: number;
+  maxAttempts: number;
   only?: string;
 }
 
@@ -29,6 +30,11 @@ export function registerBackfill(cli: CAC): void {
       "--concurrency <n>",
       "Concurrency for record backfill (labels are per-labeler serial)",
       { default: 100 }
+    )
+    .option(
+      "--max-attempts <n>",
+      "Failed attempts before leaving an account pending for the next run",
+      { default: 5 }
     )
     .option(
       "--only <kind>",
@@ -53,11 +59,14 @@ export function registerBackfill(cli: CAC): void {
       const runRecords = only !== "labels";
       const runLabels = only !== "records";
 
+      let recordsIncomplete = false;
       if (runRecords) {
-        await backfillAll({
+        const result = await backfillAll({
           ...wrangler,
           concurrency: Number(options.concurrency),
+          maxAttempts: Number(options.maxAttempts),
         });
+        recordsIncomplete = result.status.state !== "complete";
       }
 
       if (runLabels) {
@@ -77,6 +86,13 @@ export function registerBackfill(cli: CAC): void {
             `labels: caught up after ${result.cycles} cycle${result.cycles === 1 ? "" : "s"}`
           );
         }
+      }
+
+      if (recordsIncomplete) {
+        console.error(
+          "Record backfill remains incomplete. Failed rows were kept pending; rerun this command to retry them."
+        );
+        process.exitCode = 1;
       }
     });
 }

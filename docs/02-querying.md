@@ -28,6 +28,18 @@ Every config field becomes a predictable URL param:
 
 Dotted field names become camelCase params — `queryable: { "subject.uri": {} }` → `?subjectUri=…`.
 
+## Operational status
+
+`GET /status` and `GET /xrpc/{namespace}.getOverview` return the current JSON overview. It includes indexed record totals, the live-ingest cursor and lag, and durable backfill state:
+
+- discovery sources complete, pending, or failed;
+- known account totals, including pending and currently unreachable accounts;
+- account/collection tasks complete, pending, or failed;
+- known-task completion percentage; and
+- per-collection backfill progress.
+
+"Known" is deliberate: while relay discovery is incomplete, Contrail cannot honestly claim how many accounts remain undiscovered. `/health` remains a lightweight liveness response and does not claim that historical backfill is complete.
+
 ## Programmatic
 
 ```ts

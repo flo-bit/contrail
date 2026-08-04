@@ -41,10 +41,15 @@ function recordTimeUs(
 }
 
 const PAGE_SIZE = 100;
-const BATCH_SIZE = 100;
-const MAX_RETRIES = 5;
+const DEFAULT_MAX_ATTEMPTS = 5;
 
 const REQUEST_TIMEOUT_MS = 10_000;
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -72,17 +77,21 @@ async function withRetry<T>(
   throw lastError;
 }
 
+function errorMessage(error: unknown): string {
+  return String(error).slice(0, 1_000);
+}
+
 async function markFailed(
   db: Database,
   did: string,
   collection: string,
-  error: string
+  error: unknown
 ): Promise<void> {
   await db
     .prepare(
-      "UPDATE backfills SET retries = retries + 1, last_error = ? WHERE did = ? AND collection = ?"
+      "UPDATE backfills SET retries = retries + 1, last_error = ?, last_attempt_at = ? WHERE did = ? AND collection = ?"
     )
-    .bind(error, did, collection)
+    .bind(errorMessage(error), Date.now(), did, collection)
     .run();
 }
 
@@ -97,15 +106,20 @@ export interface BackfillOptions {
   requestTimeout?: number;
 }
 
-export async function backfillUser(
+interface BackfillUserAttempt {
+  records: number;
+  completed: boolean;
+}
+
+async function backfillUserAttempt(
   db: Database,
   did: string,
   collection: string,
   deadline: number,
   config: ContrailConfig,
   options?: BackfillOptions
-): Promise<number> {
-  if (Date.now() >= deadline) return 0;
+): Promise<BackfillUserAttempt> {
+  if (Date.now() >= deadline) return { records: 0, completed: false };
 
   const status = await db
     .prepare(
@@ -114,7 +128,7 @@ export async function backfillUser(
     .bind(did, collection)
     .first<{ completed: number; pds_cursor: string | null; retries: number }>();
 
-  if (status?.completed) return 0;
+  if (status?.completed) return { records: 0, completed: true };
 
   if (!status) {
     await db
@@ -131,12 +145,12 @@ export async function backfillUser(
 
   if (!isDid(did)) {
     await markFailed(db, did, collection, `Invalid DID: ${did}`);
-    return 0;
+    return { records: 0, completed: false };
   }
 
   if (!isNsid(collection)) {
     await markFailed(db, did, collection, `Invalid NSID: ${collection}`);
-    return 0;
+    return { records: 0, completed: false };
   }
 
   let client = options?.client;
@@ -149,8 +163,8 @@ export async function backfillUser(
         timeout
       );
     } catch (err) {
-      await markFailed(db, did, collection, String(err));
-      return 0;
+      await markFailed(db, did, collection, err);
+      return { records: 0, completed: false };
     }
   }
 
@@ -174,13 +188,16 @@ export async function backfillUser(
         timeout
       );
       if (!response.ok) {
+        const detail = response.data.message
+          ? `${response.data.error}: ${response.data.message}`
+          : response.data.error;
         await markFailed(
           db,
           did,
           collection,
-          `listRecords status ${response.status}`
+          `listRecords status ${response.status} (${detail})`
         );
-        return totalInserted;
+        return { records: totalInserted, completed: false };
       }
 
       if (response.data.records.length === 0) {
@@ -218,9 +235,9 @@ export async function backfillUser(
 
       await db
         .prepare(
-          "UPDATE backfills SET pds_cursor = ? WHERE did = ? AND collection = ?"
+          "UPDATE backfills SET pds_cursor = ?, last_error = NULL, last_attempt_at = ? WHERE did = ? AND collection = ?"
         )
-        .bind(currentCursor ?? null, did, collection)
+        .bind(currentCursor ?? null, now, did, collection)
         .run();
 
       if (!currentCursor) {
@@ -229,20 +246,39 @@ export async function backfillUser(
       }
     }
   } catch (err) {
-    await markFailed(db, did, collection, String(err));
-    return totalInserted;
+    await markFailed(db, did, collection, err);
+    return { records: totalInserted, completed: false };
   }
 
   if (done) {
     await db
       .prepare(
-        "UPDATE backfills SET completed = 1 WHERE did = ? AND collection = ?"
+        "UPDATE backfills SET completed = 1, last_error = NULL, last_attempt_at = ? WHERE did = ? AND collection = ?"
       )
-      .bind(did, collection)
+      .bind(Date.now(), did, collection)
       .run();
   }
 
-  return totalInserted;
+  return { records: totalInserted, completed: done };
+}
+
+export async function backfillUser(
+  db: Database,
+  did: string,
+  collection: string,
+  deadline: number,
+  config: ContrailConfig,
+  options?: BackfillOptions
+): Promise<number> {
+  const result = await backfillUserAttempt(
+    db,
+    did,
+    collection,
+    deadline,
+    config,
+    options
+  );
+  return result.records;
 }
 
 // --- Bulk backfill (groups by DID, resolves client once) ---
@@ -256,6 +292,9 @@ export interface BackfillProgress {
 
 export interface BackfillAllOptions {
   concurrency?: number;
+  /** Failed account/collection attempts allowed in one run before leaving the
+   * row pending for a future run. Default: 5. */
+  maxAttempts?: number;
   onProgress?: (progress: BackfillProgress) => void;
 }
 
@@ -264,7 +303,11 @@ export async function backfillPending(
   config: ContrailConfig,
   options?: BackfillAllOptions
 ): Promise<number> {
-  const concurrency = options?.concurrency ?? 100;
+  const concurrency = positiveInteger(options?.concurrency, 100);
+  const maxAttempts = positiveInteger(
+    options?.maxAttempts,
+    DEFAULT_MAX_ATTEMPTS
+  );
   let totalBackfilled = 0;
 
   // Anchor the jetstream cursor to now if it hasn't been set yet, so records
@@ -273,7 +316,8 @@ export async function backfillPending(
     await saveCursor(db, Date.now() * 1000);
   }
 
-  // Reset retries so users that hit the cap in a prior run get another chance.
+  // The attempt cap is per invocation. Rows remain incomplete and a later run
+  // gets a fresh bounded retry budget.
   await db
     .prepare("UPDATE backfills SET retries = 0 WHERE completed = 0")
     .run();
@@ -283,13 +327,13 @@ export async function backfillPending(
       .prepare(
         "SELECT did, collection FROM backfills WHERE completed = 0 AND retries < ? ORDER BY did"
       )
-      .bind(MAX_RETRIES)
+      .bind(maxAttempts)
       .all<{ did: string; collection: string }>();
 
     const rows = pending.results ?? [];
     if (rows.length === 0) break;
 
-    // Group by DID so we resolve PDS once per user
+    // Group by DID so we resolve each PDS once per pass.
     const byDid = new Map<string, string[]>();
     for (const row of rows) {
       const cols = byDid.get(row.did) ?? [];
@@ -299,11 +343,8 @@ export async function backfillPending(
 
     const dids = [...byDid.keys()];
 
-    // Resolve PDS endpoints up front (populates the in-memory cache) rather
-    // than concurrently with the backfill passes below. Overlapping the two put
-    // identity resolution and record backfill in contention for slingshot at
-    // once, and the partial responses that produced (a PDS without a handle)
-    // got persisted and stranded. Resolving first keeps that load separate.
+    // Warm the identity/PDS cache separately from record requests. Failures are
+    // deliberately ignored here: the actual pass records them per pending row.
     for (let i = 0; i < dids.length; i += 200) {
       await Promise.allSettled(
         dids.slice(i, i + 200).map((did) =>
@@ -316,7 +357,6 @@ export async function backfillPending(
     let usersComplete = 0;
     let usersFailed = 0;
     const failedDids: string[] = [];
-
     const FAST_TIMEOUT = 3_000;
 
     const emitProgress = () =>
@@ -327,13 +367,13 @@ export async function backfillPending(
         usersFailed,
       });
 
-    // Fast pass: single attempt per user with short timeout
+    // Fast pass: one short attempt. A DID is complete only when every pending
+    // collection reaches the end of its PDS listing.
     for (let i = 0; i < dids.length; i += concurrency) {
       const batch = dids.slice(i, i + concurrency);
-
-      const results = await Promise.allSettled(
+      const results = await Promise.all(
         batch.map(async (did) => {
-          let client: Client | undefined;
+          let client: Client;
           try {
             client = await withRetry(
               () => getClient(did as Did, db, config),
@@ -342,90 +382,97 @@ export async function backfillPending(
               FAST_TIMEOUT
             );
           } catch {
-            failedDids.push(did);
-            return 0;
+            return { did, records: 0, completed: false };
           }
 
-          const cols = byDid.get(did)!;
-          const counts = await Promise.all(
-            cols.map((col) =>
-              backfillUser(db, did, col, Infinity, config, {
+          const attempts = await Promise.all(
+            byDid.get(did)!.map((collection) =>
+              backfillUserAttempt(db, did, collection, Infinity, config, {
                 client,
                 skipReplayDetection: true,
                 maxRetries: 0,
                 requestTimeout: FAST_TIMEOUT,
-              }).catch(() => {
-                failedDids.push(did);
-                return 0;
               })
             )
           );
-
-          usersComplete++;
-          return counts.reduce((a, b) => a + b, 0);
+          return {
+            did,
+            records: attempts.reduce((sum, attempt) => sum + attempt.records, 0),
+            completed: attempts.every((attempt) => attempt.completed),
+          };
         })
       );
 
-      for (const r of results) {
-        if (r.status === "fulfilled") roundBackfilled += r.value;
+      for (const result of results) {
+        roundBackfilled += result.records;
+        if (result.completed) usersComplete++;
+        else failedDids.push(result.did);
       }
-
       emitProgress();
     }
 
-    // Retry pass: failed DIDs get retries with backoff, still in concurrent batches
-    if (failedDids.length > 0) {
-      const uniqueFailed = [...new Set(failedDids)];
-      usersComplete -= uniqueFailed.length; // don't count them yet
+    // Slow retry pass: use normal timeouts and request backoff for DIDs that did
+    // not finish. They remain incomplete if this pass also fails.
+    const uniqueFailed = [...new Set(failedDids)];
+    const retryableRows = await db
+      .prepare(
+        "SELECT DISTINCT did FROM backfills WHERE completed = 0 AND retries < ?"
+      )
+      .bind(maxAttempts)
+      .all<{ did: string }>();
+    const retryableDids = new Set(
+      (retryableRows.results ?? []).map((row) => row.did)
+    );
+    const retryDids = uniqueFailed.filter((did) => retryableDids.has(did));
+    usersFailed += uniqueFailed.length - retryDids.length;
+    emitProgress();
 
-      for (let i = 0; i < uniqueFailed.length; i += concurrency) {
-        const batch = uniqueFailed.slice(i, i + concurrency);
-
-        const results = await Promise.allSettled(
-          batch.map(async (did) => {
-            let client: Client | undefined;
-            try {
-              client = await withRetry(
-                () => getClient(did as Did, db, config),
-                `getClient(${did})`,
-                2
-              );
-            } catch (err) {
-              for (const col of byDid.get(did)!) {
-                await markFailed(db, did, col, String(err));
-              }
-              usersFailed++;
-              usersComplete++;
-              return 0;
-            }
-
-            const cols = byDid.get(did)!;
-            const counts = await Promise.all(
-              cols.map((col) =>
-                backfillUser(db, did, col, Infinity, config, {
-                  client,
-                  skipReplayDetection: true,
-                  maxRetries: 2,
-                })
-              )
+    for (let i = 0; i < retryDids.length; i += concurrency) {
+      const batch = retryDids.slice(i, i + concurrency);
+      const results = await Promise.all(
+        batch.map(async (did) => {
+          let client: Client;
+          try {
+            client = await withRetry(
+              () => getClient(did as Did, db, config),
+              `getClient(${did})`,
+              2
             );
-            usersComplete++;
-            return counts.reduce((a, b) => a + b, 0);
-          })
-        );
+          } catch (error) {
+            for (const collection of byDid.get(did)!) {
+              await markFailed(db, did, collection, error);
+            }
+            return { records: 0, completed: false };
+          }
 
-        for (const r of results) {
-          if (r.status === "fulfilled") roundBackfilled += r.value;
-        }
+          const attempts = await Promise.all(
+            byDid.get(did)!.map((collection) =>
+              backfillUserAttempt(db, did, collection, Infinity, config, {
+                client,
+                skipReplayDetection: true,
+                maxRetries: 2,
+              })
+            )
+          );
+          return {
+            records: attempts.reduce((sum, attempt) => sum + attempt.records, 0),
+            completed: attempts.every((attempt) => attempt.completed),
+          };
+        })
+      );
 
-        emitProgress();
+      for (const result of results) {
+        roundBackfilled += result.records;
+        if (result.completed) usersComplete++;
+        else usersFailed++;
       }
+      emitProgress();
     }
 
     totalBackfilled += roundBackfilled;
-
-    // If nothing was backfilled this round, we're stuck
-    if (roundBackfilled === 0) break;
+    // Do not use inserted-record count as a completion signal: a reachable PDS
+    // may legitimately have zero records, while an unreachable PDS must consume
+    // its bounded retry budget and remain pending.
   }
 
   return totalBackfilled;
@@ -442,7 +489,7 @@ async function fetchPage(
   relay: string,
   collection: string,
   cursor?: string
-): Promise<DiscoveryPage | null> {
+): Promise<DiscoveryPage> {
   const url = new URL(
     `/xrpc/com.atproto.sync.listReposByCollection`,
     relay
@@ -453,21 +500,28 @@ async function fetchPage(
     url.searchParams.set("cursor", cursor);
   }
 
-  try {
-    return await withRetry(
-      async () => {
-        const response = await fetch(url.toString());
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return (await response.json()) as DiscoveryPage;
-      },
-      `fetchPage(${relay}, ${collection})`
-    );
-  } catch (err) {
-    // Discovery page fetch failed after retries — skip this relay
-    return null;
-  }
+  return withRetry(
+    async () => {
+      const response = await fetch(url.toString());
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as Partial<DiscoveryPage>;
+      if (
+        !body ||
+        !Array.isArray(body.repos) ||
+        !body.repos.every(
+          (repo) =>
+            repo && typeof repo === "object" && typeof repo.did === "string"
+        ) ||
+        (body.cursor !== undefined && typeof body.cursor !== "string")
+      ) {
+        throw new Error("Malformed discovery response");
+      }
+      return body as DiscoveryPage;
+    },
+    `fetchPage(${relay}, ${collection})`
+  );
 }
 
 async function insertDiscoveredDIDs(
@@ -495,6 +549,9 @@ async function insertDiscoveredDIDs(
   }
 }
 
+const DISCOVERY_RETRY_BASE_MS = 60_000;
+const DISCOVERY_RETRY_MAX_MS = 60 * 60_000;
+
 async function saveDiscoveryState(
   db: Database,
   collection: string,
@@ -504,10 +561,56 @@ async function saveDiscoveryState(
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO discovery (collection, relay, cursor, completed) VALUES (?, ?, ?, ?) ON CONFLICT(collection, relay) DO UPDATE SET cursor = excluded.cursor, completed = excluded.completed"
+      "INSERT INTO discovery (collection, relay, cursor, completed, retries, last_error, last_attempt_at, next_retry_at) VALUES (?, ?, ?, ?, 0, NULL, ?, NULL) ON CONFLICT(collection, relay) DO UPDATE SET cursor = excluded.cursor, completed = excluded.completed, retries = 0, last_error = NULL, last_attempt_at = excluded.last_attempt_at, next_retry_at = NULL"
     )
-    .bind(collection, relay, cursor, completed ? 1 : 0)
+    .bind(collection, relay, cursor, completed ? 1 : 0, Date.now())
     .run();
+}
+
+async function markDiscoveryFailed(
+  db: Database,
+  collection: string,
+  relay: string,
+  cursor: string | null,
+  retries: number,
+  error: unknown
+): Promise<void> {
+  const now = Date.now();
+  const retryDelay = Math.min(
+    DISCOVERY_RETRY_BASE_MS * 2 ** Math.min(retries, 6),
+    DISCOVERY_RETRY_MAX_MS
+  );
+  await db
+    .prepare(
+      "INSERT INTO discovery (collection, relay, cursor, completed, retries, last_error, last_attempt_at, next_retry_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?) ON CONFLICT(collection, relay) DO UPDATE SET cursor = excluded.cursor, completed = 0, retries = excluded.retries, last_error = excluded.last_error, last_attempt_at = excluded.last_attempt_at, next_retry_at = excluded.next_retry_at"
+    )
+    .bind(
+      collection,
+      relay,
+      cursor,
+      retries + 1,
+      errorMessage(error),
+      now,
+      now + retryDelay
+    )
+    .run();
+}
+
+async function ensureDiscoveryRows(
+  db: Database,
+  collections: string[],
+  relays: string[]
+): Promise<void> {
+  for (const collection of collections) {
+    for (const relay of relays) {
+      await db
+        .prepare(
+          "INSERT INTO discovery (collection, relay, completed) VALUES (?, ?, 0) ON CONFLICT DO NOTHING"
+        )
+        .bind(collection, relay)
+        .run();
+    }
+  }
 }
 
 export async function discoverDIDs(
@@ -520,6 +623,7 @@ export async function discoverDIDs(
   if (relays.length === 0 || collections.length === 0) return [];
 
   const discovered: string[] = [];
+  await ensureDiscoveryRows(db, collections, relays);
 
   for (const collection of collections) {
     if (Date.now() >= deadline) break;
@@ -530,24 +634,37 @@ export async function discoverDIDs(
     for (const r of relays) {
       const row = await db
         .prepare(
-          "SELECT cursor, completed FROM discovery WHERE collection = ? AND relay = ?"
+          "SELECT cursor, completed, retries, next_retry_at FROM discovery WHERE collection = ? AND relay = ?"
         )
         .bind(collection, r)
-        .first<{ cursor: string | null; completed: number }>();
+        .first<{
+          cursor: string | null;
+          completed: number;
+          retries: number;
+          next_retry_at: number | null;
+        }>();
 
       if (row?.completed) continue;
+      if (row?.next_retry_at && row.next_retry_at > Date.now()) continue;
 
-      data = await fetchPage(r, collection, row?.cursor ?? undefined);
-      if (data) {
+      try {
+        data = await fetchPage(r, collection, row?.cursor ?? undefined);
         relay = r;
         break;
-      } else {
-        await saveDiscoveryState(db, collection, r, null, true);
+      } catch (error) {
+        await markDiscoveryFailed(
+          db,
+          collection,
+          r,
+          row?.cursor ?? null,
+          row?.retries ?? 0,
+          error
+        );
       }
     }
     if (!data || !relay) continue;
 
-    const dids = data.repos?.map((r) => r.did) ?? [];
+    const dids = data.repos.map((r) => r.did).filter(isDid);
     await insertDiscoveredDIDs(db, dids, collection);
     discovered.push(...dids);
 

@@ -56,7 +56,9 @@ await contrail.discover();                     // walk relays, register DIDs
 await contrail.backfill({ concurrency: 100 }); // fetch history for registered DIDs
 ```
 
-`backfill()` picks up where it left off across runs — safe to re-run.
+`backfill()` picks up each account/collection at its saved PDS cursor. A row is marked complete only after the PDS listing reaches its end. Timeouts, failed identity resolution, `429`, and `5xx` responses leave the row pending with its last error.
+
+Each invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. A later invocation resets that budget and retries the pending rows. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
 
 ### Workers CLI
 
@@ -67,7 +69,7 @@ pnpm contrail backfill           # local D1 (wrangler dev's bindings)
 pnpm contrail backfill --remote  # production D1
 ```
 
-Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100).
+Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100), and `--max-attempts <n>` (default 5). The command exits unsuccessfully when known work remains; rerun it later rather than treating the partial result as complete.
 
 If you'd rather embed backfill inside your own script, `@atmo-dev/contrail/workers` exports the same logic as a function:
 
@@ -97,7 +99,7 @@ async scheduled(_ev, env, ctx) {
 
 `ingest()` connects to Jetstream, streams events since the saved cursor, stops when caught up. Running every minute is fine — the next fire resumes where this one left off. Each cycle is bounded, so it can't blow past the Worker time limit.
 
-**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and offers to run the initial backfill when the local DB is empty.
+**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and offers to start or resume backfill whenever known work remains.
 
 ### Persistent (node / any long-lived server)
 

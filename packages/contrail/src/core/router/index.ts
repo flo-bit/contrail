@@ -6,7 +6,7 @@ import { backfillUser } from "../backfill";
 import { hydrateLabels } from "../labels/hydrate";
 import { selectAcceptedLabelers } from "../labels/select";
 import { resolveActor } from "../identity";
-import { registerAdminRoutes } from "./admin";
+import { getOverview, registerAdminRoutes } from "./admin";
 import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
@@ -26,6 +26,7 @@ export function createApp(
   app.use("*", cors());
 
   app.get("/", (c) => c.json({ status: "ok" }));
+  app.get("/status", async (c) => c.json(await getOverview(db, config)));
   app.get("/health", (c) => c.json({ status: "ok" }));
   app.get("/xrpc/_health", (c) => c.json({ status: "ok" }));
 

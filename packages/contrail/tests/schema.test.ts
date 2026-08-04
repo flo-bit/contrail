@@ -18,6 +18,25 @@ describe("initSchema", () => {
     expect(names).toContain("discovery");
     expect(names).toContain("cursor");
     expect(names).toContain("identities");
+
+    const backfillColumns = await db
+      .prepare("PRAGMA table_info(backfills)")
+      .all<{ name: string }>();
+    expect(backfillColumns.results.map((column) => column.name)).toContain(
+      "last_attempt_at"
+    );
+
+    const discoveryColumns = await db
+      .prepare("PRAGMA table_info(discovery)")
+      .all<{ name: string }>();
+    expect(discoveryColumns.results.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "retries",
+        "last_error",
+        "last_attempt_at",
+        "next_retry_at",
+      ])
+    );
   });
 
   it("creates dynamic indexes for queryable fields", async () => {
@@ -46,6 +65,34 @@ describe("initSchema", () => {
 
     // Should have index for subject.uri relation field
     expect(names.some((n) => n.includes("subject"))).toBe(true);
+  });
+
+  it("migrates existing backfill and discovery state tables", async () => {
+    const db = createTestDb();
+    await db
+      .prepare(
+        "CREATE TABLE backfills (did TEXT NOT NULL, collection TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, pds_cursor TEXT, retries INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY (did, collection))"
+      )
+      .run();
+    await db
+      .prepare(
+        "CREATE TABLE discovery (collection TEXT NOT NULL, relay TEXT NOT NULL, cursor TEXT, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (collection, relay))"
+      )
+      .run();
+
+    await initSchema(db, TEST_CONFIG);
+
+    const discoveryColumns = await db
+      .prepare("PRAGMA table_info(discovery)")
+      .all<{ name: string }>();
+    expect(discoveryColumns.results.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "retries",
+        "last_error",
+        "last_attempt_at",
+        "next_retry_at",
+      ])
+    );
   });
 
   it("is idempotent", async () => {

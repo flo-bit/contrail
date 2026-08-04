@@ -21,6 +21,7 @@ import {
   discoverDIDs,
   type BackfillAllOptions,
 } from "./core/backfill";
+import { getBackfillStatus, type BackfillStatus } from "./core/status";
 import {
   processNotifyUris,
   type NotifyResult,
@@ -172,7 +173,11 @@ export class Contrail {
   async backfillAll(
     options?: BackfillAllOptions,
     db?: Database
-  ): Promise<{ discovered: number; backfilled: number }> {
+  ): Promise<{
+    discovered: number;
+    backfilled: number;
+    status: BackfillStatus;
+  }> {
     const d = this.getDb(db);
     const logger = this.config.logger;
     const startedAt = Date.now();
@@ -203,11 +208,18 @@ export class Contrail {
 
     logger?.log?.("backfilling…");
     const backfilled = await this.backfill(effective, d);
+    const status = await getBackfillStatus(d, this.config);
     const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
-    logger?.log?.(
-      `  done: ${backfilled} records across ${discovered.length} users in ${elapsedS}s`
-    );
-    return { discovered: discovered.length, backfilled };
+    if (status.state === "complete") {
+      logger?.log?.(
+        `  done: ${backfilled} records; ${status.accounts.complete}/${status.accounts.total} known accounts complete in ${elapsedS}s`
+      );
+    } else {
+      logger?.warn?.(
+        `  incomplete: ${status.accounts.pending} known accounts remain; ${status.accounts.unreachable} currently unreachable (${elapsedS}s)`
+      );
+    }
+    return { discovered: discovered.length, backfilled, status };
   }
 
   /** Immediately fetch and index specific records from their PDS. */

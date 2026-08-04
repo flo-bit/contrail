@@ -12,6 +12,7 @@
 import { Contrail } from "../contrail.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillAllOptions } from "../core/backfill.js";
+import type { BackfillStatus } from "../core/status.js";
 
 interface WranglerCommon {
   config: ContrailConfig;
@@ -25,6 +26,8 @@ interface WranglerCommon {
 export interface BackfillAllViaWranglerOptions extends WranglerCommon {
   /** Passed through to `contrail.backfillAll()`. Default: 100. */
   concurrency?: number;
+  /** Failed attempts allowed in this run before a row remains pending. */
+  maxAttempts?: number;
   /** Override the built-in progress logging. */
   onProgress?: BackfillAllOptions["onProgress"];
 }
@@ -62,10 +65,18 @@ async function withWrangler<T>(
 
 export async function backfillAll(
   opts: BackfillAllViaWranglerOptions
-): Promise<{ discovered: number; backfilled: number }> {
+): Promise<{
+  discovered: number;
+  backfilled: number;
+  status: BackfillStatus;
+}> {
   return withWrangler(opts, (contrail, db) =>
     contrail.backfillAll(
-      { concurrency: opts.concurrency ?? 100, onProgress: opts.onProgress },
+      {
+        concurrency: opts.concurrency ?? 100,
+        maxAttempts: opts.maxAttempts,
+        onProgress: opts.onProgress,
+      },
       db
     )
   );

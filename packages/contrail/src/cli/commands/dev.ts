@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { CAC } from "cac";
 import { Contrail } from "../../contrail.js";
+import { getBackfillStatus } from "../../core/status.js";
 import type { Database } from "../../core/types.js";
 import { promptYesNo, resolveAndLoadConfig } from "../shared.js";
 
@@ -53,15 +54,19 @@ export function registerDev(cli: CAC): void {
         const contrail = new Contrail(config);
         await contrail.init(db);
 
-        const hasBackfilled = await db
-          .prepare("SELECT 1 FROM backfills WHERE completed = 1 LIMIT 1")
-          .first();
+        const backfillStatus = await getBackfillStatus(db, config);
 
-        if (!hasBackfilled) {
-          console.log("no backfilled users in the local DB yet.");
+        if (backfillStatus.state !== "complete") {
+          if (backfillStatus.state === "not_started") {
+            console.log("no backfilled users in the local DB yet.");
+          } else {
+            console.log(
+              `backfill incomplete: ${backfillStatus.accounts.pending} accounts remain; ${backfillStatus.accounts.unreachable} currently unreachable.`
+            );
+          }
           if (
             await promptYesNo(
-              "run backfill now? (takes a few minutes)",
+              "run or resume backfill now? (takes a few minutes)",
               true,
               !!options.yes
             )

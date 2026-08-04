@@ -25,7 +25,10 @@ then hit:
 
 ```
 GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
+GET https://<your-worker>.workers.dev/status
 ```
+
+`/status` returns JSON with the live-ingest cursor, indexed record totals, discovery progress, known backfill work, and counts of pending or currently unreachable accounts.
 
 ## local dev
 
@@ -34,7 +37,15 @@ pnpm dev                # wraps wrangler dev + auto-fires cron + prompts for ini
 pnpm contrail backfill  # backfill against the local D1 created by wrangler
 ```
 
-`pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to run backfill when nothing has been indexed yet, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
+`pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to start or resume backfill whenever known work remains, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
+
+A failed PDS stays pending rather than being marked complete. The backfill command retries failures with a bounded attempt budget and exits unsuccessfully if work remains; rerun it later to give unreachable accounts a fresh retry budget.
+
+```bash
+curl http://localhost:8787/status
+```
+
+This reports the durable state without exposing account DIDs or raw upstream errors.
 
 ## extending
 
