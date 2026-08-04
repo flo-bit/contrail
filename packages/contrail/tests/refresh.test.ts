@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { refresh } from "../src/index";
-import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { initSchema, queryRecords, refresh, resolveConfig } from "../src/index";
+import {
+  ingestRecords,
+  createTestDb,
+  createTestDbWithSchema,
+  makeEvent,
+  TEST_CONFIG,
+} from "./helpers";
 import type { Database } from "../src/index";
 
 // We mock the PDS client so refresh() can be exercised without network IO.
@@ -192,6 +198,36 @@ describe("refresh", () => {
     expect(result.usersScanned).toBe(1);
     // The non-failing user's records still classified.
     expect(result.total.missing).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not report records rejected by admission as missing", async () => {
+    const filteredConfig = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: EVENT_NSID,
+          recordFilter: (record) => record.keep === true,
+        },
+      },
+    });
+    const db = createTestDb();
+    await initSchema(db, filteredConfig);
+    await registerKnownDid(db, ALICE);
+    pages.set(`${ALICE}|${EVENT_NSID}`, [
+      {
+        uri: aliceEventUri("filtered"),
+        cid: "filtered-cid",
+        value: { keep: false },
+      },
+    ]);
+
+    const result = await refresh(db, filteredConfig, { ignoreWindowMs: 0 });
+    expect(result.total).toEqual({ missing: 0, staleUpdates: 0, inSync: 0 });
+    const stored = await queryRecords(db, filteredConfig, {
+      collection: "event",
+    });
+    expect(stored.records).toHaveLength(0);
   });
 
   it("recounts both relation targets when a refreshed child moves", async () => {

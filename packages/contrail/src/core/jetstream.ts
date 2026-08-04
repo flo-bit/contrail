@@ -196,6 +196,7 @@ export async function ingestEvents(
 
   const collections = getCollectionNsids(config);
   const dependentCollections = new Set(getDependentNsids(config));
+  const provisionalKnownDids = knownDids ? new Set(knownDids) : undefined;
   const urls = config.jetstreams ?? [];
 
   let totalCommits = 0;
@@ -244,12 +245,21 @@ export async function ingestEvents(
 
       const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
-      if (dependentCollections.has(commit.collection) && knownDids) {
-        if (!knownDids.has(event.did)) {
-          filteredUnknownDid++;
-          if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
-          return;
-        }
+      if (
+        provisionalKnownDids &&
+        !dependentCollections.has(commit.collection) &&
+        commit.operation !== "delete"
+      ) {
+        provisionalKnownDids.add(event.did);
+      }
+      if (
+        dependentCollections.has(commit.collection) &&
+        provisionalKnownDids &&
+        !provisionalKnownDids.has(event.did)
+      ) {
+        filteredUnknownDid++;
+        if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
+        return;
       }
 
       const prev = seenUris.get(uri);
@@ -437,19 +447,15 @@ export async function runIngestCycle(
   }
 
   const accepted: IngestEvent[] = [];
+  const newlyKnownDids: string[] = [];
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
     const result = await ingestRecords(db, batch, config, { knownDids });
     accepted.push(...result.accepted);
-  }
-
-  const newlyKnownDids: string[] = [];
-  if (knownDids) {
-    const dependent = new Set(dependentCollections);
-    for (const event of accepted) {
-      if (!dependent.has(event.collection) && !knownDids.has(event.did)) {
-        knownDids.add(event.did);
-        newlyKnownDids.push(event.did);
+    if (knownDids) {
+      for (const did of result.discoveredDids) {
+        knownDids.add(did);
+        newlyKnownDids.push(did);
       }
     }
   }

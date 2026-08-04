@@ -87,7 +87,6 @@ export async function runPersistent(
         flushIntervalMs,
         signal,
         collections,
-        dependentCollections,
         knownDids,
         newlyKnownDids: new Set<string>(),
         state,
@@ -113,7 +112,6 @@ interface StreamOptions {
   flushIntervalMs: number;
   signal?: AbortSignal;
   collections: string[];
-  dependentCollections: Set<string>;
   knownDids?: Set<string>;
   /** DIDs that crossed from unknown→known during this stream's lifetime.
    *  Drained on each flush so Constellation reverse-lookups can run for them. */
@@ -129,7 +127,7 @@ async function streamAndFlush(
   cursor: number | null,
   opts: StreamOptions,
 ): Promise<void> {
-  const { batchSize, flushIntervalMs, signal, collections, dependentCollections, knownDids, state, log } = opts;
+  const { batchSize, flushIntervalMs, signal, collections, knownDids, state, log } = opts;
 
   const subscription = opts.createSubscription
     ? opts.createSubscription(cursor)
@@ -157,19 +155,17 @@ async function streamAndFlush(
     try {
       if (buffer.length > 0) {
         const batch = buffer.splice(0);
-        const { accepted } = await ingestRecords(db, batch, config, {
-          knownDids,
-        });
+        const { accepted, discoveredDids } = await ingestRecords(
+          db,
+          batch,
+          config,
+          { knownDids },
+        );
 
         if (knownDids) {
-          for (const event of accepted) {
-            if (
-              !dependentCollections.has(event.collection) &&
-              !knownDids.has(event.did)
-            ) {
-              knownDids.add(event.did);
-              opts.newlyKnownDids?.add(event.did);
-            }
+          for (const did of discoveredDids) {
+            knownDids.add(did);
+            opts.newlyKnownDids?.add(did);
           }
         }
 
@@ -291,10 +287,6 @@ async function streamAndFlush(
 
       if (event.kind === "commit") {
         const { commit } = event;
-
-        if (dependentCollections.has(commit.collection) && knownDids) {
-          if (!knownDids.has(event.did)) continue;
-        }
 
         buffer.push(
           createIngestEvent({

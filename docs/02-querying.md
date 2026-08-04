@@ -44,7 +44,7 @@ The programmatic shape doesn't use the URL param names — keys are the underlyi
 
 - `filters` / `rangeFilters` — keyed by the field name from your config (`startsAt`, `subject.uri`), not the camelCased URL param.
 - `countFilters` — keyed by the target collection's short name for totals, or by the full `nsid#group` token for group counts. E.g., `{ rsvp: 10 }` for "at least 10 RSVPs total," or `{ "community.lexicon.calendar.rsvp#going": 10 }` for "at least 10 going."
-- `sort` — `{ recordField, direction }` for field sorts, `{ countType, direction }` for count sorts (where `countType` is the same collection-short-name or `nsid#group` as above).
+- `sort` — `{ recordField, direction }` for field sorts, `{ countType, direction }` for count sorts (where `countType` is the same collection-short-name or `nsid#group` as above). Field sorts preserve the SQL value type, and records whose field is missing or `null` sort last in either direction.
 
 For count filters / sorts, the HTTP side is nicer than the programmatic side — consider going through `createHandler` + `fetch` even for in-process calls if you want the friendly names. Or use `createServerClient` from `@atmo-dev/contrail/server` for a typed XRPC client that runs in-process (no fetch roundtrip).
 

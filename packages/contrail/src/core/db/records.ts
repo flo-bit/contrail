@@ -788,7 +788,7 @@ export interface SortOption {
 interface CursorPayload {
   t: number;
   u: string;
-  v?: string | number;
+  v?: string | number | null;
   k: "time" | "search" | string;
 }
 
@@ -920,12 +920,22 @@ export async function queryRecords(
         "(r.time_us < ? OR (r.time_us = ? AND r.uri > ?))";
       if (sort?.recordField) {
         const sortExpr = dialect.jsonExtract("r.record", sort.recordField);
-        const cmp = sort.direction === "desc" ? "<" : ">";
-        const value = payload.v ?? "";
-        conditions.push(
-          `(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND ${stableTail}))`,
-        );
-        bindings.push(value, value, payload.t, payload.t, payload.u);
+        if (payload.v === null) {
+          conditions.push(`(${sortExpr} IS NULL AND ${stableTail})`);
+          bindings.push(payload.t, payload.t, payload.u);
+        } else if (payload.v !== undefined) {
+          const cmp = sort.direction === "desc" ? "<" : ">";
+          conditions.push(
+            `(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND ${stableTail}) OR ${sortExpr} IS NULL)`,
+          );
+          bindings.push(
+            payload.v,
+            payload.v,
+            payload.t,
+            payload.t,
+            payload.u,
+          );
+        }
       } else if (sort?.countType) {
         const sortCol = countColumnForType(config, collection, sort.countType);
         if (!sortCol) throw new Error(`Unknown countType: ${sort.countType}`);
@@ -996,6 +1006,9 @@ export async function queryRecords(
     ? ", " + countCols.map(({ column }) => `r.${column}`).join(", ")
     : "";
   const selectBindings: (string | number)[] = [];
+  const fieldSortSelect = sort?.recordField
+    ? `, ${dialect.jsonExtract("r.record", sort.recordField)} AS __sort_value`
+    : "";
   let searchRankSelect = "";
   if (expectedKind === "search" && ftsClause && search) {
     searchRankSelect = `, ${ftsClause.orderExpr} AS __search_rank`;
@@ -1003,7 +1016,7 @@ export async function queryRecords(
       selectBindings.push(search);
     }
   }
-  const select = `r.uri, r.did, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}${searchRankSelect}`;
+  const select = `r.uri, r.did, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}${fieldSortSelect}${searchRankSelect}`;
 
   const join = [source?.joins, ftsJoin].filter(Boolean).join(" ");
   const orderBindings: (string | number)[] = [];
@@ -1011,7 +1024,7 @@ export async function queryRecords(
   let orderBy: string;
   if (sort?.recordField) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderBy = `${dialect.jsonExtract("r.record", sort.recordField)} ${dir}, r.time_us DESC, r.uri ASC`;
+    orderBy = `${dialect.jsonExtract("r.record", sort.recordField)} ${dir} NULLS LAST, r.time_us DESC, r.uri ASC`;
   } else if (sort?.countType) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
     const sortCol = countColumnForType(config, collection, sort.countType);
@@ -1064,6 +1077,7 @@ export async function queryRecords(
           records[records.length - 1],
           sort,
           expectedKind,
+          rows[rows.length - 1]?.__sort_value,
           rows[rows.length - 1]?.__search_rank,
         )
       : undefined;
@@ -1076,14 +1090,19 @@ function buildCursor(
   row: RecordRow & { counts?: Record<string, number> },
   sort: SortOption | undefined,
   kind: string,
+  fieldSortValue?: unknown,
   searchRank?: unknown,
 ): string {
   const t = Number(row.time_us);
   const u = row.uri;
   if (sort?.recordField) {
-    const parsed = row.record ? JSON.parse(row.record) : null;
-    const v = parsed ? getNestedValue(parsed, sort.recordField) : undefined;
-    return encodeCursor({ t, u, v: v == null ? "" : String(v), k: kind });
+    const v =
+      fieldSortValue === null ||
+      typeof fieldSortValue === "string" ||
+      typeof fieldSortValue === "number"
+        ? fieldSortValue
+        : null;
+    return encodeCursor({ t, u, v, k: kind });
   }
   if (sort?.countType) {
     const v = row.counts?.[sort.countType] ?? 0;

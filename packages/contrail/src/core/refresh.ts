@@ -212,14 +212,23 @@ export async function refresh(
           config
         );
 
-        for (const ev of events) {
-          const ex = existing.get(ev.uri);
-          if (!ex) {
+        // Admission owns which remote records belong in the projection. Classify
+        // only accepted events so an intentional filter is not reported missing
+        // on every refresh forever.
+        const { accepted } = await ingestRecords(db, events, config, {
+          existing,
+          skipFeedFanout: true,
+        });
+
+        for (const event of accepted) {
+          const previous = existing.get(event.uri);
+          if (!previous) {
             byCollection[nsid].missing++;
             total.missing++;
-          } else if (ex.cid !== ev.cid) {
+          } else if (previous.cid !== event.cid) {
             const inWindow =
-              ex.indexed_at !== null && ex.indexed_at >= ignoreBeforeUs;
+              previous.indexed_at !== null &&
+              previous.indexed_at >= ignoreBeforeUs;
             if (inWindow) {
               byCollection[nsid].inSync++;
               total.inSync++;
@@ -232,15 +241,6 @@ export async function refresh(
             total.inSync++;
           }
         }
-
-        // Upsert everything — even records "inside the ignore window"
-        // might genuinely have a new CID; we just don't count them as a
-        // miss-signal. Skip feed fanout since this is a catch-up, not a
-        // user-visible write.
-        await ingestRecords(db, events, config, {
-          existing,
-          skipFeedFanout: true,
-        });
         recordsScanned += events.length;
 
         cursor = nextCursor;

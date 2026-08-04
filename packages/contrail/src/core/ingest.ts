@@ -54,12 +54,15 @@ export interface IngestDropCounts {
   unknownCollection: number;
   invalidRecord: number;
   recordFilter: number;
+  unknownActor: number;
   unknownSubject: number;
 }
 
 export interface IngestRecordsResult {
   accepted: IngestEvent[];
   dropped: IngestDropCounts;
+  /** Discoverable actors admitted by this batch but absent from knownDids. */
+  discoveredDids: string[];
 }
 
 /**
@@ -80,6 +83,7 @@ export async function ingestRecords(
     unknownCollection: 0,
     invalidRecord: 0,
     recordFilter: 0,
+    unknownActor: 0,
     unknownSubject: 0,
   };
   const logger = config.logger ?? console;
@@ -120,11 +124,41 @@ export async function ingestRecords(
     accepted.push(event);
   }
 
+  const effectiveKnownDids = options.knownDids
+    ? new Set(options.knownDids)
+    : undefined;
+  const discoveredDids: string[] = [];
+  if (effectiveKnownDids) {
+    for (const event of accepted) {
+      if (event.operation === "delete") continue;
+      const shortName = resolveCollectionKey(config, event.collection);
+      const collection = shortName ? config.collections[shortName] : undefined;
+      if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
+        continue;
+      }
+      effectiveKnownDids.add(event.did);
+      discoveredDids.push(event.did);
+    }
+  }
+
+  const actorFiltered = effectiveKnownDids
+    ? accepted.filter((event) => {
+        if (event.operation === "delete") return true;
+        const shortName = resolveCollectionKey(config, event.collection);
+        const collection = shortName ? config.collections[shortName] : undefined;
+        if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
+          return true;
+        }
+        dropped.unknownActor++;
+        return false;
+      })
+    : accepted;
+
   const subjectFiltered = await filterUnknownSubjects(
     db,
     config,
-    accepted,
-    options.knownDids,
+    actorFiltered,
+    effectiveKnownDids,
     dropped,
   );
 
@@ -132,7 +166,7 @@ export async function ingestRecords(
     await projectEvents(db, subjectFiltered, config, options);
   }
 
-  return { accepted: subjectFiltered, dropped };
+  return { accepted: subjectFiltered, dropped, discoveredDids };
 }
 
 async function filterUnknownSubjects(
@@ -142,7 +176,7 @@ async function filterUnknownSubjects(
   knownDids: ReadonlySet<string> | undefined,
   dropped: IngestDropCounts,
 ): Promise<IngestEvent[]> {
-  const subjectsByUri = new Map<string, string>();
+  const subjectsByEvent = new Map<IngestEvent, string>();
   const subjects = new Set<string>();
 
   for (const event of events) {
@@ -157,18 +191,18 @@ async function filterUnknownSubjects(
     const subject = record ? getNestedValue(record, subjectField) : undefined;
     if (typeof subject !== "string" || !isDid(subject)) {
       dropped.unknownSubject++;
-      subjectsByUri.set(event.uri, "");
+      subjectsByEvent.set(event, "");
       continue;
     }
-    subjectsByUri.set(event.uri, subject);
+    subjectsByEvent.set(event, subject);
     subjects.add(subject);
   }
 
-  if (subjectsByUri.size === 0) return events;
+  if (subjectsByEvent.size === 0) return events;
 
   const known = knownDids ? new Set(knownDids) : await loadKnownDids(db, subjects);
   return events.filter((event) => {
-    const subject = subjectsByUri.get(event.uri);
+    const subject = subjectsByEvent.get(event);
     if (subject === undefined) return true;
     if (subject !== "" && known.has(subject)) return true;
     if (subject !== "") dropped.unknownSubject++;

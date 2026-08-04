@@ -121,6 +121,71 @@ describe("ingestRecords", () => {
     expect(result.dropped.unknownSubject).toBe(0);
   });
 
+  it("admits dependent records discovered in the same batch regardless of order", async () => {
+    for (const dependentFirst of [false, true]) {
+      const suffix = dependentFirst ? "dependent-first" : "primary-first";
+      const primary = createIngestEvent({
+        did: `did:plc:${suffix}`,
+        collection: "com.example.event",
+        rkey: suffix,
+        operation: "create",
+        cid: `cid-${suffix}`,
+        value: { keep: true },
+        timeUs: 1,
+      });
+      const follow = createIngestEvent({
+        did: `did:plc:${suffix}`,
+        collection: "app.bsky.graph.follow",
+        rkey: suffix,
+        operation: "create",
+        cid: `follow-${suffix}`,
+        value: { subject: `did:plc:${suffix}` },
+        timeUs: 2,
+      });
+
+      const result = await ingestRecords(
+        db,
+        dependentFirst ? [follow, primary] : [primary, follow],
+        config,
+        { knownDids: new Set() },
+      );
+      expect(result.accepted).toHaveLength(2);
+      expect(result.discoveredDids).toEqual([`did:plc:${suffix}`]);
+    }
+  });
+
+  it("does not let a rejected primary admit dependent records", async () => {
+    const result = await ingestRecords(
+      db,
+      [
+        createIngestEvent({
+          did: "did:plc:rejected",
+          collection: "com.example.event",
+          rkey: "primary",
+          operation: "create",
+          cid: "primary-cid",
+          value: { keep: false },
+          timeUs: 1,
+        }),
+        createIngestEvent({
+          did: "did:plc:rejected",
+          collection: "app.bsky.graph.follow",
+          rkey: "follow",
+          operation: "create",
+          cid: "follow-cid",
+          value: { subject: "did:plc:known" },
+          timeUs: 2,
+        }),
+      ],
+      config,
+      { knownDids: new Set(["did:plc:known"]) },
+    );
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.dropped.recordFilter).toBe(1);
+    expect(result.dropped.unknownActor).toBe(1);
+  });
+
   it("applies dependent subject filtering in the same admission path", async () => {
     await db
       .prepare(
@@ -145,5 +210,56 @@ describe("ingestRecords", () => {
     const result = await ingestRecords(db, records, config);
     expect(result.accepted.map((record) => record.rkey)).toEqual(["f0"]);
     expect(result.dropped.unknownSubject).toBe(1);
+  });
+
+  it("always admits deletes when another mutation for the same URI is filtered", async () => {
+    const uri = "at://did:plc:alice/app.bsky.graph.follow/shared";
+    await db
+      .prepare(
+        "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)",
+      )
+      .bind("did:plc:known", null, null, 1)
+      .run();
+    await ingestRecords(
+      db,
+      [
+        createIngestEvent({
+          uri,
+          did: "did:plc:alice",
+          collection: "app.bsky.graph.follow",
+          rkey: "shared",
+          operation: "create",
+          cid: "old-cid",
+          value: { subject: "did:plc:known" },
+          timeUs: 1,
+        }),
+      ],
+      config,
+    );
+
+    const update = createIngestEvent({
+      uri,
+      did: "did:plc:alice",
+      collection: "app.bsky.graph.follow",
+      rkey: "shared",
+      operation: "update",
+      cid: "new-cid",
+      value: { subject: "did:plc:unknown" },
+      timeUs: 2,
+    });
+    const deletion = createIngestEvent({
+      uri,
+      did: "did:plc:alice",
+      collection: "app.bsky.graph.follow",
+      rkey: "shared",
+      operation: "delete",
+      timeUs: 3,
+    });
+    const result = await ingestRecords(db, [update, deletion], config);
+
+    expect(result.accepted).toEqual([deletion]);
+    expect(result.dropped.unknownSubject).toBe(1);
+    const stored = await queryRecords(db, config, { collection: "follow" });
+    expect(stored.records).toHaveLength(0);
   });
 });

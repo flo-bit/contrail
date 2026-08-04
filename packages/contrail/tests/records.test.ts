@@ -299,6 +299,61 @@ describe("queryRecords", () => {
     ]);
   });
 
+  it("preserves numeric and null field values across cursor pages", async () => {
+    const values = [
+      { rkey: "one", score: 1, time_us: 1000 },
+      { rkey: "two", score: 2, time_us: 1000 },
+      { rkey: "three", score: 3, time_us: 1000 },
+      { rkey: "null", score: null, time_us: 2000 },
+      { rkey: "missing", time_us: 1000 },
+    ];
+    await ingestRecords(
+      db,
+      values.map(({ rkey, time_us, ...record }) =>
+        makeEvent({
+          uri: `at://did:plc:numeric/community.lexicon.calendar.event/${rkey}`,
+          did: "did:plc:numeric",
+          rkey,
+          record,
+          time_us,
+        }),
+      ),
+      TEST_CONFIG,
+    );
+
+    const collect = async (direction: "asc" | "desc") => {
+      const rkeys: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await queryRecords(db, TEST_CONFIG, {
+          collection: "community.lexicon.calendar.event",
+          did: "did:plc:numeric",
+          limit: 2,
+          cursor,
+          sort: { recordField: "score", direction },
+        });
+        rkeys.push(...page.records.map((record) => record.rkey));
+        cursor = page.cursor;
+      } while (cursor && rkeys.length < 10);
+      return rkeys;
+    };
+
+    expect(await collect("asc")).toEqual([
+      "one",
+      "two",
+      "three",
+      "null",
+      "missing",
+    ]);
+    expect(await collect("desc")).toEqual([
+      "three",
+      "two",
+      "one",
+      "null",
+      "missing",
+    ]);
+  });
+
   it("encodes and decodes cursors without Node Buffer", async () => {
     vi.stubGlobal("Buffer", undefined);
     try {
