@@ -24,6 +24,10 @@ const config = resolveConfig({
       discover: false,
       subjectField: "subject",
     },
+    directedEvent: {
+      collection: "com.example.directedEvent",
+      subjectField: "subject",
+    },
   },
 });
 
@@ -99,6 +103,22 @@ describe("ingestRecords", () => {
     expect(result.accepted).toHaveLength(0);
     expect(result.dropped.invalidRecord).toBe(1);
     expect(result.dropped.unknownCollection).toBe(1);
+  });
+
+  it("does not apply dependent subject filtering to discoverable collections", async () => {
+    const event = createIngestEvent({
+      did: "did:plc:alice",
+      collection: "com.example.directedEvent",
+      rkey: "public",
+      operation: "create",
+      cid: "cid-public",
+      value: { subject: "did:plc:unknown" },
+      timeUs: 1,
+    });
+
+    const result = await ingestRecords(db, [event], config);
+    expect(result.accepted).toEqual([event]);
+    expect(result.dropped.unknownSubject).toBe(0);
   });
 
   it("applies dependent subject filtering in the same admission path", async () => {

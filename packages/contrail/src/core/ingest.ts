@@ -148,9 +148,9 @@ async function filterUnknownSubjects(
   for (const event of events) {
     if (event.operation === "delete") continue;
     const shortName = resolveCollectionKey(config, event.collection);
-    const subjectField = shortName
-      ? config.collections[shortName]?.subjectField
-      : undefined;
+    const collection = shortName ? config.collections[shortName] : undefined;
+    const subjectField =
+      collection?.discover === false ? collection.subjectField : undefined;
     if (!subjectField) continue;
 
     const record = parseRecord(event.record);

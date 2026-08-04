@@ -30,6 +30,7 @@ vi.mock("../src/core/client", async (importOriginal) => {
 const ALICE = "did:plc:alice";
 const BOB = "did:plc:bob";
 const EVENT_NSID = "community.lexicon.calendar.event";
+const RSVP_NSID = "community.lexicon.calendar.rsvp";
 
 function aliceEventUri(rkey: string): string {
   return `at://${ALICE}/${EVENT_NSID}/${rkey}`;
@@ -191,6 +192,58 @@ describe("refresh", () => {
     expect(result.usersScanned).toBe(1);
     // The non-failing user's records still classified.
     expect(result.total.missing).toBeGreaterThanOrEqual(1);
+  });
+
+  it("recounts both relation targets when a refreshed child moves", async () => {
+    const db = await createTestDbWithSchema();
+    await registerKnownDid(db, ALICE);
+    const eventA = aliceEventUri("event-a");
+    const eventB = aliceEventUri("event-b");
+    const rsvpUri = `at://${ALICE}/${RSVP_NSID}/rsvp`;
+
+    await ingestRecords(
+      db,
+      [
+        makeEvent({ uri: eventA, did: ALICE, rkey: "event-a" }),
+        makeEvent({ uri: eventB, did: ALICE, rkey: "event-b" }),
+        makeEvent({
+          uri: rsvpUri,
+          did: ALICE,
+          collection: RSVP_NSID,
+          rkey: "rsvp",
+          cid: "old-cid",
+          record: {
+            subject: { uri: eventA },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        }),
+      ],
+      TEST_CONFIG,
+    );
+
+    pages.set(`${ALICE}|${RSVP_NSID}`, [
+      {
+        uri: rsvpUri,
+        cid: "new-cid",
+        value: {
+          subject: { uri: eventB },
+          status: "community.lexicon.calendar.rsvp#going",
+        },
+      },
+    ]);
+
+    await refresh(db, TEST_CONFIG, { ignoreWindowMs: 0 });
+    const rows = await db
+      .prepare(
+        "SELECT uri, count_rsvp FROM records_event WHERE uri IN (?, ?) ORDER BY uri",
+      )
+      .bind(eventA, eventB)
+      .all<{ uri: string; count_rsvp: number }>();
+
+    expect(rows.results).toEqual([
+      { uri: eventA, count_rsvp: 0 },
+      { uri: eventB, count_rsvp: 1 },
+    ]);
   });
 
   it("returns elapsed time and the configured ignore window", async () => {

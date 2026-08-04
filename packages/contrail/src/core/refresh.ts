@@ -208,7 +208,7 @@ export async function refresh(
         const existing = await lookupExistingRecords(
           db,
           events.map((e) => ({ uri: e.uri, collection: e.collection })),
-          false,
+          true, // old body is required to recount a relation's previous target
           config
         );
 

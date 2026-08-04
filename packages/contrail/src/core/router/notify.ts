@@ -61,7 +61,7 @@ async function fetchRecordFromPDS(
       .json()
       .catch(() => null) as { error?: unknown; message?: unknown } | null;
     const errorCode = typeof body?.error === "string" ? body.error : undefined;
-    if (response.status === 404 || errorCode === "RecordNotFound") {
+    if (errorCode === "RecordNotFound") {
       return { kind: "not-found" };
     }
     const detail =

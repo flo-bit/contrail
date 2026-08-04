@@ -75,7 +75,10 @@ describe("POST notifyOfUpdate", () => {
             headers: { "Content-Type": "application/json" },
           });
         }
-        return new Response("not found", { status: 404 });
+        return new Response(JSON.stringify({ error: "RecordNotFound" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
       })
     );
   }
@@ -225,7 +228,7 @@ describe("POST notifyOfUpdate", () => {
     expect(result.records).toHaveLength(0);
   });
 
-  it.each([429, 500])(
+  it.each([404, 429, 500])(
     "preserves local state when the PDS returns %s",
     async (status) => {
       const did = "did:plc:test";
