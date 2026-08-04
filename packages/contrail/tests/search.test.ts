@@ -3,7 +3,7 @@ import type { Database } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { createTestDb, makeEvent } from "./helpers";
 import { initSchema } from "../src/index";
-import { applyEvents, queryRecords } from "../src/index";
+import { ingestRecords, queryRecords } from "../src/index";
 
 // Detect FTS5 support at module level (node:sqlite doesn't include it)
 let hasFts = false;
@@ -54,7 +54,7 @@ describe.skipIf(!hasFts)("FTS with explicit searchable fields", () => {
   const collection = "community.lexicon.calendar.event";
 
   beforeEach(async () => {
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -117,7 +117,7 @@ describe.skipIf(!hasFts)("FTS with explicit searchable fields", () => {
   });
 
   it("does not search range fields (startsAt)", async () => {
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -140,10 +140,10 @@ describe.skipIf(!hasFts)("FTS sync", () => {
   const collection = "community.lexicon.calendar.event";
 
   it("updates FTS on record update", async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Old Name", mode: "online", description: "test" }, time_us: 1000 }),
     ], SEARCH_CONFIG);
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "New Name", mode: "online", description: "test" }, operation: "update", time_us: 2000 }),
     ], SEARCH_CONFIG);
     expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Old" })).records).toHaveLength(0);
@@ -151,17 +151,17 @@ describe.skipIf(!hasFts)("FTS sync", () => {
   });
 
   it("removes from FTS on delete", async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Deletable", mode: "online", description: "test" }, time_us: 1000 }),
     ], SEARCH_CONFIG);
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", operation: "delete", record: { name: "Deletable", mode: "online", description: "test" }, time_us: 2000 }),
     ], SEARCH_CONFIG);
     expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Deletable" })).records).toHaveLength(0);
   });
 
   it("does not duplicate FTS rows when the same record is re-applied during backfill", async () => {
-    // Backfill passes call applyEvents with skipReplayDetection: true, which leaves
+    // Backfill passes call ingestRecords with skipReplayDetection: true, which leaves
     // existingMap empty so every record looks brand-new. Re-backfilling the same
     // record must not append a second FTS row; otherwise the search JOIN fans out
     // and returns the event more than once (which crashes keyed lists downstream).
@@ -172,8 +172,8 @@ describe.skipIf(!hasFts)("FTS sync", () => {
       record: { name: "Backfilled Meetup", mode: "online", description: "test" },
       time_us: 1000,
     });
-    await applyEvents(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
-    await applyEvents(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
+    await ingestRecords(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
+    await ingestRecords(db, [event], SEARCH_CONFIG, { skipReplayDetection: true });
 
     const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Meetup" });
     expect(result.records).toHaveLength(1);
@@ -183,12 +183,12 @@ describe.skipIf(!hasFts)("FTS sync", () => {
     // The delete must run unconditionally. If an update leaves every searchable
     // field empty, buildFtsContent returns null and there is nothing to re-insert,
     // but the prior FTS row must still be removed so old terms stop matching.
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { name: "Searchable Title", mode: "online", description: "find me" }, time_us: 1000 }),
     ], SEARCH_CONFIG);
     expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" })).records).toHaveLength(1);
 
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/community.lexicon.calendar.event/1", collection, rkey: "1", record: { startsAt: "2026-01-01T00:00:00Z" }, operation: "update", time_us: 2000 }),
     ], SEARCH_CONFIG);
     expect((await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" })).records).toHaveLength(0);
@@ -199,7 +199,7 @@ describe.skipIf(!hasFts)("explicit searchable fields", () => {
   const collection = "test.explicit.collection";
 
   beforeEach(async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/test.explicit.collection/1", did: "did:plc:a", collection, rkey: "1", record: { title: "Interesting Article", body: "Some content here", category: "tech" }, time_us: 1000 }),
     ], SEARCH_CONFIG);
   });
@@ -218,7 +218,7 @@ describe.skipIf(!hasFts)("searchable: false", () => {
   const collection = "test.disabled.collection";
 
   it("search param is ignored when FTS is disabled", async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: "at://did:plc:a/test.disabled.collection/1", did: "did:plc:a", collection, rkey: "1", record: { name: "Should Not Be Searchable" }, time_us: 1000 }),
     ], SEARCH_CONFIG);
     const result = await queryRecords(db, SEARCH_CONFIG, { collection, search: "Searchable" });
@@ -240,7 +240,7 @@ describe.skipIf(!hasFts)("search pagination", () => {
         time_us: (i + 1) * 1000,
       })
     );
-    await applyEvents(db, events, SEARCH_CONFIG);
+    await ingestRecords(db, events, SEARCH_CONFIG);
   });
 
   it("paginates search results", async () => {

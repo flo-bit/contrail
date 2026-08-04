@@ -9,7 +9,7 @@ import type {
 import { resolveConfig } from "../src/index";
 import { initSchema } from "../src/index";
 import {
-  applyEvents,
+  ingestRecords,
   sweepFeedItems,
   pruneActorFeed,
   pruneFeedItems,
@@ -181,7 +181,7 @@ describe("feed maintenance stays index-bounded", () => {
       indexed_at: 5000,
       operation: "create",
     };
-    await applyEvents(db, [event], CONFIG);
+    await ingestRecords(db, [event], CONFIG);
 
     // The fan-out INSERT must have been issued and it must hit the table.
     const fanout = sqls.find((s) => /INSERT.*feed_items/is.test(s));
@@ -195,7 +195,7 @@ describe("feed maintenance stays index-bounded", () => {
     await makeFollowRow(real, "did:plc:follower", "did:plc:author");
 
     const { db, sqls } = recordingDb(real);
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         {

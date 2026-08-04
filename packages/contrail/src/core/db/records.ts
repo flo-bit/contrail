@@ -554,10 +554,10 @@ export async function lookupExistingRecords(
 
 // --- Events ---
 
-export async function applyEvents(
+export async function projectEvents(
   db: Database,
   events: IngestEvent[],
-  config?: ContrailConfig,
+  config: ContrailConfig,
   options?: {
     skipReplayDetection?: boolean;
     skipFeedFanout?: boolean;
@@ -570,17 +570,17 @@ export async function applyEvents(
 ): Promise<void> {
   if (events.length === 0) return;
 
-  const followCollections = config ? getFeedFollowShortNames(config) : [];
-  const hasCountingRelations = config ? Object.values(config.collections).some(c =>
+  const followCollections = getFeedFollowShortNames(config);
+  const hasCountingRelations = Object.values(config.collections).some(c =>
     Object.values(c.relations ?? {}).some(r => r.count !== false)
-  ) : false;
+  );
   const needRecordContent = followCollections.length > 0 || hasCountingRelations;
 
   // Use pre-fetched data or look up existing records
   let existingMap: Map<string, ExistingRecordInfo>;
   if (options?.existing) {
     existingMap = options.existing;
-  } else if (config && !options?.skipReplayDetection) {
+  } else if (!options?.skipReplayDetection) {
     existingMap = await lookupExistingRecords(db, events, needRecordContent, config);
   } else {
     existingMap = new Map();
@@ -599,11 +599,10 @@ export async function applyEvents(
 
   for (const e of events) {
     // Event's collection is an NSID. Resolve its storage key from config.
-    // If no config, treat collection string as-is (for tests that pre-populate tables).
-    const short = config ? resolveCollectionKey(config, e.collection) : e.collection;
+    const short = resolveCollectionKey(config, e.collection);
     if (!short) {
-      (config?.logger ?? console).warn(
-        `[ingest] drop (unknown collection in applyEvents): ${e.operation} ${e.uri} collection=${e.collection}`
+      (config.logger ?? console).warn(
+        `[ingest] drop (unknown collection in projection): ${e.operation} ${e.uri} collection=${e.collection}`
       );
       continue;
     }
@@ -627,29 +626,25 @@ export async function applyEvents(
       );
     }
 
-    if (config) {
-      // Collect count targets (deduplicated across the whole batch)
-      const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
-      collectCountTargets(e, config, existingRecordJson, countTargets);
+    // Collect count targets (deduplicated across the whole batch)
+    const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
+    collectCountTargets(e, config, existingRecordJson, countTargets);
 
-      // Feed fanout still needs replay detection
-      const existingInfo = existingMap.get(e.uri);
-      const isReplay =
-        e.operation === "delete"
-          ? existingInfo === undefined
-          : existingInfo?.cid === e.cid;
+    // Feed fanout still needs replay detection
+    const existingInfo = existingMap.get(e.uri);
+    const isReplay =
+      e.operation === "delete"
+        ? existingInfo === undefined
+        : existingInfo?.cid === e.cid;
 
-      if (!isReplay && !options?.skipFeedFanout) {
-        batch.push(...buildFeedStatements(db, e, config, existingRecordStrings));
-      }
-      batch.push(...buildFtsStatements(db, e, config));
+    if (!isReplay && !options?.skipFeedFanout) {
+      batch.push(...buildFeedStatements(db, e, config, existingRecordStrings));
     }
+    batch.push(...buildFtsStatements(db, e, config));
   }
 
   // Build deduplicated count statements — one UPDATE per unique target
-  if (config) {
-    batch.push(...buildBatchCountStatements(db, config, countTargets));
-  }
+  batch.push(...buildBatchCountStatements(db, config, countTargets));
 
   await db.batch(batch);
 
@@ -657,7 +652,7 @@ export async function applyEvents(
   // This fires on both the live and backfill
   // paths (driven by `options.phase`), carries one deduplicated event per
   // record, and isolates failures so a throwing sink never blocks ingestion.
-  const sinks = config?.sinks;
+  const sinks = config.sinks;
   if (sinks && sinks.length > 0) {
     const records: RecordEvent[] = events.map((e) =>
       e.operation === "delete"
@@ -674,7 +669,7 @@ export async function applyEvents(
           }
     );
     const ctx = { phase: options?.phase ?? "live" } as const;
-    const logger = config?.logger ?? console;
+    const logger = config.logger ?? console;
     for (const sink of sinks) {
       try {
         await sink.onRecords(records, ctx);

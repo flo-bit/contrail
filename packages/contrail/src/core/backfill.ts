@@ -10,7 +10,8 @@ import {
   DEFAULT_RELAYS,
   shortNameForNsid,
 } from "./types";
-import { applyEvents, getLastCursor, saveCursor } from "./db";
+import { getLastCursor, saveCursor } from "./db";
+import { createIngestEvent, ingestRecords } from "./ingest";
 import { getClient, getPDS } from "./client";
 
 const DEFAULT_TIME_FIELD = "createdAt";
@@ -21,10 +22,9 @@ const DEFAULT_TIME_FIELD = "createdAt";
 function recordTimeUs(
   record: unknown,
   collection: string,
-  config: ContrailConfig | undefined,
+  config: ContrailConfig,
   nowUs: number
 ): number {
-  if (!config) return nowUs;
   const short = shortNameForNsid(config, collection);
   const colCfg = short ? config.collections[short] : undefined;
   const field = colCfg?.timeField ?? DEFAULT_TIME_FIELD;
@@ -72,49 +72,6 @@ async function withRetry<T>(
   throw lastError;
 }
 
-/** Drop events whose `subjectField` value is a DID we have no identity for.
- *  One bulk SELECT per call, suitable for use after each backfill page. */
-async function filterEventsBySubject(
-  db: Database,
-  events: IngestEvent[],
-  subjectField: string
-): Promise<IngestEvent[]> {
-  const subjects = new Set<string>();
-  const eventSubjects = new Map<string, string>();
-  for (const e of events) {
-    if (!e.record) continue;
-    let subj: unknown;
-    try {
-      subj = JSON.parse(e.record)?.[subjectField];
-    } catch {
-      continue;
-    }
-    if (typeof subj === "string" && isDid(subj)) {
-      subjects.add(subj);
-      eventSubjects.set(e.uri, subj);
-    }
-  }
-  if (subjects.size === 0) return [];
-
-  const known = new Set<string>();
-  const list = [...subjects];
-  const CHUNK = 100;
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const rows = await db
-      .prepare(`SELECT did FROM identities WHERE did IN (${placeholders})`)
-      .bind(...chunk)
-      .all<{ did: string }>();
-    for (const r of rows.results ?? []) known.add(r.did);
-  }
-
-  return events.filter((e) => {
-    const subj = eventSubjects.get(e.uri);
-    return subj !== undefined && known.has(subj);
-  });
-}
-
 async function markFailed(
   db: Database,
   did: string,
@@ -132,7 +89,7 @@ async function markFailed(
 export interface BackfillOptions {
   /** Pre-resolved client — avoids redundant PDS lookups when batching by DID */
   client?: Client;
-  /** Skip replay detection in applyEvents (safe during initial backfill) */
+  /** Skip replay detection during initial backfill. */
   skipReplayDetection?: boolean;
   /** Max retries per request (default: 3). Set to 0 for single-attempt mode. */
   maxRetries?: number;
@@ -145,7 +102,7 @@ export async function backfillUser(
   did: string,
   collection: string,
   deadline: number,
-  config?: ContrailConfig,
+  config: ContrailConfig,
   options?: BackfillOptions
 ): Promise<number> {
   if (Date.now() >= deadline) return 0;
@@ -200,15 +157,6 @@ export async function backfillUser(
   let totalInserted = 0;
   let done = false;
 
-  // Lookup subject filter once: if this collection declares a subjectField, we
-  // drop records whose subject DID isn't already in our identities table.
-  const collectionShort = config
-    ? shortNameForNsid(config, collection)
-    : undefined;
-  const subjectField = collectionShort
-    ? config?.collections[collectionShort]?.subjectField
-    : undefined;
-
   try {
     while (Date.now() < deadline) {
       const response = await withRetry(
@@ -242,31 +190,29 @@ export async function backfillUser(
 
       const now = Date.now();
       const nowUs = now * 1000;
-      let events: IngestEvent[] = response.data.records.map((r) => ({
-        uri: r.uri,
-        did,
-        collection,
-        rkey: r.uri.split("/").pop()!,
-        operation: "create" as const,
-        cid: r.cid,
-        record: JSON.stringify(r.value),
-        time_us: recordTimeUs(r.value, collection, config, nowUs),
-        indexed_at: nowUs,
-      }));
-
-      if (subjectField) {
-        events = await filterEventsBySubject(db, events, subjectField);
-      }
+      const events: IngestEvent[] = response.data.records.map((record) =>
+        createIngestEvent({
+          uri: record.uri,
+          did,
+          collection,
+          rkey: record.uri.split("/").pop()!,
+          operation: "create",
+          cid: record.cid,
+          value: record.value,
+          timeUs: recordTimeUs(record.value, collection, config, nowUs),
+          indexedAt: nowUs,
+        }),
+      );
 
       if (events.length > 0) {
-        await applyEvents(db, events, config, {
+        const result = await ingestRecords(db, events, config, {
           skipReplayDetection: options?.skipReplayDetection,
           skipFeedFanout: true,
           // Let sinks bulk-flush differently from live ingestion.
           phase: "backfill",
         });
+        totalInserted += result.accepted.length;
       }
-      totalInserted += events.length;
 
       currentCursor = response.data.cursor ?? undefined;
 

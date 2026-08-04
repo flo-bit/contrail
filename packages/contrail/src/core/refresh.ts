@@ -25,7 +25,8 @@ import { isDid, isNsid } from "@atcute/lexicons/syntax";
 
 import type { Client } from "@atcute/client";
 import type { ContrailConfig, Database, IngestEvent } from "./types.js";
-import { applyEvents, lookupExistingRecords } from "./db/records.js";
+import { lookupExistingRecords } from "./db/records.js";
+import { createIngestEvent, ingestRecords } from "./ingest.js";
 import { getClient } from "./client.js";
 
 const PAGE_SIZE = 100;
@@ -190,17 +191,19 @@ export async function refresh(
         if (pageRecords.length === 0) break;
 
         const now = Date.now();
-        const events: IngestEvent[] = pageRecords.map((r) => ({
-          uri: r.uri,
-          did,
-          collection: nsid,
-          rkey: r.uri.split("/").pop()!,
-          operation: "create" as const,
-          cid: r.cid,
-          record: JSON.stringify(r.value),
-          time_us: now * 1000,
-          indexed_at: now * 1000,
-        }));
+        const events: IngestEvent[] = pageRecords.map((record) =>
+          createIngestEvent({
+            uri: record.uri,
+            did,
+            collection: nsid,
+            rkey: record.uri.split("/").pop()!,
+            operation: "create",
+            cid: record.cid,
+            value: record.value,
+            timeUs: now * 1000,
+            indexedAt: now * 1000,
+          }),
+        );
 
         const existing = await lookupExistingRecords(
           db,
@@ -234,7 +237,10 @@ export async function refresh(
         // might genuinely have a new CID; we just don't count them as a
         // miss-signal. Skip feed fanout since this is a catch-up, not a
         // user-visible write.
-        await applyEvents(db, events, config, { skipFeedFanout: true });
+        await ingestRecords(db, events, config, {
+          existing,
+          skipFeedFanout: true,
+        });
         recordsScanned += events.length;
 
         cursor = nextCursor;

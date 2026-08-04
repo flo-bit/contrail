@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { Database } from "../src/index";
-import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { queryRecords, getLastCursor, saveCursor } from "../src/index";
 
 let db: Database;
@@ -26,9 +26,9 @@ describe("cursor", () => {
   });
 });
 
-describe("applyEvents", () => {
+describe("ingestRecords", () => {
   it("does nothing for empty events", async () => {
-    await applyEvents(db, []);
+    await ingestRecords(db, []);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -36,7 +36,7 @@ describe("applyEvents", () => {
   });
 
   it("inserts create events", async () => {
-    await applyEvents(db, [makeEvent()]);
+    await ingestRecords(db, [makeEvent()]);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -46,10 +46,10 @@ describe("applyEvents", () => {
   });
 
   it("upserts on conflict", async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ record: { name: "V1" }, time_us: 100 }),
     ]);
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ record: { name: "V2" }, time_us: 200, operation: "update" }),
     ]);
     const result = await queryRecords(db, TEST_CONFIG, {
@@ -61,8 +61,8 @@ describe("applyEvents", () => {
   });
 
   it("deletes events", async () => {
-    await applyEvents(db, [makeEvent()]);
-    await applyEvents(db, [makeEvent({ operation: "delete" })]);
+    await ingestRecords(db, [makeEvent()]);
+    await ingestRecords(db, [makeEvent({ operation: "delete" })]);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -73,10 +73,10 @@ describe("applyEvents", () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
 
     // Insert parent event
-    await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+    await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
 
     // Insert RSVP pointing at the event
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -102,10 +102,10 @@ describe("applyEvents", () => {
 
   it("decrements counts on delete", async () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
-    await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+    await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
 
     const rsvpRecord = { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" };
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -121,7 +121,7 @@ describe("applyEvents", () => {
     );
 
     // Delete the RSVP
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -148,7 +148,7 @@ describe("applyEvents", () => {
 
 describe("queryRecords", () => {
   beforeEach(async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({
         uri: "at://did:plc:a/community.lexicon.calendar.event/1",
         did: "did:plc:a",

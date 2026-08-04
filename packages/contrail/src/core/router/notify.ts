@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
 import { shortNameForNsid, getFeedMutatingNsids } from "../types";
-import { applyEvents, lookupExistingRecords } from "../db/records";
+import { lookupExistingRecords } from "../db/records";
+import { createIngestEvent, ingestRecords } from "../ingest";
 import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
@@ -105,39 +106,40 @@ export async function processNotifyUris(
         continue;
       }
 
-      events.push({
-        uri,
-        did: parsed.did,
-        collection: parsed.collection,
-        rkey: parsed.rkey,
-        operation: existingInfo ? "update" : "create",
-        cid: result.cid,
-        record: JSON.stringify(result.value),
-        time_us: now,
-        indexed_at: now,
-      });
+      events.push(
+        createIngestEvent({
+          uri,
+          did: parsed.did,
+          collection: parsed.collection,
+          rkey: parsed.rkey,
+          operation: existingInfo ? "update" : "create",
+          cid: result.cid,
+          value: result.value,
+          timeUs: now,
+          indexedAt: now,
+        }),
+      );
     } else if (existingInfo) {
       // Record gone from PDS but exists locally — delete it.
-      events.push({
-        uri,
-        did: parsed.did,
-        collection: parsed.collection,
-        rkey: parsed.rkey,
-        operation: "delete",
-        cid: null,
-        record: existingInfo.record,
-        time_us: now,
-        indexed_at: now,
-      });
+      events.push(
+        createIngestEvent({
+          uri,
+          did: parsed.did,
+          collection: parsed.collection,
+          rkey: parsed.rkey,
+          operation: "delete",
+          timeUs: now,
+          indexedAt: now,
+        }),
+      );
     }
   }
 
-  if (events.length > 0) {
-    // Pass pre-fetched existing records so applyEvents skips re-querying
-    await applyEvents(db, events, config, { existing });
-  }
+  const appliedEvents = events.length > 0
+    ? (await ingestRecords(db, events, config, { existing })).accepted
+    : [];
 
-  // applyEvents fans these records into feed_items exactly like the cron and
+  // The shared ingest path fans these records into feed_items exactly like the cron and
   // persistent ingest paths, so prune here too — otherwise a notify-only
   // deployment (no jetstream loop) would never sweep. Run the recovery-aware
   // gate on every call, not only when records changed: a notify-only deployment
@@ -146,13 +148,17 @@ export async function processNotifyUris(
   // true only when this call actually applied a feed-mutating record.
   if (config.feeds) {
     const feedMutatingNsids = getFeedMutatingNsids(config);
-    const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
+    const feedTouched = appliedEvents.some((e) =>
+      feedMutatingNsids.has(e.collection),
+    );
     await runGatedFeedPrune(db, config, feedTouched);
   }
 
   return {
-    indexed: events.filter((e) => e.operation === "create" || e.operation === "update").length,
-    deleted: events.filter((e) => e.operation === "delete").length,
+    indexed: appliedEvents.filter(
+      (event) => event.operation === "create" || event.operation === "update",
+    ).length,
+    deleted: appliedEvents.filter((event) => event.operation === "delete").length,
     errors: errors.length > 0 ? errors : undefined,
   };
 }

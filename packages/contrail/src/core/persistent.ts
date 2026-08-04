@@ -7,9 +7,9 @@ import {
   getFeedMutatingNsids,
   jetstreamUrlOption,
   resolveConfig,
-  shortNameForNsid,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents } from "./db";
+import { initSchema, getLastCursor, saveCursor } from "./db";
+import { createIngestEvent, ingestRecords } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 import {
@@ -43,7 +43,7 @@ export async function runPersistent(
   config: ContrailConfig,
   options?: PersistentIngestOptions,
 ): Promise<void> {
-  // Internals (applyEvents, count updates, query planning) read `_resolved`
+  // Ingestion, count updates, and query planning read `_resolved`
   // and silently skip features when it's missing. The Contrail class resolves
   // in its constructor; callers using this raw export must also get a resolved
   // config, so do it defensively here. resolveConfig is idempotent.
@@ -157,14 +157,28 @@ async function streamAndFlush(
     try {
       if (buffer.length > 0) {
         const batch = buffer.splice(0);
-        await applyEvents(db, batch, config);
+        const { accepted } = await ingestRecords(db, batch, config, {
+          knownDids,
+        });
+
+        if (knownDids) {
+          for (const event of accepted) {
+            if (
+              !dependentCollections.has(event.collection) &&
+              !knownDids.has(event.did)
+            ) {
+              knownDids.add(event.did);
+              opts.newlyKnownDids?.add(event.did);
+            }
+          }
+        }
 
         // A feed can only go over cap right after a feed-mutating record is
         // applied, so remember whether this batch had one. The sweep below uses
         // it to prune promptly (see the cron path in jetstream.ts).
         if (config.feeds) {
           const feedMutatingNsids = getFeedMutatingNsids(config);
-          if (batch.some((e) => feedMutatingNsids.has(e.collection))) {
+          if (accepted.some((e) => feedMutatingNsids.has(e.collection))) {
             state.feedDirty = true;
           }
         }
@@ -172,7 +186,7 @@ async function streamAndFlush(
         const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
         await saveCursor(db, lastTimeUs);
 
-        const uniqueDids = [...new Set(batch.map((e) => e.did))];
+        const uniqueDids = [...new Set(accepted.map((e) => e.did))];
         if (uniqueDids.length > 0) {
           try {
             await refreshStaleIdentities(db, uniqueDids, config);
@@ -197,7 +211,9 @@ async function streamAndFlush(
         // Opt-in planner-stat maintenance (gated + persisted cadence).
         await maybeOptimize(db, config, log);
 
-        log.log(`Flushed ${batch.length} events. Cursor: ${lastTimeUs}`);
+        log.log(
+          `Flushed ${accepted.length}/${batch.length} records. Cursor: ${lastTimeUs}`,
+        );
       }
 
       // Bounded, cursored feed prune (see sweepFeedItems / runFeedPruneSlice).
@@ -276,53 +292,22 @@ async function streamAndFlush(
       if (event.kind === "commit") {
         const { commit } = event;
 
-        const short = shortNameForNsid(config, commit.collection);
-        const collectionCfg = short ? config.collections[short] : undefined;
-
         if (dependentCollections.has(commit.collection) && knownDids) {
           if (!knownDids.has(event.did)) continue;
-          // Subject filter: skip records whose subject DID isn't known.
-          const subjectField = collectionCfg?.subjectField;
-          if (subjectField && commit.operation !== "delete") {
-            const subj = (commit.record as Record<string, unknown> | undefined)?.[
-              subjectField
-            ];
-            if (typeof subj === "string" && !knownDids.has(subj)) continue;
-          }
         }
 
-        if (collectionCfg?.recordFilter && commit.operation !== "delete") {
-          const rec = commit.record as Record<string, unknown> | undefined;
-          let keep = false;
-          try {
-            keep = !!(rec && collectionCfg.recordFilter(rec));
-          } catch (err) {
-            log.warn(`recordFilter threw for ${commit.collection}/${commit.rkey}: ${err}`);
-          }
-          if (!keep) continue;
-        }
+        buffer.push(
+          createIngestEvent({
+            did: event.did,
+            timeUs: event.time_us,
+            collection: commit.collection,
+            operation: commit.operation,
+            rkey: commit.rkey,
+            cid: commit.operation === "delete" ? null : commit.cid,
+            value: commit.operation === "delete" ? undefined : commit.record,
+          }),
+        );
 
-        const now = Date.now();
-        const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
-
-        buffer.push({
-          uri,
-          did: event.did,
-          time_us: event.time_us,
-          collection: commit.collection,
-          operation: commit.operation as "create" | "update" | "delete",
-          rkey: commit.rkey,
-          cid: commit.operation === "delete" ? null : commit.cid,
-          record: commit.operation === "delete" ? null : JSON.stringify(commit.record),
-          indexed_at: now * 1000,
-        });
-
-        if (knownDids && !dependentCollections.has(commit.collection)) {
-          if (!knownDids.has(event.did)) {
-            knownDids.add(event.did);
-            opts.newlyKnownDids?.add(event.did);
-          }
-        }
       } else if (event.kind === "identity") {
         try {
           await applyIdentityEvent(db, event.did, event.identity.handle);

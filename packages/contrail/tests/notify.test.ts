@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { Database } from "../src/index";
 import { resolveConfig } from "../src/index";
-import { applyEvents, createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { ingestRecords, createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { initSchema } from "../src/index";
 import { parseAtUri } from "../src/index";
 import { createApp } from "../src/index";
@@ -175,7 +175,7 @@ describe("POST notifyOfUpdate", () => {
     const uri = `at://${did}/community.lexicon.calendar.event/evt1`;
 
     // Pre-populate a record
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri, did, rkey: "evt1", record: { name: "Old" } }),
     ], TEST_CONFIG);
 
@@ -232,7 +232,7 @@ describe("POST notifyOfUpdate", () => {
     const uri = `at://${did}/community.lexicon.calendar.event/evt1`;
 
     // Insert original
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri, did, rkey: "evt1", record: { name: "V1" } }),
     ]);
 
@@ -265,7 +265,7 @@ describe("POST notifyOfUpdate", () => {
     const rsvpUri = `at://${did}/community.lexicon.calendar.rsvp/r1`;
 
     // Insert parent event
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: eventUri, did, rkey: "evt1", record: { name: "Event" } }),
     ]);
 
@@ -300,10 +300,10 @@ describe("POST notifyOfUpdate", () => {
     const rsvpRecord = { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" };
 
     // Insert parent event and RSVP via normal ingestion
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: eventUri, did, rkey: "evt1", record: { name: "Event" } }),
     ]);
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -354,10 +354,10 @@ describe("POST notifyOfUpdate", () => {
     const rsvpUri = `at://${did}/community.lexicon.calendar.rsvp/r1`;
 
     // Insert parent event and RSVP via normal ingestion
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: eventUri, did, rkey: "evt1", record: { name: "Event" } }),
     ]);
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -476,10 +476,10 @@ describe("POST notifyOfUpdate", () => {
     const rsvpUri = `at://${did}/community.lexicon.calendar.rsvp/r1`;
 
     // Insert event + RSVP
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ uri: eventUri, did, rkey: "evt1", record: { name: "Event" } }),
     ]);
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({

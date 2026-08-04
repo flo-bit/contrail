@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { refresh } from "../src/index";
-import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import type { Database } from "../src/index";
 
 // We mock the PDS client so refresh() can be exercised without network IO.
@@ -74,7 +74,7 @@ describe("refresh", () => {
     await registerKnownDid(db, ALICE);
 
     // Seed DB with a record at this URI.
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({
         did: ALICE,
         rkey: "k1",
@@ -101,7 +101,7 @@ describe("refresh", () => {
 
     // Seed DB with an OLD record (indexed_at way in the past).
     const dayAgoUs = (Date.now() - 86_400_000) * 1000;
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({
         did: ALICE,
         rkey: "k2",
@@ -130,7 +130,7 @@ describe("refresh", () => {
 
     // Seed with a record indexed JUST NOW.
     const nowUs = Date.now() * 1000;
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({
         did: ALICE,
         rkey: "k3",

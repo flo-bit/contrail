@@ -12,7 +12,7 @@ import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
 import { initSchema } from "../src/index";
 import {
-  applyEvents,
+  ingestRecords,
   queryRecords,
   getLastCursor,
   saveCursor,
@@ -132,7 +132,7 @@ if (!PG_URL) {
 
   describe("ingestion", () => {
     it("inserts create events", async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ record: { name: "Event 1", mode: "online" } }),
       ]);
       const result = await queryRecords(db, TEST_CONFIG, {
@@ -144,10 +144,10 @@ if (!PG_URL) {
 
     it("upserts on conflict", async () => {
       const uri = "at://did:plc:test/community.lexicon.calendar.event/1";
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", cid: "cid1", record: { name: "V1", mode: "online" } }),
       ]);
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", cid: "cid2", record: { name: "V2", mode: "online" } }),
       ]);
       const result = await queryRecords(db, TEST_CONFIG, {
@@ -159,10 +159,10 @@ if (!PG_URL) {
 
     it("deletes events", async () => {
       const uri = "at://did:plc:test/community.lexicon.calendar.event/1";
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", record: { name: "Gone", mode: "online" } }),
       ]);
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", operation: "delete", record: null, cid: null }),
       ]);
       const result = await queryRecords(db, TEST_CONFIG, {
@@ -172,7 +172,7 @@ if (!PG_URL) {
     });
 
     it("does nothing for empty events", async () => {
-      await applyEvents(db, []);
+      await ingestRecords(db, []);
       const cursor = await getLastCursor(db);
       expect(cursor).toBeNull();
     });
@@ -184,13 +184,13 @@ if (!PG_URL) {
     const eventUri = "at://did:plc:host/community.lexicon.calendar.event/evt1";
 
     beforeEach(async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri: eventUri, rkey: "evt1", record: { name: "Counted Event", mode: "online" } }),
       ]);
     });
 
     it("increments counts on RSVP create", async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({
           uri: "at://did:plc:u1/community.lexicon.calendar.rsvp/r1",
           did: "did:plc:u1",
@@ -227,7 +227,7 @@ if (!PG_URL) {
 
     it("decrements counts on RSVP delete", async () => {
       const rsvpUri = "at://did:plc:u1/community.lexicon.calendar.rsvp/r1";
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({
           uri: rsvpUri,
           did: "did:plc:u1",
@@ -245,7 +245,7 @@ if (!PG_URL) {
       expect(result.records[0].counts?.["community.lexicon.calendar.rsvp"]).toBe(1);
 
       // Delete the RSVP
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({
           uri: rsvpUri,
           did: "did:plc:u1",
@@ -270,7 +270,7 @@ if (!PG_URL) {
 
   describe("queries", () => {
     beforeEach(async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/1", rkey: "1", did: "did:plc:alice", record: { name: "Alpha", mode: "online", startsAt: "2026-04-01T10:00:00Z" }, time_us: 1000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/2", rkey: "2", did: "did:plc:bob", record: { name: "Beta", mode: "in-person", startsAt: "2026-05-01T10:00:00Z" }, time_us: 2000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/3", rkey: "3", did: "did:plc:alice", record: { name: "Gamma", mode: "online", startsAt: "2026-06-01T10:00:00Z" }, time_us: 3000 }),
@@ -374,7 +374,7 @@ if (!PG_URL) {
 
   describe("full-text search", () => {
     beforeEach(async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/1", rkey: "1", record: { name: "Rust Meetup", description: "Systems programming", mode: "online" }, time_us: 1000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/2", rkey: "2", record: { name: "TypeScript Workshop", description: "Learn web dev", mode: "online" }, time_us: 2000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/3", rkey: "3", record: { name: "Go Conference", description: "Concurrency and systems", mode: "in-person" }, time_us: 3000 }),
@@ -425,11 +425,11 @@ if (!PG_URL) {
     const eventUri2 = "at://did:plc:host/community.lexicon.calendar.event/evt2";
 
     beforeEach(async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri: eventUri1, rkey: "evt1", record: { name: "Event 1", mode: "online" }, time_us: 1000 }),
         makeEvent({ uri: eventUri2, rkey: "evt2", record: { name: "Event 2", mode: "online" }, time_us: 2000 }),
       ]);
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({
           uri: "at://did:plc:u1/community.lexicon.calendar.rsvp/r1",
           did: "did:plc:u1",

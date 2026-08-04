@@ -1,16 +1,16 @@
-/** Sinks — write-only, post-commit observers fanned out by `applyEvents`.
+/** Sinks — write-only, post-commit observers fanned out by `ingestRecords`.
  *
  *   - One deduplicated event per record (not the realtime collection:/actor: pair).
  *   - Fire on the live path by default and on backfill when `phase` says so.
  *   - Failures are isolated: a throwing sink blocks neither the DB commit nor
  *     the other sinks, and is logged.
  *   - Public-record scope: space-scoped records publish via the publishing
- *     adapter and never reach `applyEvents`, so a sink cannot observe them. */
+ *     adapter and never reach `ingestRecords`, so a sink cannot observe them. */
 
 import { describe, it, expect } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { initSchema } from "../src/index";
-import { applyEvents, queryRecords } from "../src/index";
+import { ingestRecords, queryRecords } from "../src/index";
 import { resolveConfig } from "../src/index";
 import type {
   ContrailConfig,
@@ -61,13 +61,13 @@ async function freshDb(config: ContrailConfig) {
   return db;
 }
 
-describe("sinks — applyEvents fan-out", () => {
+describe("sinks — ingestRecords fan-out", () => {
   it("delivers one deduplicated created event per record, phase=live by default", async () => {
     const sink = new RecordingSink();
     const config = configWithSinks([sink]);
     const db = await freshDb(config);
 
-    await applyEvents(db, [createEvent()], config);
+    await ingestRecords(db, [createEvent()], config);
 
     expect(sink.calls).toHaveLength(1);
     expect(sink.calls[0].ctx.phase).toBe("live");
@@ -90,8 +90,8 @@ describe("sinks — applyEvents fan-out", () => {
     const config = configWithSinks([sink]);
     const db = await freshDb(config);
 
-    await applyEvents(db, [createEvent()], config);
-    await applyEvents(db, [createEvent({ operation: "delete" })], config);
+    await ingestRecords(db, [createEvent()], config);
+    await ingestRecords(db, [createEvent({ operation: "delete" })], config);
 
     expect(sink.calls).toHaveLength(2);
     expect(sink.calls[1].events[0]).toEqual({
@@ -108,7 +108,7 @@ describe("sinks — applyEvents fan-out", () => {
     const config = configWithSinks([sink]);
     const db = await freshDb(config);
 
-    await applyEvents(db, [createEvent()], config, { phase: "backfill" });
+    await ingestRecords(db, [createEvent()], config, { phase: "backfill" });
 
     expect(sink.calls[0].ctx.phase).toBe("backfill");
   });
@@ -119,7 +119,7 @@ describe("sinks — applyEvents fan-out", () => {
     const config = configWithSinks([a, b]);
     const db = await freshDb(config);
 
-    await applyEvents(db, [createEvent()], config);
+    await ingestRecords(db, [createEvent()], config);
 
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);
@@ -143,7 +143,7 @@ describe("sinks — applyEvents fan-out", () => {
     };
     const db = await freshDb(config);
 
-    await applyEvents(db, [createEvent()], config);
+    await ingestRecords(db, [createEvent()], config);
 
     // The throw blocked neither the later sink...
     expect(after.calls).toHaveLength(1);
@@ -159,7 +159,7 @@ describe("sinks — applyEvents fan-out", () => {
     const config = configWithSinks([sink]);
     const db = await freshDb(config);
 
-    await applyEvents(db, [], config);
+    await ingestRecords(db, [], config);
 
     expect(sink.calls).toHaveLength(0);
   });

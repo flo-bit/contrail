@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { applyEvents } from "../src/index";
+import { ingestRecords } from "../src/index";
 import { __resetPdsCachesForTests } from "../src/index";
 import type { Database, IngestEvent } from "../src/index";
 
@@ -37,7 +37,7 @@ async function setup() {
     db,
   });
   await contrail.init();
-  await applyEvents(db, [ev()], contrail.config);
+  await ingestRecords(db, [ev()], contrail.config);
   return { db, contrail };
 }
 

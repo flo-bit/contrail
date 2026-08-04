@@ -10,6 +10,7 @@ export * from "./core/client";
 export * from "./core/sinks/types";
 
 // Ingestion and maintenance.
+export * from "./core/ingest";
 export * from "./core/jetstream";
 export * from "./core/persistent";
 export * from "./core/backfill";
@@ -19,7 +20,23 @@ export * from "./core/constellation";
 
 // Database.
 export * from "./core/db/schema";
-export * from "./core/db/records";
+export {
+  getFeedPruneCursor,
+  getLastCursor,
+  lookupExistingRecords,
+  pruneActorFeed,
+  pruneFeedItems,
+  queryRecords,
+  saveCursor,
+  saveFeedPruneCursor,
+  sweepFeedItems,
+} from "./core/db/records";
+export type {
+  ExistingRecordInfo,
+  FeedSweepResult,
+  QueryOptions,
+  SortOption,
+} from "./core/db/records";
 export * from "./core/db/meta";
 export * from "./core/db/optimize";
 

@@ -4,14 +4,14 @@ import {
   getCollectionNsids,
   getDependentNsids,
   jetstreamUrlOption,
-  shortNameForNsid,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
   optimizeEnabled,
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, applyEvents, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { initSchema, getLastCursor, saveCursor, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { createIngestEvent, ingestRecords } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
@@ -187,7 +187,6 @@ export async function ingestEvents(
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
-  newlyKnownDids: string[];
   identityUpdates: Map<string, string>;
 }> {
   const log = getLogger(config);
@@ -207,7 +206,6 @@ export async function ingestEvents(
   let connectCount = 0;
   const seenUris = new Map<string, number>(); // uri -> time_us of first occurrence
   const duplicateUris: string[] = [];
-  const newlyKnownDids = new Set<string>();
   const identityUpdates = new Map<string, string>();
 
   const subscription = new JetstreamSubscription({
@@ -246,39 +244,12 @@ export async function ingestEvents(
 
       const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
 
-      const short = shortNameForNsid(config, commit.collection);
-      const collectionCfg = short ? config.collections[short] : undefined;
-
       if (dependentCollections.has(commit.collection) && knownDids) {
         if (!knownDids.has(event.did)) {
           filteredUnknownDid++;
           if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
           return;
         }
-        // Subject filter: for collections with subjectField (e.g. follows
-        // pointing at a `subject` DID), drop records whose subject isn't a
-        // DID we care about. Trims network-wide social graph to the
-        // subjects our discoverable users overlap with.
-        const subjectField = collectionCfg?.subjectField;
-        if (subjectField && commit.operation !== "delete") {
-          const subj = (commit.record as Record<string, unknown> | undefined)?.[
-            subjectField
-          ];
-          if (typeof subj === "string" && !knownDids.has(subj)) {
-            return;
-          }
-        }
-      }
-
-      if (collectionCfg?.recordFilter && commit.operation !== "delete") {
-        const rec = commit.record as Record<string, unknown> | undefined;
-        let keep = false;
-        try {
-          keep = !!(rec && collectionCfg.recordFilter(rec));
-        } catch (err) {
-          log.warn(`[ingest] recordFilter threw for ${uri}: ${err}`);
-        }
-        if (!keep) return;
       }
 
       const prev = seenUris.get(uri);
@@ -291,33 +262,22 @@ export async function ingestEvents(
         seenUris.set(uri, event.time_us);
       }
 
-      const now = Date.now();
-
-      collected.push({
-        uri,
-        did: event.did,
-        time_us: event.time_us,
-        collection: commit.collection,
-        operation: commit.operation as "create" | "update" | "delete",
-        rkey: commit.rkey,
-        cid: commit.operation === "delete" ? null : commit.cid,
-        record:
-          commit.operation === "delete"
-            ? null
-            : JSON.stringify(commit.record),
-        indexed_at: now * 1000,
-      });
-
-      log.log(
-        `[ingest] keep: ${commit.operation} ${uri} time_us=${event.time_us}`
+      collected.push(
+        createIngestEvent({
+          did: event.did,
+          timeUs: event.time_us,
+          collection: commit.collection,
+          operation: commit.operation,
+          rkey: commit.rkey,
+          cid: commit.operation === "delete" ? null : commit.cid,
+          value: commit.operation === "delete" ? undefined : commit.record,
+        }),
       );
 
-      if (knownDids && !dependentCollections.has(commit.collection)) {
-        if (!knownDids.has(event.did)) {
-          knownDids.add(event.did);
-          newlyKnownDids.add(event.did);
-        }
-      }
+      log.log(
+        `[ingest] candidate: ${commit.operation} ${uri} time_us=${event.time_us}`
+      );
+
     } else if (event.kind === "identity") {
       identityUpdates.set(event.did, event.identity.handle);
     }
@@ -382,7 +342,7 @@ export async function ingestEvents(
       : 0;
 
   log.log(
-    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, kept=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
+    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, candidates=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
   );
 
   if (cursorGap !== null && cursorGap > 1000) {
@@ -409,7 +369,7 @@ export async function ingestEvents(
     }
   }
 
-  return { events: collected, lastCursor, newlyKnownDids: [...newlyKnownDids], identityUpdates };
+  return { events: collected, lastCursor, identityUpdates };
 }
 
 // Run a full ingest cycle: init schema, load cursor, ingest, apply, save cursor
@@ -456,7 +416,7 @@ export async function runIngestCycle(
     }
   }
 
-  const { events, lastCursor, newlyKnownDids, identityUpdates } = await ingestEvents(
+  const { events, lastCursor, identityUpdates } = await ingestEvents(
     config,
     cursor,
     timeoutMs,
@@ -476,9 +436,22 @@ export async function runIngestCycle(
     log.log(`[ingest] received 0 events from Jetstream`);
   }
 
+  const accepted: IngestEvent[] = [];
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
-    await applyEvents(db, batch, config);
+    const result = await ingestRecords(db, batch, config, { knownDids });
+    accepted.push(...result.accepted);
+  }
+
+  const newlyKnownDids: string[] = [];
+  if (knownDids) {
+    const dependent = new Set(dependentCollections);
+    for (const event of accepted) {
+      if (!dependent.has(event.collection) && !knownDids.has(event.did)) {
+        knownDids.add(event.did);
+        newlyKnownDids.push(event.did);
+      }
+    }
   }
 
   // Apply handle changes from #identity events. UPDATE-only, so unknown
@@ -495,7 +468,7 @@ export async function runIngestCycle(
   }
 
   // Persist the cursor BEFORE the best-effort enrichment tail below. Records are
-  // already durably applied (applyEvents) and handle changes recorded, so the
+  // already durably projected and handle changes recorded, so the
   // cursor's forward progress is real and must be committed now. The steps that
   // follow — refreshStaleIdentities especially — make per-DID network calls and
   // can run long; if the cron isolate is aborted (e.g. a scheduled-invocation
@@ -515,7 +488,7 @@ export async function runIngestCycle(
 
   // Refresh stale/missing identities for DIDs in this batch (best-effort; runs
   // after the cursor save so its network latency can't strand forward progress).
-  const uniqueDids = [...new Set(events.map((e) => e.did))];
+  const uniqueDids = [...new Set(accepted.map((e) => e.did))];
   if (uniqueDids.length > 0) {
     try {
       await refreshStaleIdentities(db, uniqueDids, config);
@@ -556,7 +529,7 @@ export async function runIngestCycle(
   // for many intervals (one slice per interval) as a per-slice clock would.
   if (config.feeds) {
     const feedMutatingNsids = getFeedMutatingNsids(config);
-    const feedTouched = events.some((e) => feedMutatingNsids.has(e.collection));
+    const feedTouched = accepted.some((e) => feedMutatingNsids.has(e.collection));
     await runGatedFeedPrune(db, config, feedTouched);
   }
 
@@ -564,5 +537,5 @@ export async function runIngestCycle(
   // config.maintenance.optimize is set).
   await maybeOptimize(db, config, log);
 
-  log.log(`[ingest] cycle complete. stored=${events.length}`);
+  log.log(`[ingest] cycle complete. stored=${accepted.length}`);
 }

@@ -247,7 +247,7 @@ export interface ContrailConfig {
    *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`. */
   notify?: boolean | string;
   /** Write-only, post-commit observers of applied records — derived indexes,
-   *  audit logs, webhook fan-outs. Each fires after every `applyEvents()` commit
+   *  audit logs, webhook fan-outs. Each fires after every record-ingest commit
    *  on both live and backfill paths, with failures isolated so a throwing
    *  sink never blocks ingestion. */
   sinks?: import("./sinks/types").Sink[];

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
 import { initSchema } from "../src/index";
-import { applyEvents, queryRecords, getLastCursor, saveCursor } from "../src/index";
+import { ingestRecords, queryRecords, getLastCursor, saveCursor } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { makeEvent } from "./helpers";
 
@@ -79,7 +79,7 @@ if (!PG_URL) {
     });
 
     it("inserts and queries records", async () => {
-      await applyEvents(db, [makeEvent({ record: { name: "PG Test", mode: "online" } })]);
+      await ingestRecords(db, [makeEvent({ record: { name: "PG Test", mode: "online" } })]);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
       });
@@ -87,7 +87,7 @@ if (!PG_URL) {
     });
 
     it("filters by json field", async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/1", rkey: "1", record: { name: "A", mode: "online" }, time_us: 2000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/2", rkey: "2", record: { name: "B", mode: "in-person" }, time_us: 1000 }),
       ]);
@@ -100,8 +100,8 @@ if (!PG_URL) {
 
     it("counts relations", async () => {
       const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
-      await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
-      await applyEvents(db, [
+      await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+      await ingestRecords(db, [
         makeEvent({
           uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/r1",
           did: "did:plc:user1",
@@ -119,7 +119,7 @@ if (!PG_URL) {
     });
 
     it("full-text search works via tsvector", async () => {
-      await applyEvents(db, [
+      await ingestRecords(db, [
         makeEvent({
           uri: "at://a/community.lexicon.calendar.event/1",
           rkey: "1",
