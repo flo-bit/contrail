@@ -39,7 +39,7 @@ pnpm contrail backfill  # backfill against the local D1 created by wrangler
 
 `pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to start or resume backfill whenever known work remains, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
 
-A failed PDS account stays incomplete rather than being marked complete. The initial command uses a bounded attempt budget, then records an exponential retry time. The normal one-minute Worker cron retries a small due slice after live ingestion, with delays from 15 minutes up to 48 hours and a ten-attempt limit, so dead PDSes cannot monopolize the tick. Rerunning the command resets exhausted rows and forces an immediate bounded pass.
+A failed PDS account stays incomplete rather than being marked complete. The initial command uses a bounded attempt budget, then records an exponential retry time. The normal one-minute Worker cron retries a small due slice after live ingestion, with delays from 15 minutes up to 48 hours and a ten-scheduled-attempt limit, so dead PDSes cannot monopolize the tick. Rerunning the command resets exhausted rows and forces an immediate bounded pass.
 
 ```bash
 curl http://localhost:8787/status

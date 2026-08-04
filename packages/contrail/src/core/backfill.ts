@@ -98,24 +98,34 @@ async function markFailed(
 ): Promise<void> {
   const row = await db
     .prepare(
-      "SELECT retries FROM backfills WHERE did = ? AND collection = ?"
+      "SELECT retries, scheduled_retries FROM backfills WHERE did = ? AND collection = ?"
     )
     .bind(did, collection)
-    .first<{ retries: number }>();
-  const retries = (row?.retries ?? 0) + 1;
+    .first<{ retries: number; scheduled_retries: number }>();
+  const previousRetries = row?.retries ?? 0;
+  const retries = previousRetries + 1;
+  const scheduledRetries =
+    (row?.scheduled_retries ?? 0) +
+    (exhaustAfterAttempts === undefined ? 0 : 1);
   const now = Date.now();
   const exhausted =
-    exhaustAfterAttempts !== undefined && retries >= exhaustAfterAttempts;
+    exhaustAfterAttempts !== undefined &&
+    scheduledRetries >= exhaustAfterAttempts;
+  const retryExponent =
+    exhaustAfterAttempts === undefined
+      ? 0
+      : Math.max(0, scheduledRetries - (previousRetries > 0 ? 0 : 1));
   const retryDelay = Math.min(
-    BACKFILL_RETRY_BASE_MS * 2 ** Math.min(retries - 1, 16),
+    BACKFILL_RETRY_BASE_MS * 2 ** Math.min(retryExponent, 16),
     BACKFILL_RETRY_MAX_MS
   );
   await db
     .prepare(
-      "UPDATE backfills SET retries = ?, last_error = ?, last_attempt_at = ?, next_retry_at = ?, retry_exhausted = ? WHERE did = ? AND collection = ?"
+      "UPDATE backfills SET retries = ?, scheduled_retries = ?, last_error = ?, last_attempt_at = ?, next_retry_at = ?, retry_exhausted = ? WHERE did = ? AND collection = ?"
     )
     .bind(
       retries,
+      scheduledRetries,
       errorMessage(error),
       now,
       exhausted ? null : now + retryDelay,
@@ -287,7 +297,7 @@ async function backfillUserAttempt(
 
       await db
         .prepare(
-          "UPDATE backfills SET pds_cursor = ?, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
+          "UPDATE backfills SET pds_cursor = ?, retries = 0, scheduled_retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
         )
         .bind(currentCursor ?? null, now, did, collection)
         .run();
@@ -311,7 +321,7 @@ async function backfillUserAttempt(
   if (done) {
     await db
       .prepare(
-        "UPDATE backfills SET completed = 1, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
+        "UPDATE backfills SET completed = 1, retries = 0, scheduled_retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
       )
       .bind(Date.now(), did, collection)
       .run();
@@ -379,7 +389,7 @@ async function backfillPendingWork(
   // gets a fresh bounded retry budget.
   await db
     .prepare(
-      "UPDATE backfills SET retries = 0, next_retry_at = NULL, retry_exhausted = 0 WHERE completed = 0"
+      "UPDATE backfills SET retries = 0, scheduled_retries = 0, next_retry_at = NULL, retry_exhausted = 0 WHERE completed = 0"
     )
     .run();
 
@@ -559,7 +569,7 @@ export async function backfillPending(
 export interface BackfillRetryOptions {
   /** Maximum accounts to attempt in one scheduled slice. Default: 5. */
   maxAccounts?: number;
-  /** Consecutive failures before automatic retries stop. Default: 10. */
+  /** Failed scheduled attempts before automatic retries stop. Default: 10. */
   maxAttempts?: number;
   /** Total wall-clock budget for the slice. Default: 10000ms. */
   timeoutMs?: number;

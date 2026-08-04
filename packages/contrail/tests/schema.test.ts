@@ -27,6 +27,7 @@ describe("initSchema", () => {
       expect.arrayContaining([
         "last_attempt_at",
         "next_retry_at",
+        "scheduled_retries",
         "retry_exhausted",
       ])
     );
@@ -94,6 +95,7 @@ describe("initSchema", () => {
       expect.arrayContaining([
         "last_attempt_at",
         "next_retry_at",
+        "scheduled_retries",
         "retry_exhausted",
       ])
     );

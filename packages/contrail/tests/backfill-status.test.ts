@@ -196,7 +196,7 @@ describe("scheduled backfill retries", () => {
       .run();
     await db
       .prepare(
-        "INSERT INTO backfills (did, collection, completed, retries, last_error, next_retry_at) VALUES (?, ?, 0, 8, 'unavailable', ?)"
+        "INSERT INTO backfills (did, collection, completed, retries, scheduled_retries, last_error, next_retry_at) VALUES (?, ?, 0, 8, 8, 'unavailable', ?)"
       )
       .bind(DID, EVENT, Date.now() - 1)
       .run();
@@ -216,14 +216,16 @@ describe("scheduled backfill retries", () => {
       maxAttempts: 10
     });
     let row = await db
-      .prepare("SELECT retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
+      .prepare("SELECT retries, scheduled_retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
       .bind(DID)
       .first<{
         retries: number;
+        scheduled_retries: number;
         next_retry_at: number | null;
         retry_exhausted: number;
       }>();
     expect(row?.retries).toBe(9);
+    expect(row?.scheduled_retries).toBe(9);
     expect(row?.retry_exhausted).toBe(0);
     expect(row?.next_retry_at).toBeGreaterThanOrEqual(
       before + 48 * 60 * 60_000
@@ -241,15 +243,17 @@ describe("scheduled backfill retries", () => {
       maxAttempts: 10
     });
     row = await db
-      .prepare("SELECT retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
+      .prepare("SELECT retries, scheduled_retries, next_retry_at, retry_exhausted FROM backfills WHERE did = ?")
       .bind(DID)
       .first<{
         retries: number;
+        scheduled_retries: number;
         next_retry_at: number | null;
         retry_exhausted: number;
       }>();
     expect(row).toEqual({
       retries: 10,
+      scheduled_retries: 10,
       next_retry_at: null,
       retry_exhausted: 1
     });

@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 5;
+export const CONTRAIL_SCHEMA_VERSION = 6;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS backfills (
   last_error TEXT,
   last_attempt_at ${dialect.bigintType},
   next_retry_at ${dialect.bigintType},
+  scheduled_retries INTEGER NOT NULL DEFAULT 0,
   retry_exhausted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (did, collection)
 );
@@ -319,6 +320,11 @@ const MIGRATIONS: MigrationOp[] = [
   { table: "backfills", column: "last_error", columnDef: "TEXT" },
   { table: "backfills", column: "last_attempt_at", columnDef: "BIGINT" },
   { table: "backfills", column: "next_retry_at", columnDef: "BIGINT" },
+  {
+    table: "backfills",
+    column: "scheduled_retries",
+    columnDef: "INTEGER NOT NULL DEFAULT 0",
+  },
   {
     table: "backfills",
     column: "retry_exhausted",
