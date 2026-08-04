@@ -54,7 +54,7 @@ For count filters / sorts, the HTTP side is nicer than the programmatic side —
 ?limit=25&cursor=<opaque>
 ```
 
-`cursor` is opaque — pass back whatever `listRecords` returned in its `cursor` field. `limit` is 1–200 (default 50). Cursors embed the sort kind, so a cursor from a `sort=startsAt` query is ignored by a `sort=rsvpsCount` query instead of silently returning wrong results.
+`cursor` is opaque — pass back whatever `listRecords` returned in its `cursor` field. `limit` is 1–200 (default 50). Cursors embed the complete ordering, including relevance rank for search and URI as the final unique tiebreaker. They also embed the sort kind, so a cursor from a `sort=startsAt` query is ignored by a `sort=rsvpsCount` query instead of silently returning wrong results.
 
 ```ts
 let cursor: string | undefined;

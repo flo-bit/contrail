@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Database } from "../src/index";
 import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { queryRecords, getLastCursor, saveCursor } from "../src/index";
@@ -266,6 +266,55 @@ describe("queryRecords", () => {
     });
     expect(page2.records).toHaveLength(1);
     expect(page2.cursor).toBeUndefined();
+  });
+
+  it("paginates records with tied timestamps without dropping any", async () => {
+    const tied = ["a", "b", "c"].map((rkey) =>
+      makeEvent({
+        uri: `at://did:plc:tied/community.lexicon.calendar.event/${rkey}`,
+        did: "did:plc:tied",
+        rkey,
+        record: { name: "Same" },
+        time_us: 1000,
+      }),
+    );
+    await ingestRecords(db, tied, TEST_CONFIG);
+
+    const page1 = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      did: "did:plc:tied",
+      limit: 2,
+    });
+    const page2 = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      did: "did:plc:tied",
+      limit: 2,
+      cursor: page1.cursor,
+    });
+
+    expect([...page1.records, ...page2.records].map((record) => record.rkey)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("encodes and decodes cursors without Node Buffer", async () => {
+    vi.stubGlobal("Buffer", undefined);
+    try {
+      const page1 = await queryRecords(db, TEST_CONFIG, {
+        collection: "community.lexicon.calendar.event",
+        limit: 2,
+      });
+      const page2 = await queryRecords(db, TEST_CONFIG, {
+        collection: "community.lexicon.calendar.event",
+        limit: 2,
+        cursor: page1.cursor,
+      });
+      expect(page2.records).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("filters by equality", async () => {

@@ -61,6 +61,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:built": "node tests/built-sqlite.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

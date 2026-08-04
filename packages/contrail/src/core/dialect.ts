@@ -109,19 +109,26 @@ export function buildFtsSchema(
 export function ftsQueryClause(
   dialect: SqlDialect,
   recordsTable: string
-): { join: string; condition: string; orderExpr: string } {
+): {
+  join: string;
+  condition: string;
+  orderExpr: string;
+  orderDirection: "asc" | "desc";
+} {
   if (dialect.ftsStrategy === "virtual-table") {
     const ftsTable = recordsTable.replace("records_", "fts_");
     return {
       join: `JOIN ${ftsTable} fts ON fts.uri = r.uri`,
       condition: "fts.content MATCH ?",
       orderExpr: "fts.rank",
+      orderDirection: "asc",
     };
   } else {
     return {
       join: "",
       condition: "r.search_vector @@ plainto_tsquery('english', ?)",
       orderExpr: "ts_rank(r.search_vector, plainto_tsquery('english', ?))",
+      orderDirection: "desc",
     };
   }
 }

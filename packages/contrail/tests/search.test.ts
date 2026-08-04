@@ -251,4 +251,63 @@ describe.skipIf(!hasFts)("search pagination", () => {
     expect(page2.records).toHaveLength(2);
     expect(page2.cursor).toBeUndefined();
   });
+
+  it("uses rank, time, and URI together when paginating", async () => {
+    await ingestRecords(
+      db,
+      [
+        makeEvent({
+          uri: `at://did:plc:a/${collection}/rank-a`,
+          collection,
+          rkey: "rank-a",
+          record: { name: "Quokka", mode: "", description: "" },
+          time_us: 1000,
+        }),
+        makeEvent({
+          uri: `at://did:plc:a/${collection}/rank-b`,
+          collection,
+          rkey: "rank-b",
+          record: {
+            name: "Quokka community gathering with a deliberately long title",
+            mode: "online",
+            description: "many unrelated words make this a weaker match",
+          },
+          time_us: 3000,
+        }),
+        makeEvent({
+          uri: `at://did:plc:a/${collection}/rank-c`,
+          collection,
+          rkey: "rank-c",
+          record: {
+            name: "Quokka event with another deliberately long title",
+            mode: "online",
+            description: "more unrelated words make this weaker too",
+          },
+          time_us: 2000,
+        }),
+      ],
+      SEARCH_CONFIG,
+    );
+
+    const complete = await queryRecords(db, SEARCH_CONFIG, {
+      collection,
+      search: "Quokka",
+      limit: 50,
+    });
+    const paged: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await queryRecords(db, SEARCH_CONFIG, {
+        collection,
+        search: "Quokka",
+        limit: 1,
+        cursor,
+      });
+      paged.push(...page.records.map((record) => record.uri));
+      cursor = page.cursor;
+    } while (cursor && paged.length < 10);
+
+    expect(paged).toEqual(complete.records.map((record) => record.uri));
+    expect(paged).toHaveLength(3);
+  });
 });

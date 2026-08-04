@@ -25,12 +25,24 @@ type RecordFetchResult =
   | { kind: "not-found" }
   | { kind: "error"; status?: number; message: string };
 
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
 /** Fetch one authoritative record without conflating failure with deletion. */
 async function fetchRecordFromPDS(
   pds: string,
   did: string,
   collection: string,
-  rkey: string
+  rkey: string,
+  signal: AbortSignal,
 ): Promise<RecordFetchResult> {
   const url = new URL(`/xrpc/com.atproto.repo.getRecord`, pds);
   url.searchParams.set("repo", did);
@@ -38,28 +50,18 @@ async function fetchRecordFromPDS(
   url.searchParams.set("rkey", rkey);
 
   let response: Response;
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    NOTIFY_FETCH_TIMEOUT_MS,
-  );
   try {
-    response = await fetch(url.toString(), { signal: controller.signal });
+    response = await fetch(url.toString(), { signal });
   } catch (error) {
-    return {
-      kind: "error",
-      message: controller.signal.aborted
-        ? `PDS request timed out after ${NOTIFY_FETCH_TIMEOUT_MS}ms`
-        : `network failure: ${String(error)}`,
-    };
-  } finally {
-    clearTimeout(timeout);
+    if (signal.aborted) throw error;
+    return { kind: "error", message: `network failure: ${String(error)}` };
   }
 
   if (!response.ok) {
-    const body = await response
-      .json()
-      .catch(() => null) as { error?: unknown; message?: unknown } | null;
+    const body = await response.json().catch((error) => {
+      if (signal.aborted) throw error;
+      return null;
+    }) as { error?: unknown; message?: unknown } | null;
     const errorCode = typeof body?.error === "string" ? body.error : undefined;
     if (errorCode === "RecordNotFound") {
       return { kind: "not-found" };
@@ -78,6 +80,7 @@ async function fetchRecordFromPDS(
   try {
     data = await response.json();
   } catch (error) {
+    if (signal.aborted) throw error;
     return {
       kind: "error",
       status: response.status,
@@ -156,26 +159,43 @@ export async function processNotifyUris(
   );
 
   for (const { uri, parsed } of validUris) {
-    let pds: string | null | undefined;
-    try {
-      pds = await getPDS(parsed.did as Did, db, config);
-    } catch (error) {
-      errors.push(`${uri}: could not resolve PDS: ${String(error)}`);
-      continue;
-    }
-    if (!pds) {
-      errors.push(`${uri}: could not resolve PDS for ${parsed.did}`);
-      continue;
-    }
-
-    const result = await fetchRecordFromPDS(
-      pds,
-      parsed.did,
-      parsed.collection,
-      parsed.rkey
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error("notify deadline exceeded")),
+      NOTIFY_FETCH_TIMEOUT_MS,
     );
-    const existingInfo = existing.get(uri);
+    let result: RecordFetchResult;
+    try {
+      const pds = await abortable(
+        getPDS(parsed.did as Did, db, config),
+        controller.signal,
+      );
+      if (!pds) {
+        errors.push(`${uri}: could not resolve PDS for ${parsed.did}`);
+        continue;
+      }
+      result = await abortable(
+        fetchRecordFromPDS(
+          pds,
+          parsed.did,
+          parsed.collection,
+          parsed.rkey,
+          controller.signal,
+        ),
+        controller.signal,
+      );
+    } catch (error) {
+      errors.push(
+        controller.signal.aborted
+          ? `${uri}: PDS request timed out after ${NOTIFY_FETCH_TIMEOUT_MS}ms`
+          : `${uri}: could not resolve or fetch from PDS: ${String(error)}`,
+      );
+      continue;
+    } finally {
+      clearTimeout(timeout);
+    }
 
+    const existingInfo = existing.get(uri);
     if (result.kind === "error") {
       errors.push(`${uri}: ${result.message}`);
       continue;

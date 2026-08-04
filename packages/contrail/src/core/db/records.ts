@@ -783,13 +783,13 @@ export interface SortOption {
   direction: "asc" | "desc";
 }
 
-/** Opaque keyset cursor. `t` is the tiebreaker (time_us of the last row),
- *  `v` is the sort-key value (string for record fields, number for counts),
- *  `k` identifies the sort so we can reject mismatched cursors. */
+/** Opaque keyset cursor. `v` is the primary sort value, `t` is time,
+ *  and `u` is the final unique tiebreaker. */
 interface CursorPayload {
   t: number;
+  u: string;
   v?: string | number;
-  k: "time" | string; // "time" | `field:<name>` | `count:<type>`
+  k: "time" | "search" | string;
 }
 
 function sortKind(sort?: SortOption): "time" | string {
@@ -798,15 +798,40 @@ function sortKind(sort?: SortOption): "time" | string {
   return "time";
 }
 
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+function decodeBase64Url(value: string): string {
+  const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 function encodeCursor(payload: CursorPayload): string {
-  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return encodeBase64Url(JSON.stringify(payload));
 }
 
 function decodeCursor(cursor: string): CursorPayload | null {
   try {
-    const json = Buffer.from(cursor, "base64url").toString("utf8");
-    const p = JSON.parse(json);
-    if (typeof p?.t !== "number" || typeof p?.k !== "string") return null;
+    const p = JSON.parse(decodeBase64Url(cursor));
+    if (
+      typeof p?.t !== "number" ||
+      typeof p?.u !== "string" ||
+      typeof p?.k !== "string"
+    ) {
+      return null;
+    }
     return p as CursorPayload;
   } catch {
     return null;
@@ -865,44 +890,95 @@ export async function queryRecords(
     bindings.push(did);
   }
 
-  // Opaque keyset cursor encoding { t, v?, k }. Silently ignored if it doesn't
-  // match the current sort — callers shouldn't mix sort params with stale cursors.
-  const expectedKind = sortKind(sort);
+  const dialect = getDialect(db);
+  let ftsJoin = "";
+  let ftsClause: ReturnType<typeof ftsQueryClause> | null = null;
+  if (search) {
+    const collectionConfig = config.collections[collection];
+    const fields = collectionConfig
+      ? getSearchableFields(collection, collectionConfig)
+      : null;
+    if (fields && fields.length > 0) {
+      ftsClause = ftsQueryClause(dialect, recordsTableName(collection));
+      ftsJoin = ftsClause.join;
+      conditions.push(ftsClause.condition);
+      bindings.push(search);
+    }
+  }
+
+  // Cursors are accepted only for the ordering that created them. URI is the
+  // final key so rows with identical sort values and timestamps cannot vanish.
+  const expectedKind = sort
+    ? sortKind(sort)
+    : ftsClause
+      ? "search"
+      : "time";
   if (cursor) {
     const payload = decodeCursor(cursor);
     if (payload && payload.k === expectedKind) {
+      const stableTail =
+        "(r.time_us < ? OR (r.time_us = ? AND r.uri > ?))";
       if (sort?.recordField) {
-        const sortExpr = getDialect(db).jsonExtract('r.record', sort.recordField);
+        const sortExpr = dialect.jsonExtract("r.record", sort.recordField);
         const cmp = sort.direction === "desc" ? "<" : ">";
-        conditions.push(`(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND r.time_us < ?))`);
-        const v = payload.v ?? "";
-        bindings.push(v as string | number, v as string | number, payload.t);
+        const value = payload.v ?? "";
+        conditions.push(
+          `(${sortExpr} ${cmp} ? OR (${sortExpr} = ? AND ${stableTail}))`,
+        );
+        bindings.push(value, value, payload.t, payload.t, payload.u);
       } else if (sort?.countType) {
         const sortCol = countColumnForType(config, collection, sort.countType);
         if (!sortCol) throw new Error(`Unknown countType: ${sort.countType}`);
         const cmp = sort.direction === "desc" ? "<" : ">";
-        conditions.push(`(r.${sortCol} ${cmp} ? OR (r.${sortCol} = ? AND r.time_us < ?))`);
-        const v = Number(payload.v ?? 0);
-        bindings.push(v, v, payload.t);
-      } else {
-        conditions.push("r.time_us < ?");
-        bindings.push(payload.t);
+        const value = Number(payload.v ?? 0);
+        conditions.push(
+          `(r.${sortCol} ${cmp} ? OR (r.${sortCol} = ? AND ${stableTail}))`,
+        );
+        bindings.push(value, value, payload.t, payload.t, payload.u);
+      } else if (ftsClause && search && typeof payload.v === "number") {
+        const rankExpr = ftsClause.orderExpr;
+        const cmp = ftsClause.orderDirection === "desc" ? "<" : ">";
+        conditions.push(
+          `(${rankExpr} ${cmp} ? OR (${rankExpr} = ? AND ${stableTail}))`,
+        );
+        if (dialect.ftsStrategy === "generated-column") {
+          bindings.push(
+            search,
+            payload.v,
+            search,
+            payload.v,
+            payload.t,
+            payload.t,
+            payload.u,
+          );
+        } else {
+          bindings.push(
+            payload.v,
+            payload.v,
+            payload.t,
+            payload.t,
+            payload.u,
+          );
+        }
+      } else if (!ftsClause) {
+        conditions.push(stableTail);
+        bindings.push(payload.t, payload.t, payload.u);
       }
     }
   }
 
   for (const [field, value] of Object.entries(filters)) {
-    conditions.push(`${getDialect(db).jsonExtract('r.record', field)} = ?`);
+    conditions.push(`${dialect.jsonExtract("r.record", field)} = ?`);
     bindings.push(value);
   }
 
   for (const [field, range] of Object.entries(rangeFilters)) {
     if (range.min != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} >= ?`);
+      conditions.push(`${dialect.jsonExtract("r.record", field)} >= ?`);
       bindings.push(range.min);
     }
     if (range.max != null) {
-      conditions.push(`${getDialect(db).jsonExtract('r.record', field)} <= ?`);
+      conditions.push(`${dialect.jsonExtract("r.record", field)} <= ?`);
       bindings.push(range.max);
     }
   }
@@ -914,59 +990,53 @@ export async function queryRecords(
     bindings.push(minCount);
   }
 
-  let ftsJoin = "";
-  let ftsClause: ReturnType<typeof ftsQueryClause> | null = null;
-  if (search) {
-    const colConfig2 = config.collections[collection];
-    const fields = colConfig2 ? getSearchableFields(collection, colConfig2) : null;
-    if (fields && fields.length > 0) {
-      ftsClause = ftsQueryClause(getDialect(db), recordsTableName(collection));
-      ftsJoin = ftsClause.join;
-      conditions.push(ftsClause.condition);
-      // SECURITY: `search` is user input bound as a parameter, not interpolated.
-      bindings.push(search);
-    }
-  }
-
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const countSelect = countCols.length > 0
     ? ", " + countCols.map(({ column }) => `r.${column}`).join(", ")
     : "";
-  const select = `r.uri, r.did, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}`;
+  const selectBindings: (string | number)[] = [];
+  let searchRankSelect = "";
+  if (expectedKind === "search" && ftsClause && search) {
+    searchRankSelect = `, ${ftsClause.orderExpr} AS __search_rank`;
+    if (dialect.ftsStrategy === "generated-column") {
+      selectBindings.push(search);
+    }
+  }
+  const select = `r.uri, r.did, r.rkey, r.cid, r.record, r.time_us, r.indexed_at${countSelect}${searchRankSelect}`;
 
   const join = [source?.joins, ftsJoin].filter(Boolean).join(" ");
+  const orderBindings: (string | number)[] = [];
 
   let orderBy: string;
   if (sort?.recordField) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderBy = `${getDialect(db).jsonExtract('r.record', sort.recordField)} ${dir}, r.time_us DESC`;
+    orderBy = `${dialect.jsonExtract("r.record", sort.recordField)} ${dir}, r.time_us DESC, r.uri ASC`;
   } else if (sort?.countType) {
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
     const sortCol = countColumnForType(config, collection, sort.countType);
     if (!sortCol) throw new Error(`Unknown countType: ${sort.countType}`);
-    orderBy = `r.${sortCol} ${dir}, r.time_us DESC`;
+    orderBy = `r.${sortCol} ${dir}, r.time_us DESC, r.uri ASC`;
   } else if (ftsClause) {
-    orderBy = `${ftsClause.orderExpr}, r.time_us DESC`;
-    // PG ts_rank needs the search term bound again for ORDER BY
-    if (getDialect(db).ftsStrategy === "generated-column" && search) {
-      bindings.push(search);
+    const dir = ftsClause.orderDirection.toUpperCase();
+    orderBy = `${ftsClause.orderExpr} ${dir}, r.time_us DESC, r.uri ASC`;
+    if (dialect.ftsStrategy === "generated-column" && search) {
+      orderBindings.push(search);
     }
   } else {
-    orderBy = "r.time_us DESC";
+    orderBy = "r.time_us DESC, r.uri ASC";
   }
-
-  bindings.push(limit);
 
   const query = `SELECT ${select} FROM ${table} r ${join} ${where} ORDER BY ${orderBy} LIMIT ?`;
 
   const result = await db
     .prepare(query)
-    .bind(...bindings)
+    .bind(...selectBindings, ...bindings, ...orderBindings, limit)
     .all<any>();
+  const rows = result.results ?? [];
 
   const nsid = nsidForShortName(config, collection) ?? collection;
-  const records = (result.results ?? []).map((row: any) => {
+  const records = rows.map((row: any) => {
     const rec: RecordRow & { counts?: Record<string, number> } = {
       uri: row.uri,
       did: row.did,
@@ -990,7 +1060,12 @@ export async function queryRecords(
 
   const nextCursor =
     records.length === limit
-      ? buildCursor(records[records.length - 1], sort, expectedKind)
+      ? buildCursor(
+          records[records.length - 1],
+          sort,
+          expectedKind,
+          rows[rows.length - 1]?.__search_rank,
+        )
       : undefined;
 
   return { records, cursor: nextCursor };
@@ -1000,17 +1075,24 @@ export async function queryRecords(
 function buildCursor(
   row: RecordRow & { counts?: Record<string, number> },
   sort: SortOption | undefined,
-  kind: string
+  kind: string,
+  searchRank?: unknown,
 ): string {
   const t = Number(row.time_us);
+  const u = row.uri;
   if (sort?.recordField) {
     const parsed = row.record ? JSON.parse(row.record) : null;
     const v = parsed ? getNestedValue(parsed, sort.recordField) : undefined;
-    return encodeCursor({ t, v: v == null ? "" : String(v), k: kind });
+    return encodeCursor({ t, u, v: v == null ? "" : String(v), k: kind });
   }
   if (sort?.countType) {
     const v = row.counts?.[sort.countType] ?? 0;
-    return encodeCursor({ t, v, k: kind });
+    return encodeCursor({ t, u, v, k: kind });
   }
-  return encodeCursor({ t, k: kind });
+  if (kind === "search") {
+    const v = Number(searchRank);
+    if (!Number.isFinite(v)) throw new Error("Search rank missing from result");
+    return encodeCursor({ t, u, v, k: kind });
+  }
+  return encodeCursor({ t, u, k: kind });
 }

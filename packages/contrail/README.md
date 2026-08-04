@@ -88,4 +88,4 @@ import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 ```
 
-D1 implements Contrail's database interface directly.
+The SQLite adapter uses the built-in `node:sqlite` module and therefore requires Node.js 22.13 or newer. D1 implements Contrail's database interface directly.

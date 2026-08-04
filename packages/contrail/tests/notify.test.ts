@@ -302,6 +302,45 @@ describe("POST notifyOfUpdate", () => {
     }
   });
 
+  it("times out when response headers arrive but the body stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const did = "did:plc:test";
+      const uri = `at://${did}/community.lexicon.calendar.event/stalled-body`;
+      await seedLocalRecord(uri);
+      await seedIdentity(did, "https://pds.example.com");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+          let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodyController = controller;
+            },
+          });
+          init?.signal?.addEventListener(
+            "abort",
+            () => bodyController.error(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+          return new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }),
+      );
+
+      const response = notify(uri);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const body = await (await response).json();
+      expect(body).toMatchObject({ indexed: 0, deleted: 0 });
+      expect(body.errors?.[0]).toContain("timed out");
+      expect(await getLocalRecord(uri)).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves local state after a malformed successful response", async () => {
     const did = "did:plc:test";
     const uri = `at://${did}/community.lexicon.calendar.event/malformed`;
