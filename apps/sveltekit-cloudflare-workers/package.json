@@ -9,8 +9,6 @@
 		"generate:types": "lex-cli generate",
 		"backfill": "contrail backfill",
 		"backfill:remote": "contrail backfill --remote",
-		"refresh": "contrail refresh",
-		"refresh:remote": "contrail refresh --remote",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "pnpm generate:types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

@@ -97,7 +97,7 @@ async scheduled(_ev, env, ctx) {
 
 `ingest()` connects to Jetstream, streams events since the saved cursor, stops when caught up. Running every minute is fine — the next fire resumes where this one left off. Each cycle is bounded, so it can't blow past the Worker time limit.
 
-**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and prompts you to run backfill or refresh if the local DB looks stale on start.
+**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and offers to run the initial backfill when the local DB is empty.
 
 ### Persistent (node / any long-lived server)
 
@@ -139,42 +139,11 @@ Typical combos:
 - **workers app:** `backfillAll()` once + `ingest()` on cron + optional `notify()` for self-writes
 - **node server:** `backfillAll()` once + `runPersistent()` forever + optional `notify()` for self-writes
 
-## Refresh (catch-up after outages / dev idle)
+## Recovery after an outage
 
-When Jetstream drops events — you went offline for a few days in dev, there was an outage, or you just want reassurance nothing was lost — `refresh` walks every known DID's PDS and reconciles against your DB:
+Normal ingestion resumes from its saved Jetstream cursor, so a short outage needs no special command: restart `ingest()` or `runPersistent()` and let it catch up.
 
-```bash
-pnpm contrail refresh                    # totals only
-pnpm contrail refresh --by-collection    # totals + per-collection breakdown
-pnpm contrail refresh --ignore-window 30 # grace seconds (default: 60)
-```
-
-Each record is classified as:
-
-- **missing** — PDS has it, DB doesn't. Inserted.
-- **stale update** — DB has it with a different CID, *and* the DB row is older than the ignore window. Upserted.
-- **in sync** — same CID, or DB row is within the ignore window (jetstream probably just hadn't caught up yet).
-
-The ignore window is there so a refresh run seconds after a normal jetstream cycle doesn't double-count records that are about to sync anyway. Records inside the window are still written if they differ; they just don't show up in the stats.
-
-Report shape (`--by-collection`):
-
-```
-by collection:
-  community.lexicon.calendar.event
-    3 missing, 1 stale updates, 842 in sync
-  community.lexicon.calendar.rsvp
-    12 missing, 0 stale updates, 4108 in sync
-
-total:
-  15 missing, 1 stale updates, 4950 in sync
-  234 users scanned, 1 failed in 85.3s
-  (ignore window: 60s)
-```
-
-Safe to run repeatedly — each pass converges toward zero missing / stale. Programmatic equivalent: `contrail.refresh({ ignoreWindowMs, concurrency })` returns the same structure.
-
-Refresh is **not** a replacement for `ingest`/`runPersistent` — it walks every user's full history, which is expensive. Use it after outages or during dev idle, not as a continuous freshness mechanism.
+Contrail does not perform a full PDS sweep as a repair mechanism. Such a sweep is expensive, cannot discover repositories it never knew about, and cannot safely infer remote deletions after partial failures. If the saved cursor is older than the source's retained history, rebuild into a fresh database with `backfillAll()` rather than trusting a partial reconciliation. A replay-capable source and first-class projection rebuild command are planned follow-up work.
 
 Reading the indexed data — filters, sorts, hydration, search, pagination — has its own doc: [Querying](./02-querying.md).
 

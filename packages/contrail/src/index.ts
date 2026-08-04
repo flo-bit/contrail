@@ -20,7 +20,6 @@ export * from "./core/ingest";
 export * from "./core/jetstream";
 export * from "./core/persistent";
 export * from "./core/backfill";
-export * from "./core/refresh";
 export * from "./core/search";
 export * from "./core/constellation";
 

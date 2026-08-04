@@ -194,7 +194,7 @@ From now on:
 - Pages and XRPC endpoints are served under your domain.
 - The cron fires every minute, hitting `/api/cron`, which runs `contrail.ingest()`.
 - Loaders that need live data use `getServerClient()` for zero-overhead typed calls.
-- Need to reconcile after an outage? `pnpm contrail refresh --remote`.
+- After a short outage, ingestion resumes from its saved cursor. If source history has expired, rebuild into a fresh database with `pnpm backfill:remote`.
 
 ## Where to go next
 

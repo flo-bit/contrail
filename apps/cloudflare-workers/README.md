@@ -30,11 +30,11 @@ GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsA
 ## local dev
 
 ```bash
-pnpm dev                # wraps wrangler dev + auto-fires cron + prompts for backfill/refresh if needed
+pnpm dev                # wraps wrangler dev + auto-fires cron + prompts for initial backfill
 pnpm contrail backfill  # backfill against the local D1 created by wrangler
 ```
 
-`pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and prompts to run backfill (if nothing's indexed yet) or refresh (if the ingest cursor is >1h old), then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
+`pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to run backfill when nothing has been indexed yet, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
 
 ## extending
 

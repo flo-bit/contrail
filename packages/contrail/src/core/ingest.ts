@@ -68,7 +68,7 @@ export interface IngestRecordsResult {
 /**
  * The single admission and projection path for records from every source.
  *
- * Jetstream, persistent subscriptions, PDS backfill, refresh, and immediate
+ * Jetstream, persistent subscriptions, PDS backfill, and immediate
  * synchronization all produce the same IngestEvent shape and enter here.
  * Source connection and checkpoint handling remain outside this function.
  */

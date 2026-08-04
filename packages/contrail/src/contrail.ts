@@ -22,11 +22,6 @@ import {
   type BackfillAllOptions,
 } from "./core/backfill";
 import {
-  refresh as runRefresh,
-  type RefreshOptions,
-  type RefreshResult,
-} from "./core/refresh";
-import {
   processNotifyUris,
   type NotifyResult,
 } from "./core/router/notify";
@@ -213,46 +208,6 @@ export class Contrail {
       `  done: ${backfilled} records across ${discovered.length} users in ${elapsedS}s`
     );
     return { discovered: discovered.length, backfilled };
-  }
-
-  /** Fresh sweep: re-walk every known DID's PDS, compare each record against
-   *  our DB, count anything missing or stale (outside the ignore window).
-   *  Apply the deltas. Returns stats per-collection + totals.
-   *
-   *  Progress logs via `config.logger` unless `onProgress` is supplied. */
-  async refresh(
-    options?: RefreshOptions,
-    db?: Database
-  ): Promise<RefreshResult> {
-    const d = this.getDb(db);
-    const logger = this.config.logger;
-
-    let effective = options;
-    if (!options?.onProgress) {
-      let lastLogAt = 0;
-      effective = {
-        ...options,
-        onProgress: ({ usersComplete, usersTotal, usersFailed, recordsScanned }) => {
-          const now = Date.now();
-          if (now - lastLogAt < 2_000) return;
-          lastLogAt = now;
-          const failStr = usersFailed > 0 ? `, ${usersFailed} failed` : "";
-          logger?.log?.(
-            `  ${recordsScanned} records scanned | ${usersComplete}/${usersTotal} users${failStr}`
-          );
-        },
-      };
-    }
-
-    logger?.log?.("refreshing…");
-    const result = await runRefresh(d, this.config, effective);
-    const elapsedS = (result.elapsedMs / 1000).toFixed(1);
-    logger?.log?.(
-      `  done: ${result.total.missing} missing, ${result.total.staleUpdates} stale updates ` +
-        `across ${result.usersScanned} users in ${elapsedS}s` +
-        (result.usersFailed > 0 ? ` (${result.usersFailed} failed)` : "")
-    );
-    return result;
   }
 
   /** Immediately fetch and index specific records from their PDS. */
