@@ -55,6 +55,7 @@ export function ingestRecords(
   options?: {
     skipReplayDetection?: boolean;
     skipFeedFanout?: boolean;
+    skipDerivedProjections?: boolean;
     existing?: Map<string, ExistingRecordInfo>;
   }
 ): Promise<void> {

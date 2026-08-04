@@ -8,6 +8,8 @@ interface BackfillOpts {
   remote?: boolean;
   binding: string;
   concurrency: number;
+  pdsConcurrency: number;
+  didsPerPds: number;
   maxAttempts: number;
   only?: string;
 }
@@ -28,13 +30,23 @@ export function registerBackfill(cli: CAC): void {
     })
     .option(
       "--concurrency <n>",
-      "Concurrency for record backfill (labels are per-labeler serial)",
+      "Concurrent identity resolutions (labels are per-labeler serial)",
       { default: 100 }
     )
     .option(
+      "--pds-concurrency <n>",
+      "PDS hosts fetched concurrently",
+      { default: 20 }
+    )
+    .option(
+      "--dids-per-pds <n>",
+      "Accounts fetched concurrently from each PDS",
+      { default: 3 }
+    )
+    .option(
       "--max-attempts <n>",
-      "Failed attempts before leaving an account pending for the next run",
-      { default: 5 }
+      "Immediate attempts before deferring failures to scheduled retries",
+      { default: 1 }
     )
     .option(
       "--only <kind>",
@@ -64,6 +76,8 @@ export function registerBackfill(cli: CAC): void {
         const result = await backfillAll({
           ...wrangler,
           concurrency: Number(options.concurrency),
+          pdsConcurrency: Number(options.pdsConcurrency),
+          didsPerPds: Number(options.didsPerPds),
           maxAttempts: Number(options.maxAttempts),
         });
         recordsIncomplete = result.status.state !== "complete";

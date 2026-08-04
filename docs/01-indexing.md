@@ -52,13 +52,19 @@ await contrail.backfillAll({ concurrency: 100 }); // discover + backfill, logs p
 Under the hood this is two steps you can call separately if you want finer control:
 
 ```ts
-await contrail.discover();                     // walk relays, register DIDs
-await contrail.backfill({ concurrency: 100 }); // fetch history for registered DIDs
+await contrail.discover(); // walk relays, register DIDs
+await contrail.backfill({
+  concurrency: 100,    // identity resolution
+  pdsConcurrency: 20,  // active PDS hosts
+  didsPerPds: 3,       // accounts per active PDS
+});
 ```
 
 `backfill()` picks up each account/collection at its saved PDS cursor. A row is marked complete only after the PDS listing reaches its end. Timeouts, failed identity resolution, `429`, and `5xx` responses leave the row pending with its last error.
 
-Each initial invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. Failed account rows retain their cursors and receive an exponential `next_retry_at`. Scheduled retries start at 15 minutes, double to a maximum of 48 hours, and stop after ten failed scheduled attempts. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation resets exhausted rows and forces another bounded pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
+Each initial invocation attempts a failed account once by default, then gets out of the way. Failed rows retain their cursors and receive an exponential `next_retry_at`. Scheduled retries start at 15 minutes, double to a maximum of 48 hours, and stop after ten failed scheduled attempts. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation resets exhausted rows and forces another pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
+
+Historical loading writes canonical records first, then rebuilds FTS and materialized relation counts with set-based SQL. A durable dirty marker keeps status `incomplete` if the process stops between those phases; the next manual or scheduled backfill repairs the projections before reporting readiness. Live ingestion and scheduled account retries continue maintaining both projections incrementally.
 
 ### Workers CLI
 
@@ -69,7 +75,7 @@ pnpm contrail backfill           # local D1 (wrangler dev's bindings)
 pnpm contrail backfill --remote  # production D1
 ```
 
-Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100), and `--max-attempts <n>` (default 5). Once every known account has either completed or received a deferred failure, the initial pass is complete and scheduled retries continue in the background. Interrupted or undiscovered work still reports the pass as incomplete.
+Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags include `--binding <name>` (default `DB`), `--concurrency <n>` for identity resolution (default 100), `--pds-concurrency <n>` (default 20), `--dids-per-pds <n>` (default 3), and `--max-attempts <n>` (default 1). Once every known account has either completed or received a deferred failure, the initial pass is complete and scheduled retries continue in the background. Interrupted or undiscovered work still reports the pass as incomplete.
 
 If you'd rather embed backfill inside your own script, `@atmo-dev/contrail/workers` exports the same logic as a function:
 

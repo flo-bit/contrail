@@ -12,20 +12,20 @@ pnpm bench --config calendar.config.json
 
 ## Comparing concurrency
 
-Each command runs in a new Node process and starts from a fresh local D1:
+Each command runs in a new Node process and starts from a fresh local D1. Identity resolution, active PDS hosts, and accounts per PDS are separate controls:
 
 ```bash
-pnpm bench --config calendar.config.json --concurrency 25
-pnpm bench --config calendar.config.json --concurrency 50
 pnpm bench --config calendar.config.json --concurrency 100
-pnpm bench --config calendar.config.json --concurrency 200
+pnpm bench --config calendar.config.json --pds-concurrency 5 --dids-per-pds 3
+pnpm bench --config calendar.config.json --pds-concurrency 10 --dids-per-pds 3
+pnpm bench --config calendar.config.json --pds-concurrency 20 --dids-per-pds 3
 ```
 
-The defaults are `--concurrency 100` and `--max-attempts 5`, matching `contrail backfill`. The baseline therefore includes the same immediate retry behavior as an ordinary Atmo RSVP re-backfill. Change only one option at a time after recording that baseline.
+The current defaults are 100 concurrent identity resolutions, 20 active PDS hosts, 3 accounts per PDS, and one immediate attempt. Failures retain their cursor and move to scheduled cron retries instead of slowing the initial pass. The checked-in 774.49-second baseline records the older global-concurrency/5-attempt behavior and remains the historical comparison point.
 
 Before every run the harness recursively deletes its config/concurrency-specific `.cache` directory. It disposes and deletes the local D1 afterward as well; pass `--keep-cache` only for debugging.
 
-Results are written to ignored JSON files under `results/`. Selected reference runs can be copied into `baselines/`; the first exact-default Atmo RSVP run is [`baselines/calendar-default.json`](baselines/calendar-default.json).
+Results are written to ignored JSON files under `results/`. Selected reference runs live in `baselines/`: [`calendar-default.json`](baselines/calendar-default.json) is the original 774.49-second global-concurrency run, while [`calendar-host-aware.json`](baselines/calendar-host-aware.json) is the comparable 219.74-second host-aware run with set-based derived projection rebuilds.
 
 Each result includes:
 
@@ -34,7 +34,7 @@ Each result includes:
 - records per second;
 - peak RSS;
 - account and per-collection backfill state; and
-- the exact concurrency and attempt settings.
+- the exact resolution, PDS-host, per-PDS account, and attempt settings.
 
 ## Adding configs
 

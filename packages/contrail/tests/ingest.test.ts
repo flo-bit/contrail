@@ -7,6 +7,7 @@ import {
   queryRecords,
   resolveConfig,
   type Database,
+  type Statement,
 } from "../src/index";
 
 const logger = { log() {}, warn() {}, error() {} };
@@ -69,6 +70,40 @@ describe("ingestRecords", () => {
     expect(result.dropped.recordFilter).toBe(1);
     const stored = await queryRecords(db, config, { collection: "event" });
     expect(stored.records.map((record) => record.rkey)).toEqual(["kept"]);
+  });
+
+  it("packs record writes into statements within D1's binding limit", async () => {
+    const sql: string[] = [];
+    const observedDb: Database = {
+      prepare(statement) {
+        sql.push(statement);
+        return db.prepare(statement);
+      },
+      batch(statements: Statement[]) {
+        return db.batch(statements);
+      },
+      dialect: db.dialect,
+    };
+    const events = Array.from({ length: 30 }, (_, index) =>
+      createIngestEvent({
+        did: "did:plc:alice",
+        collection: "com.example.event",
+        rkey: `bulk-${index}`,
+        operation: "create",
+        cid: `cid-${index}`,
+        value: { keep: true },
+        timeUs: index + 1,
+      }),
+    );
+
+    await ingestRecords(observedDb, events, config);
+
+    const inserts = sql.filter((statement) =>
+      statement.startsWith("INSERT INTO records_event"),
+    );
+    expect(inserts).toHaveLength(3);
+    expect(inserts.every((statement) => (statement.match(/\?/g) ?? []).length <= 100)).toBe(true);
+    expect((await queryRecords(db, config, { collection: "event" })).records).toHaveLength(30);
   });
 
   it("drops malformed records and untracked collections before projection", async () => {

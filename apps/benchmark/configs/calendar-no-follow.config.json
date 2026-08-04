@@ -1,0 +1,47 @@
+{
+  "namespace": "rsvp.atmo",
+  "maintenance": {
+    "optimize": true
+  },
+  "collections": {
+    "event": {
+      "collection": "community.lexicon.calendar.event",
+      "queryable": {
+        "mode": {},
+        "name": {},
+        "status": {},
+        "description": {},
+        "preferences.showInDiscovery": {},
+        "startsAt": { "type": "range" },
+        "endsAt": { "type": "range" },
+        "createdAt": { "type": "range" }
+      },
+      "searchable": ["mode", "name", "status", "description"],
+      "relations": {
+        "rsvps": {
+          "collection": "rsvp",
+          "groupBy": "status",
+          "groups": {
+            "going": "community.lexicon.calendar.rsvp#going",
+            "interested": "community.lexicon.calendar.rsvp#interested",
+            "notgoing": "community.lexicon.calendar.rsvp#notgoing"
+          }
+        }
+      }
+    },
+    "rsvp": {
+      "collection": "community.lexicon.calendar.rsvp",
+      "queryable": {
+        "status": {},
+        "subject.uri": {},
+        "createdAt": { "type": "range" }
+      },
+      "references": {
+        "event": {
+          "collection": "event",
+          "field": "subject.uri"
+        }
+      }
+    }
+  }
+}

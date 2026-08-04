@@ -4,6 +4,7 @@ import { resolveConfig } from "../src/index";
 import { createTestDb, makeEvent } from "./helpers";
 import { initSchema } from "../src/index";
 import { ingestRecords, queryRecords } from "../src/index";
+import { rebuildDerivedProjections } from "../src/core/db/records";
 
 // Detect FTS5 support at module level (node:sqlite doesn't include it)
 let hasFts = false;
@@ -84,6 +85,43 @@ describe.skipIf(!hasFts)("FTS with explicit searchable fields", () => {
       ],
       SEARCH_CONFIG
     );
+  });
+
+  it("rebuilds deferred FTS rows after bulk canonical writes", async () => {
+    await ingestRecords(
+      db,
+      [
+        makeEvent({
+          uri: `at://did:plc:deferred/${collection}/deferred`,
+          did: "did:plc:deferred",
+          collection,
+          rkey: "deferred",
+          record: {
+            name: "DeferredNeedle",
+            mode: "online",
+            description: "bulk loaded",
+          },
+        }),
+      ],
+      SEARCH_CONFIG,
+      { skipDerivedProjections: true }
+    );
+
+    expect(
+      (await queryRecords(db, SEARCH_CONFIG, {
+        collection,
+        search: "DeferredNeedle",
+      })).records
+    ).toHaveLength(0);
+
+    await rebuildDerivedProjections(db, SEARCH_CONFIG);
+
+    expect(
+      (await queryRecords(db, SEARCH_CONFIG, {
+        collection,
+        search: "DeferredNeedle",
+      })).records
+    ).toHaveLength(1);
   });
 
   it("finds records matching a search term", async () => {

@@ -58,12 +58,13 @@ export function validateExternalUrl(url: string, additionalAllowedHosts?: string
 async function resolveViaSlingshot(
   identifier: string,
   slingshotUrl: string,
+  signal?: AbortSignal,
 ): Promise<ResolvedIdentity | undefined> {
   const url = new URL(slingshotUrl);
   url.searchParams.set("identifier", identifier);
 
   try {
-    const response = await fetch(url.toString());
+    const response = await fetch(url.toString(), { signal });
     if (!response.ok) return undefined;
     const data = (await response.json()) as {
       did?: string;
@@ -76,7 +77,8 @@ async function resolveViaSlingshot(
       handle: data.handle ?? null,
       pds: data.pds ?? null,
     };
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     return undefined;
   }
 }
@@ -91,9 +93,12 @@ const DEFAULT_DID_RESOLVER: DidDocumentResolver = new CompositeDidDocumentResolv
 async function getPDSViaDidDoc(
   did: Did,
   config?: ContrailConfig,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
+  signal?.throwIfAborted();
   const resolver = config?.networkOverrides?.resolver ?? DEFAULT_DID_RESOLVER;
   const doc = await resolver.resolve(did as Did<"plc"> | Did<"web">);
+  signal?.throwIfAborted();
   return doc.service
     ?.find((s) => s.id === "#atproto_pds")
     ?.serviceEndpoint.toString();
@@ -110,10 +115,11 @@ async function getPDSViaDidDoc(
 export async function resolvePDS(
   identifier: string,
   config?: ContrailConfig,
+  signal?: AbortSignal,
 ): Promise<ResolvedIdentity | undefined> {
   const slingshotUrl = config?.networkOverrides?.slingshotUrl ?? SLINGSHOT_URL;
   const allowed = config?.networkOverrides?.additionalAllowedHosts;
-  const result = await resolveViaSlingshot(identifier, slingshotUrl);
+  const result = await resolveViaSlingshot(identifier, slingshotUrl, signal);
   if (result?.pds) {
     if (!validateExternalUrl(result.pds, allowed)) return { ...result, pds: null };
     return result;
@@ -122,7 +128,7 @@ export async function resolvePDS(
   // Fall back to DID doc resolution (only works for DIDs, not handles)
   if (identifier.startsWith("did:")) {
     try {
-      const pds = await getPDSViaDidDoc(identifier as Did, config);
+      const pds = await getPDSViaDidDoc(identifier as Did, config, signal);
       if (pds && validateExternalUrl(pds, allowed)) {
         return {
           did: identifier,
@@ -130,7 +136,8 @@ export async function resolvePDS(
           pds,
         };
       }
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
       // ignore
     }
   }
@@ -174,6 +181,7 @@ export async function getPDS(
   did: Did,
   db?: Database,
   config?: ContrailConfig,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const mem = pdsCacheGet(did);
   if (mem) return mem;
@@ -182,7 +190,7 @@ export async function getPDS(
   const inflight = pdsInflight.get(did);
   if (inflight) return inflight;
 
-  const promise = resolvePDSCached(did, db, config);
+  const promise = resolvePDSCached(did, db, config, signal);
   pdsInflight.set(did, promise);
   try {
     return await promise;
@@ -195,6 +203,7 @@ async function resolvePDSCached(
   did: Did,
   db?: Database,
   config?: ContrailConfig,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   let knownPds: string | undefined;
   if (db) {
@@ -215,7 +224,7 @@ async function resolvePDSCached(
     }
   }
 
-  const resolved = await resolvePDS(did, config);
+  const resolved = await resolvePDS(did, config, signal);
   if (!resolved?.pds) return knownPds;
 
   pdsCacheSet(did, resolved.pds);
@@ -234,16 +243,21 @@ async function resolvePDSCached(
   return resolved.pds;
 }
 
+export function createPdsClient(pds: string): Client {
+  return new Client({
+    handler: simpleFetchHandler({ service: pds }),
+  });
+}
+
 export async function getClient(
   did: Did,
   db?: Database,
   config?: ContrailConfig,
+  signal?: AbortSignal,
 ): Promise<Client> {
-  const pds = await getPDS(did, db, config);
+  const pds = await getPDS(did, db, config, signal);
   if (!pds) throw new Error(`PDS not found for ${did}`);
-  return new Client({
-    handler: simpleFetchHandler({ service: pds }),
-  });
+  return createPdsClient(pds);
 }
 
 /** Test-only: clear module-level PDS caches. Production code MUST NOT call this.

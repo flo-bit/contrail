@@ -111,6 +111,7 @@ export async function getBackfillStatus(
     collectionRows,
     retryRow,
     runRow,
+    projectionRow,
   ] = await Promise.all([
     db
       .prepare(
@@ -195,7 +196,12 @@ export async function getBackfillStatus(
         run_id: string | null;
         heartbeat_at: number | null;
         finished_at: number | null;
-      }>()
+      }>(),
+    db
+      .prepare(
+        "SELECT value FROM _contrail_meta WHERE key = 'backfill_derived_projections_dirty'"
+      )
+      .first<{ value: string }>()
   ]);
 
   const taskCounts = counts(taskRow);
@@ -230,9 +236,12 @@ export async function getBackfillStatus(
     !!runRow?.run_id &&
     runRow.finished_at === null &&
     number(runRow.heartbeat_at) >= now - BACKFILL_RUN_STALE_MS;
+  const projectionDirty = projectionRow?.value === "1";
   const state = running
     ? "running"
-    : taskCounts.total === 0 && discovery.total === 0
+    : projectionDirty
+      ? "incomplete"
+      : taskCounts.total === 0 && discovery.total === 0
       ? expectsDiscovery
         ? "not_started"
         : "complete"

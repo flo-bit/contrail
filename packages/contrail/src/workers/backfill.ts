@@ -24,9 +24,13 @@ interface WranglerCommon {
 }
 
 export interface BackfillAllViaWranglerOptions extends WranglerCommon {
-  /** Passed through to `contrail.backfillAll()`. Default: 100. */
+  /** Concurrent identity resolutions. Default: 100. */
   concurrency?: number;
-  /** Failed attempts allowed in this run before a row remains pending. */
+  /** PDS hosts fetched concurrently. Default: 20. */
+  pdsConcurrency?: number;
+  /** Accounts fetched concurrently from each PDS. Default: 3. */
+  didsPerPds?: number;
+  /** Immediate attempts before scheduled retries take over. Default: 1. */
   maxAttempts?: number;
   /** Override the built-in progress logging. */
   onProgress?: BackfillAllOptions["onProgress"];
@@ -74,6 +78,8 @@ export async function backfillAll(
     contrail.backfillAll(
       {
         concurrency: opts.concurrency ?? 100,
+        pdsConcurrency: opts.pdsConcurrency,
+        didsPerPds: opts.didsPerPds,
         maxAttempts: opts.maxAttempts,
         onProgress: opts.onProgress,
       },

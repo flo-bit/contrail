@@ -594,6 +594,73 @@ export async function lookupExistingRecords(
 
 // --- Events ---
 
+// D1 accepts at most 100 bound parameters per statement. A record upsert uses
+// seven, so fourteen rows fit while leaving the same SQL valid for SQLite and
+// PostgreSQL. Packing rows avoids one prepared statement per record during
+// backfill without changing the admission or derived-projection path.
+const MAX_STATEMENT_BINDINGS = 100;
+const RECORD_UPSERT_BINDINGS = 7;
+const RECORD_UPSERT_ROWS = Math.floor(
+  MAX_STATEMENT_BINDINGS / RECORD_UPSERT_BINDINGS
+);
+
+interface StorageMutation {
+  event: IngestEvent;
+  table: string;
+}
+
+function buildRecordMutationStatements(
+  db: Database,
+  mutations: Iterable<StorageMutation>
+): Statement[] {
+  const byTable = new Map<
+    string,
+    { upserts: IngestEvent[]; deletes: IngestEvent[] }
+  >();
+  for (const { event, table } of mutations) {
+    const group = byTable.get(table) ?? { upserts: [], deletes: [] };
+    if (event.operation === "delete") group.deletes.push(event);
+    else group.upserts.push(event);
+    byTable.set(table, group);
+  }
+
+  const statements: Statement[] = [];
+  for (const [table, { upserts, deletes }] of byTable) {
+    for (let index = 0; index < upserts.length; index += RECORD_UPSERT_ROWS) {
+      const chunk = upserts.slice(index, index + RECORD_UPSERT_ROWS);
+      const values = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`
+          )
+          .bind(
+            ...chunk.flatMap((event) => [
+              event.uri,
+              event.did,
+              event.rkey,
+              event.cid,
+              event.record,
+              event.time_us,
+              event.indexed_at,
+            ])
+          )
+      );
+    }
+
+    for (let index = 0; index < deletes.length; index += MAX_STATEMENT_BINDINGS) {
+      const chunk = deletes.slice(index, index + MAX_STATEMENT_BINDINGS);
+      const placeholders = chunk.map(() => "?").join(", ");
+      statements.push(
+        db
+          .prepare(`DELETE FROM ${table} WHERE uri IN (${placeholders})`)
+          .bind(...chunk.map((event) => event.uri))
+      );
+    }
+  }
+  return statements;
+}
+
 export async function projectEvents(
   db: Database,
   events: IngestEvent[],
@@ -601,6 +668,8 @@ export async function projectEvents(
   options?: {
     skipReplayDetection?: boolean;
     skipFeedFanout?: boolean;
+    /** Skip FTS and relation-count maintenance during canonical bulk loading. */
+    skipDerivedProjections?: boolean;
     /** Pre-fetched existing records — skips the internal lookup when provided */
     existing?: Map<string, ExistingRecordInfo>;
     /** Ingest phase forwarded to `config.sinks`. `"live"` for jetstream /
@@ -611,9 +680,13 @@ export async function projectEvents(
   if (events.length === 0) return;
 
   const followCollections = getFeedFollowShortNames(config);
-  const hasCountingRelations = Object.values(config.collections).some(c =>
-    Object.values(c.relations ?? {}).some(r => r.count !== false)
-  );
+  const hasCountingRelations =
+    !options?.skipDerivedProjections &&
+    Object.values(config.collections).some((collection) =>
+      Object.values(collection.relations ?? {}).some(
+        (relation) => relation.count !== false
+      )
+    );
   const needRecordContent = followCollections.length > 0 || hasCountingRelations;
 
   // Use pre-fetched data or look up existing records
@@ -627,6 +700,9 @@ export async function projectEvents(
   }
 
   const batch: Statement[] = [];
+  // Keep only the final storage mutation for a URI within this atomic batch.
+  // Derived projections still inspect every admitted event below.
+  const storageMutations = new Map<string, StorageMutation>();
 
   // Build a record-content map for feed statements (needs string values)
   const existingRecordStrings = new Map<string, string | null>();
@@ -647,29 +723,14 @@ export async function projectEvents(
       continue;
     }
     const table = recordsTableName(short);
+    storageMutations.set(`${table}\0${e.uri}`, { event: e, table });
 
-    if (e.operation === "delete") {
-      batch.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(e.uri));
-    } else {
-      batch.push(
-        db.prepare(
-          `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`
-        ).bind(
-          e.uri,
-          e.did,
-          e.rkey,
-          e.cid,
-          e.record,
-          e.time_us,
-          e.indexed_at
-        )
-      );
+    if (!options?.skipDerivedProjections) {
+      // Collect count targets (deduplicated across the whole batch)
+      const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
+      collectCountTargets(e, config, existingRecordJson, countTargets);
+      collectParentCountTargets(e, config, countTargets);
     }
-
-    // Collect count targets (deduplicated across the whole batch)
-    const existingRecordJson = existingMap.get(e.uri)?.record ?? null;
-    collectCountTargets(e, config, existingRecordJson, countTargets);
-    collectParentCountTargets(e, config, countTargets);
 
     // Feed fanout still needs replay detection
     const existingInfo = existingMap.get(e.uri);
@@ -681,8 +742,14 @@ export async function projectEvents(
     if (!isReplay && !options?.skipFeedFanout) {
       batch.push(...buildFeedStatements(db, e, config, existingRecordStrings));
     }
-    batch.push(...buildFtsStatements(db, e, config));
+    if (!options?.skipDerivedProjections) {
+      batch.push(...buildFtsStatements(db, e, config));
+    }
   }
+
+  // Storage runs first so FTS, feeds, and count statements in the same atomic
+  // batch observe the final records.
+  batch.unshift(...buildRecordMutationStatements(db, storageMutations.values()));
 
   // Build deduplicated count statements — one UPDATE per unique target
   batch.push(...buildBatchCountStatements(db, config, countTargets));
@@ -719,6 +786,127 @@ export async function projectEvents(
       }
     }
   }
+}
+
+/** Rebuild projections that are intentionally skipped during canonical bulk
+ * loading. Live ingestion and scheduled retries continue maintaining them
+ * incrementally after this set-based catch-up. */
+export async function rebuildDerivedProjections(
+  db: Database,
+  config: ContrailConfig
+): Promise<void> {
+  const dialect = getDialect(db);
+
+  if (dialect.ftsStrategy === "virtual-table") {
+    for (const [short, collection] of Object.entries(config.collections)) {
+      const fields = getSearchableFields(short, collection);
+      if (!fields || fields.length === 0) continue;
+
+      const ftsTable = ftsTableName(short);
+      const recordsTable = recordsTableName(short);
+      const terms = fields.map((field) => {
+        const path = `$.${field}`;
+        return `CASE WHEN json_type(record, '${path}') = 'text' THEN json_extract(record, '${path}') ELSE '' END`;
+      });
+      const content = `trim(${terms.join(" || ' ' || ")})`;
+      try {
+        await db.batch([
+          db.prepare(`DELETE FROM ${ftsTable}`),
+          db.prepare(
+            `INSERT INTO ${ftsTable} (uri, content)
+             SELECT uri, content FROM (
+               SELECT uri, ${content} AS content FROM ${recordsTable}
+             ) rebuilt
+             WHERE content <> ''`
+          ),
+        ]);
+      } catch {
+        // FTS5 is optional in some SQLite builds, matching schema initialization.
+      }
+    }
+  }
+
+  const countStatements: Statement[] = [];
+  for (const [parentShort, parentConfig] of Object.entries(config.collections)) {
+    const parentTable = recordsTableName(parentShort);
+    for (const [relationName, relation] of Object.entries(
+      parentConfig.relations ?? {}
+    )) {
+      if (relation.count === false) continue;
+
+      const childTable = recordsTableName(relation.collection);
+      const childTarget = dialect.jsonExtract(
+        "child.record",
+        getRelationField(relation)
+      );
+      const parentTarget = relation.match === "did" ? "did" : "uri";
+      const distinctExpression = relation.countDistinct
+        ? ["uri", "did", "rkey"].includes(relation.countDistinct)
+          ? `child.${relation.countDistinct}`
+          : dialect.jsonExtract("child.record", relation.countDistinct)
+        : null;
+      const totalCount = distinctExpression
+        ? `COUNT(DISTINCT ${distinctExpression})`
+        : "COUNT(*)";
+      const totalColumn = countColumnName(relation.collection);
+      const projections = [`${totalCount} AS ${totalColumn}`];
+      const columns = [totalColumn];
+      const bindings: string[] = [];
+
+      const mapping = (config as ResolvedContrailConfig)._resolved?.relations[
+        parentShort
+      ]?.[relationName];
+      if (relation.groupBy && mapping?.groups) {
+        const childGroup = dialect.jsonExtract(
+          "child.record",
+          relation.groupBy
+        );
+        for (const [groupKey, token] of Object.entries(mapping.groups)) {
+          const column = groupedCountColumnName(
+            relation.collection,
+            groupKey
+          );
+          const groupedCount = distinctExpression
+            ? `COUNT(DISTINCT CASE WHEN ${childGroup} = ? THEN ${distinctExpression} END)`
+            : `SUM(CASE WHEN ${childGroup} = ? THEN 1 ELSE 0 END)`;
+          projections.push(`${groupedCount} AS ${column}`);
+          columns.push(column);
+          bindings.push(token);
+        }
+      }
+
+      // Reset parents with no matching children, then update only parents that
+      // appear in one grouped child scan. This avoids N parents × M correlated
+      // COUNT subqueries during a historical rebuild.
+      countStatements.push(
+        db.prepare(
+          `UPDATE ${parentTable} SET ${columns
+            .map((column) => `${column} = 0`)
+            .join(", ")}`
+        )
+      );
+      const aggregateUpdate = db.prepare(
+        `WITH derived AS (
+           SELECT ${childTarget} AS target, ${projections.join(", ")}
+           FROM ${childTable} child
+           GROUP BY ${childTarget}
+         )
+         UPDATE ${parentTable} AS parent
+         SET ${columns
+           .map((column) => `${column} = derived.${column}`)
+           .join(", ")}
+         FROM derived
+         WHERE parent.${parentTarget} = derived.target`
+      );
+      countStatements.push(
+        bindings.length > 0
+          ? aggregateUpdate.bind(...bindings)
+          : aggregateUpdate
+      );
+    }
+  }
+
+  if (countStatements.length > 0) await db.batch(countStatements);
 }
 
 function safeParseJson(s: string): Record<string, unknown> {

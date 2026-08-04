@@ -43,6 +43,9 @@ export function createIngestEvent(input: RecordEventInput): IngestEvent {
 export interface IngestRecordsOptions {
   skipReplayDetection?: boolean;
   skipFeedFanout?: boolean;
+  /** Skip FTS and relation-count maintenance for a bulk load that will rebuild
+   * both projections once canonical records are durable. */
+  skipDerivedProjections?: boolean;
   /** Pre-fetched rows, used by immediate synchronization. */
   existing?: Map<string, ExistingRecordInfo>;
   phase?: "live" | "backfill";

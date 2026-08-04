@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Database } from "../src/index";
 import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { queryRecords, getLastCursor, saveCursor } from "../src/index";
+import { rebuildDerivedProjections } from "../src/core/db/records";
 
 let db: Database;
 
@@ -98,6 +99,40 @@ describe("ingestRecords", () => {
     expect(result.records).toHaveLength(1);
     expect(result.records[0].counts).toBeDefined();
     expect(result.records[0].counts!["rsvp"]).toBe(1);
+  });
+
+  it("rebuilds deferred relation counts after bulk canonical writes", async () => {
+    const eventUri = "at://did:plc:test/community.lexicon.calendar.event/deferred";
+    await ingestRecords(
+      db,
+      [
+        makeEvent({ uri: eventUri, rkey: "deferred" }),
+        makeEvent({
+          uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/deferred",
+          did: "did:plc:user1",
+          collection: "community.lexicon.calendar.rsvp",
+          rkey: "deferred",
+          record: {
+            subject: { uri: eventUri },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        }),
+      ],
+      { skipDerivedProjections: true }
+    );
+
+    let result = await queryRecords(db, TEST_CONFIG, { collection: "event" });
+    expect(result.records[0].counts?.rsvp).toBeUndefined();
+
+    await rebuildDerivedProjections(db, TEST_CONFIG);
+
+    result = await queryRecords(db, TEST_CONFIG, { collection: "event" });
+    expect(result.records[0].counts?.rsvp).toBe(1);
+    expect(
+      result.records[0].counts?.[
+        "community.lexicon.calendar.rsvp#going"
+      ]
+    ).toBe(1);
   });
 
   it("recounts children that arrived before their parent", async () => {
