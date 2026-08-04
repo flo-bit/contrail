@@ -39,13 +39,13 @@ pnpm contrail backfill  # backfill against the local D1 created by wrangler
 
 `pnpm dev` runs `contrail dev` under the hood. On start it inspects the local D1 and offers to start or resume backfill whenever known work remains, then runs `wrangler dev --test-scheduled` with a 60s timer hitting `/__scheduled` so the cron actually fires locally.
 
-A failed PDS stays pending rather than being marked complete. The backfill command retries failures with a bounded attempt budget and exits unsuccessfully if work remains; rerun it later to give unreachable accounts a fresh retry budget.
+A failed PDS account stays pending rather than being marked complete. The initial command uses a bounded attempt budget, then records an exponential retry time. The normal one-minute Worker cron retries a small due slice after live ingestion, so dead PDSes cannot monopolize the tick. Rerunning the command forces an immediate bounded pass.
 
 ```bash
 curl http://localhost:8787/status
 ```
 
-This reports the durable state without exposing account DIDs or raw upstream errors.
+This reports the durable state without exposing account DIDs or raw upstream errors. `state: "running"` means a manual or scheduled backfill slice currently owns the database lease. `state: "complete"` means discovery and the initial pass finished; `accounts.unreachable` and `retries` may still show deferred account work that cron will continue retrying.
 
 ## extending
 

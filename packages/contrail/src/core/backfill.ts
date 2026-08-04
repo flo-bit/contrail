@@ -13,6 +13,11 @@ import {
 import { getLastCursor, saveCursor } from "./db";
 import { createIngestEvent, ingestRecords } from "./ingest";
 import { getClient, getPDS } from "./client";
+import {
+  finishBackfillRun,
+  heartbeatBackfillRun,
+  tryStartBackfillRun,
+} from "./status";
 
 const DEFAULT_TIME_FIELD = "createdAt";
 
@@ -44,6 +49,8 @@ const PAGE_SIZE = 100;
 const DEFAULT_MAX_ATTEMPTS = 5;
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const BACKFILL_RETRY_BASE_MS = 60_000;
+const BACKFILL_RETRY_MAX_MS = 60 * 60_000;
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -87,11 +94,30 @@ async function markFailed(
   collection: string,
   error: unknown
 ): Promise<void> {
+  const row = await db
+    .prepare(
+      "SELECT retries FROM backfills WHERE did = ? AND collection = ?"
+    )
+    .bind(did, collection)
+    .first<{ retries: number }>();
+  const retries = (row?.retries ?? 0) + 1;
+  const now = Date.now();
+  const retryDelay = Math.min(
+    BACKFILL_RETRY_BASE_MS * 2 ** Math.min(retries - 1, 6),
+    BACKFILL_RETRY_MAX_MS
+  );
   await db
     .prepare(
-      "UPDATE backfills SET retries = retries + 1, last_error = ?, last_attempt_at = ? WHERE did = ? AND collection = ?"
+      "UPDATE backfills SET retries = ?, last_error = ?, last_attempt_at = ?, next_retry_at = ? WHERE did = ? AND collection = ?"
     )
-    .bind(errorMessage(error), Date.now(), did, collection)
+    .bind(
+      retries,
+      errorMessage(error),
+      now,
+      now + retryDelay,
+      did,
+      collection
+    )
     .run();
 }
 
@@ -235,7 +261,7 @@ async function backfillUserAttempt(
 
       await db
         .prepare(
-          "UPDATE backfills SET pds_cursor = ?, last_error = NULL, last_attempt_at = ? WHERE did = ? AND collection = ?"
+          "UPDATE backfills SET pds_cursor = ?, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL WHERE did = ? AND collection = ?"
         )
         .bind(currentCursor ?? null, now, did, collection)
         .run();
@@ -253,7 +279,7 @@ async function backfillUserAttempt(
   if (done) {
     await db
       .prepare(
-        "UPDATE backfills SET completed = 1, last_error = NULL, last_attempt_at = ? WHERE did = ? AND collection = ?"
+        "UPDATE backfills SET completed = 1, retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL WHERE did = ? AND collection = ?"
       )
       .bind(Date.now(), did, collection)
       .run();
@@ -298,10 +324,11 @@ export interface BackfillAllOptions {
   onProgress?: (progress: BackfillProgress) => void;
 }
 
-export async function backfillPending(
+async function backfillPendingWork(
   db: Database,
   config: ContrailConfig,
-  options?: BackfillAllOptions
+  options: BackfillAllOptions | undefined,
+  runId: string
 ): Promise<number> {
   const concurrency = positiveInteger(options?.concurrency, 100);
   const maxAttempts = positiveInteger(
@@ -342,6 +369,7 @@ export async function backfillPending(
     }
 
     const dids = [...byDid.keys()];
+    await heartbeatBackfillRun(db, runId);
 
     // Warm the identity/PDS cache separately from record requests. Failures are
     // deliberately ignored here: the actual pass records them per pending row.
@@ -409,6 +437,7 @@ export async function backfillPending(
         else failedDids.push(result.did);
       }
       emitProgress();
+      await heartbeatBackfillRun(db, runId);
     }
 
     // Slow retry pass: use normal timeouts and request backoff for DIDs that did
@@ -467,6 +496,7 @@ export async function backfillPending(
         else usersFailed++;
       }
       emitProgress();
+      await heartbeatBackfillRun(db, runId);
     }
 
     totalBackfilled += roundBackfilled;
@@ -476,6 +506,128 @@ export async function backfillPending(
   }
 
   return totalBackfilled;
+}
+
+export async function backfillPending(
+  db: Database,
+  config: ContrailConfig,
+  options?: BackfillAllOptions
+): Promise<number> {
+  const runId = await tryStartBackfillRun(db);
+  if (!runId) throw new Error("A backfill is already running");
+  try {
+    return await backfillPendingWork(db, config, options, runId);
+  } finally {
+    await finishBackfillRun(db, runId);
+  }
+}
+
+export interface BackfillRetryOptions {
+  /** Maximum accounts to attempt in one scheduled slice. Default: 5. */
+  maxAccounts?: number;
+  /** Total wall-clock budget for the slice. Default: 10000ms. */
+  timeoutMs?: number;
+  /** Deadline for each PDS request within the slice. Default: 3000ms. */
+  requestTimeoutMs?: number;
+}
+
+export interface BackfillRetryResult {
+  attempted: number;
+  completed: number;
+  failed: number;
+  records: number;
+  skipped: boolean;
+}
+
+/** Retry a small due slice without resetting persisted failure backoff. Safe for
+ * scheduled runtimes: one database-backed run lease prevents overlap. */
+export async function retryPendingBackfills(
+  db: Database,
+  config: ContrailConfig,
+  options?: BackfillRetryOptions
+): Promise<BackfillRetryResult> {
+  const runId = await tryStartBackfillRun(db);
+  if (!runId) {
+    return { attempted: 0, completed: 0, failed: 0, records: 0, skipped: true };
+  }
+
+  const maxAccounts = positiveInteger(options?.maxAccounts, 5);
+  const timeoutMs = positiveInteger(options?.timeoutMs, 10_000);
+  const requestTimeoutMs = positiveInteger(options?.requestTimeoutMs, 3_000);
+  const deadline = Date.now() + timeoutMs;
+  let attempted = 0;
+  let completed = 0;
+  let failed = 0;
+  let records = 0;
+
+  try {
+    const due = await db
+      .prepare(
+        "SELECT did FROM backfills WHERE completed = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) GROUP BY did ORDER BY MIN(COALESCE(next_retry_at, 0)), did LIMIT ?"
+      )
+      .bind(Date.now(), maxAccounts)
+      .all<{ did: string }>();
+
+    for (const { did } of due.results ?? []) {
+      if (Date.now() >= deadline) break;
+      attempted++;
+      const pending = await db
+        .prepare(
+          "SELECT collection FROM backfills WHERE did = ? AND completed = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY collection"
+        )
+        .bind(did, Date.now())
+        .all<{ collection: string }>();
+      const collections = (pending.results ?? []).map((row) => row.collection);
+      if (collections.length === 0) continue;
+
+      let client: Client;
+      try {
+        client = await withRetry(
+          () => getClient(did as Did, db, config),
+          `getClient(${did})`,
+          0,
+          Math.min(requestTimeoutMs, Math.max(1, deadline - Date.now()))
+        );
+      } catch (error) {
+        for (const collection of collections) {
+          await markFailed(db, did, collection, error);
+        }
+        failed++;
+        await heartbeatBackfillRun(db, runId);
+        continue;
+      }
+
+      const attempts: BackfillUserAttempt[] = [];
+      for (const collection of collections) {
+        if (Date.now() >= deadline) break;
+        attempts.push(
+          await backfillUserAttempt(db, did, collection, deadline, config, {
+            client,
+            skipReplayDetection: true,
+            maxRetries: 0,
+            requestTimeout: Math.min(
+              requestTimeoutMs,
+              Math.max(1, deadline - Date.now())
+            ),
+          })
+        );
+      }
+      records += attempts.reduce((sum, attempt) => sum + attempt.records, 0);
+      if (
+        attempts.length === collections.length &&
+        attempts.every((attempt) => attempt.completed)
+      ) {
+        completed++;
+      } else {
+        failed++;
+      }
+      await heartbeatBackfillRun(db, runId);
+    }
+  } finally {
+    await finishBackfillRun(db, runId);
+  }
+
+  return { attempted, completed, failed, records, skipped: false };
 }
 
 // --- Discovery ---
@@ -677,4 +829,35 @@ export async function discoverDIDs(
   }
 
   return discovered;
+}
+
+export interface DiscoverAndBackfillResult {
+  discovered: string[];
+  backfilled: number;
+}
+
+/** Hold one lease across relay discovery and the complete initial PDS pass. */
+export async function discoverAndBackfill(
+  db: Database,
+  config: ContrailConfig,
+  options?: BackfillAllOptions,
+  onDiscovered?: (count: number) => void
+): Promise<DiscoverAndBackfillResult> {
+  const runId = await tryStartBackfillRun(db);
+  if (!runId) throw new Error("A backfill is already running");
+
+  const allDiscovered = new Set<string>();
+  try {
+    while (true) {
+      const dids = await discoverDIDs(db, config, Infinity);
+      await heartbeatBackfillRun(db, runId);
+      if (dids.length === 0) break;
+      for (const did of dids) allDiscovered.add(did);
+    }
+    onDiscovered?.(allDiscovered.size);
+    const backfilled = await backfillPendingWork(db, config, options, runId);
+    return { discovered: [...allDiscovered], backfilled };
+  } finally {
+    await finishBackfillRun(db, runId);
+  }
 }

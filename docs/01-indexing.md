@@ -58,7 +58,7 @@ await contrail.backfill({ concurrency: 100 }); // fetch history for registered D
 
 `backfill()` picks up each account/collection at its saved PDS cursor. A row is marked complete only after the PDS listing reaches its end. Timeouts, failed identity resolution, `429`, and `5xx` responses leave the row pending with its last error.
 
-Each invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. A later invocation resets that budget and retries the pending rows. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
+Each initial invocation has a bounded failure budget (five attempts by default), so one dead PDS cannot hang the whole command forever. Failed account rows retain their cursors, receive an exponential `next_retry_at`, and remain incomplete. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation forces another bounded pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
 
 ### Workers CLI
 
@@ -69,7 +69,7 @@ pnpm contrail backfill           # local D1 (wrangler dev's bindings)
 pnpm contrail backfill --remote  # production D1
 ```
 
-Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100), and `--max-attempts <n>` (default 5). The command exits unsuccessfully when known work remains; rerun it later rather than treating the partial result as complete.
+Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100), and `--max-attempts <n>` (default 5). Once every known account has either completed or received a deferred failure, the initial pass is complete and scheduled retries continue in the background. Interrupted or undiscovered work still reports the pass as incomplete.
 
 If you'd rather embed backfill inside your own script, `@atmo-dev/contrail/workers` exports the same logic as a function:
 
@@ -93,7 +93,10 @@ Workers can't hold long-lived connections, so run one catch-up cycle per cron fi
 ```ts
 // wrangler.jsonc: "triggers": { "crons": ["*/1 * * * *"] }
 async scheduled(_ev, env, ctx) {
-  ctx.waitUntil(contrail.ingest({}, env.DB));
+  ctx.waitUntil((async () => {
+    await contrail.ingest({}, env.DB);
+    await contrail.retryBackfill({}, env.DB); // small due slice
+  })());
 }
 ```
 

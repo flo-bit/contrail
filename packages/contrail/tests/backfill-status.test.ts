@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { backfillPending, backfillUser, createApp, discoverDIDs, getBackfillStatus, resolveConfig } from "../src/index";
+import {
+  backfillPending,
+  backfillUser,
+  createApp,
+  discoverDIDs,
+  finishBackfillRun,
+  getBackfillStatus,
+  resolveConfig,
+  retryPendingBackfills,
+  tryStartBackfillRun
+} from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
 import { TEST_CONFIG, createTestDbWithSchema, ingestRecords, makeEvent } from "./helpers";
 
@@ -46,19 +56,21 @@ describe("backfill failure state", () => {
 
     expect(inserted).toBe(0);
     const row = await db
-      .prepare("SELECT completed, retries, last_error, last_attempt_at FROM backfills WHERE did = ? AND collection = ?")
+      .prepare("SELECT completed, retries, last_error, last_attempt_at, next_retry_at FROM backfills WHERE did = ? AND collection = ?")
       .bind(DID, EVENT)
       .first<{
         completed: number;
         retries: number;
         last_error: string | null;
         last_attempt_at: number | null;
+        next_retry_at: number | null;
       }>();
     expect(row?.completed).toBe(0);
     expect(row?.retries).toBe(1);
     expect(row?.last_error).toContain("503");
     expect(row?.last_error).toContain("UpstreamFailure: PDS is unavailable");
     expect(row?.last_attempt_at).toBeTypeOf("number");
+    expect(row?.next_retry_at).toBeGreaterThan(Date.now());
   });
 
   it("retries pending rows on the next run and only then completes them", async () => {
@@ -110,6 +122,86 @@ describe("backfill failure state", () => {
       pending: 0,
       unreachable: 0
     });
+  });
+});
+
+describe("scheduled backfill retries", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    __resetPdsCachesForTests();
+    fetchSpy = vi.spyOn(global, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    __resetPdsCachesForTests();
+  });
+
+  it("waits for persisted backoff and then completes a due account", async () => {
+    const db = await createTestDbWithSchema();
+    await db
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind(DID, "backfill.test", "https://pds.test", Date.now())
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO backfills (did, collection, completed, retries, last_error, next_retry_at) VALUES (?, ?, 0, 1, 'unavailable', ?)"
+      )
+      .bind(DID, EVENT, Date.now() + 60_000)
+      .run();
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ records: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    expect(
+      await retryPendingBackfills(db, TEST_CONFIG, { maxAccounts: 1 })
+    ).toMatchObject({ attempted: 0, completed: 0, skipped: false });
+
+    await db
+      .prepare("UPDATE backfills SET next_retry_at = ? WHERE did = ?")
+      .bind(Date.now() - 1, DID)
+      .run();
+    expect(
+      await retryPendingBackfills(db, TEST_CONFIG, { maxAccounts: 1 })
+    ).toMatchObject({ attempted: 1, completed: 1, failed: 0, skipped: false });
+
+    const row = await db
+      .prepare("SELECT completed, retries, last_error, next_retry_at FROM backfills WHERE did = ?")
+      .bind(DID)
+      .first<{
+        completed: number;
+        retries: number;
+        last_error: string | null;
+        next_retry_at: number | null;
+      }>();
+    expect(row).toEqual({
+      completed: 1,
+      retries: 0,
+      last_error: null,
+      next_retry_at: null
+    });
+  });
+
+  it("reports an active run and prevents overlapping retry work", async () => {
+    const db = await createTestDbWithSchema();
+    const runId = await tryStartBackfillRun(db);
+    expect(runId).not.toBeNull();
+    expect((await getBackfillStatus(db, TEST_CONFIG)).state).toBe("running");
+
+    expect(await retryPendingBackfills(db, TEST_CONFIG)).toEqual({
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      records: 0,
+      skipped: true
+    });
+
+    await finishBackfillRun(db, runId!);
+    expect((await getBackfillStatus(db, TEST_CONFIG)).state).toBe("not_started");
   });
 });
 
@@ -172,6 +264,33 @@ describe("discovery failure state", () => {
 });
 
 describe("backfill status JSON", () => {
+  it("reports the initial pass complete while failed accounts remain scheduled", async () => {
+    const db = await createTestDbWithSchema();
+    const retryAt = Date.now() + 60_000;
+    await db
+      .prepare(
+        "INSERT INTO backfills (did, collection, completed, retries, last_error, next_retry_at) VALUES (?, ?, 0, 1, 'unavailable', ?)"
+      )
+      .bind(DID, EVENT, retryAt)
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO discovery (collection, relay, completed) VALUES (?, 'https://relay.test', 1)"
+      )
+      .bind(EVENT)
+      .run();
+
+    const status = await getBackfillStatus(db, TEST_CONFIG);
+    expect(status.state).toBe("complete");
+    expect(status.accounts.unreachable).toBe(1);
+    expect(status.retries).toEqual({
+      scheduled_accounts: 1,
+      due_accounts: 0,
+      next_retry_at: retryAt,
+      next_retry_date: new Date(retryAt).toISOString()
+    });
+  });
+
   it("reports known work, unreachable accounts, discovery, records, and cursor", async () => {
     const db = await createTestDbWithSchema();
     await ingestRecords(db, [makeEvent()]);
@@ -217,7 +336,13 @@ describe("backfill status JSON", () => {
         unreachable: 1
       },
       tasks: { total: 5, complete: 2, pending: 3, failed: 1 },
-      discovery: { total: 2, complete: 1, pending: 1, failed: 1 }
+      discovery: { total: 2, complete: 1, pending: 1, failed: 1 },
+      retries: {
+        scheduled_accounts: 1,
+        due_accounts: 1,
+        next_retry_at: null,
+        next_retry_date: null
+      }
     });
     expect(JSON.stringify(overview)).not.toContain("did:plc:b");
     expect(JSON.stringify(overview)).not.toContain("PDS unavailable");

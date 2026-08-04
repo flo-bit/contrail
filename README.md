@@ -79,7 +79,7 @@ GET /xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
 GET /status
 ```
 
-The JSON status response reports live cursor lag, indexed records, known backfill progress, and currently unreachable accounts. Failed PDS work remains pending and is retried on the next backfill run.
+The JSON status response reports live cursor lag, indexed records, known backfill progress, and currently unreachable accounts. Failed PDS work remains pending and is retried automatically in small, backed-off slices after scheduled live ingestion.
 
 For ordinary Lexicon parsing, validation, pulling, and TypeScript generation, use [Atcute](https://github.com/mary-ext/atcute) directly. Contrail no longer ships a separate Lexicon toolchain.
 

@@ -15,6 +15,7 @@ describe("initSchema", () => {
     expect(names).toContain("records_event");
     expect(names).toContain("records_rsvp");
     expect(names).toContain("backfills");
+    expect(names).toContain("backfill_state");
     expect(names).toContain("discovery");
     expect(names).toContain("cursor");
     expect(names).toContain("identities");
@@ -22,8 +23,8 @@ describe("initSchema", () => {
     const backfillColumns = await db
       .prepare("PRAGMA table_info(backfills)")
       .all<{ name: string }>();
-    expect(backfillColumns.results.map((column) => column.name)).toContain(
-      "last_attempt_at"
+    expect(backfillColumns.results.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["last_attempt_at", "next_retry_at"])
     );
 
     const discoveryColumns = await db
@@ -81,6 +82,13 @@ describe("initSchema", () => {
       .run();
 
     await initSchema(db, TEST_CONFIG);
+
+    const backfillColumns = await db
+      .prepare("PRAGMA table_info(backfills)")
+      .all<{ name: string }>();
+    expect(backfillColumns.results.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["last_attempt_at", "next_retry_at"])
+    );
 
     const discoveryColumns = await db
       .prepare("PRAGMA table_info(discovery)")

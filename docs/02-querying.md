@@ -35,8 +35,11 @@ Dotted field names become camelCase params — `queryable: { "subject.uri": {} }
 - discovery sources complete, pending, or failed;
 - known account totals, including pending and currently unreachable accounts;
 - account/collection tasks complete, pending, or failed;
-- known-task completion percentage; and
-- per-collection backfill progress.
+- known-task completion percentage;
+- per-collection backfill progress; and
+- scheduled/due account retries plus the next retry time.
+
+`state` is `running` while a manual or scheduled slice holds the backfill lease. It becomes `complete` after discovery and the initial pass finish, even when `accounts.unreachable` and `tasks.failed` are non-zero; those account rows are still incomplete and remain scheduled for background retry. `incomplete` means discovery or an initial account attempt has not finished.
 
 "Known" is deliberate: while relay discovery is incomplete, Contrail cannot honestly claim how many accounts remain undiscovered. `/health` remains a lightweight liveness response and does not claim that historical backfill is complete.
 

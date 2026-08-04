@@ -18,8 +18,12 @@ import {
 } from "./core/jetstream";
 import {
   backfillPending,
+  discoverAndBackfill,
   discoverDIDs,
+  retryPendingBackfills,
   type BackfillAllOptions,
+  type BackfillRetryOptions,
+  type BackfillRetryResult,
 } from "./core/backfill";
 import { getBackfillStatus, type BackfillStatus } from "./core/status";
 import {
@@ -166,6 +170,15 @@ export class Contrail {
     return backfillPending(this.getDb(db), this.config, options);
   }
 
+  /** Retry a bounded slice of due or interrupted account backfills. Intended
+   *  for scheduled runtimes; persisted backoff prevents hammering failures. */
+  async retryBackfill(
+    options?: BackfillRetryOptions,
+    db?: Database
+  ): Promise<BackfillRetryResult> {
+    return retryPendingBackfills(this.getDb(db), this.config, options);
+  }
+
   /** Discover every DID with records in the configured collections, then
    *  backfill their history. Logs progress via `config.logger` — supply
    *  `onProgress` to take over output, or pass a no-op logger in the config
@@ -181,10 +194,6 @@ export class Contrail {
     const d = this.getDb(db);
     const logger = this.config.logger;
     const startedAt = Date.now();
-
-    logger?.log?.("discovering users…");
-    const discovered = await this.discover(d);
-    logger?.log?.(`  discovered ${discovered.length} users`);
 
     // Wrap the call with a throttled default progress logger when the
     // caller hasn't supplied their own. Throttle at 2s so we don't spam in
@@ -206,17 +215,32 @@ export class Contrail {
       };
     }
 
-    logger?.log?.("backfilling…");
-    const backfilled = await this.backfill(effective, d);
+    logger?.log?.("discovering users…");
+    const result = await discoverAndBackfill(
+      d,
+      this.config,
+      effective,
+      (count) => {
+        logger?.log?.(`  discovered ${count} users`);
+        logger?.log?.("backfilling…");
+      }
+    );
+    const discovered = result.discovered;
+    const backfilled = result.backfilled;
+
     const status = await getBackfillStatus(d, this.config);
     const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
-    if (status.state === "complete") {
+    if (status.state === "complete" && status.accounts.unreachable > 0) {
+      logger?.warn?.(
+        `  done with deferred failures: ${status.accounts.complete}/${status.accounts.total} known accounts complete; ${status.accounts.unreachable} unavailable accounts scheduled for retry (${elapsedS}s)`
+      );
+    } else if (status.state === "complete") {
       logger?.log?.(
         `  done: ${backfilled} records; ${status.accounts.complete}/${status.accounts.total} known accounts complete in ${elapsedS}s`
       );
     } else {
       logger?.warn?.(
-        `  incomplete: ${status.accounts.pending} known accounts remain; ${status.accounts.unreachable} currently unreachable (${elapsedS}s)`
+        `  interrupted: ${status.accounts.pending} known accounts still need an initial attempt (${elapsedS}s)`
       );
     }
     return { discovered: discovered.length, backfilled, status };

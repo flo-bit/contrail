@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 3;
+export const CONTRAIL_SCHEMA_VERSION = 4;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS backfills (
   retries INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   last_attempt_at ${dialect.bigintType},
+  next_retry_at ${dialect.bigintType},
   PRIMARY KEY (did, collection)
 );
 CREATE TABLE IF NOT EXISTS discovery (
@@ -56,6 +57,13 @@ CREATE TABLE IF NOT EXISTS discovery (
 CREATE TABLE IF NOT EXISTS cursor (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   time_us ${dialect.bigintType} NOT NULL
+);
+CREATE TABLE IF NOT EXISTS backfill_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  run_id TEXT,
+  started_at ${dialect.bigintType},
+  heartbeat_at ${dialect.bigintType},
+  finished_at ${dialect.bigintType}
 );
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
@@ -309,6 +317,7 @@ const MIGRATIONS: MigrationOp[] = [
   },
   { table: "backfills", column: "last_error", columnDef: "TEXT" },
   { table: "backfills", column: "last_attempt_at", columnDef: "BIGINT" },
+  { table: "backfills", column: "next_retry_at", columnDef: "BIGINT" },
   {
     table: "discovery",
     column: "retries",
