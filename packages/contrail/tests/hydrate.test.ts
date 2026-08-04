@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Database, RecordRow, RelationConfig, ReferenceConfig } from "../src/core/types";
-import { recordsTableName } from "../src/core/types";
-import { parseHydrateParams, resolveHydrates, resolveReferences } from "../src/core/router/hydrate";
+import type { Database, RecordRow, RelationConfig, ReferenceConfig } from "../src/index";
+import { recordsTableName } from "../src/index";
+import { parseHydrateParams, resolveHydrates, resolveReferences } from "../src/index";
 import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { applyEvents } from "./helpers";
 

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Database } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
+import type { Database } from "../src/index";
+import { resolveConfig } from "../src/index";
 import { createTestDb, makeEvent } from "./helpers";
-import { initSchema } from "../src/core/db/schema";
-import { applyEvents, queryRecords } from "../src/core/db/records";
+import { initSchema } from "../src/index";
+import { applyEvents, queryRecords } from "../src/index";
 
 // Detect FTS5 support at module level (node:sqlite doesn't include it)
 let hasFts = false;

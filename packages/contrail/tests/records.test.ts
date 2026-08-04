@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Database } from "../src/core/types";
+import type { Database } from "../src/index";
 import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import { queryRecords, getLastCursor, saveCursor } from "../src/core/db/records";
+import { queryRecords, getLastCursor, saveCursor } from "../src/index";
 
 let db: Database;
 

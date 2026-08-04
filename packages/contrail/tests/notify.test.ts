@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import type { Database } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
+import type { Database } from "../src/index";
+import { resolveConfig } from "../src/index";
 import { applyEvents, createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import { initSchema } from "../src/core/db/schema";
-import { parseAtUri } from "../src/core/router/notify";
-import { createApp } from "../src/core/router/index";
-import { queryRecords } from "../src/core/db/records";
+import { initSchema } from "../src/index";
+import { parseAtUri } from "../src/index";
+import { createApp } from "../src/index";
+import { queryRecords } from "../src/index";
 import type { Hono } from "hono";
 
 const NOTIFY_CONFIG = { ...TEST_CONFIG, notify: true };

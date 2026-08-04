@@ -12,7 +12,7 @@ import {
   getDiscoverableNsids,
   getDependentNsids,
   shortNameForNsid,
-} from "../src/core/types";
+} from "../src/index";
 
 describe("validateFieldName", () => {
   it("accepts simple field names", () => {

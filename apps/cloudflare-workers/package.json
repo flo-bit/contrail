@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@atcute/lex-cli": "^2.8.1",
-    "@atmo-dev/contrail-lexicons": "workspace:*",
     "@cloudflare/workers-types": "^4.20250124.0",
     "typescript": "^5.7.3",
     "wrangler": "^4.63.0"

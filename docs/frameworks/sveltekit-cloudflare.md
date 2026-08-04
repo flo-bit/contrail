@@ -7,8 +7,7 @@ Assumes you already have a SvelteKit app with `@sveltejs/adapter-cloudflare` and
 ## Install
 
 ```bash
-pnpm add @atmo-dev/contrail
-pnpm add -D @atmo-dev/contrail-lexicons @atcute/lex-cli
+pnpm add @atmo-dev/contrail @atcute/client
 ```
 
 ## Project layout
@@ -61,13 +60,12 @@ export async function ensureInit(db: D1Database) {
 
 const handle = createHandler(contrail);
 
-/** Typed in-process XRPC client for loaders / actions. Pass `did` to act as
- *  that user (no JWT / PDS roundtrip); omit for anonymous public reads. */
-export function getServerClient(db: D1Database, did?: string): Client {
+/** In-process XRPC client for loaders and actions. */
+export function getServerClient(db: D1Database): Client {
   return createServerClient(async (req) => {
     await ensureInit(db);
     return handle(req, db) as Promise<Response>;
-  }, did);
+  });
 }
 ```
 
@@ -104,8 +102,8 @@ Now every `com.example.*.listRecords` / `com.example.*.getRecord` / `com.example
 import { getServerClient } from "$lib/contrail";
 import type { PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = async ({ platform, locals }) => {
-  const rpc = getServerClient(platform!.env.DB, locals.did ?? undefined);
+export const load: PageServerLoad = async ({ platform }) => {
+  const rpc = getServerClient(platform!.env.DB);
   const res = await rpc.get("com.example.event.listRecords", {
     params: { startsAtMin: "2026-01-01", limit: 20 },
   });
@@ -113,7 +111,7 @@ export const load: PageServerLoad = async ({ platform, locals }) => {
 };
 ```
 
-`createServerClient` bypasses fetch — the loader runs contrail's XRPC handler in-process, no extra network hop. `did` sets the caller identity without requiring a signed JWT (it's a server-to-server trust boundary; anything crossing an untrusted boundary still needs real service-auth).
+`createServerClient` bypasses the network — the loader runs Contrail's public XRPC handler in-process.
 
 ## 5. Cron ingest — the workaround
 
@@ -202,11 +200,10 @@ From now on:
 
 - [Indexing](../01-indexing.md) — config options, adapter choices
 - [Querying](../02-querying.md) — filters, sorts, hydration, search
-- [Lexicons](../03-lexicons.md) — generate TS types for your XRPC surface
 - [Feeds](../04-feeds.md) — personalized timelines via follow + target collections
-- [Auth](../05-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
-- [Spaces](../06-spaces.md) / [Communities](../07-communities.md) — private records + group-controlled DIDs, which both slot into the same handler you just mounted
-- [Sync](../08-sync.md) — reactive client-side subscriptions (`createWatchStore`) wrapped in Svelte `$state`
+- [Labels](../09-labels.md) — moderation label hydration
+
+Use Atcute directly for Lexicon pulling, validation, and TypeScript generation.
 
 ## Common gotchas
 

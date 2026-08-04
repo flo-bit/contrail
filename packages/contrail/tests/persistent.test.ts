@@ -1,15 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { ContrailConfig, Database } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
+import type { ContrailConfig, Database } from "../src/index";
+import { resolveConfig } from "../src/index";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
-import { runPersistent } from "../src/core/persistent";
-import { getLastCursor, queryRecords } from "../src/core/db/records";
-import { initSchema } from "../src/core/db/schema";
+import { runPersistent } from "../src/index";
+import { getLastCursor, queryRecords } from "../src/index";
+import { initSchema } from "../src/index";
 
-// Identity helpers live in @atmo-dev/contrail-base post-split. Mock there.
 const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
-vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
+vi.mock("../src/core/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/identity")>();
   return {
     ...actual,
     refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveConfig, resolveCollectionKey } from "../src/core/types";
+import { resolveConfig, resolveCollectionKey } from "../src/index";
 
 // resolveCollectionKey returns the key a collection's rows are stored under:
 // its short alias when one exists, otherwise the NSID itself when the config is

@@ -134,9 +134,7 @@ The PK includes `cts`, so a `neg=true` retraction is a *new row* that replaces t
 ## What's not here
 
 - **Signature verification.** `sig` is stored if the labeler supplies it, but contrail does not verify it in v1. Document as TODO; most appviews skip it.
-- **Live label updates on `watchRecords`.** The realtime stream snapshots labels with the initial query but does not push label deltas. Adding this means publishing `labels:<src>` topic events from the ingest worker and merging them in `runQueryStream` — future work.
-- **Spaces / community labels.** Hydration already runs on the spaces read paths, so labels emitted by a labeler-DID member of a space (or under a community DID) will show up if you write them to the `labels` table. The auth surface for "make this DID a labeler in this space" is not yet exposed as XRPCs.
-- **Outbound `subscribeLabels`.** Contrail does not republish labels. Communities-as-labelers (using the community DID as `src`) is a natural extension once you want to act as a labeler instead of just consume.
+- **Outbound `subscribeLabels`.** Contrail consumes labels but does not act as a labeler or republish them.
 - **Label definitions / preferences UX.** Custom label names, blur behaviors, severity, and per-user preference state belong on the *client*, fetched directly from each labeler. Contrail intentionally stays out of this.
 
 ## Design

@@ -1,6 +1,6 @@
 # cloudflare-workers
 
-minimal, runnable contrail deployment — cloudflare workers + d1, one collection (`community.lexicon.calendar.event`), no spaces / communities / realtime. mirrors the setup shown in the [root README](../../README.md) exactly.
+Minimal runnable Contrail deployment: Cloudflare Workers, D1, and one public collection (`community.lexicon.calendar.event`). It mirrors the setup in the [root README](../../README.md).
 
 ## layout
 
@@ -41,5 +41,3 @@ pnpm contrail backfill  # backfill against the local D1 created by wrangler
 - **add a collection:** append to `collections` in `src/contrail.config.ts`; redeploy; `pnpm contrail backfill --remote` to backfill the new one.
 - **add full-text search:** `searchable: ["field1", "field2"]`, redeploy, no backfill needed (fts indexes repopulate on ingest).
 - **add relations / references:** see [indexing docs](../../docs/01-indexing.md).
-- **private records:** see [spaces docs](../../docs/05-spaces.md).
-- **group-controlled DIDs:** see [communities docs](../../docs/06-communities.md).

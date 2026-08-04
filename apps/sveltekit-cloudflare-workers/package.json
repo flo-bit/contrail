@@ -5,9 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "contrail-lex generate && contrail-lex types && vite build && contrail append-scheduled",
-		"generate": "contrail-lex generate",
-		"generate:pull": "contrail-lex all",
+		"build": "vite build && contrail append-scheduled",
 		"backfill": "contrail backfill",
 		"backfill:remote": "contrail backfill --remote",
 		"refresh": "contrail refresh",
@@ -62,7 +60,6 @@
 	"dependencies": {
 		"@atcute/jetstream": "^1.1.2",
 		"@atmo-dev/contrail": "workspace:*",
-		"@atmo-dev/contrail-lexicons": "workspace:*",
 		"@foxui/core": "^0.9.1",
 		"@foxui/social": "^0.8.10",
 		"@foxui/time": "^0.8.5",

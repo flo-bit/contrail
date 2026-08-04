@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createWorker } from "../src/worker";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { ContrailConfig } from "../src/core/types";
+import type { ContrailConfig } from "../src/index";
 
 const MINIMAL_CONFIG: ContrailConfig = {
   namespace: "com.example",

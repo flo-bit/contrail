@@ -21,9 +21,7 @@ import type { ContrailConfig, Database } from "../core/types.js";
 export interface CreateWorkerOptions {
   /** D1 binding name in wrangler env. Default: `"DB"`. */
   binding?: string;
-  /** Bundled lexicon JSON — if provided, exposes them at `/lexicons`
-   *  so consumer apps can typegen against the deployed service. Generate
-   *  with `contrail-lex generate` (emits `lexicons/generated/index.ts`). */
+  /** Bundled Lexicon documents to expose for application type generation. */
   lexicons?: object[];
   /** Runs once per isolate, after schema init, before handling the first
    *  request. Use for app-specific setup that needs a live DB handle. */

@@ -9,16 +9,16 @@
 
 import { describe, it, expect } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { applyEvents, queryRecords } from "../src/core/db/records";
-import { resolveConfig } from "../src/core/types";
+import { initSchema } from "../src/index";
+import { applyEvents, queryRecords } from "../src/index";
+import { resolveConfig } from "../src/index";
 import type {
   ContrailConfig,
   IngestEvent,
   RecordEvent,
   Sink,
   SinkContext,
-} from "../src/core/types";
+} from "../src/index";
 
 const ALICE = "did:plc:alice";
 const EVENT_NSID = "community.lexicon.calendar.event";

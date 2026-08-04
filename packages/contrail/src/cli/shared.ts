@@ -9,7 +9,10 @@ import {
   CONFIG_CANDIDATES_MESSAGE,
 } from "../cli-config.js";
 import type { ContrailConfig } from "../core/types.js";
-import type { CollectionStats, RefreshResult } from "../core/refresh.js";
+import type {
+  CollectionStats,
+  RefreshResult,
+} from "../core/refresh.js";
 
 export interface ConfigOpts {
   config?: string;

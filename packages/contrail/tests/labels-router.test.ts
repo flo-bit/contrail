@@ -6,9 +6,9 @@
 import { describe, it, expect } from "vitest";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { applyEvents } from "../src/core/db/records";
-import { applyLabels } from "../src/core/labels/apply";
-import type { IngestEvent } from "../src/core/types";
+import { applyEvents } from "../src/index";
+import { applyLabels } from "../src/index";
+import type { IngestEvent } from "../src/index";
 
 const COLL = "com.example.event";
 const SRC_A = "did:plc:labelerA";

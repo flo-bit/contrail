@@ -1,15 +1,21 @@
 # Contrail
 
-> **pre-alpha.** Expect breaking changes.
+> **Pre-alpha.** Expect breaking changes.
 
-a library for easily creating (serverless) atproto backends/appviews.
+Contrail turns public AT Protocol records into a queryable AppView.
 
-- declare collections
-- get automatic jetstream backfill and ingestion, typed XRPC endpoints
-- optional: permissioned spaces and group-controlled communities
+It provides:
 
-mostly tested on cloudflare workers with d1 but should run in any node env too 
-(+ has adapters for node:sqlite and postgres for the db).
+- historical backfill from relays and PDSes;
+- current updates from Jetstream;
+- D1, SQLite, and PostgreSQL storage;
+- `getRecord` and `listRecords` HTTP endpoints;
+- filters, sorting, search, and pagination;
+- custom queries;
+- relationship counts and hydration; and
+- profile and label hydration.
+
+Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite or PostgreSQL is also supported.
 
 ## Install
 
@@ -17,88 +23,88 @@ mostly tested on cloudflare workers with d1 but should run in any node env too
 pnpm add @atmo-dev/contrail
 ```
 
-## Minimal example
-
-a complete cloudflare worker that indexes public calendar events from the atproto network and serves them over a typed XRPC endpoint. two files + config. a runnable version lives in [`apps/cloudflare-workers`](https://github.com/flo-bit/contrail/tree/main/apps/cloudflare-workers) — clone, deploy, `pnpm contrail backfill --remote`, done.
-
-**`src/contrail.config.ts`** — picked up automatically by the `contrail` CLI:
+## Minimal Worker
 
 ```ts
+// src/contrail.config.ts
 import type { ContrailConfig } from "@atmo-dev/contrail";
 
 export const config: ContrailConfig = {
   namespace: "com.example",
   collections: {
     event: {
-      collection: "community.lexicon.calendar.event", // NSID to index
-      queryable: { startsAt: { type: "range" } },     // ?startsAtMin=...
-      searchable: ["name", "description"],            // ?search=...
+      collection: "community.lexicon.calendar.event",
+      queryable: {
+        mode: {},
+        startsAt: { type: "range" },
+      },
+      searchable: ["name", "description"],
     },
   },
 };
 ```
 
-**`src/worker.ts`** — four lines. `createWorker` wires up fetch + scheduled + lazy init:
-
 ```ts
+// src/worker.ts
 import { createWorker } from "@atmo-dev/contrail/worker";
 import { config } from "./contrail.config";
-import { lexicons } from "../lexicons/generated";
 
-export default createWorker(config, { lexicons });
+export default createWorker(config);
 ```
 
-`lexicons/generated/` is produced by `contrail-lex generate`; passing `{ lexicons }` exposes them at `/lexicons` so consumer apps can typegen against your deployed service. Drop it if you don't need that.
-
-and a d1 binding + cron in `wrangler.jsonc`:
+Add a D1 binding and one-minute cron to `wrangler.jsonc`:
 
 ```jsonc
 {
   "main": "src/worker.ts",
-  "d1_databases": [{ "binding": "DB", "database_name": "contrail", "database_id": "..." }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "contrail", "database_id": "..." }
+  ],
   "triggers": { "crons": ["*/1 * * * *"] }
 }
 ```
 
-then:
+Then deploy and backfill:
 
 ```bash
-npx wrangler d1 create contrail   # copy the id into wrangler.jsonc
-pnpm wrangler deploy              # deploy the worker
-pnpm contrail backfill --remote   # one-shot historical backfill
+npx wrangler d1 create contrail
+pnpm wrangler deploy
+pnpm contrail backfill --remote
 ```
 
-the worker keeps itself fresh from now on via the cron. hit:
+Query the resulting AppView:
 
+```text
+GET /xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
 ```
-GET https://<your-worker>.workers.dev/xrpc/com.example.event.listRecords?startsAtMin=2026-01-01&limit=10
+
+For ordinary Lexicon parsing, validation, pulling, and TypeScript generation, use [Atcute](https://github.com/mary-ext/atcute) directly. Contrail no longer ships a separate Lexicon toolchain.
+
+## Other databases
+
+```ts
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 ```
 
-returns every `community.lexicon.calendar.event` record published anywhere on atproto that matches, as JSON. that's it — no PDS setup, no lexicon publishing, no relay configuration. everything scales from there: add filters, add full-text search, add more collections, turn on [spaces](https://github.com/flo-bit/contrail/blob/main/docs/06-spaces.md) for private records, mount the handler in sveltekit instead, swap the adapter for postgres.
+See [Indexing](docs/01-indexing.md) for adapter setup and [Querying](docs/02-querying.md) for the query and hydration model.
 
-**not using workers?** same library, different `db`. see [adapters](https://github.com/flo-bit/contrail/blob/main/docs/01-indexing.md#adapters) for node:sqlite and postgres.
+## Documentation
 
-## Docs
+- [Indexing](docs/01-indexing.md)
+- [Querying](docs/02-querying.md)
+- [Feeds](docs/04-feeds.md)
+- [Labels](docs/09-labels.md)
+- [SvelteKit + Cloudflare](docs/frameworks/sveltekit-cloudflare.md)
 
-- [Indexing](https://github.com/flo-bit/contrail/blob/main/docs/01-indexing.md) — the core: collections, ingestion, adapters
-- [Querying](https://github.com/flo-bit/contrail/blob/main/docs/02-querying.md) — filters, sorts, hydration, search, pagination
-- [Lexicons](https://github.com/flo-bit/contrail/blob/main/docs/03-lexicons.md) — `contrail-lex` CLI, codegen, publishing
-- [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/04-feeds.md) — personalized timelines via follow + target collections
-- [Auth](https://github.com/flo-bit/contrail/blob/main/docs/05-auth.md) — service-auth JWTs, invite tokens, watch tickets, OAuth permission sets
-- [Spaces](https://github.com/flo-bit/contrail/blob/main/docs/06-spaces.md) — permissioned records stored by the appview
-- [Communities](https://github.com/flo-bit/contrail/blob/main/docs/07-communities.md) — group-controlled atproto DIDs
-- [Sync](https://github.com/flo-bit/contrail/blob/main/docs/08-sync.md) — reactive client-side store over `watchRecords`
-- [Labels](https://github.com/flo-bit/contrail/blob/main/docs/09-labels.md) — atproto-native moderation hydration from external labelers
-- [Deployment shapes](https://github.com/flo-bit/contrail/blob/main/docs/10-deployment-shapes.md) — all-in-one vs split-authority vs split-host configurations
-- Frameworks: [SvelteKit + Cloudflare](https://github.com/flo-bit/contrail/blob/main/docs/frameworks/sveltekit-cloudflare.md)
+## Repository layout
 
-## Packages
+There is one published package and one implementation:
 
-| Package | |
-|---|---|
-| `@atmo-dev/contrail` | Core library — indexing, XRPC server, spaces, realtime |
-| `@atmo-dev/contrail-community` | Community module — group-controlled DIDs, access-level ladder. Plugs into core via an integration |
-| `@atmo-dev/contrail-sync` | Client-side reactive watch-store with optional IndexedDB cache |
-| `@atmo-dev/contrail-lexicons` | Codegen + `contrail-lex` CLI |
+```text
+packages/contrail/   @atmo-dev/contrail
+```
 
-Working in this repo? See [development.md](https://github.com/flo-bit/contrail/blob/main/development.md) for the monorepo layout and commands.
+The previous AppView, base, community, authority, record-host, sync, and Lexicon packages have been removed.
+
+See [development.md](development.md) for repository commands.

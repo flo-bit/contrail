@@ -201,7 +201,4 @@ const db = createPostgresDatabase(pool);
 | `relays` | Bluesky | Relay URLs for discovery |
 | `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
 | `feeds` | — | See [Feeds](./04-feeds.md) |
-| `spaces` | — | See [Spaces](./06-spaces.md) |
-| `community` | — | See [Communities](./07-communities.md) |
-| `realtime` | — | See [Sync](./08-sync.md) |
 | `labels` | — | See [Labels](./09-labels.md) |

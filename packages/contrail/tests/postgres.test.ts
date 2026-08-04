@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
-import { initSchema } from "../src/core/db/schema";
-import { applyEvents, queryRecords, getLastCursor, saveCursor } from "../src/core/db/records";
-import { resolveConfig } from "../src/core/types";
+import { initSchema } from "../src/index";
+import { applyEvents, queryRecords, getLastCursor, saveCursor } from "../src/index";
+import { resolveConfig } from "../src/index";
 import { makeEvent } from "./helpers";
 
 const TEST_CONFIG = resolveConfig({

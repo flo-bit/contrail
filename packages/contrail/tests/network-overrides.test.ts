@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolvePDS, getClient, __resetPdsCachesForTests } from "../src/core/client";
-import { refreshStaleIdentities } from "../src/core/identity";
+import { resolvePDS, getClient, __resetPdsCachesForTests } from "../src/index";
+import { refreshStaleIdentities } from "../src/index";
 import { createTestDbWithSchema } from "./helpers";
-import type { ContrailConfig } from "../src/core/types";
+import type { ContrailConfig } from "../src/index";
 import type { Did } from "@atcute/lexicons";
 import {
   CompositeDidDocumentResolver,

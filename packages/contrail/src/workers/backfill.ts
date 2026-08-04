@@ -14,7 +14,10 @@
 import { Contrail } from "../contrail.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillAllOptions } from "../core/backfill.js";
-import type { RefreshOptions, RefreshResult } from "../core/refresh.js";
+import type {
+  RefreshOptions,
+  RefreshResult,
+} from "../core/refresh.js";
 
 interface WranglerCommon {
   config: ContrailConfig;

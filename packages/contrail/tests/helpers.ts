@@ -1,8 +1,8 @@
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
-import { initSchema } from "../src/core/db/schema";
-import { applyEvents as coreApplyEvents, type ExistingRecordInfo } from "../src/core/db/records";
+import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/index";
+import { resolveConfig } from "../src/index";
+import { initSchema } from "../src/index";
+import { applyEvents as coreApplyEvents, type ExistingRecordInfo } from "../src/index";
 
 export function createTestDb(): Database {
   return createSqliteDatabase(":memory:");

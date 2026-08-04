@@ -1,18 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { refresh } from "../src/core/refresh";
+import { refresh } from "../src/index";
 import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import type { Database } from "../src/core/types";
+import type { Database } from "../src/index";
 
 // We mock the PDS client so refresh() can be exercised without network IO.
 // Each test sets the desired pageRecords for a given (did, collection) via
 // the `pages` map below.
 const pages = new Map<string, Array<{ uri: string; cid: string; value: object }>>();
 
-// `getClient` lives in @atmo-dev/contrail-base after the package split.
-// `refresh` (now in contrail-appview) imports it via its own shim that
-// ultimately resolves to base — so we mock the base export directly.
-vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
+vi.mock("../src/core/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/client")>();
   return {
     ...actual,
     getClient: vi.fn(async (_did: string) => ({

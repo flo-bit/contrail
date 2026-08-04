@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { jetstreamUrlOption } from "../src/core/types";
+import { jetstreamUrlOption } from "../src/index";
 
 // @atcute/jetstream treats a string url and an array url differently *by design*:
 // an array is a pool of interchangeable instances, so it seeds `#lastUsedUrl=''`

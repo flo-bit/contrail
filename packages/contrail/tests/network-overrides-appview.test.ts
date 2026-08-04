@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createApp } from "../src/core/router";
-import { runIngestCycle } from "../src/core/jetstream";
-import { __resetPdsCachesForTests } from "../src/core/client";
+import { createApp } from "../src/index";
+import { runIngestCycle } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/index";
 import { createTestDbWithSchema, TEST_CONFIG } from "./helpers";
-import type { ContrailConfig } from "../src/core/types";
+import type { ContrailConfig } from "../src/index";
 
 // Mock the Jetstream subscription so `runIngestCycle` ingests one synthetic
 // commit without opening a real WebSocket. Everything else in the appview

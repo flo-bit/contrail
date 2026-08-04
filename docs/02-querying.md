@@ -7,7 +7,7 @@ Once [indexing](./01-indexing.md) is set up, every collection you declared gets 
 | `{namespace}.{short}.listRecords` | Paginated list with filters, sorts, hydration |
 | `{namespace}.{short}.getRecord?uri=…` | Single record by AT-URI |
 
-Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, `{namespace}.permissionSet`, `{namespace}.lexicons`.
+Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, and optionally `{namespace}.lexicons`.
 
 ## HTTP (what most callers use)
 

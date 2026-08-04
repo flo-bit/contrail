@@ -4,9 +4,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { applyEvents } from "../src/core/db/records";
-import { __resetPdsCachesForTests } from "../src/core/client";
-import type { Database, IngestEvent } from "../src/core/types";
+import { applyEvents } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/index";
+import type { Database, IngestEvent } from "../src/index";
 
 const COLL = "com.example.event";
 const AUTHOR = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";

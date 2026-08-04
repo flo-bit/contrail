@@ -5,15 +5,15 @@ import type {
   Statement,
   ResolvedContrailConfig,
   IngestEvent,
-} from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
-import { initSchema } from "../src/core/db/schema";
+} from "../src/index";
+import { resolveConfig } from "../src/index";
+import { initSchema } from "../src/index";
 import {
   applyEvents,
   sweepFeedItems,
   pruneActorFeed,
   pruneFeedItems,
-} from "../src/core/db/records";
+} from "../src/index";
 
 // ---------------------------------------------------------------------------
 // Guardrail: no contrail-issued maintenance statement may be unbounded-O(n)

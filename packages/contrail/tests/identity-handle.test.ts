@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getPDS, __resetPdsCachesForTests } from "../src/core/client";
-import { refreshStaleIdentities } from "../src/core/identity";
+import { getPDS, __resetPdsCachesForTests } from "../src/index";
+import { refreshStaleIdentities } from "../src/index";
 import { createTestDbWithSchema } from "./helpers";
-import type { Database } from "../src/core/types";
+import type { Database } from "../src/index";
 import type { Did } from "@atcute/lexicons";
 
 // Root-cause coverage for PR #42: identities that end up with a PDS but no

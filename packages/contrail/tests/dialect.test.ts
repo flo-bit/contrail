@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sqliteDialect, postgresDialect, buildFtsSchema, ftsQueryClause } from "../src/core/dialect";
+import { sqliteDialect, postgresDialect, buildFtsSchema, ftsQueryClause } from "../src/index";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 
 describe("sqliteDialect", () => {

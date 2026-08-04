@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema, getMeta } from "../src/core/db";
-import { resolveConfig } from "../src/core/types";
-import type { Database, Statement } from "../src/core/types";
+import { initSchema, getMeta } from "../src/index";
+import { resolveConfig } from "../src/index";
+import type { Database, Statement } from "../src/index";
 
 // initSchema replays ~40 DDL statements serially on every call; on recycled
 // Workers isolates that's hundreds of ms of cold-start round-trips. The
