@@ -18,6 +18,18 @@ const PROFILE_A = "com.example.profileA";
 const PROFILE_B = "com.example.profileB";
 const logger = { log() {}, warn() {}, error() {} };
 
+// Node 22's built-in SQLite does not include FTS5, while D1 and newer Node
+// builds do. Keep this shared-ingestion test meaningful on both runtimes and
+// exercise the FTS projection whenever the database supports it.
+let hasFts = false;
+try {
+  const testDb = createSqliteDatabase(":memory:");
+  await testDb
+    .prepare("CREATE VIRTUAL TABLE __profile_fts_test USING fts5(content)")
+    .run();
+  hasFts = true;
+} catch {}
+
 function profileLexicon(id: string) {
   return {
     lexicon: 1 as const,
@@ -54,7 +66,7 @@ async function setup(options?: { rejectB?: boolean; sink?: RecordEvent[][] }) {
       profileA: { collection: PROFILE_A },
       profileB: {
         collection: PROFILE_B,
-        searchable: ["displayName"],
+        searchable: hasFts ? ["displayName"] : false,
         recordFilter: options?.rejectB
           ? (record) => record.displayName !== "Rejected"
           : undefined,
@@ -115,7 +127,7 @@ afterEach(() => {
 });
 
 describe("profile enrichment through shared ingestion", () => {
-  it("checks each profile collection and applies validation, FTS, sinks, and source metadata", async () => {
+  it("checks each profile collection and applies validation, optional FTS, sinks, and source metadata", async () => {
     const sinkBatches: RecordEvent[][] = [];
     const { config, db } = await setup({ sink: sinkBatches });
     await seedProfileA(db, config);
@@ -159,7 +171,7 @@ describe("profile enrichment through shared ingestion", () => {
       (
         await queryRecords(db, config, {
           collection: "profileB",
-          search: "Fetched",
+          ...(hasFts ? { search: "Fetched" } : {}),
         })
       ).records,
     ).toHaveLength(1);
