@@ -65,25 +65,25 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@atcute/atproto": "^3.1.10",
-    "@atcute/cbor": "^2.3.2",
-    "@atcute/client": "^4.2.1",
-    "@atcute/identity-resolver": "^1.2.2",
-    "@atcute/jetstream": "^1.0.2",
-    "@atcute/lexicons": "^1.2.9",
+    "@atcute/atproto": "^4.0.4",
+    "@atcute/cbor": "^2.3.6",
+    "@atcute/client": "^5.1.1",
+    "@atcute/identity-resolver": "^2.0.1",
+    "@atcute/jetstream": "^2.0.2",
+    "@atcute/lexicons": "^2.0.3",
     "cac": "^7.0.0",
-    "hono": "^4.12.8",
-    "jiti": "^2.4.0"
+    "hono": "^4.13.0",
+    "jiti": "^2.7.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250124.0",
-    "@types/node": "^25.5.0",
-    "@types/pg": "^8.20.0",
-    "pg": "^8.20.0",
-    "tsup": "^8.5.0",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.0",
-    "wrangler": "^4.63.0"
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.4",
+    "pg": "^8.22.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
   },
   "peerDependencies": {
     "pg": "^8.0.0",

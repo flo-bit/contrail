@@ -8,11 +8,10 @@ import {
   getDiscoverableNsids,
   getDependentNsids,
   DEFAULT_RELAYS,
-  shortNameForNsid,
 } from "./types";
 import { getLastCursor, saveCursor } from "./db";
 import { getMeta, setMeta } from "./db/meta";
-import { createIngestEvent, ingestRecords } from "./ingest";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { rebuildDerivedProjections } from "./db/records";
 import { createPdsClient, getClient, getPDS } from "./client";
 import {
@@ -20,32 +19,6 @@ import {
   heartbeatBackfillRun,
   tryStartBackfillRun,
 } from "./status";
-
-const DEFAULT_TIME_FIELD = "createdAt";
-
-/** Parse the record's canonical time (e.g. createdAt) and return microseconds.
- *  Falls back to `nowUs` when missing/invalid. Clamps to nowUs to avoid
- *  user-controlled future timestamps pinning records at the top of feeds. */
-function recordTimeUs(
-  record: unknown,
-  collection: string,
-  config: ContrailConfig,
-  nowUs: number
-): number {
-  const short = shortNameForNsid(config, collection);
-  const colCfg = short ? config.collections[short] : undefined;
-  const field = colCfg?.timeField ?? DEFAULT_TIME_FIELD;
-  if (field === false) return nowUs;
-  const raw =
-    record && typeof record === "object"
-      ? (record as Record<string, unknown>)[field]
-      : undefined;
-  if (typeof raw !== "string") return nowUs;
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms) || ms <= 0) return nowUs;
-  const us = ms * 1000;
-  return us > nowUs ? nowUs : us;
-}
 
 const PAGE_SIZE = 100;
 const DEFAULT_MAX_ATTEMPTS = 1;
@@ -390,6 +363,12 @@ async function backfillUserAttempt(
           value: record.value,
           timeUs: recordTimeUs(record.value, collection, config, nowUs),
           indexedAt: nowUs,
+          source: {
+            id: "pds-backfill",
+            time_us: nowUs,
+            revision: null,
+            cursor: nextCursor ?? null,
+          },
         }),
       );
 

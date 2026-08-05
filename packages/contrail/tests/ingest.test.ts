@@ -103,6 +103,15 @@ describe("ingestRecords", () => {
     );
     expect(inserts).toHaveLength(3);
     expect(inserts.every((statement) => (statement.match(/\?/g) ?? []).length <= 100)).toBe(true);
+    const versionInserts = sql.filter((statement) =>
+      statement.startsWith("INSERT INTO record_versions"),
+    );
+    expect(versionInserts).toHaveLength(4);
+    expect(
+      versionInserts.every(
+        (statement) => (statement.match(/\?/g) ?? []).length <= 100,
+      ),
+    ).toBe(true);
     expect((await queryRecords(db, config, { collection: "event" })).records).toHaveLength(30);
   });
 
@@ -324,7 +333,8 @@ describe("ingestRecords", () => {
     const result = await ingestRecords(db, [update, deletion], config);
 
     expect(result.accepted).toEqual([deletion]);
-    expect(result.dropped.unknownSubject).toBe(1);
+    expect(result.dropped.unknownSubject).toBe(0);
+    expect(result.dropped.superseded).toBe(1);
     const stored = await queryRecords(db, config, { collection: "follow" });
     expect(stored.records).toHaveLength(0);
   });

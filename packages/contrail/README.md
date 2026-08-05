@@ -70,6 +70,8 @@ await contrail.runPersistent({
 
 After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. Only an authoritative not-found response deletes local state; rate limits, server errors, timeouts, malformed responses, and network failures leave it unchanged. Authentication and abuse controls for the public HTTP operation remain under design.
 
+Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact yielded cursor in the same transaction. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
+
 ## HTTP
 
 ```ts

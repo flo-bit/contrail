@@ -19,6 +19,7 @@ describe("initSchema", () => {
     expect(names).toContain("discovery");
     expect(names).toContain("cursor");
     expect(names).toContain("identities");
+    expect(names).toContain("record_versions");
 
     const backfillColumns = await db
       .prepare("PRAGMA table_info(backfills)")
@@ -111,6 +112,57 @@ describe("initSchema", () => {
         "next_retry_at",
       ])
     );
+  });
+
+  it("seeds ordering metadata for visible rows from older schemas", async () => {
+    const db = createTestDb();
+    await db
+      .prepare(
+        `CREATE TABLE records_event (
+          uri TEXT PRIMARY KEY,
+          did TEXT NOT NULL,
+          rkey TEXT NOT NULL,
+          cid TEXT,
+          record TEXT,
+          time_us BIGINT NOT NULL,
+          indexed_at BIGINT NOT NULL
+        )`,
+      )
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO records_event (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        "at://did:plc:legacy/community.lexicon.calendar.event/one",
+        "did:plc:legacy",
+        "one",
+        "cid-legacy",
+        JSON.stringify({ name: "legacy" }),
+        100,
+        200,
+      )
+      .run();
+
+    await initSchema(db, TEST_CONFIG);
+
+    const version = await db
+      .prepare(
+        "SELECT operation, source_id, source_time_us, cid FROM record_versions WHERE uri = ?",
+      )
+      .bind("at://did:plc:legacy/community.lexicon.calendar.event/one")
+      .first<{
+        operation: string;
+        source_id: string;
+        source_time_us: number;
+        cid: string;
+      }>();
+    expect(version).toEqual({
+      operation: "update",
+      source_id: "legacy",
+      source_time_us: 200,
+      cid: "cid-legacy",
+    });
   });
 
   it("is idempotent", async () => {

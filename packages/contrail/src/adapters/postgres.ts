@@ -9,7 +9,12 @@ interface PgStatement extends Statement {
 }
 
 /** Column names known to be BIGINT — PostgreSQL returns these as strings */
-const BIGINT_COLUMNS = new Set(["time_us", "indexed_at", "resolved_at"]);
+const BIGINT_COLUMNS = new Set([
+  "time_us",
+  "source_time_us",
+  "indexed_at",
+  "resolved_at",
+]);
 
 function normalizeRow(row: any): any {
   if (!row) return row;

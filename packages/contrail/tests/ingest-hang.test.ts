@@ -44,6 +44,7 @@ function commitEvent(
     time_us,
     did,
     commit: {
+      rev: String(time_us),
       collection,
       operation: "create" as const,
       rkey,
@@ -118,7 +119,38 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
     expect(result.events[0].uri).toBe(
       "at://did:plc:author/community.lexicon.calendar.event/evt1",
     );
+    expect(result.events[0].source).toEqual({
+      id: "jetstream",
+      time_us: 1_000_000,
+      revision: "1000000",
+      cursor: "1000000",
+    });
     // The replayed cursor must come back so the caller can persist it.
+    expect(result.lastCursor).toBe(1_000_000);
+  });
+
+  it("never checkpoints past the last yielded event when the subscription buffers ahead", async () => {
+    jetstream.script = async function* (self: { cursor: number | null }) {
+      self.cursor = 1_000_000;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        1_000_000,
+        "yielded",
+      );
+      // Mirrors @atcute receiving a second frame and moving its internal cursor
+      // before the async iterator delivers that frame to Contrail.
+      self.cursor = 2_000_000;
+      await new Promise(() => {});
+    };
+
+    const result = await withTimeout(
+      ingestEvents(discoverableConfig(), 999_999, 150),
+      2_000,
+      "buffered cursor",
+    );
+
+    expect(result.events).toHaveLength(1);
     expect(result.lastCursor).toBe(1_000_000);
   });
 

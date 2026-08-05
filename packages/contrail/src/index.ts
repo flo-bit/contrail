@@ -34,6 +34,7 @@ export {
   pruneFeedItems,
   queryRecords,
   saveCursor,
+  saveCursorStatement,
   saveFeedPruneCursor,
   sweepFeedItems,
 } from "./core/db/records";

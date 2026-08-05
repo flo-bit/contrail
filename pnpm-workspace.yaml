@@ -1,10 +1,13 @@
 packages:
-  - "packages/*"
-  - "apps/*"
+  - packages/*
+  - apps/*
 
 onlyBuiltDependencies:
   - esbuild
   - sharp
   - workerd
-  - "@tailwindcss/oxide"
-  - "@sveltejs/kit"
+  - '@tailwindcss/oxide'
+  - '@sveltejs/kit'
+
+trustPolicyExclude:
+  - chokidar@4.0.3

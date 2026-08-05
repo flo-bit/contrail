@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 6;
+export const CONTRAIL_SCHEMA_VERSION = 7;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -74,6 +74,22 @@ CREATE TABLE IF NOT EXISTS identities (
   resolved_at ${dialect.bigintType} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_identities_handle ON identities(handle);
+CREATE TABLE IF NOT EXISTS record_versions (
+  uri TEXT PRIMARY KEY,
+  did TEXT NOT NULL,
+  collection TEXT NOT NULL,
+  rkey TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  cid TEXT,
+  source_id TEXT NOT NULL,
+  source_revision TEXT,
+  source_time_us ${dialect.bigintType} NOT NULL,
+  source_cursor TEXT,
+  indexed_at ${dialect.bigintType} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_record_versions_collection ON record_versions(collection);
+CREATE INDEX IF NOT EXISTS idx_record_versions_did ON record_versions(did);
+CREATE INDEX IF NOT EXISTS idx_record_versions_tombstones ON record_versions(operation, indexed_at);
 `;
 }
 
@@ -380,6 +396,28 @@ export interface InitSchemaOptions {
   extraSchemas?: SchemaModule[];
 }
 
+/**
+ * Upgrade visible rows written before source metadata existed. Their local
+ * projection time is the only durable freshness boundary available. Keeping a
+ * version row prevents an old relay replay from replacing upgraded data.
+ */
+async function seedLegacyRecordVersions(
+  db: Database,
+  config: ContrailConfig,
+): Promise<void> {
+  for (const [shortName, collection] of Object.entries(config.collections)) {
+    const table = recordsTableName(shortName);
+    await db
+      .prepare(
+        `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at)
+         SELECT uri, did, ?, rkey, 'update', cid, 'legacy', NULL, indexed_at, NULL, indexed_at FROM ${table}
+         WHERE 1 = 1 ON CONFLICT(uri) DO NOTHING`,
+      )
+      .bind(collection.collection)
+      .run();
+  }
+}
+
 function hashStrings(parts: string[]): string {
   const joined = parts.join("\0");
   let first = 0x811c9dc5;
@@ -468,6 +506,7 @@ export async function initSchema(
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
   await runMigrations(db, hasFeeds);
   await applyCountColumns(db, config);
+  await seedLegacyRecordVersions(db, config);
 
   for (const apply of options.extraSchemas ?? []) await apply(db);
   await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);

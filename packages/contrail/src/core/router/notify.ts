@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
 import { shortNameForNsid, getFeedMutatingNsids } from "../types";
 import { lookupExistingRecords } from "../db/records";
-import { createIngestEvent, ingestRecords } from "../ingest";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
 import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did } from "@atcute/lexicons";
@@ -12,10 +12,12 @@ import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
  *  if it isn't a valid full record URI. Backed by atcute's validator, which
  *  also enforces the DID / NSID / record-key character classes. */
 export function parseAtUri(uri: string): { did: string; collection: string; rkey: string } | null {
-  const parsed = parseCanonicalResourceUri(uri);
-  if (!parsed.ok) return null;
-  const { repo, collection, rkey } = parsed.value;
-  return { did: repo, collection, rkey };
+  try {
+    const { repo, collection, rkey } = parseCanonicalResourceUri(uri);
+    return { did: repo, collection, rkey };
+  } catch {
+    return null;
+  }
 }
 
 const NOTIFY_FETCH_TIMEOUT_MS = 5_000;
@@ -218,11 +220,19 @@ export async function processNotifyUris(
           operation: existingInfo ? "update" : "create",
           cid: result.cid,
           value: result.value,
-          timeUs: now,
+          timeUs: recordTimeUs(result.value, parsed.collection, config, now),
           indexedAt: now,
+          source: {
+            id: "pds-notify",
+            time_us: now,
+            revision: null,
+            cursor: null,
+          },
         }),
       );
-    } else if (existingInfo) {
+    } else {
+      // An authoritative absence is versioned even when no visible row exists;
+      // that tombstone prevents an older relay create from resurrecting it.
       events.push(
         createIngestEvent({
           uri,
@@ -232,6 +242,12 @@ export async function processNotifyUris(
           operation: "delete",
           timeUs: now,
           indexedAt: now,
+          source: {
+            id: "pds-notify",
+            time_us: now,
+            revision: null,
+            cursor: null,
+          },
         }),
       );
     }
@@ -260,7 +276,9 @@ export async function processNotifyUris(
     indexed: appliedEvents.filter(
       (event) => event.operation === "create" || event.operation === "update",
     ).length,
-    deleted: appliedEvents.filter((event) => event.operation === "delete").length,
+    deleted: appliedEvents.filter(
+      (event) => event.operation === "delete" && existing.has(event.uri),
+    ).length,
     errors: errors.length > 0 ? errors : undefined,
   };
 }

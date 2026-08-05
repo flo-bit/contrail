@@ -8,8 +8,8 @@ import {
   jetstreamUrlOption,
   resolveConfig,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor } from "./db";
-import { createIngestEvent, ingestRecords } from "./ingest";
+import { initSchema, getLastCursor, saveCursorStatement } from "./db";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 import {
@@ -155,12 +155,22 @@ async function streamAndFlush(
     try {
       if (buffer.length > 0) {
         const batch = buffer.splice(0);
-        const { accepted, discoveredDids } = await ingestRecords(
-          db,
-          batch,
-          config,
-          { knownDids },
+        const lastTimeUs = Math.max(
+          ...batch.map((event) => event.source?.time_us ?? event.time_us),
         );
+        let ingestResult: Awaited<ReturnType<typeof ingestRecords>>;
+        try {
+          ingestResult = await ingestRecords(db, batch, config, {
+            knownDids,
+            trailingStatements: [saveCursorStatement(db, lastTimeUs)],
+          });
+        } catch (error) {
+          // The cursor transaction failed, so keep this exact batch at the front
+          // for the timer's next attempt rather than losing it in memory.
+          buffer.unshift(...batch);
+          throw error;
+        }
+        const { accepted, discoveredDids } = ingestResult;
 
         if (knownDids) {
           for (const did of discoveredDids) {
@@ -178,9 +188,6 @@ async function streamAndFlush(
             state.feedDirty = true;
           }
         }
-
-        const lastTimeUs = Math.max(...batch.map((e) => e.time_us));
-        await saveCursor(db, lastTimeUs);
 
         const uniqueDids = [...new Set(accepted.map((e) => e.did))];
         if (uniqueDids.length > 0) {
@@ -291,12 +298,26 @@ async function streamAndFlush(
         buffer.push(
           createIngestEvent({
             did: event.did,
-            timeUs: event.time_us,
+            timeUs:
+              commit.operation === "delete"
+                ? event.time_us
+                : recordTimeUs(
+                    commit.record,
+                    commit.collection,
+                    config,
+                    event.time_us,
+                  ),
             collection: commit.collection,
             operation: commit.operation,
             rkey: commit.rkey,
             cid: commit.operation === "delete" ? null : commit.cid,
             value: commit.operation === "delete" ? undefined : commit.record,
+            source: {
+              id: "jetstream",
+              time_us: event.time_us,
+              revision: commit.rev,
+              cursor: String(event.time_us),
+            },
           }),
         );
 

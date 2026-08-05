@@ -3,6 +3,7 @@ import type {
   ContrailConfig,
   Database,
   IngestEvent,
+  MutationSource,
   Statement,
 } from "./types";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./types";
 import {
   projectEvents,
+  selectCurrentMutations,
   type ExistingRecordInfo,
 } from "./db/records";
 
@@ -22,14 +24,18 @@ export interface RecordEventInput {
   operation: "create" | "update" | "delete";
   cid?: string | null;
   value?: unknown;
+  /** Record/application time used by query and feed ordering. */
   timeUs: number;
   indexedAt?: number;
+  /** Source ordering metadata. Defaults to a local observation. */
+  source?: Partial<MutationSource> & Pick<MutationSource, "id">;
 }
 
 /** Normalize a source record into Contrail's canonical mutation shape. */
 export function createIngestEvent(input: RecordEventInput): IngestEvent {
   const deleted = input.operation === "delete";
   const serialized = deleted ? null : JSON.stringify(input.value);
+  const indexedAt = input.indexedAt ?? Date.now() * 1000;
   return {
     uri:
       input.uri ??
@@ -41,8 +47,43 @@ export function createIngestEvent(input: RecordEventInput): IngestEvent {
     cid: deleted ? null : (input.cid ?? null),
     record: serialized ?? null,
     time_us: input.timeUs,
-    indexed_at: input.indexedAt ?? Date.now() * 1000,
+    indexed_at: indexedAt,
+    source: {
+      id: input.source?.id ?? "local",
+      // Preserve pre-0.13.1 ordering for callers that do not yet provide a
+      // separate source clock; adapters always pass source.time_us explicitly.
+      time_us: input.source?.time_us ?? input.timeUs,
+      revision: input.source?.revision ?? null,
+      cursor: input.source?.cursor ?? null,
+    },
   };
+}
+
+const DEFAULT_TIME_FIELD = "createdAt";
+
+/**
+ * Parse a record's configured application time independently of source order.
+ * Missing, invalid, and future values fall back to the source observation time.
+ */
+export function recordTimeUs(
+  record: unknown,
+  collection: string,
+  config: ContrailConfig,
+  fallbackUs: number,
+): number {
+  const short = resolveCollectionKey(config, collection);
+  const collectionConfig = short ? config.collections[short] : undefined;
+  const field = collectionConfig?.timeField ?? DEFAULT_TIME_FIELD;
+  if (field === false) return fallbackUs;
+  const raw =
+    record && typeof record === "object"
+      ? (record as Record<string, unknown>)[field]
+      : undefined;
+  if (typeof raw !== "string") return fallbackUs;
+  const milliseconds = Date.parse(raw);
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return fallbackUs;
+  const microseconds = milliseconds * 1000;
+  return microseconds > fallbackUs ? fallbackUs : microseconds;
 }
 
 export interface IngestRecordsOptions {
@@ -66,6 +107,8 @@ export interface IngestDropCounts {
   recordFilter: number;
   unknownActor: number;
   unknownSubject: number;
+  /** Duplicate or stale mutations rejected by durable source ordering. */
+  superseded: number;
 }
 
 export interface IngestRecordsResult {
@@ -89,12 +132,14 @@ export async function ingestRecords(
   options: IngestRecordsOptions = {},
 ): Promise<IngestRecordsResult> {
   const accepted: IngestEvent[] = [];
+  const policyExcluded = new Set<IngestEvent>();
   const dropped: IngestDropCounts = {
     unknownCollection: 0,
     invalidRecord: 0,
     recordFilter: 0,
     unknownActor: 0,
     unknownSubject: 0,
+    superseded: 0,
   };
   const logger = config.logger ?? console;
 
@@ -126,6 +171,9 @@ export async function ingestRecords(
         }
         if (!keep) {
           dropped.recordFilter++;
+          const exclusion = asProjectionDelete(event);
+          accepted.push(exclusion);
+          policyExcluded.add(exclusion);
           continue;
         }
       }
@@ -134,12 +182,22 @@ export async function ingestRecords(
     accepted.push(event);
   }
 
+  // Reject duplicate/stale source observations before they can admit dependent
+  // actors in this batch. The winning versions are persisted with projection.
+  const ordered = await selectCurrentMutations(db, accepted);
+  dropped.superseded += ordered.superseded;
+
+  const projectionExclusions = ordered.applied.filter((event) =>
+    policyExcluded.has(event),
+  );
+  const admitted = ordered.applied.filter((event) => !policyExcluded.has(event));
+
   const effectiveKnownDids = options.knownDids
     ? new Set(options.knownDids)
     : undefined;
   const discoveredDids: string[] = [];
   if (effectiveKnownDids) {
-    for (const event of accepted) {
+    for (const event of admitted) {
       if (event.operation === "delete") continue;
       const shortName = resolveCollectionKey(config, event.collection);
       const collection = shortName ? config.collections[shortName] : undefined;
@@ -151,34 +209,56 @@ export async function ingestRecords(
     }
   }
 
-  const actorFiltered = effectiveKnownDids
-    ? accepted.filter((event) => {
-        if (event.operation === "delete") return true;
-        const shortName = resolveCollectionKey(config, event.collection);
-        const collection = shortName ? config.collections[shortName] : undefined;
-        if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
-          return true;
-        }
-        dropped.unknownActor++;
-        return false;
-      })
-    : accepted;
+  const actorFiltered: IngestEvent[] = [];
+  for (const event of admitted) {
+    if (event.operation === "delete" || !effectiveKnownDids) {
+      actorFiltered.push(event);
+      continue;
+    }
+    const shortName = resolveCollectionKey(config, event.collection);
+    const collection = shortName ? config.collections[shortName] : undefined;
+    if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
+      actorFiltered.push(event);
+      continue;
+    }
+    dropped.unknownActor++;
+    projectionExclusions.push(asProjectionDelete(event));
+  }
 
-  const subjectFiltered = await filterUnknownSubjects(
+  const subjectResult = await filterUnknownSubjects(
     db,
     config,
     actorFiltered,
     effectiveKnownDids,
     dropped,
   );
+  projectionExclusions.push(...subjectResult.excluded);
 
-  if (subjectFiltered.length > 0) {
-    await projectEvents(db, subjectFiltered, config, options);
+  const projectionEvents = [
+    ...subjectResult.accepted,
+    ...projectionExclusions,
+  ];
+  if (projectionEvents.length > 0) {
+    await projectEvents(db, projectionEvents, config, {
+      ...options,
+      sourceOrderingChecked: true,
+    });
   } else if (options.trailingStatements?.length) {
     await db.batch(options.trailingStatements);
   }
 
-  return { accepted: subjectFiltered, dropped, discoveredDids };
+  return { accepted: subjectResult.accepted, dropped, discoveredDids };
+}
+
+function asProjectionDelete(event: IngestEvent): IngestEvent {
+  return {
+    ...event,
+    operation: "delete",
+    // Policy exclusions retain the authoritative source CID in the tombstone.
+    // True source deletes still enter with a null CID.
+    cid: event.cid,
+    record: null,
+  };
 }
 
 async function filterUnknownSubjects(
@@ -187,7 +267,7 @@ async function filterUnknownSubjects(
   events: IngestEvent[],
   knownDids: ReadonlySet<string> | undefined,
   dropped: IngestDropCounts,
-): Promise<IngestEvent[]> {
+): Promise<{ accepted: IngestEvent[]; excluded: IngestEvent[] }> {
   const subjectsByEvent = new Map<IngestEvent, string>();
   const subjects = new Set<string>();
 
@@ -210,16 +290,23 @@ async function filterUnknownSubjects(
     subjects.add(subject);
   }
 
-  if (subjectsByEvent.size === 0) return events;
+  if (subjectsByEvent.size === 0) {
+    return { accepted: events, excluded: [] };
+  }
 
   const known = knownDids ? new Set(knownDids) : await loadKnownDids(db, subjects);
-  return events.filter((event) => {
+  const accepted: IngestEvent[] = [];
+  const excluded: IngestEvent[] = [];
+  for (const event of events) {
     const subject = subjectsByEvent.get(event);
-    if (subject === undefined) return true;
-    if (subject !== "" && known.has(subject)) return true;
+    if (subject === undefined || (subject !== "" && known.has(subject))) {
+      accepted.push(event);
+      continue;
+    }
     if (subject !== "") dropped.unknownSubject++;
-    return false;
-  });
+    excluded.push(asProjectionDelete(event));
+  }
+  return { accepted, excluded };
 }
 
 async function loadKnownDids(
