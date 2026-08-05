@@ -12,6 +12,10 @@ import {
 import { getLastCursor, saveCursor } from "./db";
 import { getMeta, setMeta } from "./db/meta";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
+import {
+  ingestDiagnosticsStatement,
+  type IngestDiagnosticCounts,
+} from "./diagnostics";
 import { rebuildDerivedProjections } from "./db/records";
 import { createPdsClient, getClient, getPDS } from "./client";
 import {
@@ -200,6 +204,8 @@ export interface BackfillOptions {
   metrics?: BackfillMetricsAccumulator;
   /** @internal Cursor already loaded by the bulk scheduler. */
   resumeState?: { cursor: string | null };
+  /** @internal Bounded diagnostics shared by one bulk run. */
+  aggregateDiagnostics?: IngestDiagnosticCounts;
 }
 
 interface BackfillUserAttempt {
@@ -389,6 +395,10 @@ async function backfillUserAttempt(
         skipFeedFanout: true,
         knownDids: options?.knownDids,
         skipDerivedProjections: options?.skipDerivedProjections,
+        // listRecords is an authoritative current-source observation. It wins
+        // durable older state, so another record_versions read is redundant.
+        authoritativeSourceObservation: true,
+        aggregateDiagnostics: options?.aggregateDiagnostics,
         // Canonical projection and cursor acknowledgement commit atomically.
         trailingStatements: [checkpoint],
         // Let sinks bulk-flush differently from live ingestion.
@@ -623,6 +633,23 @@ function createStreamingHostScheduler<TResult>(
   };
 }
 
+async function flushIngestDiagnostics(
+  db: Database,
+  counts: IngestDiagnosticCounts,
+  config: ContrailConfig,
+): Promise<void> {
+  try {
+    const statement = ingestDiagnosticsStatement(db, counts);
+    if (statement) await statement.run();
+  } catch (error) {
+    // Private telemetry must never change canonical completion state.
+    (config.logger ?? console).warn(
+      "Backfill diagnostics flush failed",
+      error,
+    );
+  }
+}
+
 async function loadKnownBackfillDids(db: Database): Promise<Set<string>> {
   const rows = await db
     .prepare("SELECT DISTINCT did FROM backfills")
@@ -656,6 +683,7 @@ async function backfillPendingWork(
   let totalBackfilled = 0;
   const knownDids = await loadKnownBackfillDids(db);
   const metrics = emptyBackfillMetrics();
+  const aggregateDiagnostics: IngestDiagnosticCounts = {};
 
   // Anchor the jetstream cursor to now if it hasn't been set yet, so records
   // emitted during backfill are replayed once jetstream starts.
@@ -762,6 +790,7 @@ async function backfillPendingWork(
               skipDerivedProjections: true,
               metrics,
               resumeState: work,
+              aggregateDiagnostics,
             }
           );
           records += attempt.records;
@@ -822,6 +851,11 @@ async function backfillPendingWork(
     // remain retrying with persisted backoff. Explicit larger values cause
     // another host-aware pass without changing the scheduled retry budget.
   }
+
+  // Diagnostics are private aggregate telemetry, not canonical state. Flush
+  // once after concurrent page work to avoid turning one hot counter row into
+  // a global D1 write lock on every backfill page.
+  await flushIngestDiagnostics(db, aggregateDiagnostics, config);
 
   // Canonical records and cursors are durable now. Rebuild expensive derived
   // projections once with set-based SQL instead of hundreds of statements per
@@ -893,6 +927,7 @@ export async function retryPendingBackfills(
   let completed = 0;
   let failed = 0;
   let records = 0;
+  const aggregateDiagnostics: IngestDiagnosticCounts = {};
 
   try {
     if ((await getMeta(db, DERIVED_PROJECTIONS_DIRTY_KEY)) === "1") {
@@ -958,6 +993,7 @@ export async function retryPendingBackfills(
               Math.max(1, deadline - Date.now())
             ),
             exhaustAfterAttempts: maxAttempts,
+            aggregateDiagnostics,
           })
         );
       }
@@ -973,6 +1009,7 @@ export async function retryPendingBackfills(
       await heartbeatBackfillRun(db, runId);
     }
   } finally {
+    await flushIngestDiagnostics(db, aggregateDiagnostics, config);
     await finishBackfillRun(db, runId);
   }
 

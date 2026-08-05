@@ -20,6 +20,7 @@ describe("initSchema", () => {
     expect(names).toContain("cursor");
     expect(names).toContain("identities");
     expect(names).toContain("record_versions");
+    expect(names).toContain("ingest_diagnostics");
 
     const backfillColumns = await db
       .prepare("PRAGMA table_info(backfills)")

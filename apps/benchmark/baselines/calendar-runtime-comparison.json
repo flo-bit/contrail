@@ -1,0 +1,60 @@
+{
+  "format": "contrail.runtime-comparison-benchmark",
+  "version": 1,
+  "observed_at": "2026-08-05T04:18:19Z",
+  "workload": {
+    "backend": "wrangler-local-d1",
+    "config": "configs/calendar-records-only.config.json",
+    "discovered_accounts": 1633,
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    }
+  },
+  "release_code_pinned_runtime": {
+    "contrail_commit": "aec1ac8fed1a9a83520cb99764484c7cca9bd2c0",
+    "wrangler": "4.84.1",
+    "workerd": "1.20260421.1",
+    "result": "results/calendar-records-only-r100-h20-d3-2026-08-05T00-08-33-355Z.json",
+    "backfill_ms": 48559.97,
+    "full_harness_ms": 50281.28,
+    "fetched_records": 20878,
+    "indexed_records": 20878
+  },
+  "current_code_pinned_runtime": {
+    "wrangler": "4.84.1",
+    "workerd": "1.20260421.1",
+    "result": "results/calendar-records-only-r100-h20-d3-2026-08-05T04-18-18-554Z.json",
+    "backfill_ms": 50521.06,
+    "full_harness_ms": 54923.52,
+    "fetched_records": 20877,
+    "indexed_records": 20877
+  },
+  "release_code_new_runtime": {
+    "contrail_commit": "aec1ac8fed1a9a83520cb99764484c7cca9bd2c0",
+    "wrangler": "4.118.0",
+    "workerd": "1.20260730.1",
+    "result": "results/calendar-records-only-r100-h20-d3-2026-08-05T04-16-54-348Z.json",
+    "backfill_ms": 107830,
+    "full_harness_ms": 110540,
+    "fetched_records": 20876,
+    "indexed_records": 20876
+  },
+  "current_code_new_runtime": {
+    "wrangler": "4.118.0",
+    "workerd": "1.20260730.1",
+    "result": "results/calendar-records-only-r100-h20-d3-2026-08-05T04-12-43-631Z.json",
+    "backfill_ms": 129568.12,
+    "full_harness_ms": 132081.27,
+    "fetched_records": 20739,
+    "indexed_records": 20739
+  },
+  "notes": [
+    "All four rows use the same backend, fixture, and 100x20x3 scheduler limits. Live source totals differ by at most 139 records (0.67%).",
+    "The inverse runtime/code checks isolate Wrangler/workerd from Contrail source changes: release code took 50.28 seconds on the pinned runtime and 110.54 seconds on the newer runtime; current code took 54.92 and 132.08 seconds respectively.",
+    "The current durable ordering path adds a modest expected write cost under the pinned runtime. Most of the apparent post-0.13 local-D1 regression came from the benchmark runtime upgrade, not runtime Lexicon validation or source ordering.",
+    "The benchmark app pins Wrangler 4.84.1/workerd 1.20260421.1 for continuity. Other deployment and example apps remain on current Wrangler releases."
+  ]
+}

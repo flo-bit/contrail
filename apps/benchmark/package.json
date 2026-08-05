@@ -11,9 +11,9 @@
     "@atmo-dev/contrail": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260804.1",
+    "@cloudflare/workers-types": "4.20260424.1",
     "@types/node": "^26.1.2",
     "typescript": "^6.0.3",
-    "wrangler": "^4.118.0"
+    "wrangler": "4.84.1"
   }
 }

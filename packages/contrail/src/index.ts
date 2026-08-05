@@ -1,4 +1,5 @@
 /** Contrail's public API. */
+export type { LexiconDoc } from "@atcute/lexicon-doc";
 export { Contrail } from "./contrail";
 export type { AppOptions, ContrailOptions } from "./contrail";
 
@@ -21,6 +22,8 @@ export * from "./core/jetstream";
 export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";
+export * from "./core/diagnostics";
+export * from "./core/validation";
 export * from "./core/search";
 export * from "./core/constellation";
 

@@ -1,11 +1,12 @@
 import { isDid } from "@atcute/lexicons/syntax";
+import { parse as parseTid } from "@atcute/tid";
 import type { ContrailConfig, Database, Logger } from "./types";
 import {
   DEFAULT_CONSTELLATION_URL,
   DEFAULT_FOLLOW_NSID,
-  recordsTableName,
   shortNameForNsid,
 } from "./types";
+import { createIngestEvent, ingestRecords } from "./ingest";
 
 const PAGE_LIMIT = 100;
 const DID_FILTER_CHUNK = 50;
@@ -54,11 +55,11 @@ function parseBacklink(entry: NonNullable<BacklinksPage["links"]>[number]): Back
     return {
       did: entry.did,
       rkey: entry.rkey,
-      uri: entry.uri ?? `at://${entry.did}/${DEFAULT_FOLLOW_NSID}/${entry.rkey}`,
+      uri: `at://${entry.did}/${DEFAULT_FOLLOW_NSID}/${entry.rkey}`,
     };
   }
   if (entry.uri) {
-    const m = /^at:\/\/(did:[^/]+)\/[^/]+\/([^/]+)$/.exec(entry.uri);
+    const m = /^at:\/\/(did:[^/]+)\/app\.bsky\.graph\.follow\/([^/]+)$/.exec(entry.uri);
     if (m && isDid(m[1])) {
       return { did: m[1], rkey: m[2], uri: entry.uri };
     }
@@ -122,14 +123,6 @@ export async function backfillFollowersFromConstellation(
   if (!followShort) return 0;
   const log = getLogger(config);
 
-  const followTable = recordsTableName(followShort);
-  const recordJson = JSON.stringify({
-    $type: DEFAULT_FOLLOW_NSID,
-    subject: subjectDid,
-    createdAt: new Date().toISOString(),
-  });
-  const nowUs = Date.now() * 1000;
-
   let cursor: string | undefined;
   let inserted = 0;
   let pages = 0;
@@ -154,17 +147,46 @@ export async function backfillFollowersFromConstellation(
         rows.map((r) => r.did)
       );
       const survivors = rows.filter((r) => known.has(r.did));
-
-      for (const r of survivors) {
-        const result = await db
-          .prepare(
-            `INSERT INTO ${followTable} (uri, did, rkey, cid, record, time_us, indexed_at)
-             VALUES (?, ?, ?, NULL, ?, ?, ?)
-             ON CONFLICT(uri) DO NOTHING`
-          )
-          .bind(r.uri, r.did, r.rkey, recordJson, nowUs, nowUs)
-          .run();
-        inserted += (result as { changes?: number })?.changes ?? 0;
+      const nowUs = Date.now() * 1000;
+      const events = survivors.flatMap((row) => {
+        try {
+          const { timestamp } = parseTid(row.rkey);
+          return [
+            createIngestEvent({
+              uri: row.uri,
+              did: row.did,
+              collection: DEFAULT_FOLLOW_NSID,
+              rkey: row.rkey,
+              operation: "create",
+              cid: null,
+              value: {
+                $type: DEFAULT_FOLLOW_NSID,
+                subject: subjectDid,
+                createdAt: new Date(timestamp / 1000).toISOString(),
+              },
+              timeUs: timestamp,
+              indexedAt: nowUs,
+              // The backlink API has no record CID. TID-derived source metadata
+              // is stable across repeated acquisitions, keeping sinks/feed fanout
+              // idempotent while the shared validator treats this as synthetic.
+              source: {
+                id: "constellation",
+                time_us: timestamp,
+                revision: row.rkey,
+                cursor: row.rkey,
+              },
+            }),
+          ];
+        } catch {
+          return [];
+        }
+      });
+      if (events.length > 0) {
+        known.add(subjectDid);
+        const ingest = await ingestRecords(db, events, config, {
+          knownDids: known,
+        });
+        inserted += ingest.accepted.length;
       }
     }
 

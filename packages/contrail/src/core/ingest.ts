@@ -12,9 +12,19 @@ import {
 } from "./types";
 import {
   projectEvents,
+  selectAuthoritativeMutations,
   selectCurrentMutations,
   type ExistingRecordInfo,
 } from "./db/records";
+import {
+  addIngestDiagnosticCounts,
+  ingestDiagnosticsStatement,
+  type IngestDiagnosticCounts,
+} from "./diagnostics";
+import {
+  validateCanonicalRecord,
+  type RecordValidationFailure,
+} from "./validation";
 
 export interface RecordEventInput {
   uri?: string;
@@ -99,11 +109,21 @@ export interface IngestRecordsOptions {
   knownDids?: ReadonlySet<string>;
   /** Statements committed after projection in the same database batch. */
   trailingStatements?: Statement[];
+  /** The source response is a current authoritative snapshot, so it supersedes
+   * durable observations without a redundant version lookup. */
+  authoritativeSourceObservation?: boolean;
+  /** @internal Aggregate private diagnostics for one bulk run. The caller
+   * flushes this bounded object once after concurrent page processing. */
+  aggregateDiagnostics?: IngestDiagnosticCounts;
 }
 
 export interface IngestDropCounts {
   unknownCollection: number;
   invalidRecord: number;
+  lexiconValidation: number;
+  cidMismatch: number;
+  cidEncoding: number;
+  missingCid: number;
   recordFilter: number;
   unknownActor: number;
   unknownSubject: number;
@@ -136,12 +156,21 @@ export async function ingestRecords(
   const dropped: IngestDropCounts = {
     unknownCollection: 0,
     invalidRecord: 0,
+    lexiconValidation: 0,
+    cidMismatch: 0,
+    cidEncoding: 0,
+    missingCid: 0,
     recordFilter: 0,
     unknownActor: 0,
     unknownSubject: 0,
     superseded: 0,
   };
   const logger = config.logger ?? console;
+  let candidates: Array<{
+    event: IngestEvent;
+    shortName: string;
+    record: Record<string, unknown> | null;
+  }> = [];
 
   for (const event of events) {
     const shortName = resolveCollectionKey(config, event.collection);
@@ -152,15 +181,66 @@ export async function ingestRecords(
       );
       continue;
     }
+    const record =
+      event.operation === "delete" ? null : parseRecord(event.record);
+    if (event.operation !== "delete" && !record) {
+      dropped.invalidRecord++;
+      logger.warn(`[ingest] drop invalid record: ${event.uri}`);
+      continue;
+    }
+    candidates.push({ event, shortName, record });
+  }
 
-    if (event.operation !== "delete") {
-      const record = parseRecord(event.record);
-      if (!record) {
-        dropped.invalidRecord++;
-        logger.warn(`[ingest] drop invalid record: ${event.uri}`);
-        continue;
+  // A backfill page contains one collection. When that collection is dependent
+  // and the caller supplied the complete actor set, reject out-of-scope rows
+  // before expensive Lexicon/CID work. Mixed live batches keep the two-pass path
+  // below so a discoverable record can still admit a dependent sibling.
+  const hasDiscoverableMutation = candidates.some(({ event, shortName }) => {
+    const collection = config.collections[shortName];
+    return event.operation !== "delete" && collection?.discover !== false;
+  });
+  if (options.knownDids && !hasDiscoverableMutation) {
+    candidates = candidates.filter(({ event, shortName, record }) => {
+      if (event.operation === "delete") return true;
+      const collection = config.collections[shortName];
+      if (collection?.discover !== false) return true;
+      if (!options.knownDids!.has(event.did)) {
+        dropped.unknownActor++;
+        return false;
       }
+      if (!collection.subjectField) return true;
+      const subject = record
+        ? getNestedValue(record, collection.subjectField)
+        : undefined;
+      if (typeof subject !== "string" || !isDid(subject)) {
+        dropped.unknownSubject++;
+        return false;
+      }
+      if (!options.knownDids!.has(subject)) {
+        dropped.unknownSubject++;
+        return false;
+      }
+      return true;
+    });
+  }
 
+  // CID hashing is asynchronous. Validate a bounded ingest batch in parallel,
+  // while preserving source order when applying admission decisions below.
+  const validationFailures = await Promise.all(
+    candidates.map(({ event, record }) =>
+      record ? validateCanonicalRecord(config, event, record) : null,
+    ),
+  );
+
+  for (let index = 0; index < candidates.length; index++) {
+    const { event, shortName, record } = candidates[index];
+    const failure = validationFailures[index];
+    if (failure) {
+      incrementValidationDrop(dropped, failure);
+      continue;
+    }
+
+    if (record) {
       const filter = config.collections[shortName]?.recordFilter;
       if (filter) {
         let keep = false;
@@ -182,9 +262,24 @@ export async function ingestRecords(
     accepted.push(event);
   }
 
+  const validationDropTotal =
+    dropped.lexiconValidation +
+    dropped.cidMismatch +
+    dropped.cidEncoding +
+    dropped.missingCid;
+  if (validationDropTotal > 0 && !options.aggregateDiagnostics) {
+    logger.warn(
+      `[ingest] dropped ${validationDropTotal} record(s) during validation ` +
+        `(lexicon=${dropped.lexiconValidation}, cid_mismatch=${dropped.cidMismatch}, ` +
+        `cid_encoding=${dropped.cidEncoding}, missing_cid=${dropped.missingCid})`,
+    );
+  }
+
   // Reject duplicate/stale source observations before they can admit dependent
   // actors in this batch. The winning versions are persisted with projection.
-  const ordered = await selectCurrentMutations(db, accepted);
+  const ordered = options.authoritativeSourceObservation
+    ? selectAuthoritativeMutations(accepted)
+    : await selectCurrentMutations(db, accepted);
   dropped.superseded += ordered.superseded;
 
   const projectionExclusions = ordered.applied.filter((event) =>
@@ -222,32 +317,65 @@ export async function ingestRecords(
       continue;
     }
     dropped.unknownActor++;
-    projectionExclusions.push(asProjectionDelete(event));
   }
 
-  const subjectResult = await filterUnknownSubjects(
+  const subjectFiltered = await filterUnknownSubjects(
     db,
     config,
     actorFiltered,
     effectiveKnownDids,
     dropped,
   );
-  projectionExclusions.push(...subjectResult.excluded);
 
   const projectionEvents = [
-    ...subjectResult.accepted,
+    ...subjectFiltered,
     ...projectionExclusions,
+  ];
+  const diagnosticCounts: IngestDiagnosticCounts = {
+    unknown_collection: dropped.unknownCollection,
+    invalid_json: dropped.invalidRecord,
+    lexicon_validation: dropped.lexiconValidation,
+    cid_mismatch: dropped.cidMismatch,
+    cid_encoding: dropped.cidEncoding,
+    missing_cid: dropped.missingCid,
+    record_filter: dropped.recordFilter,
+    unknown_actor: dropped.unknownActor,
+    unknown_subject: dropped.unknownSubject,
+    superseded: dropped.superseded,
+  };
+  const diagnostics = options.aggregateDiagnostics
+    ? null
+    : ingestDiagnosticsStatement(db, diagnosticCounts);
+  const trailingStatements = [
+    ...(diagnostics ? [diagnostics] : []),
+    ...(options.trailingStatements ?? []),
   ];
   if (projectionEvents.length > 0) {
     await projectEvents(db, projectionEvents, config, {
       ...options,
+      trailingStatements,
       sourceOrderingChecked: true,
     });
-  } else if (options.trailingStatements?.length) {
-    await db.batch(options.trailingStatements);
+  } else if (trailingStatements.length > 0) {
+    await db.batch(trailingStatements);
+  }
+  // Aggregate only after the canonical projection/checkpoint transaction
+  // succeeds, so a rolled-back page cannot inflate private diagnostics.
+  if (options.aggregateDiagnostics) {
+    addIngestDiagnosticCounts(options.aggregateDiagnostics, diagnosticCounts);
   }
 
-  return { accepted: subjectResult.accepted, dropped, discoveredDids };
+  return { accepted: subjectFiltered, dropped, discoveredDids };
+}
+
+function incrementValidationDrop(
+  dropped: IngestDropCounts,
+  failure: RecordValidationFailure,
+): void {
+  if (failure === "lexicon_validation") dropped.lexiconValidation++;
+  else if (failure === "cid_mismatch") dropped.cidMismatch++;
+  else if (failure === "cid_encoding") dropped.cidEncoding++;
+  else dropped.missingCid++;
 }
 
 function asProjectionDelete(event: IngestEvent): IngestEvent {
@@ -267,7 +395,7 @@ async function filterUnknownSubjects(
   events: IngestEvent[],
   knownDids: ReadonlySet<string> | undefined,
   dropped: IngestDropCounts,
-): Promise<{ accepted: IngestEvent[]; excluded: IngestEvent[] }> {
+): Promise<IngestEvent[]> {
   const subjectsByEvent = new Map<IngestEvent, string>();
   const subjects = new Set<string>();
 
@@ -290,13 +418,10 @@ async function filterUnknownSubjects(
     subjects.add(subject);
   }
 
-  if (subjectsByEvent.size === 0) {
-    return { accepted: events, excluded: [] };
-  }
+  if (subjectsByEvent.size === 0) return events;
 
   const known = knownDids ? new Set(knownDids) : await loadKnownDids(db, subjects);
   const accepted: IngestEvent[] = [];
-  const excluded: IngestEvent[] = [];
   for (const event of events) {
     const subject = subjectsByEvent.get(event);
     if (subject === undefined || (subject !== "" && known.has(subject))) {
@@ -304,9 +429,8 @@ async function filterUnknownSubjects(
       continue;
     }
     if (subject !== "") dropped.unknownSubject++;
-    excluded.push(asProjectionDelete(event));
   }
-  return { accepted, excluded };
+  return accepted;
 }
 
 async function loadKnownDids(

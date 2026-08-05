@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 7;
+export const CONTRAIL_SCHEMA_VERSION = 8;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS record_versions (
 CREATE INDEX IF NOT EXISTS idx_record_versions_collection ON record_versions(collection);
 CREATE INDEX IF NOT EXISTS idx_record_versions_did ON record_versions(did);
 CREATE INDEX IF NOT EXISTS idx_record_versions_tombstones ON record_versions(operation, indexed_at);
+CREATE TABLE IF NOT EXISTS ingest_diagnostics (
+  category TEXT PRIMARY KEY,
+  total ${dialect.bigintType} NOT NULL,
+  last_seen_at ${dialect.bigintType} NOT NULL
+);
 `;
 }
 

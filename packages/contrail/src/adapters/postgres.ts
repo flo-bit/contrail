@@ -13,7 +13,9 @@ const BIGINT_COLUMNS = new Set([
   "time_us",
   "source_time_us",
   "indexed_at",
+  "last_seen_at",
   "resolved_at",
+  "total",
 ]);
 
 function normalizeRow(row: any): any {

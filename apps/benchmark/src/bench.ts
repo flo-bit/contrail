@@ -1,8 +1,15 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { Contrail, type ContrailConfig, type Database } from "@atmo-dev/contrail";
+import { createRequire } from "node:module";
+import {
+  Contrail,
+  type ContrailConfig,
+  type Database,
+  type LexiconDoc,
+} from "@atmo-dev/contrail";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { getPlatformProxy } from "wrangler";
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -10,15 +17,20 @@ const CONFIG_DIR = resolve(APP_DIR, "configs");
 const CACHE_DIR = resolve(APP_DIR, ".cache");
 const RESULTS_DIR = resolve(APP_DIR, "results");
 const WRANGLER_CONFIG = resolve(APP_DIR, "wrangler.jsonc");
+const require = createRequire(import.meta.url);
+
+type BenchmarkBackend = "d1" | "sqlite";
 
 interface Options {
   config: string;
+  backend: BenchmarkBackend;
   concurrency: number;
   pdsConcurrency: number;
   didsPerPds: number;
   maxAttempts: number;
   keepCache: boolean;
   excludeDids: string[];
+  validationLexicons?: string;
 }
 
 function positiveInteger(raw: string | undefined, name: string, fallback: number): number {
@@ -32,18 +44,26 @@ function positiveInteger(raw: string | undefined, name: string, fallback: number
 
 function parseArgs(argv: string[]): Options {
   let config: string | undefined;
+  let backend: BenchmarkBackend = "d1";
   let concurrencyRaw: string | undefined;
   let pdsConcurrencyRaw: string | undefined;
   let didsPerPdsRaw: string | undefined;
   let maxAttemptsRaw: string | undefined;
   let keepCache = false;
+  let validationLexicons: string | undefined;
   const excludeDids: string[] = [];
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
     if (arg === "--config") config = argv[++index];
     else if (arg.startsWith("--config=")) config = arg.slice("--config=".length);
-    else if (arg === "--concurrency") concurrencyRaw = argv[++index];
+    else if (arg === "--backend" || arg.startsWith("--backend=")) {
+      const value = arg === "--backend" ? argv[++index] : arg.slice("--backend=".length);
+      if (value !== "d1" && value !== "sqlite") {
+        throw new Error(`--backend must be d1 or sqlite (got ${value})`);
+      }
+      backend = value;
+    } else if (arg === "--concurrency") concurrencyRaw = argv[++index];
     else if (arg.startsWith("--concurrency=")) {
       concurrencyRaw = arg.slice("--concurrency=".length);
     } else if (arg === "--pds-concurrency") pdsConcurrencyRaw = argv[++index];
@@ -58,17 +78,24 @@ function parseArgs(argv: string[]): Options {
     } else if (arg === "--exclude-did") excludeDids.push(argv[++index]);
     else if (arg.startsWith("--exclude-did=")) {
       excludeDids.push(arg.slice("--exclude-did=".length));
+    } else if (arg === "--validation-lexicons") {
+      validationLexicons = argv[++index];
+    } else if (arg.startsWith("--validation-lexicons=")) {
+      validationLexicons = arg.slice("--validation-lexicons=".length);
     } else if (arg === "--keep-cache") keepCache = true;
     else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: pnpm bench --config <file> [options]
 
 Options:
   --config <file>       JSON config path or filename under configs/ (required)
+  --backend <name>      d1 (default) or native sqlite
   --concurrency <n>     Concurrent identity resolutions (default: 100)
   --pds-concurrency <n> Concurrent PDS hosts (default: 20)
   --dids-per-pds <n>    Concurrent accounts per PDS (default: 3)
   --max-attempts <n>    Immediate attempts per failed account (default: 1)
   --exclude-did <did>   Skip an actor after discovery (repeatable)
+  --validation-lexicons <dir>
+                        Enable strict Lexicon + CID validation with JSON docs
   --keep-cache          Keep the disposable local D1 after the run
 `);
       process.exit(0);
@@ -80,12 +107,14 @@ Options:
   if (!config) throw new Error("--config is required");
   return {
     config,
+    backend,
     concurrency: positiveInteger(concurrencyRaw, "--concurrency", 100),
     pdsConcurrency: positiveInteger(pdsConcurrencyRaw, "--pds-concurrency", 20),
     didsPerPds: positiveInteger(didsPerPdsRaw, "--dids-per-pds", 3),
     maxAttempts: positiveInteger(maxAttemptsRaw, "--max-attempts", 1),
     keepCache,
     excludeDids,
+    validationLexicons,
   };
 }
 
@@ -102,6 +131,38 @@ async function resolveConfigPath(input: string): Promise<string> {
     }
   }
   throw new Error(`Config not found: ${input}`);
+}
+
+async function loadLexiconDirectory(input: string): Promise<{
+  path: string;
+  documents: object[];
+}> {
+  const path = isAbsolute(input) ? input : resolve(process.cwd(), input);
+  const entries = await readdir(path, { recursive: true, withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => resolve(entry.parentPath, entry.name))
+    .sort();
+  if (files.length === 0) throw new Error(`No Lexicon JSON files found: ${path}`);
+  const documents = await Promise.all(
+    files.map(async (file) => JSON.parse(await readFile(file, "utf8")) as object),
+  );
+  return { path, documents };
+}
+
+async function installedPackageVersion(
+  name: string,
+  packageRequire: NodeJS.Require = require,
+): Promise<string | null> {
+  try {
+    const packagePath = packageRequire.resolve(`${name}/package.json`);
+    const metadata = JSON.parse(await readFile(packagePath, "utf8")) as {
+      version?: unknown;
+    };
+    return typeof metadata.version === "string" ? metadata.version : null;
+  } catch {
+    return null;
+  }
 }
 
 function elapsed(start: number): number {
@@ -187,24 +248,59 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const configPath = await resolveConfigPath(options.config);
   const config = JSON.parse(await readFile(configPath, "utf8")) as ContrailConfig;
-  const name = safeName(configPath);
+  const validation = options.validationLexicons
+    ? await loadLexiconDirectory(options.validationLexicons)
+    : null;
+  if (validation) {
+    config.validation = {
+      lexicons: validation.documents as LexiconDoc[],
+      strict: true,
+      verifyCid: true,
+    };
+  }
+  const wranglerPackagePath =
+    options.backend === "d1" ? require.resolve("wrangler/package.json") : null;
+  const runtime = {
+    node: process.version,
+    wrangler:
+      options.backend === "d1" ? await installedPackageVersion("wrangler") : null,
+    workerd: wranglerPackagePath
+      ? await installedPackageVersion("workerd", createRequire(wranglerPackagePath))
+      : null,
+    sqlite: options.backend === "sqlite" ? (process.versions.sqlite ?? null) : null,
+  };
+  const name = `${safeName(configPath)}${
+    options.backend === "sqlite" ? "-sqlite" : ""
+  }${validation ? "-validated" : ""}`;
   const cachePath = resolve(
     CACHE_DIR,
     `${name}-r${options.concurrency}-h${options.pdsConcurrency}-d${options.didsPerPds}`,
   );
 
-  await rm(cachePath, { recursive: true, force: true });
-  await mkdir(cachePath, { recursive: true });
+  if (options.backend === "d1") {
+    await rm(cachePath, { recursive: true, force: true });
+    await mkdir(cachePath, { recursive: true });
+  }
   await mkdir(RESULTS_DIR, { recursive: true });
 
   console.log(`config:       ${configPath}`);
-  console.log(`backend:      fresh local D1`);
+  console.log(
+    `backend:      ${
+      options.backend === "d1" ? "fresh local D1" : "fresh in-memory native SQLite"
+    }`,
+  );
+  console.log(
+    options.backend === "d1"
+      ? `runtime:      Wrangler ${runtime.wrangler ?? "unknown"}, workerd ${runtime.workerd ?? "unknown"}`
+      : `runtime:      Node ${runtime.node}, SQLite ${runtime.sqlite ?? "unknown"}`,
+  );
   console.log(`resolution:   ${options.concurrency}`);
   console.log(`PDS hosts:   ${options.pdsConcurrency}`);
   console.log(`DIDs / PDS:  ${options.didsPerPds}`);
   console.log(`max attempts: ${options.maxAttempts}`);
   console.log(`excluded:     ${options.excludeDids.length} actors`);
-  console.log(`cache:        reset ${cachePath}`);
+  console.log(`validation:   ${validation ? `${validation.documents.length} Lexicons + CID` : "disabled"}`);
+  if (options.backend === "d1") console.log(`cache:        reset ${cachePath}`);
 
   const startedAt = new Date();
   const totalStart = performance.now();
@@ -217,20 +313,25 @@ async function main(): Promise<void> {
   let acceptedRecords = 0;
   let backfillMetrics: any;
   let overview: any;
+  let diagnostics: any;
   let fetchInstrumentation: ReturnType<typeof instrumentFetch> | undefined;
 
   try {
     let phaseStart = performance.now();
-    proxy = await getPlatformProxy({
-      configPath: WRANGLER_CONFIG,
-      persist: { path: cachePath },
-      remoteBindings: false,
-      envFiles: [],
-    });
+    let db: Database;
+    if (options.backend === "sqlite") {
+      db = createSqliteDatabase(":memory:");
+    } else {
+      proxy = await getPlatformProxy({
+        configPath: WRANGLER_CONFIG,
+        persist: { path: cachePath },
+        remoteBindings: false,
+        envFiles: [],
+      });
+      db = (proxy.env as Record<string, unknown>).DB as Database;
+    }
     bindingMs = elapsed(phaseStart);
     fetchInstrumentation = instrumentFetch();
-
-    const db = (proxy.env as Record<string, unknown>).DB as Database;
     const contrail = new Contrail({ ...config, db });
 
     phaseStart = performance.now();
@@ -276,10 +377,11 @@ async function main(): Promise<void> {
       .fetch(new Request("http://benchmark/status"));
     if (!response.ok) throw new Error(`Status request failed: ${response.status}`);
     overview = await response.json();
+    diagnostics = await contrail.diagnostics();
   } finally {
     fetchInstrumentation?.restore();
     await proxy?.dispose();
-    if (!options.keepCache) {
+    if (options.backend === "d1" && !options.keepCache) {
       await rm(cachePath, { recursive: true, force: true });
     }
   }
@@ -302,13 +404,22 @@ async function main(): Promise<void> {
     format: "contrail.backfill-benchmark",
     version: 1,
     config: relativeConfig.startsWith("..") ? configPath : relativeConfig,
-    backend: "wrangler-local-d1",
+    backend: options.backend === "d1" ? "wrangler-local-d1" : "native-sqlite",
+    runtime,
     options: {
       concurrency: options.concurrency,
       pdsConcurrency: options.pdsConcurrency,
       didsPerPds: options.didsPerPds,
       maxAttempts: options.maxAttempts,
       excludedDids: options.excludeDids,
+      validation: validation
+        ? {
+            lexicons: relative(APP_DIR, validation.path),
+            documents: validation.documents.length,
+            strict: true,
+            verifyCid: true,
+          }
+        : null,
     },
     started_at: startedAt.toISOString(),
     completed_at: completedAt.toISOString(),
@@ -336,6 +447,7 @@ async function main(): Promise<void> {
     },
     backfill: overview.backfill,
     collections: overview.collections,
+    ingest_diagnostics: diagnostics,
   };
 
   const timestamp = completedAt.toISOString().replace(/[:.]/g, "-");
@@ -359,6 +471,12 @@ async function main(): Promise<void> {
       `${overview.backfill.accounts.failed} failed`,
   );
   console.log(`network max:  ${result.network.max_concurrent} concurrent requests`);
+  const rejected = (diagnostics ?? []).reduce(
+    (total: number, diagnostic: { total?: number }) =>
+      total + Number(diagnostic.total ?? 0),
+    0,
+  );
+  console.log(`rejections:   ${rejected} aggregate admission decisions`);
   if (backfillMetrics) {
     console.log(
       `phases:       resolution ${(backfillMetrics.resolution_ms / 1000).toFixed(2)}s, ` +

@@ -1,0 +1,83 @@
+{
+  "format": "contrail.validation-comparison-benchmark",
+  "version": 1,
+  "observed_at": "2026-08-05T04:40:22Z",
+  "workload": {
+    "backend": "wrangler-local-d1",
+    "config": "configs/calendar.config.json",
+    "discovered_accounts": 1633,
+    "runtime": {
+      "node": "v26.5.0",
+      "wrangler": "4.84.1",
+      "workerd": "1.20260421.1"
+    },
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    }
+  },
+  "validation_disabled": {
+    "result": "results/calendar-r100-h20-d3-2026-08-05T04-26-34-203Z.json",
+    "backfill_ms": 148081.06,
+    "full_harness_ms": 153173.06,
+    "source_requests": 17380,
+    "fetched_records": 842689,
+    "accepted_records": 87275,
+    "indexed_records": 87266,
+    "accepted_records_per_second": 589.37,
+    "peak_rss_kib": 502672,
+    "records": {
+      "community.lexicon.calendar.event": 14610,
+      "community.lexicon.calendar.rsvp": 6275,
+      "app.bsky.actor.profile": 1401,
+      "app.bsky.graph.follow": 64980
+    },
+    "accounts": {
+      "complete": 1588,
+      "retrying": 45,
+      "failed": 0
+    }
+  },
+  "validated": {
+    "runtime_lexicons": 10,
+    "strict": true,
+    "verify_cid": true,
+    "result": "results/calendar-validated-r100-h20-d3-2026-08-05T04-40-21-241Z.json",
+    "backfill_ms": 145360.78,
+    "full_harness_ms": 148222.14,
+    "source_requests": 17398,
+    "fetched_records": 844253,
+    "accepted_records": 75038,
+    "indexed_records": 75029,
+    "accepted_records_per_second": 516.22,
+    "peak_rss_kib": 588592,
+    "records": {
+      "community.lexicon.calendar.event": 4833,
+      "community.lexicon.calendar.rsvp": 3780,
+      "app.bsky.actor.profile": 1382,
+      "app.bsky.graph.follow": 65034
+    },
+    "rejections": {
+      "lexicon_validation": 12291,
+      "cid_mismatch": 0,
+      "cid_encoding": 0,
+      "missing_cid": 0,
+      "unknown_subject": 756922,
+      "superseded": 2
+    },
+    "accounts": {
+      "complete": 1591,
+      "retrying": 42,
+      "failed": 0
+    }
+  },
+  "notes": [
+    "These are fresh-D1 live-network runs using the same built package, pinned runtime, config, and 100x20x3 scheduling limits. A rate-limited intermediate run was discarded before this pair was retained.",
+    "The source workloads were closely matched: fetched records differed by 1,564 (0.185%) and source requests differed by 18 (0.104%). Neither retained run received HTTP 429 responses.",
+    "The validated run finished 4.95 seconds sooner, but this is not a validation speedup: it rejected 12,291 records and therefore performed materially fewer canonical and derived writes. A deterministic replay fixture is required to isolate validation CPU cost.",
+    "Accepted-record throughput was 516.22/s with validation and 589.37/s without it. Peak RSS was 85,920 KiB higher in the validated process; treat one live-run memory sample as directional rather than a stable bound.",
+    "CID verification found no mismatches, encoding failures, or missing authoritative CIDs."
+  ]
+}

@@ -660,13 +660,10 @@ export interface MutationSelection {
   superseded: number;
 }
 
-/** Select one newest mutation per URI and reject rows older than durable state. */
-export async function selectCurrentMutations(
-  db: Database,
+function selectMutationWinners(
   events: IngestEvent[],
-): Promise<MutationSelection> {
-  if (events.length === 0) return { applied: [], superseded: 0 };
-  const durable = await lookupRecordVersions(db, events.map((event) => event.uri));
+  durable: ReadonlyMap<string, RecordVersionInfo>,
+): MutationSelection {
   const winners = new Map<
     string,
     { event: IngestEvent; version: RecordVersionInfo; index: number }
@@ -692,6 +689,23 @@ export async function selectCurrentMutations(
       .map((winner) => winner.event),
     superseded,
   };
+}
+
+/** Deduplicate one authoritative source observation without a durable lookup. */
+export function selectAuthoritativeMutations(
+  events: IngestEvent[],
+): MutationSelection {
+  return selectMutationWinners(events, new Map());
+}
+
+/** Select one newest mutation per URI and reject rows older than durable state. */
+export async function selectCurrentMutations(
+  db: Database,
+  events: IngestEvent[],
+): Promise<MutationSelection> {
+  if (events.length === 0) return { applied: [], superseded: 0 };
+  const durable = await lookupRecordVersions(db, events.map((event) => event.uri));
+  return selectMutationWinners(events, durable);
 }
 
 /**
@@ -984,20 +998,35 @@ export async function projectEvents(
   // record, and isolates failures so a throwing sink never blocks ingestion.
   const sinks = config.sinks;
   if (sinks && sinks.length > 0) {
-    const records: RecordEvent[] = events.map((e) =>
-      e.operation === "delete"
-        ? { kind: "deleted", uri: e.uri, did: e.did, collection: e.collection, rkey: e.rkey }
-        : {
-            kind: "created",
-            uri: e.uri,
-            did: e.did,
-            collection: e.collection,
-            rkey: e.rkey,
-            cid: e.cid,
-            record: e.record ? safeParseJson(e.record) : {},
-            time_us: e.time_us,
-          }
-    );
+    // An absent-row tombstone is canonical ordering state, not an externally
+    // visible deletion. Publish deletes only when this transaction removed a
+    // previously visible record.
+    const records: RecordEvent[] = events
+      .filter(
+        (event) =>
+          event.operation !== "delete" || existingMap.has(event.uri),
+      )
+      .map((event) =>
+        event.operation === "delete"
+          ? {
+              kind: "deleted",
+              uri: event.uri,
+              did: event.did,
+              collection: event.collection,
+              rkey: event.rkey,
+            }
+          : {
+              kind: "created",
+              uri: event.uri,
+              did: event.did,
+              collection: event.collection,
+              rkey: event.rkey,
+              cid: event.cid,
+              record: event.record ? safeParseJson(event.record) : {},
+              time_us: event.time_us,
+            },
+      );
+    if (records.length === 0) return selection;
     const ctx = { phase: options?.phase ?? "live" } as const;
     const logger = config.logger ?? console;
     for (const sink of sinks) {

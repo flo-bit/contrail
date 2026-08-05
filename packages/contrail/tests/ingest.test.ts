@@ -285,6 +285,12 @@ describe("ingestRecords", () => {
     const result = await ingestRecords(db, records, config);
     expect(result.accepted.map((record) => record.rkey)).toEqual(["f0"]);
     expect(result.dropped.unknownSubject).toBe(1);
+    expect(
+      await db
+        .prepare("SELECT uri FROM record_versions WHERE uri = ?")
+        .bind(records[1].uri)
+        .first(),
+    ).toBeNull();
   });
 
   it("always admits deletes when another mutation for the same URI is filtered", async () => {

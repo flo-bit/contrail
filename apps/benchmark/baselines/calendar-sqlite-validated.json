@@ -1,0 +1,67 @@
+{
+  "format": "contrail.validation-benchmark",
+  "version": 1,
+  "observed_at": "2026-08-05T13:33:26Z",
+  "backend": "native-sqlite",
+  "runtime": {
+    "node": "v26.5.0",
+    "sqlite": "3.53.3"
+  },
+  "config": "configs/calendar-records-only.config.json",
+  "result": "results/calendar-records-only-sqlite-validated-r100-h20-d3-2026-08-05T13-33-25-881Z.json",
+  "options": {
+    "identity_concurrency": 100,
+    "pds_concurrency": 20,
+    "dids_per_pds": 3,
+    "max_immediate_attempts": 1,
+    "runtime_lexicons": 10,
+    "strict": true,
+    "verify_cid": true
+  },
+  "timings_ms": {
+    "binding": 3.5,
+    "init": 2.04,
+    "discovery": 987.28,
+    "backfill": 46148.69,
+    "total": 47162.98,
+    "projection_and_checkpoint": 860.66
+  },
+  "source": {
+    "requests": 3692,
+    "fetched_records": 20763,
+    "records": {
+      "community.lexicon.calendar.event": {
+        "fetched": 14613,
+        "accepted": 4834,
+        "indexed": 4834
+      },
+      "community.lexicon.calendar.rsvp": {
+        "fetched": 6150,
+        "accepted": 3697,
+        "indexed": 3697
+      }
+    }
+  },
+  "accepted_records": 8531,
+  "indexed_records": 8531,
+  "accepted_records_per_second": 184.86,
+  "peak_rss_kib": 494640,
+  "rejections": {
+    "lexicon_validation": 12232,
+    "cid_mismatch": 0,
+    "cid_encoding": 0,
+    "missing_cid": 0
+  },
+  "accounts": {
+    "total": 1633,
+    "complete": 1553,
+    "retrying": 80,
+    "failed": 0
+  },
+  "notes": [
+    "This fixture contains only calendar events and RSVPs. Profiles, follows, feeds, FTS, relation counts, field-query indexes, and Constellation are disabled.",
+    "The run used a fresh in-memory native SQLite database. Projection plus atomic checkpoint work took 0.86 seconds cumulatively; wall time was dominated by live identity/PDS requests.",
+    "Transient network failures left 80 accounts retrying and fetched roughly 0.6% fewer records than the retained validation-disabled records-only run. Report wall time, record totals, and completion state together; do not use this single live run as isolated validation overhead.",
+    "Strict validation rejected 12,232 records and CID verification found no mismatches, encoding failures, or missing authoritative CIDs."
+  ]
+}
