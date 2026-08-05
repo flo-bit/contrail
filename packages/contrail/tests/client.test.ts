@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { resolvePDS, getClient, getPDS, __resetPdsCachesForTests } from "../src/core/client";
+import { resolvePDS, getClient, getPDS } from "../src/index";
+import { __resetPdsCachesForTests } from "../src/core/client";
 import { type DidDocumentResolver } from "@atcute/identity-resolver";
 import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";

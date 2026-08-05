@@ -1,15 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { ContrailConfig, Database } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
+import type { ContrailConfig, Database } from "../src/index";
+import { resolveConfig } from "../src/index";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
-import { runPersistent } from "../src/core/persistent";
-import { getLastCursor, queryRecords } from "../src/core/db/records";
-import { initSchema } from "../src/core/db/schema";
+import { runPersistent } from "../src/index";
+import { getLastCursor, queryRecords } from "../src/index";
+import { initSchema } from "../src/index";
 
-// Identity helpers live in @atmo-dev/contrail-base post-split. Mock there.
 const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
-vi.mock("@atmo-dev/contrail-base", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@atmo-dev/contrail-base")>();
+vi.mock("../src/core/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/identity")>();
   return {
     ...actual,
     refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),
@@ -86,6 +85,67 @@ describe("runPersistent", () => {
 
     const cursor = await getLastCursor(db);
     expect(cursor).toBe(1049); // last event's time_us
+  });
+
+  it("keeps dependent events discovered in the same flush batch", async () => {
+    const config = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: { collection: "com.example.event" },
+        follow: {
+          collection: "app.bsky.graph.follow",
+          discover: false,
+          subjectField: "subject",
+        },
+      },
+    });
+    const localDb = createTestDb();
+    const did = "did:plc:new";
+    const events = [
+      {
+        kind: "commit",
+        did,
+        time_us: 1000,
+        commit: {
+          collection: "com.example.event",
+          operation: "create",
+          rkey: "primary",
+          cid: "primary-cid",
+          record: { name: "Primary" },
+        },
+      },
+      {
+        kind: "commit",
+        did,
+        time_us: 1001,
+        commit: {
+          collection: "app.bsky.graph.follow",
+          operation: "create",
+          rkey: "dependent",
+          cid: "dependent-cid",
+          record: { subject: did },
+        },
+      },
+    ];
+    const controller = new AbortController();
+    const promise = runPersistent(localDb, config, {
+      batchSize: 2,
+      flushIntervalMs: 60_000,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription(events) as any,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    controller.abort();
+    await promise;
+
+    expect(
+      (await queryRecords(localDb, config, { collection: "event" })).records,
+    ).toHaveLength(1);
+    expect(
+      (await queryRecords(localDb, config, { collection: "follow" })).records,
+    ).toHaveLength(1);
   });
 
   it("flushes on timer when buffer is not full", async () => {

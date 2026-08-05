@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { createWorker } from "../src/worker";
+import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { ContrailConfig } from "../src/core/types";
+import type { ContrailConfig } from "../src/index";
 
 const MINIMAL_CONFIG: ContrailConfig = {
   namespace: "com.example",
@@ -84,20 +85,46 @@ describe("createWorker", () => {
     expect(res.status).toBe(404);
   });
 
-  it("scheduled handler hands the ingest promise to ctx.waitUntil", async () => {
-    const db = createSqliteDatabase(":memory:");
-    const worker = createWorker(MINIMAL_CONFIG);
-    const env = { DB: db };
+  it("scheduled handler runs live ingest then a bounded backfill retry slice", async () => {
+    const order: string[] = [];
+    const ingest = vi
+      .spyOn(Contrail.prototype, "ingest")
+      .mockImplementation(async () => {
+        order.push("ingest");
+      });
+    const retry = vi
+      .spyOn(Contrail.prototype, "retryBackfill")
+      .mockImplementation(async () => {
+        order.push("retry");
+        return {
+          attempted: 0,
+          completed: 0,
+          failed: 0,
+          records: 0,
+          skipped: false,
+        };
+      });
 
-    const waitUntil = vi.fn();
-    const ctx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+    try {
+      const db = createSqliteDatabase(":memory:");
+      const worker = createWorker(MINIMAL_CONFIG);
+      const env = { DB: db };
+      const waitUntil = vi.fn();
+      const ctx = {
+        waitUntil,
+        passThroughOnException: vi.fn(),
+      } as unknown as ExecutionContext;
 
-    // Schedule returns once init + waitUntil have been called. The actual
-    // ingest is a long-running promise that would try to connect to a real
-    // Jetstream — we don't drain it; we just verify the wire-up.
-    await worker.scheduled({} as ScheduledEvent, env, ctx);
+      await worker.scheduled({} as ScheduledEvent, env, ctx);
 
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+      expect(waitUntil).toHaveBeenCalledTimes(1);
+      const scheduled = waitUntil.mock.calls[0][0];
+      expect(scheduled).toBeInstanceOf(Promise);
+      await scheduled;
+      expect(order).toEqual(["ingest", "retry"]);
+    } finally {
+      ingest.mockRestore();
+      retry.mockRestore();
+    }
   });
 });

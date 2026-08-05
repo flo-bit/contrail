@@ -18,6 +18,25 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  apps/benchmark:
+    dependencies:
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../../packages/contrail
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250124.0
+        version: 4.20260424.1
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.6.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.84.1
+        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
+
   apps/cloudflare-workers:
     dependencies:
       '@atmo-dev/contrail':
@@ -27,9 +46,6 @@ importers:
       '@atcute/lex-cli':
         specifier: ^2.8.1
         version: 2.8.1
-      '@atmo-dev/contrail-lexicons':
-        specifier: workspace:*
-        version: link:../../packages/lexicons
       '@cloudflare/workers-types':
         specifier: ^4.20250124.0
         version: 4.20260424.1
@@ -38,173 +54,6 @@ importers:
         version: 5.9.3
       wrangler:
         specifier: ^4.63.0
-        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
-
-  apps/contrail-e2e:
-    dependencies:
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../../packages/contrail
-      '@atmo-dev/contrail-community':
-        specifier: workspace:*
-        version: link:../../packages/contrail-community
-      pg:
-        specifier: ^8.20.0
-        version: 8.20.0
-    devDependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/client':
-        specifier: ^4.2.1
-        version: 4.2.1
-      '@atcute/identity-resolver':
-        specifier: ^1.2.2
-        version: 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/jetstream':
-        specifier: ^1.1.2
-        version: 1.1.2
-      '@atcute/lexicons':
-        specifier: ^1.3.0
-        version: 1.3.0
-      '@types/pg':
-        specifier: ^8.20.0
-        version: 8.20.0
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.0
-        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-
-  apps/group-chat:
-    dependencies:
-      '@atcute/jetstream':
-        specifier: ^1.1.2
-        version: 1.1.2
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../../packages/contrail
-      '@atmo-dev/contrail-community':
-        specifier: workspace:*
-        version: link:../../packages/contrail-community
-      '@atmo-dev/contrail-lexicons':
-        specifier: workspace:*
-        version: link:../../packages/lexicons
-      '@atmo-dev/contrail-sync':
-        specifier: workspace:*
-        version: link:../../packages/sync
-      '@foxui/core':
-        specifier: ^0.9.1
-        version: 0.9.1(@internationalized/date@3.12.1)(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(tailwindcss@4.2.4)
-      '@foxui/social':
-        specifier: ^0.8.10
-        version: 0.8.10(@internationalized/date@3.12.1)(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(@tiptap/extension-code-block@3.22.4(@tiptap/core@3.22.4(@tiptap/pm@3.22.4))(@tiptap/pm@3.22.4))(@tiptap/extensions@3.22.4(@tiptap/core@3.22.4(@tiptap/pm@3.22.4))(@tiptap/pm@3.22.4))(highlight.js@11.11.1)(svelte@5.55.5(@typescript-eslint/types@8.59.0))(tailwindcss@4.2.4)
-      '@foxui/time':
-        specifier: ^0.8.5
-        version: 0.8.5(@internationalized/date@3.12.1)(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(tailwindcss@4.2.4)
-      valibot:
-        specifier: ^1.3.1
-        version: 1.3.1(typescript@6.0.3)
-    devDependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/bluesky':
-        specifier: ^3.3.0
-        version: 3.3.3
-      '@atcute/client':
-        specifier: ^4.2.1
-        version: 4.2.1
-      '@atcute/identity-resolver':
-        specifier: ^1.2.2
-        version: 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/lex-cli':
-        specifier: ^2.5.3
-        version: 2.8.1
-      '@atcute/lexicon-doc':
-        specifier: ^2.1.2
-        version: 2.2.0
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atcute/oauth-node-client':
-        specifier: ^1.1.0
-        version: 1.1.0
-      '@atcute/tid':
-        specifier: ^1.1.2
-        version: 1.1.2
-      '@cloudflare/workers-types':
-        specifier: ^4.20260317.1
-        version: 4.20260424.1
-      '@eslint/compat':
-        specifier: ^2.0.3
-        version: 2.0.5(eslint@10.2.1(jiti@2.6.1))
-      '@eslint/js':
-        specifier: ^10.0.1
-        version: 10.0.1(eslint@10.2.1(jiti@2.6.1))
-      '@sveltejs/adapter-cloudflare':
-        specifier: ^7.2.8
-        version: 7.2.8(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(wrangler@4.84.1(@cloudflare/workers-types@4.20260424.1))
-      '@sveltejs/kit':
-        specifier: ^2.55.0
-        version: 2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-      '@sveltejs/vite-plugin-svelte':
-        specifier: ^7.0.0
-        version: 7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-      '@tailwindcss/forms':
-        specifier: ^0.5.11
-        version: 0.5.11(tailwindcss@4.2.4)
-      '@tailwindcss/vite':
-        specifier: ^4.2.2
-        version: 4.2.4(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-      bits-ui:
-        specifier: ^2.16.4
-        version: 2.18.0(@internationalized/date@3.12.1)(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))
-      eslint:
-        specifier: ^10.1.0
-        version: 10.2.1(jiti@2.6.1)
-      eslint-config-prettier:
-        specifier: ^10.1.8
-        version: 10.1.8(eslint@10.2.1(jiti@2.6.1))
-      eslint-plugin-svelte:
-        specifier: ^3.16.0
-        version: 3.17.1(eslint@10.2.1(jiti@2.6.1))(svelte@5.55.5(@typescript-eslint/types@8.59.0))
-      globals:
-        specifier: ^17.4.0
-        version: 17.5.0
-      prettier:
-        specifier: ^3.8.1
-        version: 3.8.3
-      prettier-plugin-svelte:
-        specifier: ^3.5.1
-        version: 3.5.1(prettier@3.8.3)(svelte@5.55.5(@typescript-eslint/types@8.59.0))
-      prettier-plugin-tailwindcss:
-        specifier: ^0.7.2
-        version: 0.7.3(prettier-plugin-svelte@3.5.1(prettier@3.8.3)(svelte@5.55.5(@typescript-eslint/types@8.59.0)))(prettier@3.8.3)
-      svelte:
-        specifier: ^5.55.0
-        version: 5.55.5(@typescript-eslint/types@8.59.0)
-      svelte-check:
-        specifier: ^4.4.5
-        version: 4.4.6(picomatch@4.0.4)(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)
-      tailwindcss:
-        specifier: ^4.2.2
-        version: 4.2.4
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
-      typescript:
-        specifier: ^6.0.2
-        version: 6.0.3
-      typescript-eslint:
-        specifier: ^8.57.2
-        version: 8.59.0(eslint@10.2.1(jiti@2.6.1))(typescript@6.0.3)
-      vite:
-        specifier: ^8.0.3
-        version: 8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
-      wrangler:
-        specifier: ^4.78.0
         version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
 
   apps/postgres:
@@ -234,9 +83,6 @@ importers:
       '@atmo-dev/contrail':
         specifier: workspace:*
         version: link:../../packages/contrail
-      '@atmo-dev/contrail-lexicons':
-        specifier: workspace:*
-        version: link:../../packages/lexicons
       '@foxui/core':
         specifier: ^0.9.1
         version: 0.9.1(@internationalized/date@3.12.1)(@sveltejs/kit@2.58.0(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.5(@typescript-eslint/types@8.59.0))(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)))(svelte@5.55.5(@typescript-eslint/types@8.59.0))(tailwindcss@4.2.4)
@@ -358,15 +204,9 @@ importers:
       '@atcute/cbor':
         specifier: ^2.3.2
         version: 2.3.2
-      '@atcute/cid':
-        specifier: ^2.4.1
-        version: 2.4.1
       '@atcute/client':
         specifier: ^4.2.1
         version: 4.2.1
-      '@atcute/identity':
-        specifier: ^1.1.4
-        version: 1.1.4
       '@atcute/identity-resolver':
         specifier: ^1.2.2
         version: 1.2.2(@atcute/identity@1.1.4)
@@ -376,21 +216,6 @@ importers:
       '@atcute/lexicons':
         specifier: ^1.2.9
         version: 1.3.0
-      '@atcute/xrpc-server':
-        specifier: ^0.1.12
-        version: 0.1.12
-      '@atmo-dev/contrail-appview':
-        specifier: workspace:*
-        version: link:../contrail-appview
-      '@atmo-dev/contrail-authority':
-        specifier: workspace:*
-        version: link:../contrail-authority
-      '@atmo-dev/contrail-base':
-        specifier: workspace:*
-        version: link:../contrail-base
-      '@atmo-dev/contrail-record-host':
-        specifier: workspace:*
-        version: link:../contrail-record-host
       cac:
         specifier: ^7.0.0
         version: 7.0.0
@@ -425,228 +250,6 @@ importers:
       wrangler:
         specifier: ^4.63.0
         version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
-
-  packages/contrail-appview:
-    dependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/cbor':
-        specifier: ^2.3.2
-        version: 2.3.2
-      '@atcute/cid':
-        specifier: ^2.4.1
-        version: 2.4.1
-      '@atcute/client':
-        specifier: ^4.2.1
-        version: 4.2.1
-      '@atcute/identity':
-        specifier: ^1.1.4
-        version: 1.1.4
-      '@atcute/identity-resolver':
-        specifier: ^1.2.2
-        version: 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/jetstream':
-        specifier: ^1.0.2
-        version: 1.1.2
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atcute/xrpc-server':
-        specifier: ^0.1.12
-        version: 0.1.12
-      '@atmo-dev/contrail-authority':
-        specifier: workspace:*
-        version: link:../contrail-authority
-      '@atmo-dev/contrail-base':
-        specifier: workspace:*
-        version: link:../contrail-base
-      '@atmo-dev/contrail-record-host':
-        specifier: workspace:*
-        version: link:../contrail-record-host
-      hono:
-        specifier: ^4.12.8
-        version: 4.12.15
-    devDependencies:
-      '@types/node':
-        specifier: ^25.5.0
-        version: 25.6.0
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/contrail-authority:
-    dependencies:
-      '@atcute/cid':
-        specifier: ^2.4.1
-        version: 2.4.1
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atmo-dev/contrail-base':
-        specifier: workspace:*
-        version: link:../contrail-base
-      hono:
-        specifier: ^4.12.8
-        version: 4.12.15
-    devDependencies:
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/contrail-base:
-    dependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/cid':
-        specifier: ^2.4.1
-        version: 2.4.1
-      '@atcute/client':
-        specifier: ^4.2.1
-        version: 4.2.1
-      '@atcute/identity':
-        specifier: ^1.1.4
-        version: 1.1.4
-      '@atcute/identity-resolver':
-        specifier: ^1.2.2
-        version: 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atcute/xrpc-server':
-        specifier: ^0.1.12
-        version: 0.1.12
-      hono:
-        specifier: ^4.12.8
-        version: 4.12.15
-    devDependencies:
-      '@types/node':
-        specifier: ^25.5.0
-        version: 25.6.0
-      '@types/pg':
-        specifier: ^8.20.0
-        version: 8.20.0
-      pg:
-        specifier: ^8.20.0
-        version: 8.20.0
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/contrail-community:
-    dependencies:
-      '@atcute/atproto':
-        specifier: ^3.1.10
-        version: 3.1.11
-      '@atcute/cbor':
-        specifier: ^2.3.2
-        version: 2.3.2
-      '@atcute/identity':
-        specifier: ^1.1.4
-        version: 1.1.4
-      '@atcute/identity-resolver':
-        specifier: ^1.2.2
-        version: 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/lexicons':
-        specifier: ^1.2.9
-        version: 1.3.0
-      '@atcute/xrpc-server':
-        specifier: ^0.1.12
-        version: 0.1.12
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../contrail
-      '@atmo-dev/contrail-base':
-        specifier: workspace:*
-        version: link:../contrail-base
-      cac:
-        specifier: ^7.0.0
-        version: 7.0.0
-      hono:
-        specifier: ^4.12.8
-        version: 4.12.15
-      wrangler:
-        specifier: ^4.0.0
-        version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
-    devDependencies:
-      '@types/node':
-        specifier: ^25.5.0
-        version: 25.6.0
-      '@types/pg':
-        specifier: ^8.20.0
-        version: 8.20.0
-      pg:
-        specifier: ^8.20.0
-        version: 8.20.0
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.0
-        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-
-  packages/contrail-record-host:
-    dependencies:
-      '@atcute/cid':
-        specifier: ^2.4.1
-        version: 2.4.1
-      '@atmo-dev/contrail-base':
-        specifier: workspace:*
-        version: link:../contrail-base
-      hono:
-        specifier: ^4.12.8
-        version: 4.12.15
-    devDependencies:
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/lexicons:
-    dependencies:
-      '@atcute/lex-cli':
-        specifier: ^2.5.3
-        version: 2.8.1
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../contrail
-    devDependencies:
-      '@types/node':
-        specifier: ^25.5.0
-        version: 25.6.0
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.0
-        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
-
-  packages/sync:
-    devDependencies:
-      tsup:
-        specifier: ^8.5.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
 
 packages:
 
@@ -739,9 +342,6 @@ packages:
 
   '@atcute/varint@2.0.0':
     resolution: {integrity: sha512-CEY/oVK/nVpL4e5y3sdenLETDL6/Xu5xsE/0TupK+f0Yv8jcD60t2gD8SHROWSvUwYLdkjczLCSA7YrtnjCzWw==}
-
-  '@atcute/xrpc-server@0.1.12':
-    resolution: {integrity: sha512-70KIerQlljp5+s6t0u6YNN9klEboQUZa2hhoi/hmXIO1cIKEORettTMctnyjfcCJaSfAuj42dxPu51GTZBlm8w==}
 
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
@@ -3992,18 +3592,6 @@ snapshots:
       unicode-segmenter: 0.14.5
 
   '@atcute/varint@2.0.0': {}
-
-  '@atcute/xrpc-server@0.1.12':
-    dependencies:
-      '@atcute/cbor': 2.3.2
-      '@atcute/crypto': 2.4.1
-      '@atcute/identity': 1.1.4
-      '@atcute/identity-resolver': 1.2.2(@atcute/identity@1.1.4)
-      '@atcute/lexicons': 1.3.0
-      '@atcute/multibase': 1.2.0
-      '@atcute/uint8array': 1.1.1
-      '@badrap/valita': 0.4.6
-      nanoid: 5.1.9
 
   '@babel/runtime@7.29.2': {}
 

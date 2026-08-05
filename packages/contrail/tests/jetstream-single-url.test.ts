@@ -23,9 +23,9 @@ vi.mock("@atcute/jetstream", () => {
   return { JetstreamSubscription: MockJetstreamSubscription };
 });
 
-import { ingestEvents } from "../src/core/jetstream";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
+import { ingestEvents } from "../src/index";
+import { resolveConfig } from "../src/index";
+import type { ContrailConfig } from "../src/index";
 
 const silentLogger = { log() {}, warn() {}, error() {} };
 

@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { Database, ResolvedContrailConfig } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
-import { initSchema } from "../src/core/db/schema";
+import type { Database, ResolvedContrailConfig } from "../src/index";
+import { resolveConfig } from "../src/index";
+import { initSchema } from "../src/index";
 import {
   pruneActorFeed,
   sweepFeedItems,
   pruneFeedItems,
   getFeedPruneCursor,
   saveFeedPruneCursor,
-} from "../src/core/db/records";
-import { runGatedFeedPrune } from "../src/core/jetstream";
+} from "../src/index";
+import { runGatedFeedPrune } from "../src/index";
 
 const EVENT = "community.lexicon.calendar.event";
 const RSVP = "community.lexicon.calendar.rsvp";

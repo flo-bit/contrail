@@ -52,11 +52,19 @@ await contrail.backfillAll({ concurrency: 100 }); // discover + backfill, logs p
 Under the hood this is two steps you can call separately if you want finer control:
 
 ```ts
-await contrail.discover();                     // walk relays, register DIDs
-await contrail.backfill({ concurrency: 100 }); // fetch history for registered DIDs
+await contrail.discover(); // walk relays, register DIDs
+await contrail.backfill({
+  concurrency: 100,    // identity resolution
+  pdsConcurrency: 20,  // active PDS hosts
+  didsPerPds: 3,       // accounts per active PDS
+});
 ```
 
-`backfill()` picks up where it left off across runs — safe to re-run.
+`backfill()` picks up each account/collection at its saved PDS cursor. A row is marked complete only after the PDS listing reaches its end. Timeouts, failed identity resolution, `429`, and `5xx` responses leave the row pending with its last error.
+
+Each initial invocation attempts a failed account once by default, then gets out of the way. Failed rows retain their cursors and receive an exponential `next_retry_at`. Scheduled retries start at 15 minutes, double to a maximum of 48 hours, and stop after ten failed scheduled attempts. Cloudflare's scheduled Worker retries a small due slice after each live-ingest cycle; an explicit later invocation resets exhausted rows and forces another pass. `backfillAll()` returns a durable `status` summary alongside the number of discovered accounts and accepted records.
+
+Historical loading writes canonical records first, then rebuilds FTS and materialized relation counts with set-based SQL. A durable dirty marker keeps status `incomplete` if the process stops between those phases; the next manual or scheduled backfill repairs the projections before reporting readiness. Live ingestion and scheduled account retries continue maintaining both projections incrementally.
 
 ### Workers CLI
 
@@ -67,7 +75,7 @@ pnpm contrail backfill           # local D1 (wrangler dev's bindings)
 pnpm contrail backfill --remote  # production D1
 ```
 
-Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags: `--binding <name>` (default `DB`), `--concurrency <n>` (default 100).
+Auto-detects configs at `contrail.config.ts`, `src/contrail.config.ts`, `src/lib/contrail.config.ts`, or `app/contrail.config.ts` (first match wins). Override with `--config <path>`. Other flags include `--binding <name>` (default `DB`), `--concurrency <n>` for identity resolution (default 100), `--pds-concurrency <n>` (default 20), `--dids-per-pds <n>` (default 3), and `--max-attempts <n>` (default 1). Once every known account has either completed or received a deferred failure, the initial pass is complete and scheduled retries continue in the background. Interrupted or undiscovered work still reports the pass as incomplete.
 
 If you'd rather embed backfill inside your own script, `@atmo-dev/contrail/workers` exports the same logic as a function:
 
@@ -91,13 +99,16 @@ Workers can't hold long-lived connections, so run one catch-up cycle per cron fi
 ```ts
 // wrangler.jsonc: "triggers": { "crons": ["*/1 * * * *"] }
 async scheduled(_ev, env, ctx) {
-  ctx.waitUntil(contrail.ingest({}, env.DB));
+  ctx.waitUntil((async () => {
+    await contrail.ingest({}, env.DB);
+    await contrail.retryBackfill({}, env.DB); // small due slice
+  })());
 }
 ```
 
 `ingest()` connects to Jetstream, streams events since the saved cursor, stops when caught up. Running every minute is fine — the next fire resumes where this one left off. Each cycle is bounded, so it can't blow past the Worker time limit.
 
-**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and prompts you to run backfill or refresh if the local DB looks stale on start.
+**Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and offers to start or resume backfill whenever known work remains.
 
 ### Persistent (node / any long-lived server)
 
@@ -139,42 +150,11 @@ Typical combos:
 - **workers app:** `backfillAll()` once + `ingest()` on cron + optional `notify()` for self-writes
 - **node server:** `backfillAll()` once + `runPersistent()` forever + optional `notify()` for self-writes
 
-## Refresh (catch-up after outages / dev idle)
+## Recovery after an outage
 
-When Jetstream drops events — you went offline for a few days in dev, there was an outage, or you just want reassurance nothing was lost — `refresh` walks every known DID's PDS and reconciles against your DB:
+Normal ingestion resumes from its saved Jetstream cursor, so a short outage needs no special command: restart `ingest()` or `runPersistent()` and let it catch up.
 
-```bash
-pnpm contrail refresh                    # totals only
-pnpm contrail refresh --by-collection    # totals + per-collection breakdown
-pnpm contrail refresh --ignore-window 30 # grace seconds (default: 60)
-```
-
-Each record is classified as:
-
-- **missing** — PDS has it, DB doesn't. Inserted.
-- **stale update** — DB has it with a different CID, *and* the DB row is older than the ignore window. Upserted.
-- **in sync** — same CID, or DB row is within the ignore window (jetstream probably just hadn't caught up yet).
-
-The ignore window is there so a refresh run seconds after a normal jetstream cycle doesn't double-count records that are about to sync anyway. Records inside the window are still written if they differ; they just don't show up in the stats.
-
-Report shape (`--by-collection`):
-
-```
-by collection:
-  community.lexicon.calendar.event
-    3 missing, 1 stale updates, 842 in sync
-  community.lexicon.calendar.rsvp
-    12 missing, 0 stale updates, 4108 in sync
-
-total:
-  15 missing, 1 stale updates, 4950 in sync
-  234 users scanned, 1 failed in 85.3s
-  (ignore window: 60s)
-```
-
-Safe to run repeatedly — each pass converges toward zero missing / stale. Programmatic equivalent: `contrail.refresh({ ignoreWindowMs, concurrency })` returns the same structure.
-
-Refresh is **not** a replacement for `ingest`/`runPersistent` — it walks every user's full history, which is expensive. Use it after outages or during dev idle, not as a continuous freshness mechanism.
+Contrail does not perform a full PDS sweep as a repair mechanism. Such a sweep is expensive, cannot discover repositories it never knew about, and cannot safely infer remote deletions after partial failures. If the saved cursor is older than the source's retained history, rebuild into a fresh database with `backfillAll()` rather than trusting a partial reconciliation. A replay-capable source and first-class projection rebuild command are planned follow-up work.
 
 Reading the indexed data — filters, sorts, hydration, search, pagination — has its own doc: [Querying](./02-querying.md).
 
@@ -199,9 +179,6 @@ const db = createPostgresDatabase(pool);
 | `profiles` | `["app.bsky.actor.profile"]` | Profile NSIDs, auto-hydrated via `?profiles=true` |
 | `jetstreams` | Bluesky | Jetstream URLs |
 | `relays` | Bluesky | Relay URLs for discovery |
-| `notify` | off | `true` opens `notifyOfUpdate`; a string requires `Bearer` |
+| `notify` | off | Prefer an in-process call or a secret string requiring `Bearer`; open `true` mode is not recommended |
 | `feeds` | — | See [Feeds](./04-feeds.md) |
-| `spaces` | — | See [Spaces](./06-spaces.md) |
-| `community` | — | See [Communities](./07-communities.md) |
-| `realtime` | — | See [Sync](./08-sync.md) |
 | `labels` | — | See [Labels](./09-labels.md) |

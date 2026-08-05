@@ -5,8 +5,6 @@
  *     `backfills` state table to resume across runs).
  *   - `labelsBackfillAll` — drain pending events per configured labeler in
  *     repeated cycles until each labeler's cursor stops advancing.
- *   - `refresh` — reconcile every known DID's PDS against our DB, report
- *     what's missing or stale. Use after outages or long idle periods.
  *
  * All dynamically import `wrangler` (optional peer dep) and wire it to
  * the user's D1 binding, then dispose the proxy on exit.
@@ -14,7 +12,7 @@
 import { Contrail } from "../contrail.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillAllOptions } from "../core/backfill.js";
-import type { RefreshOptions, RefreshResult } from "../core/refresh.js";
+import type { BackfillStatus } from "../core/status.js";
 
 interface WranglerCommon {
   config: ContrailConfig;
@@ -26,19 +24,16 @@ interface WranglerCommon {
 }
 
 export interface BackfillAllViaWranglerOptions extends WranglerCommon {
-  /** Passed through to `contrail.backfillAll()`. Default: 100. */
+  /** Concurrent identity resolutions. Default: 100. */
   concurrency?: number;
+  /** PDS hosts fetched concurrently. Default: 20. */
+  pdsConcurrency?: number;
+  /** Accounts fetched concurrently from each PDS. Default: 3. */
+  didsPerPds?: number;
+  /** Immediate attempts before scheduled retries take over. Default: 1. */
+  maxAttempts?: number;
   /** Override the built-in progress logging. */
   onProgress?: BackfillAllOptions["onProgress"];
-}
-
-export interface RefreshViaWranglerOptions extends WranglerCommon {
-  /** Passed through to `contrail.refresh()`. Default: 50. */
-  concurrency?: number;
-  /** Ignore-window for stale-update classification, in ms. Default: 60_000. */
-  ignoreWindowMs?: number;
-  /** Override the built-in progress logging. */
-  onProgress?: RefreshOptions["onProgress"];
 }
 
 async function withWrangler<T>(
@@ -74,23 +69,18 @@ async function withWrangler<T>(
 
 export async function backfillAll(
   opts: BackfillAllViaWranglerOptions
-): Promise<{ discovered: number; backfilled: number }> {
+): Promise<{
+  discovered: number;
+  backfilled: number;
+  status: BackfillStatus;
+}> {
   return withWrangler(opts, (contrail, db) =>
     contrail.backfillAll(
-      { concurrency: opts.concurrency ?? 100, onProgress: opts.onProgress },
-      db
-    )
-  );
-}
-
-export async function refresh(
-  opts: RefreshViaWranglerOptions
-): Promise<RefreshResult> {
-  return withWrangler(opts, (contrail, db) =>
-    contrail.refresh(
       {
-        concurrency: opts.concurrency ?? 50,
-        ignoreWindowMs: opts.ignoreWindowMs,
+        concurrency: opts.concurrency ?? 100,
+        pdsConcurrency: opts.pdsConcurrency,
+        didsPerPds: opts.didsPerPds,
+        maxAttempts: opts.maxAttempts,
         onProgress: opts.onProgress,
       },
       db

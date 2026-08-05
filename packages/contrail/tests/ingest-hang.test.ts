@@ -27,9 +27,9 @@ vi.mock("@atcute/jetstream", () => {
   return { JetstreamSubscription: MockJetstreamSubscription };
 });
 
-import { ingestEvents } from "../src/core/jetstream";
-import { resolveConfig } from "../src/core/types";
-import type { ContrailConfig } from "../src/core/types";
+import { ingestEvents } from "../src/index";
+import { resolveConfig } from "../src/index";
+import type { ContrailConfig } from "../src/index";
 
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -148,6 +148,38 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
     } finally {
       jetstream.abort = true;
     }
+  });
+
+  it("keeps a dependent event after the same cycle discovers its actor", async () => {
+    const liveUs = Date.now() * 1000 + 5_000_000;
+    const knownDids = new Set<string>();
+    jetstream.script = async function* (self) {
+      self.cursor = 1_000_000;
+      yield commitEvent(
+        "did:plc:new",
+        "community.lexicon.calendar.event",
+        1_000_000,
+        "primary",
+      );
+      self.cursor = liveUs;
+      yield commitEvent(
+        "did:plc:new",
+        "app.bsky.graph.follow",
+        liveUs,
+        "dependent",
+      );
+    };
+
+    const result = await ingestEvents(
+      dependentConfig(),
+      999_999,
+      5_000,
+      knownDids,
+    );
+    expect(result.events.map((event) => event.rkey)).toEqual([
+      "primary",
+      "dependent",
+    ]);
   });
 
   it("breaks via 'caught up to present' and returns the batch + cursor when a kept event reaches the live edge", async () => {

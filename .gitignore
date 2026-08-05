@@ -9,6 +9,5 @@ dist
 # Generated (internal only)
 packages/contrail/src/core/queryable.generated.ts
 apps/*/src/lexicon-types/
-apps/*/lex.config.js
 
 stuff/

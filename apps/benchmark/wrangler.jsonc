@@ -1,0 +1,12 @@
+{
+  "name": "contrail-backfill-benchmark",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-12-25",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "contrail-backfill-benchmark",
+      "database_id": "BENCHMARK_DATABASE_ID"
+    }
+  ]
+}

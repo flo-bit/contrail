@@ -30,5 +30,6 @@ declare global {
 }
 import type {} from '@atcute/atproto';
 import type {} from '@atcute/bluesky';
+import type {} from './lib/lexicons/index.js';
 
 export {};

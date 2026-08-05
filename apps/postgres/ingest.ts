@@ -5,7 +5,7 @@
  * Events are batched and flushed periodically. Handles reconnection automatically.
  *
  * Usage:
- *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" npx tsx ingest.ts
+ *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" pnpm exec tsx ingest.ts
  */
 import pg from "pg";
 import { Contrail } from "@atmo-dev/contrail";

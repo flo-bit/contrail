@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { CAC } from "cac";
 import { Contrail } from "../../contrail.js";
+import { getBackfillStatus } from "../../core/status.js";
 import type { Database } from "../../core/types.js";
 import { promptYesNo, resolveAndLoadConfig } from "../shared.js";
 
@@ -10,8 +11,6 @@ interface DevOpts {
   binding: string;
   cron: string;
   concurrency: number;
-  ignoreWindow?: number;
-  staleAfter: number;
   yes?: boolean;
 }
 
@@ -19,7 +18,7 @@ export function registerDev(cli: CAC): void {
   cli
     .command(
       "dev",
-      "Local wrangler dev + auto-trigger cron + backfill/refresh prompts"
+      "Local wrangler dev + auto-trigger cron + optional backfill prompt"
     )
     .option("--config <path>", "Path to Contrail config file (TS or JS)")
     .option("--root <path>", "Project root for auto-detection (default: CWD)", {
@@ -38,15 +37,6 @@ export function registerDev(cli: CAC): void {
       "Concurrency passed to backfill if prompted (default: 100)",
       { default: 100 }
     )
-    .option(
-      "--ignore-window <s>",
-      "Refresh ignore-window in seconds, if prompted (default: server default)"
-    )
-    .option(
-      "--stale-after <min>",
-      "Prompt to refresh if the ingest cursor is older than this (default: 60)",
-      { default: 60 }
-    )
     .option("--yes, -y", "Accept all prompts without asking (CI-friendly)")
     .action(async (options: DevOpts) => {
       const config = await resolveAndLoadConfig(options);
@@ -64,15 +54,19 @@ export function registerDev(cli: CAC): void {
         const contrail = new Contrail(config);
         await contrail.init(db);
 
-        const hasBackfilled = await db
-          .prepare("SELECT 1 FROM backfills WHERE completed = 1 LIMIT 1")
-          .first();
+        const backfillStatus = await getBackfillStatus(db, config);
 
-        if (!hasBackfilled) {
-          console.log("no backfilled users in the local DB yet.");
+        if (backfillStatus.state !== "complete") {
+          if (backfillStatus.state === "not_started") {
+            console.log("no backfilled users in the local DB yet.");
+          } else {
+            console.log(
+              `backfill incomplete: ${backfillStatus.accounts.pending} pending, ${backfillStatus.accounts.retrying} retrying, ${backfillStatus.accounts.failed} failed.`
+            );
+          }
           if (
             await promptYesNo(
-              "run backfill now? (takes a few minutes)",
+              "run or resume backfill now? (takes a few minutes)",
               true,
               !!options.yes
             )
@@ -81,27 +75,6 @@ export function registerDev(cli: CAC): void {
               { concurrency: Number(options.concurrency) },
               db
             );
-          }
-        } else {
-          const staleAfterMs = Number(options.staleAfter) * 60_000;
-          const row = await db
-            .prepare("SELECT time_us FROM cursor WHERE id = 1")
-            .first<{ time_us: number }>();
-          if (row?.time_us) {
-            const ageMs = Date.now() - Math.floor(row.time_us / 1000);
-            if (ageMs > staleAfterMs) {
-              const hrs = (ageMs / 3_600_000).toFixed(1);
-              console.log(
-                `ingest cursor is ${hrs}h old — you may have missed events.`
-              );
-              if (await promptYesNo("run refresh first?", true, !!options.yes)) {
-                const ignoreWindowMs =
-                  options.ignoreWindow !== undefined
-                    ? Number(options.ignoreWindow) * 1000
-                    : undefined;
-                await contrail.refresh({ ignoreWindowMs }, db);
-              }
-            }
           }
         }
       }
@@ -113,7 +86,7 @@ export function registerDev(cli: CAC): void {
       // production; --test-scheduled enables the manual-trigger endpoint).
       const cronUrl = `http://localhost:8787/__scheduled?cron=${encodeURIComponent(options.cron)}`;
 
-      const wrangler = spawn("npx", ["wrangler", "dev", "--test-scheduled"], {
+      const wrangler = spawn("pnpm", ["exec", "wrangler", "dev", "--test-scheduled"], {
         stdio: "inherit",
         shell: process.platform === "win32",
         cwd: options.root,

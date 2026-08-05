@@ -4,9 +4,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { applyEvents } from "../src/core/db/records";
+import { ingestRecords } from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
-import type { Database, IngestEvent } from "../src/core/types";
+import type { Database, IngestEvent } from "../src/index";
 
 const COLL = "com.example.event";
 const AUTHOR = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -37,7 +37,7 @@ async function setup() {
     db,
   });
   await contrail.init();
-  await applyEvents(db, [ev()], contrail.config);
+  await ingestRecords(db, [ev()], contrail.config);
   return { db, contrail };
 }
 

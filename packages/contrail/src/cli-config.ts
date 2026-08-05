@@ -1,7 +1,6 @@
 /**
- * Shared config-file discovery + loading for the `contrail` and
- * `contrail-lex` CLIs. Exported so downstream CLIs can use the same
- * auto-detect convention and fall back to the same list of locations.
+ * Shared config-file discovery and loading for the `contrail` CLI.
+ * Exported so downstream tooling can use the same auto-detect convention.
  *
  * Not for runtime use by regular contrail apps — they pass `config`
  * directly to `new Contrail(...)`. This module exists only to support

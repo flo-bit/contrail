@@ -1,0 +1,15 @@
+{
+  "namespace": "rsvp.atmo",
+  "profiles": [],
+  "constellation": false,
+  "collections": {
+    "event": {
+      "collection": "community.lexicon.calendar.event",
+      "searchable": false
+    },
+    "rsvp": {
+      "collection": "community.lexicon.calendar.rsvp",
+      "searchable": false
+    }
+  }
+}

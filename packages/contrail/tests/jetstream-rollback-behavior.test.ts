@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { JetstreamSubscription } from "@atcute/jetstream";
-import { jetstreamUrlOption } from "../src/core/types";
+import { jetstreamUrlOption } from "../src/index";
 
 // This test does NOT mock @atcute. It drives the real JetstreamSubscription and
 // captures the actual cursor it would connect with, to PIN the assumption our

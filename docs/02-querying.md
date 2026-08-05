@@ -7,7 +7,7 @@ Once [indexing](./01-indexing.md) is set up, every collection you declared gets 
 | `{namespace}.{short}.listRecords` | Paginated list with filters, sorts, hydration |
 | `{namespace}.{short}.getRecord?uri=…` | Single record by AT-URI |
 
-Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, `{namespace}.permissionSet`, `{namespace}.lexicons`.
+Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, and optionally `{namespace}.lexicons`.
 
 ## HTTP (what most callers use)
 
@@ -28,6 +28,20 @@ Every config field becomes a predictable URL param:
 
 Dotted field names become camelCase params — `queryable: { "subject.uri": {} }` → `?subjectUri=…`.
 
+## Operational status
+
+`GET /status` and `GET /xrpc/{namespace}.getOverview` return the current JSON overview. It includes indexed record totals, the live-ingest cursor and lag, and durable backfill state:
+
+- discovery source progress;
+- mutually exclusive account totals for `complete`, `pending`, `retrying`, and `failed`;
+- known-account completion percentage;
+- the same mutually exclusive totals per collection; and
+- scheduled/due account retries plus the next retry time.
+
+`state` is `running` while a manual or scheduled slice holds the backfill lease. It becomes `complete` after discovery and the initial pass finish, even when account-level `retrying` or `failed` counts are non-zero. `pending` means no failure has occurred yet, `retrying` means at least one attempt failed but automatic attempts remain, and `failed` means the ten-attempt automatic budget is exhausted. An explicit backfill resets that budget. `incomplete` means discovery or an initial account attempt has not finished.
+
+"Known" is deliberate: while relay discovery is incomplete, Contrail cannot honestly claim how many accounts remain undiscovered. `/health` remains a lightweight liveness response and does not claim that historical backfill is complete.
+
 ## Programmatic
 
 ```ts
@@ -44,7 +58,7 @@ The programmatic shape doesn't use the URL param names — keys are the underlyi
 
 - `filters` / `rangeFilters` — keyed by the field name from your config (`startsAt`, `subject.uri`), not the camelCased URL param.
 - `countFilters` — keyed by the target collection's short name for totals, or by the full `nsid#group` token for group counts. E.g., `{ rsvp: 10 }` for "at least 10 RSVPs total," or `{ "community.lexicon.calendar.rsvp#going": 10 }` for "at least 10 going."
-- `sort` — `{ recordField, direction }` for field sorts, `{ countType, direction }` for count sorts (where `countType` is the same collection-short-name or `nsid#group` as above).
+- `sort` — `{ recordField, direction }` for field sorts, `{ countType, direction }` for count sorts (where `countType` is the same collection-short-name or `nsid#group` as above). Field sorts preserve the SQL value type, and records whose field is missing or `null` sort last in either direction.
 
 For count filters / sorts, the HTTP side is nicer than the programmatic side — consider going through `createHandler` + `fetch` even for in-process calls if you want the friendly names. Or use `createServerClient` from `@atmo-dev/contrail/server` for a typed XRPC client that runs in-process (no fetch roundtrip).
 
@@ -54,7 +68,7 @@ For count filters / sorts, the HTTP side is nicer than the programmatic side —
 ?limit=25&cursor=<opaque>
 ```
 
-`cursor` is opaque — pass back whatever `listRecords` returned in its `cursor` field. `limit` is 1–200 (default 50). Cursors embed the sort kind, so a cursor from a `sort=startsAt` query is ignored by a `sort=rsvpsCount` query instead of silently returning wrong results.
+`cursor` is opaque — pass back whatever `listRecords` returned in its `cursor` field. `limit` is 1–200 (default 50). Cursors embed the complete ordering, including relevance rank for search and URI as the final unique tiebreaker. They also embed the sort kind, so a cursor from a `sort=startsAt` query is ignored by a `sort=rsvpsCount` query instead of silently returning wrong results.
 
 ```ts
 let cursor: string | undefined;

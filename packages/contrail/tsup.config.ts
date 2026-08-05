@@ -17,4 +17,5 @@ export default defineConfig({
   clean: true,
   tsconfig: "tsconfig.build.json",
   external: ["node:sqlite", "pg", "wrangler"],
+  removeNodeProtocol: false,
 });

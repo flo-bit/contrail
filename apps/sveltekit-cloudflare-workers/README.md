@@ -32,9 +32,9 @@ export const config: ContrailConfig = {
 };
 ```
 
-After changing the config, run `pnpm generate:pull` to regenerate lexicons and types.
+The checked-in files under `lexicons/generated/` describe this example's Contrail XRPC methods. After changing those Lexicons, run `pnpm generate:types` to regenerate the Atcute schemas and client augmentation.
 
-Run `pnpm sync` to backfill existing records from the network.
+Run `pnpm backfill` to load existing records from the network.
 
 Wrangler bindings (`wrangler.jsonc`):
 
@@ -45,11 +45,11 @@ Wrangler bindings (`wrangler.jsonc`):
 ## Deploy
 
 ```sh
-npx wrangler d1 create statusphere
+pnpm wrangler d1 create statusphere
 # Add database_id to wrangler.jsonc
 
 pnpm build
-npx wrangler deploy
+pnpm wrangler deploy
 ```
 
 ## How it works
@@ -66,7 +66,7 @@ const res = await client.get('statusphere.app.status.listRecords', {
 res.data.records  // typed response
 ```
 
-Types are generated from contrail's config via `pnpm generate:pull`, which produces lexicon JSON and TypeScript types that register with `@atcute/client`.
+`pnpm generate:types` uses `@atcute/lex-cli` to turn the checked-in method and record Lexicons into TypeScript schemas that register with `@atcute/client`. The generated TypeScript is committed so editors and clean builds retain typed queries.
 
 **Scheduled ingestion** works around SvelteKit's lack of `scheduled` export support ([sveltejs/kit#4841](https://github.com/sveltejs/kit/issues/4841)) by appending a handler post-build that self-calls `/api/cron`.
 

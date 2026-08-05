@@ -10,21 +10,23 @@
  *     export default createWorker(config, { lexicons });
  *
  * The handler lazily inits the DB schema on first request per isolate,
- * registers every XRPC route, and runs `contrail.ingest()` on the
- * `scheduled` event. Pass `binding` if your D1 binding isn't named `DB`;
+ * registers every XRPC route, and runs live ingestion plus a bounded due
+ * backfill-retry slice on the `scheduled` event. Pass `binding` if your D1 binding isn't named `DB`;
  * pass `onInit` for app-specific one-shot setup that needs the DB.
  */
 import { Contrail } from "../contrail.js";
 import { createHandler } from "../server.js";
 import type { ContrailConfig, Database } from "../core/types.js";
+import type { BackfillRetryOptions } from "../core/backfill.js";
 
 export interface CreateWorkerOptions {
   /** D1 binding name in wrangler env. Default: `"DB"`. */
   binding?: string;
-  /** Bundled lexicon JSON — if provided, exposes them at `/lexicons`
-   *  so consumer apps can typegen against the deployed service. Generate
-   *  with `contrail-lex generate` (emits `lexicons/generated/index.ts`). */
+  /** Bundled Lexicon documents to expose for application type generation. */
   lexicons?: object[];
+  /** Bounded pending-account retry slice after each scheduled ingest. Enabled
+   *  by default; pass `false` to disable or options to tune its budget. */
+  backfillRetries?: BackfillRetryOptions | false;
   /** Runs once per isolate, after schema init, before handling the first
    *  request. Use for app-specific setup that needs a live DB handle. */
   onInit?: (env: Record<string, unknown>, db: Database) => void | Promise<void>;
@@ -63,9 +65,16 @@ export function createWorker(
     ): Promise<void> {
       const db = env[binding] as Database;
       await ensureReady(env, db);
-      // ingest() drives both record and label ingestion in parallel when
-      // labels are configured — single waitUntil covers the whole cron tick.
-      ctx.waitUntil(contrail.ingest({}, db));
+      // Keep live catch-up first, then spend a bounded slice on due historical
+      // failures. A database lease prevents overlap with a manual backfill.
+      ctx.waitUntil(
+        (async () => {
+          await contrail.ingest({}, db);
+          if (options.backfillRetries !== false) {
+            await contrail.retryBackfill(options.backfillRetries, db);
+          }
+        })()
+      );
     },
   };
 }

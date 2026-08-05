@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { formatRecord, parseIntParam, fieldToParam } from "../src/core/router/helpers";
-import type { RecordRow } from "../src/core/types";
+import { formatRecord, parseIntParam, fieldToParam } from "../src/index";
+import type { RecordRow } from "../src/index";
 
 describe("formatRecord", () => {
   it("parses JSON record string", () => {

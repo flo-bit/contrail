@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema } from "../src/core/db/schema";
-import { resolveConfig, type ContrailConfig } from "../src/core/types";
-import { applyLabels } from "../src/core/labels/apply";
-import { hydrateLabels } from "../src/core/labels/hydrate";
-import { selectAcceptedLabelers } from "../src/core/labels/select";
-import type { LabelsConfig } from "../src/core/labels/types";
+import { initSchema } from "../src/index";
+import { resolveConfig, type ContrailConfig } from "../src/index";
+import { applyLabels } from "../src/index";
+import { hydrateLabels } from "../src/index";
+import { selectAcceptedLabelers } from "../src/index";
+import type { LabelsConfig } from "../src/index";
 
 const SRC_A = "did:plc:labelerA";
 const SRC_B = "did:plc:labelerB";

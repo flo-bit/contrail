@@ -16,14 +16,10 @@ export async function ensureInit(db: D1Database) {
 
 const handle = createHandler(contrail);
 
-/**
- * Typed `@atcute/client` that calls contrail in-process. Pass `did` to act
- * as that user (server-side principal via WeakMap marker — no JWT, no PDS
- * roundtrip). Omit for anonymous calls against public endpoints.
- */
-export function getServerClient(db: D1Database, did?: string): Client {
+/** Typed `@atcute/client` that calls Contrail in-process. */
+export function getServerClient(db: D1Database): Client {
 	return createServerClient(async (req) => {
 		await ensureInit(db);
 		return handle(req, db) as Promise<Response>;
-	}, did);
+	});
 }

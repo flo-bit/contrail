@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import type { Database } from "../src/core/types";
-import { applyEvents, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
-import { queryRecords, getLastCursor, saveCursor } from "../src/core/db/records";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import type { Database } from "../src/index";
+import { ingestRecords, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import { queryRecords, getLastCursor, saveCursor } from "../src/index";
+import { rebuildDerivedProjections } from "../src/core/db/records";
 
 let db: Database;
 
@@ -26,9 +27,9 @@ describe("cursor", () => {
   });
 });
 
-describe("applyEvents", () => {
+describe("ingestRecords", () => {
   it("does nothing for empty events", async () => {
-    await applyEvents(db, []);
+    await ingestRecords(db, []);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -36,7 +37,7 @@ describe("applyEvents", () => {
   });
 
   it("inserts create events", async () => {
-    await applyEvents(db, [makeEvent()]);
+    await ingestRecords(db, [makeEvent()]);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -46,10 +47,10 @@ describe("applyEvents", () => {
   });
 
   it("upserts on conflict", async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ record: { name: "V1" }, time_us: 100 }),
     ]);
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({ record: { name: "V2" }, time_us: 200, operation: "update" }),
     ]);
     const result = await queryRecords(db, TEST_CONFIG, {
@@ -61,8 +62,8 @@ describe("applyEvents", () => {
   });
 
   it("deletes events", async () => {
-    await applyEvents(db, [makeEvent()]);
-    await applyEvents(db, [makeEvent({ operation: "delete" })]);
+    await ingestRecords(db, [makeEvent()]);
+    await ingestRecords(db, [makeEvent({ operation: "delete" })]);
     const result = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
     });
@@ -73,10 +74,10 @@ describe("applyEvents", () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
 
     // Insert parent event
-    await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+    await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
 
     // Insert RSVP pointing at the event
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -100,12 +101,82 @@ describe("applyEvents", () => {
     expect(result.records[0].counts!["rsvp"]).toBe(1);
   });
 
+  it("rebuilds deferred relation counts after bulk canonical writes", async () => {
+    const eventUri = "at://did:plc:test/community.lexicon.calendar.event/deferred";
+    await ingestRecords(
+      db,
+      [
+        makeEvent({ uri: eventUri, rkey: "deferred" }),
+        makeEvent({
+          uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/deferred",
+          did: "did:plc:user1",
+          collection: "community.lexicon.calendar.rsvp",
+          rkey: "deferred",
+          record: {
+            subject: { uri: eventUri },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        }),
+      ],
+      { skipDerivedProjections: true }
+    );
+
+    let result = await queryRecords(db, TEST_CONFIG, { collection: "event" });
+    expect(result.records[0].counts?.rsvp).toBeUndefined();
+
+    await rebuildDerivedProjections(db, TEST_CONFIG);
+
+    result = await queryRecords(db, TEST_CONFIG, { collection: "event" });
+    expect(result.records[0].counts?.rsvp).toBe(1);
+    expect(
+      result.records[0].counts?.[
+        "community.lexicon.calendar.rsvp#going"
+      ]
+    ).toBe(1);
+  });
+
+  it("recounts children that arrived before their parent", async () => {
+    const eventUri = "at://did:plc:test/community.lexicon.calendar.event/late";
+
+    await ingestRecords(
+      db,
+      [
+        makeEvent({
+          uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/early",
+          did: "did:plc:user1",
+          collection: "community.lexicon.calendar.rsvp",
+          rkey: "early",
+          record: {
+            subject: { uri: eventUri },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
+        }),
+      ],
+      TEST_CONFIG,
+    );
+
+    await ingestRecords(
+      db,
+      [makeEvent({ uri: eventUri, rkey: "late", record: { name: "Late" } })],
+      TEST_CONFIG,
+    );
+
+    const row = await db
+      .prepare(
+        "SELECT count_rsvp, count_rsvp_going FROM records_event WHERE uri = ?",
+      )
+      .bind(eventUri)
+      .first<{ count_rsvp: number; count_rsvp_going: number }>();
+
+    expect(row).toEqual({ count_rsvp: 1, count_rsvp_going: 1 });
+  });
+
   it("decrements counts on delete", async () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
-    await applyEvents(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+    await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
 
     const rsvpRecord = { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" };
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -121,7 +192,7 @@ describe("applyEvents", () => {
     );
 
     // Delete the RSVP
-    await applyEvents(
+    await ingestRecords(
       db,
       [
         makeEvent({
@@ -148,7 +219,7 @@ describe("applyEvents", () => {
 
 describe("queryRecords", () => {
   beforeEach(async () => {
-    await applyEvents(db, [
+    await ingestRecords(db, [
       makeEvent({
         uri: "at://did:plc:a/community.lexicon.calendar.event/1",
         did: "did:plc:a",
@@ -230,6 +301,110 @@ describe("queryRecords", () => {
     });
     expect(page2.records).toHaveLength(1);
     expect(page2.cursor).toBeUndefined();
+  });
+
+  it("paginates records with tied timestamps without dropping any", async () => {
+    const tied = ["a", "b", "c"].map((rkey) =>
+      makeEvent({
+        uri: `at://did:plc:tied/community.lexicon.calendar.event/${rkey}`,
+        did: "did:plc:tied",
+        rkey,
+        record: { name: "Same" },
+        time_us: 1000,
+      }),
+    );
+    await ingestRecords(db, tied, TEST_CONFIG);
+
+    const page1 = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      did: "did:plc:tied",
+      limit: 2,
+    });
+    const page2 = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+      did: "did:plc:tied",
+      limit: 2,
+      cursor: page1.cursor,
+    });
+
+    expect([...page1.records, ...page2.records].map((record) => record.rkey)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("preserves numeric and null field values across cursor pages", async () => {
+    const values = [
+      { rkey: "one", score: 1, time_us: 1000 },
+      { rkey: "two", score: 2, time_us: 1000 },
+      { rkey: "three", score: 3, time_us: 1000 },
+      { rkey: "null", score: null, time_us: 2000 },
+      { rkey: "missing", time_us: 1000 },
+    ];
+    await ingestRecords(
+      db,
+      values.map(({ rkey, time_us, ...record }) =>
+        makeEvent({
+          uri: `at://did:plc:numeric/community.lexicon.calendar.event/${rkey}`,
+          did: "did:plc:numeric",
+          rkey,
+          record,
+          time_us,
+        }),
+      ),
+      TEST_CONFIG,
+    );
+
+    const collect = async (direction: "asc" | "desc") => {
+      const rkeys: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await queryRecords(db, TEST_CONFIG, {
+          collection: "community.lexicon.calendar.event",
+          did: "did:plc:numeric",
+          limit: 2,
+          cursor,
+          sort: { recordField: "score", direction },
+        });
+        rkeys.push(...page.records.map((record) => record.rkey));
+        cursor = page.cursor;
+      } while (cursor && rkeys.length < 10);
+      return rkeys;
+    };
+
+    expect(await collect("asc")).toEqual([
+      "one",
+      "two",
+      "three",
+      "null",
+      "missing",
+    ]);
+    expect(await collect("desc")).toEqual([
+      "three",
+      "two",
+      "one",
+      "null",
+      "missing",
+    ]);
+  });
+
+  it("encodes and decodes cursors without Node Buffer", async () => {
+    vi.stubGlobal("Buffer", undefined);
+    try {
+      const page1 = await queryRecords(db, TEST_CONFIG, {
+        collection: "community.lexicon.calendar.event",
+        limit: 2,
+      });
+      const page2 = await queryRecords(db, TEST_CONFIG, {
+        collection: "community.lexicon.calendar.event",
+        limit: 2,
+        cursor: page1.cursor,
+      });
+      expect(page2.records).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("filters by equality", async () => {

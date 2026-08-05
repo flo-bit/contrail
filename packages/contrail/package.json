@@ -61,22 +61,16 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:built": "node tests/built-sqlite.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@atcute/atproto": "^3.1.10",
     "@atcute/cbor": "^2.3.2",
-    "@atcute/cid": "^2.4.1",
     "@atcute/client": "^4.2.1",
-    "@atcute/identity": "^1.1.4",
     "@atcute/identity-resolver": "^1.2.2",
     "@atcute/jetstream": "^1.0.2",
     "@atcute/lexicons": "^1.2.9",
-    "@atcute/xrpc-server": "^0.1.12",
-    "@atmo-dev/contrail-appview": "workspace:*",
-    "@atmo-dev/contrail-authority": "workspace:*",
-    "@atmo-dev/contrail-base": "workspace:*",
-    "@atmo-dev/contrail-record-host": "workspace:*",
     "cac": "^7.0.0",
     "hono": "^4.12.8",
     "jiti": "^2.4.0"

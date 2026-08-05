@@ -1,8 +1,8 @@
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/core/types";
-import { resolveConfig } from "../src/core/types";
-import { initSchema } from "../src/core/db/schema";
-import { applyEvents as coreApplyEvents, type ExistingRecordInfo } from "../src/core/db/records";
+import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/index";
+import { resolveConfig } from "../src/index";
+import { initSchema } from "../src/index";
+import { ingestRecords as coreIngestRecords, type ExistingRecordInfo } from "../src/index";
 
 export function createTestDb(): Database {
   return createSqliteDatabase(":memory:");
@@ -48,17 +48,18 @@ export async function createTestDbWithSchema(): Promise<Database> {
   return db;
 }
 
-/** Apply events with TEST_CONFIG baked in — avoids each test having to pass it. */
-export function applyEvents(
+/** Ingest records with TEST_CONFIG baked in. */
+export function ingestRecords(
   db: Database,
   events: IngestEvent[],
   options?: {
     skipReplayDetection?: boolean;
     skipFeedFanout?: boolean;
+    skipDerivedProjections?: boolean;
     existing?: Map<string, ExistingRecordInfo>;
   }
 ): Promise<void> {
-  return coreApplyEvents(db, events, TEST_CONFIG, options);
+  return coreIngestRecords(db, events, TEST_CONFIG, options).then(() => undefined);
 }
 
 export function makeEvent(overrides: Partial<{

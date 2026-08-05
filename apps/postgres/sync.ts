@@ -5,7 +5,7 @@
  * per-DID in the database. Restarting resumes from where it left off.
  *
  * Usage:
- *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" npx tsx sync.ts
+ *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" pnpm exec tsx sync.ts
  */
 import pg from "pg";
 import { Contrail } from "@atmo-dev/contrail";

@@ -8,7 +8,7 @@ import {
 import {
   resolveLabelerEndpoint,
   validateEndpointUrl,
-} from "../src/core/labels/resolve";
+} from "../src/index";
 
 describe("validateEndpointUrl additionalAllowedHosts", () => {
   it("rejects pds.dev.svc.cluster.local without override (HTTP + private hostname)", () => {

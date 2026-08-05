@@ -4,7 +4,7 @@ import {
   resolveIdentities,
   resolveActor,
   refreshStaleIdentities,
-} from "../src/core/identity";
+} from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
 import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";

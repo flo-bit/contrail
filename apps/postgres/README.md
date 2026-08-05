@@ -10,7 +10,7 @@ cp -r examples/postgres my-contrail-app
 cd my-contrail-app
 
 # Install dependencies
-npm install
+pnpm install
 ```
 
 > **Note:** The `contrail` dependency in `package.json` points at `github:flo-bit/contrail`.
@@ -18,13 +18,13 @@ npm install
 > dependency to point at your fork's branch:
 >
 > ```bash
-> npm install github:your-username/contrail#your-branch
+> pnpm add github:your-username/contrail#your-branch
 > ```
 >
 > Or install from a local checkout:
 >
 > ```bash
-> npm install /path/to/your/contrail
+> pnpm add /path/to/your/contrail
 > ```
 
 ### Start PostgreSQL
@@ -58,7 +58,7 @@ Edit `config.ts` to define your collections, queryable fields, relations, and re
 ### 1. Discover users and backfill records
 
 ```bash
-npm run sync
+pnpm run sync
 ```
 
 This finds users from ATProto relays and backfills their existing records from PDS. Safe to interrupt and restart — progress is saved per-DID in the database.
@@ -66,7 +66,7 @@ This finds users from ATProto relays and backfills their existing records from P
 ### 2. Start persistent ingestion
 
 ```bash
-npm run ingest
+pnpm run ingest
 ```
 
 This opens a long-lived Jetstream connection and continuously indexes new records as they appear on the network. Events are batched and flushed every 5 seconds (or every 50 events, whichever comes first). Handles reconnection automatically.
@@ -76,7 +76,7 @@ Press `Ctrl+C` for graceful shutdown — the current batch is flushed and the cu
 ### 3. Serve the XRPC API
 
 ```bash
-npm run serve
+pnpm run serve
 ```
 
 Your XRPC API is now available at `http://localhost:3000`:
@@ -104,9 +104,9 @@ In production you'd typically run sync once (or periodically), then keep `ingest
 
 ```bash
 # Initial sync (run once, or periodically to discover new users)
-npm run sync
+pnpm run sync
 
 # In separate terminals (or use a process manager)
-npm run ingest
-npm run serve
+pnpm run ingest
+pnpm run serve
 ```

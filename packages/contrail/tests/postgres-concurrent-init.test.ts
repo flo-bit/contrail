@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
-import { initSchema } from "../src/core/db/schema";
-import { resolveConfig } from "../src/core/types";
+import { initSchema } from "../src/index";
+import { resolveConfig } from "../src/index";
 
 /**
  * Postgres-dialect concurrent-init race.

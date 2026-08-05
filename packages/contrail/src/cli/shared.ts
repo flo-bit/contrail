@@ -9,7 +9,6 @@ import {
   CONFIG_CANDIDATES_MESSAGE,
 } from "../cli-config.js";
 import type { ContrailConfig } from "../core/types.js";
-import type { CollectionStats, RefreshResult } from "../core/refresh.js";
 
 export interface ConfigOpts {
   config?: string;
@@ -55,36 +54,4 @@ export async function promptYesNo(
   } finally {
     rl.close();
   }
-}
-
-export function formatStats(s: CollectionStats): string {
-  return `${s.missing} missing, ${s.staleUpdates} stale updates, ${s.inSync} in sync`;
-}
-
-export function printRefreshReport(
-  result: RefreshResult,
-  byCollection: boolean
-): void {
-  console.log("");
-  if (byCollection) {
-    console.log("by collection:");
-    const entries = Object.entries(result.byCollection).sort(([a], [b]) =>
-      a.localeCompare(b)
-    );
-    for (const [nsid, stats] of entries) {
-      if (stats.missing === 0 && stats.staleUpdates === 0 && stats.inSync === 0)
-        continue;
-      console.log(`  ${nsid}`);
-      console.log(`    ${formatStats(stats)}`);
-    }
-    console.log("");
-  }
-  console.log("total:");
-  console.log(`  ${formatStats(result.total)}`);
-  console.log(
-    `  ${result.usersScanned} users scanned` +
-      (result.usersFailed ? `, ${result.usersFailed} failed` : "") +
-      ` in ${(result.elapsedMs / 1000).toFixed(1)}s`
-  );
-  console.log(`  (ignore window: ${(result.ignoreWindowMs / 1000).toFixed(0)}s)`);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createApp } from "../src/core/router";
+import { createApp } from "../src/index";
 import { createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 
 describe("/xrpc/<ns>.lexicons endpoint", () => {

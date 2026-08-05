@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema, optimizeDatabase, getMetaNumber } from "../src/core/db";
-import { maybeOptimize } from "../src/core/jetstream";
-import { resolveConfig } from "../src/core/types";
+import { initSchema, optimizeDatabase, getMetaNumber } from "../src/index";
+import { maybeOptimize } from "../src/index";
+import { resolveConfig } from "../src/index";
 
 const BASE = {
   namespace: "com.example",

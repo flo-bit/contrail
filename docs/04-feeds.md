@@ -118,7 +118,5 @@ That's it. Feeds are read-only over XRPC; writes to follow / target collections 
 
 - No per-feed prune cap; the global pruner uses the largest `maxItems` across all feeds.
 - The 100-record backfill on a new follow is hardcoded — not tunable per feed.
-- No dedicated test coverage for feeds yet (the production paths work, but treat the integration as load-bearing-but-untested).
 - No max-followers cap on target writes — a target record by a user with 1M followers means 1M `feed_items` inserts. For apps expecting that scale, partition feeds or rate-limit upstream.
-- Feeds live in the **main DB** even when [spaces](./06-spaces.md) are split onto a separate DB; there is no `feeds_db` binding.
-- Feeds do not currently union with [spaces](./06-spaces.md) records — `getFeed` reads only public target records.
+- Feeds contain only public target records.
