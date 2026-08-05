@@ -106,6 +106,37 @@ describe("ingestRecords", () => {
     expect((await queryRecords(db, config, { collection: "event" })).records).toHaveLength(30);
   });
 
+  it("commits trailing checkpoint statements atomically with projection", async () => {
+    await db.prepare("CREATE TABLE checkpoint_test (value TEXT UNIQUE)").run();
+    await db
+      .prepare("INSERT INTO checkpoint_test (value) VALUES (?)")
+      .bind("duplicate")
+      .run();
+    const event = createIngestEvent({
+      did: "did:plc:alice",
+      collection: "com.example.event",
+      rkey: "atomic",
+      operation: "create",
+      cid: "cid-atomic",
+      value: { keep: true },
+      timeUs: 1,
+    });
+
+    await expect(
+      ingestRecords(db, [event], config, {
+        trailingStatements: [
+          db
+            .prepare("INSERT INTO checkpoint_test (value) VALUES (?)")
+            .bind("duplicate"),
+        ],
+      })
+    ).rejects.toThrow();
+
+    expect(
+      (await queryRecords(db, config, { collection: "event" })).records
+    ).toHaveLength(0);
+  });
+
   it("drops malformed records and untracked collections before projection", async () => {
     const malformed = createIngestEvent({
       did: "did:plc:alice",

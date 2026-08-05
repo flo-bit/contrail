@@ -1,5 +1,10 @@
 import { isDid } from "@atcute/lexicons/syntax";
-import type { ContrailConfig, Database, IngestEvent } from "./types";
+import type {
+  ContrailConfig,
+  Database,
+  IngestEvent,
+  Statement,
+} from "./types";
 import {
   getNestedValue,
   resolveCollectionKey,
@@ -51,6 +56,8 @@ export interface IngestRecordsOptions {
   phase?: "live" | "backfill";
   /** Known actors used to filter dependent records without another DB read. */
   knownDids?: ReadonlySet<string>;
+  /** Statements committed after projection in the same database batch. */
+  trailingStatements?: Statement[];
 }
 
 export interface IngestDropCounts {
@@ -167,6 +174,8 @@ export async function ingestRecords(
 
   if (subjectFiltered.length > 0) {
     await projectEvents(db, subjectFiltered, config, options);
+  } else if (options.trailingStatements?.length) {
+    await db.batch(options.trailingStatements);
   }
 
   return { accepted: subjectFiltered, dropped, discoveredDids };

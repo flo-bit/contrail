@@ -58,6 +58,69 @@ const BACKFILL_RETRY_MAX_MS = 48 * 60 * 60_000;
 const DEFAULT_SCHEDULED_MAX_ATTEMPTS = 10;
 const DERIVED_PROJECTIONS_DIRTY_KEY = "backfill_derived_projections_dirty";
 
+export interface BackfillCollectionMetrics {
+  requests: number;
+  pages: number;
+  fetched_records: number;
+  accepted_records: number;
+  record_bytes: number;
+  fetch_ms: number;
+  projection_and_checkpoint_ms: number;
+}
+
+export interface BackfillRunMetrics {
+  resolution_ms: number;
+  derived_rebuild_ms: number;
+  collections: Record<string, BackfillCollectionMetrics>;
+}
+
+type BackfillMetricsAccumulator = BackfillRunMetrics;
+
+function emptyBackfillMetrics(): BackfillMetricsAccumulator {
+  return {
+    resolution_ms: 0,
+    derived_rebuild_ms: 0,
+    collections: {},
+  };
+}
+
+function collectionMetrics(
+  metrics: BackfillMetricsAccumulator,
+  collection: string
+): BackfillCollectionMetrics {
+  return (metrics.collections[collection] ??= {
+    requests: 0,
+    pages: 0,
+    fetched_records: 0,
+    accepted_records: 0,
+    record_bytes: 0,
+    fetch_ms: 0,
+    projection_and_checkpoint_ms: 0,
+  });
+}
+
+function roundedMetrics(
+  metrics: BackfillMetricsAccumulator
+): BackfillRunMetrics {
+  const round = (value: number) => Math.round(value * 100) / 100;
+  return {
+    resolution_ms: round(metrics.resolution_ms),
+    derived_rebuild_ms: round(metrics.derived_rebuild_ms),
+    collections: Object.fromEntries(
+      Object.entries(metrics.collections).map(([collection, values]) => [
+        collection,
+        {
+          ...values,
+          fetch_ms: round(values.fetch_ms),
+          projection_and_checkpoint_ms: round(
+            values.projection_and_checkpoint_ms
+          ),
+        },
+      ])
+    ),
+  };
+}
+
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
@@ -160,6 +223,10 @@ export interface BackfillOptions {
   maxPages?: number;
   /** Defer FTS and relation counts until the bulk pass finishes. */
   skipDerivedProjections?: boolean;
+  /** @internal Aggregate benchmark instrumentation owned by the bulk run. */
+  metrics?: BackfillMetricsAccumulator;
+  /** @internal Cursor already loaded by the bulk scheduler. */
+  resumeState?: { cursor: string | null };
 }
 
 interface BackfillUserAttempt {
@@ -180,12 +247,22 @@ async function backfillUserAttempt(
     return { records: 0, completed: false, failed: false };
   }
 
-  const status = await db
-    .prepare(
-      "SELECT completed, pds_cursor, retries FROM backfills WHERE did = ? AND collection = ?"
-    )
-    .bind(did, collection)
-    .first<{ completed: number; pds_cursor: string | null; retries: number }>();
+  const status = options?.resumeState
+    ? {
+        completed: 0,
+        pds_cursor: options.resumeState.cursor,
+        retries: 0,
+      }
+    : await db
+        .prepare(
+          "SELECT completed, pds_cursor, retries FROM backfills WHERE did = ? AND collection = ?"
+        )
+        .bind(did, collection)
+        .first<{
+          completed: number;
+          pds_cursor: string | null;
+          retries: number;
+        }>();
 
   if (status?.completed) {
     return { records: 0, completed: true, failed: false };
@@ -250,20 +327,30 @@ async function backfillUserAttempt(
   let totalInserted = 0;
   let done = false;
   let pages = 0;
+  const metrics = options?.metrics
+    ? collectionMetrics(options.metrics, collection)
+    : undefined;
 
   try {
     while (Date.now() < deadline) {
       const response = await withRetry(
-        (signal) =>
-          client!.get("com.atproto.repo.listRecords", {
-            params: {
-              repo: did as Did,
-              collection,
-              limit: PAGE_SIZE,
-              cursor: currentCursor,
-            },
-            signal,
-          }),
+        async (signal) => {
+          const started = performance.now();
+          if (metrics) metrics.requests++;
+          try {
+            return await client!.get("com.atproto.repo.listRecords", {
+              params: {
+                repo: did as Did,
+                collection,
+                limit: PAGE_SIZE,
+                cursor: currentCursor,
+              },
+              signal,
+            });
+          } finally {
+            if (metrics) metrics.fetch_ms += performance.now() - started;
+          }
+        },
         `listRecords(${did}/${collection})`,
         retries,
         timeout
@@ -282,14 +369,17 @@ async function backfillUserAttempt(
         return { records: totalInserted, completed: false, failed: true };
       }
 
-      if (response.data.records.length === 0) {
-        done = true;
-        break;
+      const records = response.data.records;
+      if (metrics) {
+        metrics.pages++;
+        metrics.fetched_records += records.length;
       }
 
       const now = Date.now();
       const nowUs = now * 1000;
-      const events: IngestEvent[] = response.data.records.map((record) =>
+      const nextCursor = response.data.cursor ?? undefined;
+      const pageDone = records.length === 0 || !nextCursor;
+      const events: IngestEvent[] = records.map((record) =>
         createIngestEvent({
           uri: record.uri,
           did,
@@ -303,29 +393,41 @@ async function backfillUserAttempt(
         }),
       );
 
-      if (events.length > 0) {
-        const result = await ingestRecords(db, events, config, {
-          skipReplayDetection: options?.skipReplayDetection,
-          skipFeedFanout: true,
-          knownDids: options?.knownDids,
-          skipDerivedProjections: options?.skipDerivedProjections,
-          // Let sinks bulk-flush differently from live ingestion.
-          phase: "backfill",
-        });
-        totalInserted += result.accepted.length;
+      if (metrics) {
+        metrics.record_bytes += events.reduce(
+          (bytes, event) => bytes + (event.record?.length ?? 0),
+          0
+        );
+      }
+      const projectionStarted = performance.now();
+      const checkpoint = db
+        .prepare(
+          "UPDATE backfills SET pds_cursor = ?, completed = ?, retries = 0, scheduled_retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
+        )
+        .bind(nextCursor ?? null, pageDone ? 1 : 0, now, did, collection);
+      const result = await ingestRecords(db, events, config, {
+        skipReplayDetection: options?.skipReplayDetection,
+        skipFeedFanout: true,
+        knownDids: options?.knownDids,
+        skipDerivedProjections: options?.skipDerivedProjections,
+        // Canonical projection and cursor acknowledgement commit atomically.
+        trailingStatements: [checkpoint],
+        // Let sinks bulk-flush differently from live ingestion.
+        phase: "backfill",
+      });
+      totalInserted += result.accepted.length;
+      if (metrics) {
+        metrics.accepted_records += result.accepted.length;
+        metrics.projection_and_checkpoint_ms +=
+          performance.now() - projectionStarted;
       }
 
-      currentCursor = response.data.cursor ?? undefined;
-
-      await db
-        .prepare(
-          "UPDATE backfills SET pds_cursor = ?, retries = 0, scheduled_retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
-        )
-        .bind(currentCursor ?? null, now, did, collection)
-        .run();
-
+      currentCursor = nextCursor;
+      if (options?.resumeState) {
+        options.resumeState.cursor = currentCursor ?? null;
+      }
       pages++;
-      if (!currentCursor) {
+      if (pageDone) {
         done = true;
         break;
       }
@@ -340,15 +442,6 @@ async function backfillUserAttempt(
       options?.exhaustAfterAttempts
     );
     return { records: totalInserted, completed: false, failed: true };
-  }
-
-  if (done) {
-    await db
-      .prepare(
-        "UPDATE backfills SET completed = 1, retries = 0, scheduled_retries = 0, last_error = NULL, last_attempt_at = ?, next_retry_at = NULL, retry_exhausted = 0 WHERE did = ? AND collection = ?"
-      )
-      .bind(Date.now(), did, collection)
-      .run();
   }
 
   return { records: totalInserted, completed: done, failed: false };
@@ -395,6 +488,8 @@ export interface BackfillAllOptions {
    * later attempts. Values above 1 are retained for explicit manual recovery. */
   maxAttempts?: number;
   onProgress?: (progress: BackfillProgress) => void;
+  /** Receives aggregate source/projection timings after a complete invocation. */
+  onMetrics?: (metrics: BackfillRunMetrics) => void;
 }
 
 /** Keep a fixed number of jobs active without batch barriers. Returning true
@@ -440,6 +535,115 @@ async function drainQueue<TItem, TResult>(
   });
 }
 
+function createStreamingHostScheduler<TResult>(
+  hostConcurrency: number,
+  didsPerHost: number,
+  run: (pds: string, did: string) => Promise<TResult>,
+  consume: (result: TResult) => boolean | void
+): {
+  add(pds: string, did: string): void;
+  finish(): Promise<void>;
+} {
+  type HostState = {
+    pending: string[];
+    active: number;
+    queued: boolean;
+    running: boolean;
+  };
+  const hosts = new Map<string, HostState>();
+  const waiting: string[] = [];
+  let activeHosts = 0;
+  let producerDone = false;
+  let settled = false;
+  let resolveFinished!: () => void;
+  let rejectFinished!: (error: unknown) => void;
+  const finished = new Promise<void>((resolve, reject) => {
+    resolveFinished = resolve;
+    rejectFinished = reject;
+  });
+
+  const fail = (error: unknown) => {
+    if (settled) return;
+    settled = true;
+    rejectFinished(error);
+  };
+
+  const maybeFinish = () => {
+    if (settled || !producerDone) return;
+    if (activeHosts === 0 && waiting.length === 0) {
+      settled = true;
+      resolveFinished();
+    }
+  };
+
+  const pumpHosts = () => {
+    if (settled) return;
+    while (activeHosts < hostConcurrency && waiting.length > 0) {
+      const pds = waiting.shift()!;
+      const state = hosts.get(pds)!;
+      state.queued = false;
+      if (state.running || state.pending.length === 0) continue;
+      state.running = true;
+      activeHosts++;
+      pumpDids(pds, state);
+    }
+    maybeFinish();
+  };
+
+  const finishHost = (state: HostState) => {
+    if (!state.running) return;
+    state.running = false;
+    activeHosts--;
+    pumpHosts();
+  };
+
+  function pumpDids(pds: string, state: HostState): void {
+    if (settled) return;
+    while (state.active < didsPerHost && state.pending.length > 0) {
+      const did = state.pending.shift()!;
+      state.active++;
+      run(pds, did).then(
+        (result) => {
+          state.active--;
+          if (consume(result) === true) state.pending.push(did);
+          pumpDids(pds, state);
+        },
+        fail
+      );
+    }
+    if (state.active === 0 && state.pending.length === 0) {
+      finishHost(state);
+    }
+  }
+
+  return {
+    add(pds, did) {
+      if (producerDone) throw new Error("Cannot add work after scheduler finish");
+      let state = hosts.get(pds);
+      if (!state) {
+        state = { pending: [], active: 0, queued: false, running: false };
+        hosts.set(pds, state);
+      }
+      state.pending.push(did);
+      if (state.running) {
+        pumpDids(pds, state);
+      } else if (!state.queued) {
+        state.queued = true;
+        waiting.push(pds);
+        pumpHosts();
+      }
+    },
+    finish() {
+      producerDone = true;
+      for (const [pds, state] of hosts) {
+        if (state.running) pumpDids(pds, state);
+      }
+      pumpHosts();
+      return finished;
+    },
+  };
+}
+
 async function loadKnownBackfillDids(db: Database): Promise<Set<string>> {
   const rows = await db
     .prepare("SELECT DISTINCT did FROM backfills")
@@ -472,6 +676,7 @@ async function backfillPendingWork(
   );
   let totalBackfilled = 0;
   const knownDids = await loadKnownBackfillDids(db);
+  const metrics = emptyBackfillMetrics();
 
   // Anchor the jetstream cursor to now if it hasn't been set yet, so records
   // emitted during backfill are replayed once jetstream starts.
@@ -496,39 +701,110 @@ async function backfillPendingWork(
   while (true) {
     const pending = await db
       .prepare(
-        "SELECT did, collection FROM backfills WHERE completed = 0 AND retries < ? ORDER BY did"
+        "SELECT did, collection, pds_cursor FROM backfills WHERE completed = 0 AND retries < ? ORDER BY did"
       )
       .bind(maxAttempts)
-      .all<{ did: string; collection: string }>();
+      .all<{ did: string; collection: string; pds_cursor: string | null }>();
 
     const rows = pending.results ?? [];
     if (rows.length === 0) break;
 
-    const byDid = new Map<string, string[]>();
+    type CollectionWork = {
+      collection: string;
+      cursor: string | null;
+      completed: boolean;
+      failed: boolean;
+    };
+    const byDid = new Map<string, CollectionWork[]>();
     for (const row of rows) {
       const collections = byDid.get(row.did) ?? [];
-      collections.push(row.collection);
+      collections.push({
+        collection: row.collection,
+        cursor: row.pds_cursor,
+        completed: false,
+        failed: false,
+      });
       byDid.set(row.did, collections);
     }
 
     const dids = [...byDid.keys()];
-    const byPds = new Map<string, string[]>();
     let roundBackfilled = 0;
     let usersComplete = 0;
     let usersFailed = 0;
 
-    const emitProgress = () =>
+    let lastHeartbeat = Date.now();
+    const emitProgress = () => {
       options?.onProgress?.({
         records: totalBackfilled + roundBackfilled,
         usersComplete,
         usersTotal: dids.length,
         usersFailed,
       });
+      const now = Date.now();
+      if (now - lastHeartbeat >= 30_000) {
+        lastHeartbeat = now;
+        void heartbeatBackfillRun(db, runId).catch((error) =>
+          (config.logger ?? console).warn("Backfill heartbeat failed", error)
+        );
+      }
+    };
 
     await heartbeatBackfillRun(db, runId);
 
-    // Resolve first, then schedule by host. This deliberately separates cheap
-    // identity fan-out from PDS traffic and lets every host share one client.
+    // Start host work as soon as each identity resolves. This removes the
+    // all-identities barrier while retaining both host and per-host limits.
+    const clients = new Map<string, Client>();
+    const hostScheduler = createStreamingHostScheduler(
+      pdsConcurrency,
+      didsPerPds,
+      async (pds, did) => {
+        let client = clients.get(pds);
+        if (!client) {
+          client = createPdsClient(pds);
+          clients.set(pds, client);
+        }
+        const works = byDid.get(did)!;
+        let records = 0;
+        for (const work of works) {
+          if (work.completed || work.failed) continue;
+          const attempt = await backfillUserAttempt(
+            db,
+            did,
+            work.collection,
+            Infinity,
+            config,
+            {
+              client,
+              knownDids,
+              skipReplayDetection: true,
+              maxRetries: 0,
+              requestTimeout,
+              maxPages: 1,
+              skipDerivedProjections: true,
+              metrics,
+              resumeState: work,
+            }
+          );
+          records += attempt.records;
+          work.completed = attempt.completed;
+          work.failed = attempt.failed;
+        }
+        return {
+          records,
+          completed: works.every((work) => work.completed),
+          failed: works.some((work) => work.failed),
+        };
+      },
+      (result) => {
+        roundBackfilled += result.records;
+        if (result.completed) usersComplete++;
+        else if (result.failed) usersFailed++;
+        emitProgress();
+        return !result.completed && !result.failed;
+      }
+    );
+
+    const resolutionStarted = performance.now();
     await drainQueue(
       dids,
       resolutionConcurrency,
@@ -543,80 +819,23 @@ async function backfillPendingWork(
           if (!pds) throw new Error(`PDS not found for ${did}`);
           return { did, pds: pds.replace(/\/+$/, ""), failed: false };
         } catch (error) {
-          for (const collection of byDid.get(did)!) {
-            await markFailed(db, did, collection, error);
+          for (const work of byDid.get(did)!) {
+            await markFailed(db, did, work.collection, error);
+            work.failed = true;
           }
           return { did, pds: null, failed: true };
         }
       },
       (result) => {
-        if (result.pds) {
-          const hostDids = byPds.get(result.pds) ?? [];
-          hostDids.push(result.did);
-          byPds.set(result.pds, hostDids);
-        } else if (result.failed) {
+        if (result.pds) hostScheduler.add(result.pds, result.did);
+        else if (result.failed) {
           usersFailed++;
           emitProgress();
         }
       }
     );
-
-    // Keep only a small number of PDS hosts active. Within each host, process a
-    // few accounts and one collection page at a time. This preserves connection
-    // reuse, prevents request storms, and keeps large repositories from blocking
-    // unrelated hosts or accounts on the same host.
-    await drainQueue(
-      [...byPds.entries()],
-      pdsConcurrency,
-      async ([pds, hostDids]) => {
-        const client = createPdsClient(pds);
-        await drainQueue(
-          hostDids,
-          didsPerPds,
-          async (did) => {
-            const attempts: BackfillUserAttempt[] = [];
-            for (const collection of byDid.get(did)!) {
-              attempts.push(
-                await backfillUserAttempt(
-                  db,
-                  did,
-                  collection,
-                  Infinity,
-                  config,
-                  {
-                    client,
-                    knownDids,
-                    skipReplayDetection: true,
-                    maxRetries: 0,
-                    requestTimeout,
-                    maxPages: 1,
-                    skipDerivedProjections: true,
-                  }
-                )
-              );
-            }
-            return {
-              records: attempts.reduce(
-                (sum, attempt) => sum + attempt.records,
-                0
-              ),
-              completed: attempts.every((attempt) => attempt.completed),
-              failed: attempts.some((attempt) => attempt.failed),
-            };
-          },
-          (result) => {
-            roundBackfilled += result.records;
-            if (result.completed) usersComplete++;
-            else if (result.failed) usersFailed++;
-            emitProgress();
-            return !result.completed && !result.failed;
-          }
-        );
-        await heartbeatBackfillRun(db, runId);
-        return undefined;
-      },
-      () => false
-    );
+    metrics.resolution_ms += performance.now() - resolutionStarted;
+    await hostScheduler.finish();
 
     totalBackfilled += roundBackfilled;
     await heartbeatBackfillRun(db, runId);
@@ -628,9 +847,12 @@ async function backfillPendingWork(
   // Canonical records and cursors are durable now. Rebuild expensive derived
   // projections once with set-based SQL instead of hundreds of statements per
   // network page. This also repairs a prior interrupted bulk pass.
+  const derivedStarted = performance.now();
   await rebuildDerivedProjections(db, config);
+  metrics.derived_rebuild_ms += performance.now() - derivedStarted;
   await setMeta(db, DERIVED_PROJECTIONS_DIRTY_KEY, "0");
   await heartbeatBackfillRun(db, runId);
+  options?.onMetrics?.(roundedMetrics(metrics));
 
   return totalBackfilled;
 }

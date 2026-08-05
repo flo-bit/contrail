@@ -675,6 +675,8 @@ export async function projectEvents(
     /** Ingest phase forwarded to `config.sinks`. `"live"` for jetstream /
      *  persistent ingest (default), `"backfill"` for replay / rebuild. */
     phase?: "live" | "backfill";
+    /** Statements committed after projection in the same database batch. */
+    trailingStatements?: Statement[];
   }
 ): Promise<void> {
   if (events.length === 0) return;
@@ -751,8 +753,11 @@ export async function projectEvents(
   // batch observe the final records.
   batch.unshift(...buildRecordMutationStatements(db, storageMutations.values()));
 
-  // Build deduplicated count statements — one UPDATE per unique target
+  // Build deduplicated count statements — one UPDATE per unique target.
   batch.push(...buildBatchCountStatements(db, config, countTargets));
+  if (options?.trailingStatements?.length) {
+    batch.push(...options.trailingStatements);
+  }
 
   await db.batch(batch);
 

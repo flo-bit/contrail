@@ -215,6 +215,7 @@ async function main(): Promise<void> {
   let backfillMs = 0;
   let discovered = 0;
   let acceptedRecords = 0;
+  let backfillMetrics: any;
   let overview: any;
   let fetchInstrumentation: ReturnType<typeof instrumentFetch> | undefined;
 
@@ -254,6 +255,9 @@ async function main(): Promise<void> {
       pdsConcurrency: options.pdsConcurrency,
       didsPerPds: options.didsPerPds,
       maxAttempts: options.maxAttempts,
+      onMetrics(metrics) {
+        backfillMetrics = metrics;
+      },
       onProgress(progress) {
         const now = Date.now();
         if (now - lastProgressAt < 2_000) return;
@@ -325,6 +329,7 @@ async function main(): Promise<void> {
     accepted_records: acceptedRecords,
     indexed_records: indexedRecords,
     peak_rss_kib: process.resourceUsage().maxRSS,
+    phases: backfillMetrics,
     network: {
       max_concurrent: fetchInstrumentation?.maxActive() ?? 0,
       requests: network,
@@ -354,6 +359,22 @@ async function main(): Promise<void> {
       `${overview.backfill.accounts.failed} failed`,
   );
   console.log(`network max:  ${result.network.max_concurrent} concurrent requests`);
+  if (backfillMetrics) {
+    console.log(
+      `phases:       resolution ${(backfillMetrics.resolution_ms / 1000).toFixed(2)}s, ` +
+        `derived ${(backfillMetrics.derived_rebuild_ms / 1000).toFixed(2)}s`,
+    );
+    for (const [collection, metric] of Object.entries(
+      backfillMetrics.collections,
+    ) as Array<[string, any]>) {
+      console.log(
+        `collection:   ${collection} — ${metric.fetched_records} fetched, ` +
+          `${metric.accepted_records} accepted, ${metric.requests} requests, ` +
+          `${(metric.fetch_ms / 1000).toFixed(2)}s fetch, ` +
+          `${(metric.projection_and_checkpoint_ms / 1000).toFixed(2)}s project/checkpoint`,
+      );
+    }
+  }
   for (const [key, metric] of Object.entries(network)) {
     console.log(
       `network:      ${key} — ${metric.requests} requests, ` +

@@ -1,0 +1,142 @@
+{
+  "format": "contrail.comparison-benchmark",
+  "version": 1,
+  "observed_at": "2026-08-05T00:09:00Z",
+  "workload": {
+    "collections": [
+      "community.lexicon.calendar.event",
+      "community.lexicon.calendar.rsvp"
+    ],
+    "profiles": false,
+    "follows": false,
+    "feeds": false,
+    "full_text_search": false,
+    "relation_counts": false,
+    "field_query_indexes": false,
+    "live_ingestion_during_measurement": false,
+    "discovered_accounts": 1633
+  },
+  "happyview": {
+    "version": "2.11.8",
+    "commit": "6035c557e3ff2939eb0923bb1161663106c97223",
+    "source_patch": "unbounded per-host scheduler queue deadlock fix",
+    "backend": "native-sqlite",
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 10,
+      "dids_per_pds": 3
+    },
+    "discovery_and_backfill_ms": 45332.32,
+    "harness_wall_ms": 45474,
+    "indexed_records": 20869,
+    "records": {
+      "community.lexicon.calendar.event": 14608,
+      "community.lexicon.calendar.rsvp": 6261
+    },
+    "indexed_records_per_second": 460.4,
+    "repos": {
+      "discovered": 1633,
+      "resolved": 1629,
+      "processed": 1629,
+      "pending": 4
+    }
+  },
+  "contrail_native_sqlite": {
+    "backend": "native-sqlite",
+    "config": "configs/calendar-records-only.config.json",
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 10,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    },
+    "discovery_and_backfill_ms": 43880.78,
+    "full_harness_ms": 43923.33,
+    "indexed_records": 20882,
+    "records": {
+      "community.lexicon.calendar.event": 14610,
+      "community.lexicon.calendar.rsvp": 6272
+    },
+    "indexed_records_per_second": 475.9,
+    "accounts": {
+      "complete": 1591,
+      "retrying": 42,
+      "failed": 0
+    }
+  },
+  "contrail_native_sqlite_validated_limits": {
+    "backend": "native-sqlite",
+    "config": "configs/calendar-records-only.config.json",
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    },
+    "discovery_and_backfill_ms": 34490.29,
+    "full_harness_ms": 34520.07,
+    "indexed_records": 20882,
+    "records": {
+      "community.lexicon.calendar.event": 14610,
+      "community.lexicon.calendar.rsvp": 6272
+    },
+    "indexed_records_per_second": 605.4,
+    "accounts": {
+      "complete": 1590,
+      "retrying": 43,
+      "failed": 0
+    }
+  },
+  "contrail_matched_limits": {
+    "backend": "wrangler-local-d1",
+    "config": "configs/calendar-records-only.config.json",
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 10,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    },
+    "discovery_and_backfill_ms": 57269.02,
+    "full_harness_ms": 57720.11,
+    "indexed_records": 20882,
+    "records": {
+      "community.lexicon.calendar.event": 14610,
+      "community.lexicon.calendar.rsvp": 6272
+    },
+    "indexed_records_per_second": 364.6,
+    "accounts": {
+      "complete": 1591,
+      "retrying": 42,
+      "failed": 0
+    }
+  },
+  "contrail_validated_limits": {
+    "backend": "wrangler-local-d1",
+    "config": "configs/calendar-records-only.config.json",
+    "options": {
+      "identity_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "max_immediate_attempts": 1
+    },
+    "discovery_and_backfill_ms": 49754.94,
+    "full_harness_ms": 50281.28,
+    "indexed_records": 20878,
+    "records": {
+      "community.lexicon.calendar.event": 14607,
+      "community.lexicon.calendar.rsvp": 6271
+    },
+    "indexed_records_per_second": 419.6,
+    "accounts": {
+      "complete": 1588,
+      "retrying": 45,
+      "failed": 0
+    }
+  },
+  "notes": [
+    "The live network changed slightly between sequential runs; record totals differ by at most 13 (0.06%).",
+    "The native-SQLite 10x3 row matches both backend and HappyView scheduling; the native-SQLite 20x3 row uses Contrail's validated host limit. The D1 rows show Contrail's primary deployment target.",
+    "HappyView can count a repository processed despite a collection fetch failure; Contrail keeps any unfinished collection durable and retrying.",
+    "Contrail phase metrics reported effectively zero derived-rebuild time because this fixture has no FTS or relation counts."
+  ]
+}
