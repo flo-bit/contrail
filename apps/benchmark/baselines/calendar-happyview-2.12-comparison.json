@@ -1,0 +1,188 @@
+{
+  "format": "contrail.comparison-benchmark",
+  "version": 1,
+  "observed_at": "2026-08-05T14:50:24Z",
+  "workload": {
+    "collections": [
+      "community.lexicon.calendar.event",
+      "community.lexicon.calendar.rsvp"
+    ],
+    "profiles": false,
+    "follows": false,
+    "feeds": false,
+    "full_text_search": false,
+    "relation_counts": false,
+    "field_query_indexes": false,
+    "live_ingestion_during_measurement": false,
+    "discovered_accounts": 1633,
+    "backend": "native-sqlite",
+    "identity_concurrency": 100,
+    "pds_concurrency": 10,
+    "dids_per_pds": 3
+  },
+  "happyview": {
+    "version": "2.12.0",
+    "commit": "a5caf5b879d4d5a3b1c25b79b815d7df6d7026de",
+    "source_patch": null,
+    "runtime": {
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "target": "aarch64-apple-darwin",
+      "os": "26.4",
+      "hardware": "MacBookPro18,3"
+    },
+    "default_retry_run": {
+      "max_attempts": 3,
+      "job_ms": 205539.548,
+      "harness_wall_ms": 205687.39,
+      "indexed_records": 20751,
+      "records": {
+        "community.lexicon.calendar.event": 14612,
+        "community.lexicon.calendar.rsvp": 6139
+      },
+      "indexed_records_per_second": 100.9,
+      "repos": {
+        "discovered": 1633,
+        "resolved": 1630,
+        "processed_reported": 1630,
+        "completed_rows": 1630,
+        "pending_rows": 3
+      },
+      "completion": {
+        "status": "completed",
+        "durable_error_rows": 84,
+        "error_counts": {
+          "connection_failed": 8,
+          "did_doc_not_found": 1,
+          "dns_failure": 2,
+          "other": 2,
+          "pds_server_error": 1,
+          "repo_not_found": 33,
+          "timeout": 37
+        }
+      },
+      "database_bytes": 53055488,
+      "peak_rss_bytes": null,
+      "raw_result": "../results/happyview-2.12-records-only-2026-08-05T14-42-43-323014Z.json"
+    },
+    "matched_retry_run": {
+      "max_attempts": 1,
+      "job_ms": 73590.165,
+      "harness_wall_ms": 73632.29,
+      "indexed_records": 20738,
+      "records": {
+        "community.lexicon.calendar.event": 14607,
+        "community.lexicon.calendar.rsvp": 6131
+      },
+      "indexed_records_per_second": 281.6,
+      "repos": {
+        "discovered": 1633,
+        "resolved": 1630,
+        "processed_reported": 1630,
+        "completed_rows": 1630,
+        "pending_rows": 3
+      },
+      "completion": {
+        "status": "completed",
+        "durable_error_rows": 91,
+        "error_counts": {
+          "connection_failed": 8,
+          "did_doc_not_found": 1,
+          "dns_failure": 2,
+          "other": 9,
+          "pds_server_error": 1,
+          "repo_not_found": 33,
+          "timeout": 37
+        }
+      },
+      "database_bytes": 52924416,
+      "peak_rss_bytes": null,
+      "successful_request_count": null,
+      "cumulative_request_ms": null,
+      "raw_result": "../results/happyview-2.12-records-only-2026-08-05T14-47-56-569071Z.json"
+    }
+  },
+  "contrail_bracketing_runs": [
+    {
+      "position": "before_happyview_matched",
+      "commit": "012c4d744b7878533b00ec79fc01636ebd1f8772",
+      "runtime": {
+        "node": "v26.5.0",
+        "sqlite": "3.53.3"
+      },
+      "max_attempts": 1,
+      "discovery_and_backfill_ms": 63886.26,
+      "full_harness_ms": 63905.13,
+      "indexed_records": 20760,
+      "records": {
+        "community.lexicon.calendar.event": 14610,
+        "community.lexicon.calendar.rsvp": 6150
+      },
+      "accounts": {
+        "complete": 1552,
+        "pending": 0,
+        "retrying": 81,
+        "failed": 0
+      },
+      "network": {
+        "requests": 5327,
+        "errors": 52,
+        "cumulative_request_ms": 1474297.32,
+        "max_concurrent": 127
+      },
+      "peak_rss_kib": 335168,
+      "raw_result": "../results/calendar-records-only-sqlite-r100-h10-d3-2026-08-05T14-47-32-558Z.json"
+    },
+    {
+      "position": "after_happyview_matched",
+      "commit": "012c4d744b7878533b00ec79fc01636ebd1f8772",
+      "runtime": {
+        "node": "v26.5.0",
+        "sqlite": "3.53.3"
+      },
+      "max_attempts": 1,
+      "discovery_and_backfill_ms": 61565.76,
+      "full_harness_ms": 61577.62,
+      "indexed_records": 20765,
+      "records": {
+        "community.lexicon.calendar.event": 14614,
+        "community.lexicon.calendar.rsvp": 6151
+      },
+      "accounts": {
+        "complete": 1554,
+        "pending": 0,
+        "retrying": 79,
+        "failed": 0
+      },
+      "network": {
+        "requests": 5329,
+        "errors": 50,
+        "cumulative_request_ms": 1451698.97,
+        "max_concurrent": 129
+      },
+      "peak_rss_kib": 407072,
+      "raw_result": "../results/calendar-records-only-sqlite-r100-h10-d3-2026-08-05T14-50-23-917Z.json"
+    }
+  ],
+  "observations": {
+    "matched_happyview_wall_ms": 73632.29,
+    "contrail_bracketing_wall_ms": {
+      "minimum": 61577.62,
+      "maximum": 63905.13,
+      "mean": 62741.375
+    },
+    "happyview_slower_than_bracketing_mean_percent": 17.36,
+    "record_count_difference_from_bracketing_runs": {
+      "minimum": 22,
+      "maximum": 27,
+      "maximum_percent": 0.13
+    }
+  },
+  "notes": [
+    "The matched comparison is the middle Contrail-HappyView-Contrail sequence with one immediate attempt in every run. HappyView's three-attempt default is retained separately as a retry-behavior observation, not used for the matched speed comparison.",
+    "The live network was materially less healthy than the earlier 2.11.8 comparison: Contrail retained 79-81 retrying accounts and HappyView recorded 91 durable errors in its matched run. The matched record totals nevertheless differed by at most 27 records (0.13%).",
+    "This single bracketing sequence observed HappyView 17.36% slower than the mean of the adjacent Contrail runs. It is not enough to claim a stable 2.12 regression or a general Contrail speedup; repeated alternating runs are still required.",
+    "HappyView reported status=completed while retaining three unresolved repos and durable fetch/resolution errors. Contrail reported overall state=complete separately from 79-81 account-level retrying states.",
+    "HappyView 2.12 does not expose successful upstream request counts or cumulative request time through this benchmark path. Peak RSS was not retained because the first harness monitor failed to finalize its sample before result serialization.",
+    "The prior HappyView 2.11.8 result used an uncommitted scheduler fix. HappyView 2.12.0 contains the upstream deadlock fix at commit 5d840f3 and was benchmarked without a source patch."
+  ]
+}
