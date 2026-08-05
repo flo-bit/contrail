@@ -123,6 +123,12 @@ describe("backfill failure state", () => {
     await backfillPending(db, config, { concurrency: 1, maxAttempts: 1 });
 
     expect((await queryRecords(db, config, { collection: "follow" })).records).toHaveLength(1);
+    const version = await db
+      .prepare("SELECT source_id, source_time_us FROM record_versions WHERE uri = ?")
+      .bind(`at://${actor}/${follow}/one`)
+      .first<{ source_id: string; source_time_us: number }>();
+    expect(version?.source_id).toBe("pds-backfill");
+    expect(version?.source_time_us).toBeTypeOf("number");
   });
 
   it("starts the next queued account without waiting for a slow worker", async () => {

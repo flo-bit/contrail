@@ -205,6 +205,12 @@ describe("POST notifyOfUpdate", () => {
     expect(result.records[0].uri).toBe(uri);
     expect(result.records[0].cid).toBe("bafytest");
     expect(JSON.parse(result.records[0].record!)).toEqual(record);
+    const version = await db
+      .prepare("SELECT source_id, source_time_us FROM record_versions WHERE uri = ?")
+      .bind(uri)
+      .first<{ source_id: string; source_time_us: number }>();
+    expect(version?.source_id).toBe("pds-notify");
+    expect(version?.source_time_us).toBeTypeOf("number");
   });
 
   it("deletes locally when record not found on PDS", async () => {
@@ -628,7 +634,7 @@ describe("POST notifyOfUpdate", () => {
     expect(result.records[0].counts?.["rsvp"]).toBe(1);
   });
 
-  it("does nothing when record not on PDS and not local", async () => {
+  it("records authoritative absence without reporting a visible deletion", async () => {
     const did = "did:plc:test";
     const uri = `at://${did}/community.lexicon.calendar.event/nonexistent`;
 
@@ -644,6 +650,12 @@ describe("POST notifyOfUpdate", () => {
     const body = await res.json();
     expect(body.indexed).toBe(0);
     expect(body.deleted).toBe(0);
+    expect(
+      await db
+        .prepare("SELECT operation, source_id FROM record_versions WHERE uri = ?")
+        .bind(uri)
+        .first(),
+    ).toEqual({ operation: "delete", source_id: "pds-notify" });
   });
 
   it("ingests an NSID-keyed collection end-to-end (no short alias)", async () => {

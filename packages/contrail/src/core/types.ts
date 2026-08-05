@@ -510,6 +510,17 @@ export interface RecordRow {
   indexed_at: number;
 }
 
+export interface MutationSource {
+  /** Stable adapter identifier, for example `jetstream` or `pds-backfill`. */
+  id: string;
+  /** Source observation/event time, independent of record application time. */
+  time_us: number;
+  /** Monotonic repository revision when the source provides one. */
+  revision: string | null;
+  /** Source checkpoint or event position when the source provides one. */
+  cursor: string | null;
+}
+
 export interface IngestEvent {
   uri: string;
   did: string;
@@ -518,8 +529,16 @@ export interface IngestEvent {
   operation: "create" | "update" | "delete";
   cid: string | null;
   record: string | null;
+  /** Record/application time used by queries and feeds. */
   time_us: number;
+  /** Local projection time. */
   indexed_at: number;
+  /**
+   * Authoritative source ordering metadata. Optional only for compatibility
+   * with callers that constructed IngestEvent objects before 0.13.1; source
+   * adapters and createIngestEvent always populate it.
+   */
+  source?: MutationSource;
 }
 
 // Validation

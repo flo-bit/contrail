@@ -11,9 +11,9 @@
     "@atmo-dev/contrail": "workspace:*"
   },
   "devDependencies": {
-    "@atcute/lex-cli": "^2.8.1",
-    "@cloudflare/workers-types": "^4.20250124.0",
-    "typescript": "^5.7.3",
-    "wrangler": "^4.63.0"
+    "@atcute/lex-cli": "^3.2.1",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.118.0"
   }
 }

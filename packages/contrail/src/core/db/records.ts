@@ -518,16 +518,22 @@ export async function getLastCursor(db: Database): Promise<number | null> {
   return row ? row.time_us : null;
 }
 
+export function saveCursorStatement(
+  db: Database,
+  timeUs: number,
+): Statement {
+  return db
+    .prepare(
+      "INSERT INTO cursor (id, time_us) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET time_us = CASE WHEN excluded.time_us > cursor.time_us THEN excluded.time_us ELSE cursor.time_us END",
+    )
+    .bind(timeUs);
+}
+
 export async function saveCursor(
   db: Database,
-  timeUs: number
+  timeUs: number,
 ): Promise<void> {
-  await db
-    .prepare(
-      "INSERT INTO cursor (id, time_us) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET time_us = excluded.time_us"
-    )
-    .bind(timeUs)
-    .run();
+  await saveCursorStatement(db, timeUs).run();
 }
 
 // --- Existing record lookup ---
@@ -538,6 +544,154 @@ export interface ExistingRecordInfo {
   /** When the row was last written to our DB (microseconds). Populated
    *  whenever `lookupExistingRecords` runs, regardless of `includeRecord`. */
   indexed_at: number | null;
+}
+
+export interface RecordVersionInfo {
+  uri: string;
+  did: string;
+  collection: string;
+  rkey: string;
+  operation: "create" | "update" | "delete";
+  cid: string | null;
+  source_id: string;
+  source_revision: string | null;
+  source_time_us: number;
+  source_cursor: string | null;
+  indexed_at: number;
+}
+
+function versionForEvent(event: IngestEvent): RecordVersionInfo {
+  const source = event.source;
+  return {
+    uri: event.uri,
+    did: event.did,
+    collection: event.collection,
+    rkey: event.rkey,
+    operation: event.operation,
+    cid: event.cid,
+    source_id: source?.id ?? "legacy-caller",
+    // Before 0.13.1 callers had no separate source clock, so time_us is the
+    // least surprising compatibility fallback for hand-built IngestEvents.
+    source_time_us: source?.time_us ?? event.time_us,
+    source_revision: source?.revision ?? null,
+    source_cursor: source?.cursor ?? null,
+    indexed_at: event.indexed_at,
+  };
+}
+
+function comparePositionStrings(left: string, right: string): number {
+  if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
+    if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  }
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function operationRank(operation: RecordVersionInfo["operation"]): number {
+  if (operation === "delete") return 3;
+  if (operation === "update") return 2;
+  return 1;
+}
+
+/**
+ * Compare two observations of one canonical URI. Repository revisions are the
+ * strongest signal when both sides have one. Otherwise source event/observation
+ * time orders adapters consistently. Remaining comparisons are deterministic
+ * tie-breakers; notably a delete wins an exact tie so replay cannot resurrect it.
+ */
+export function compareRecordVersions(
+  left: RecordVersionInfo,
+  right: RecordVersionInfo,
+): number {
+  if (
+    left.source_revision !== null &&
+    right.source_revision !== null &&
+    left.source_revision !== right.source_revision
+  ) {
+    return comparePositionStrings(left.source_revision, right.source_revision);
+  }
+  if (left.source_time_us !== right.source_time_us) {
+    return left.source_time_us < right.source_time_us ? -1 : 1;
+  }
+  if ((left.source_revision === null) !== (right.source_revision === null)) {
+    return left.source_revision === null ? -1 : 1;
+  }
+  if (
+    left.source_id === right.source_id &&
+    left.source_cursor !== null &&
+    right.source_cursor !== null &&
+    left.source_cursor !== right.source_cursor
+  ) {
+    return comparePositionStrings(left.source_cursor, right.source_cursor);
+  }
+  const operationDifference =
+    operationRank(left.operation) - operationRank(right.operation);
+  if (operationDifference !== 0) return operationDifference;
+  const leftCid = left.cid ?? "";
+  const rightCid = right.cid ?? "";
+  if (leftCid !== rightCid) return leftCid < rightCid ? -1 : 1;
+  if (left.source_id !== right.source_id) {
+    return left.source_id < right.source_id ? -1 : 1;
+  }
+  return 0;
+}
+
+export async function lookupRecordVersions(
+  db: Database,
+  uris: Iterable<string>,
+): Promise<Map<string, RecordVersionInfo>> {
+  const uniqueUris = [...new Set(uris)];
+  const versions = new Map<string, RecordVersionInfo>();
+  for (let index = 0; index < uniqueUris.length; index += 50) {
+    const chunk = uniqueUris.slice(index, index + 50);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await db
+      .prepare(
+        `SELECT uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at FROM record_versions WHERE uri IN (${placeholders})`,
+      )
+      .bind(...chunk)
+      .all<RecordVersionInfo>();
+    for (const row of rows.results ?? []) versions.set(row.uri, row);
+  }
+  return versions;
+}
+
+export interface MutationSelection {
+  applied: IngestEvent[];
+  superseded: number;
+}
+
+/** Select one newest mutation per URI and reject rows older than durable state. */
+export async function selectCurrentMutations(
+  db: Database,
+  events: IngestEvent[],
+): Promise<MutationSelection> {
+  if (events.length === 0) return { applied: [], superseded: 0 };
+  const durable = await lookupRecordVersions(db, events.map((event) => event.uri));
+  const winners = new Map<
+    string,
+    { event: IngestEvent; version: RecordVersionInfo; index: number }
+  >();
+  let superseded = 0;
+
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
+    const version = versionForEvent(event);
+    const batchWinner = winners.get(event.uri);
+    const current = batchWinner?.version ?? durable.get(event.uri);
+    if (current && compareRecordVersions(version, current) <= 0) {
+      superseded++;
+      continue;
+    }
+    if (batchWinner) superseded++;
+    winners.set(event.uri, { event, version, index });
+  }
+
+  return {
+    applied: [...winners.values()]
+      .sort((left, right) => left.index - right.index)
+      .map((winner) => winner.event),
+    superseded,
+  };
 }
 
 /**
@@ -603,10 +757,57 @@ const RECORD_UPSERT_BINDINGS = 7;
 const RECORD_UPSERT_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_UPSERT_BINDINGS
 );
+const RECORD_VERSION_BINDINGS = 11;
+const RECORD_VERSION_ROWS = Math.floor(
+  MAX_STATEMENT_BINDINGS / RECORD_VERSION_BINDINGS,
+);
 
 interface StorageMutation {
   event: IngestEvent;
   table: string;
+}
+
+function buildRecordVersionStatements(
+  db: Database,
+  events: IngestEvent[],
+  existing: Map<string, ExistingRecordInfo>,
+): Statement[] {
+  const statements: Statement[] = [];
+  for (let index = 0; index < events.length; index += RECORD_VERSION_ROWS) {
+    const chunk = events.slice(index, index + RECORD_VERSION_ROWS);
+    const values = chunk
+      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .join(", ");
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at`,
+        )
+        .bind(
+          ...chunk.flatMap((event) => {
+            const version = versionForEvent(event);
+            const retainedCid =
+              event.operation === "delete"
+                ? (version.cid ?? existing.get(event.uri)?.cid ?? null)
+                : version.cid;
+            return [
+              version.uri,
+              version.did,
+              version.collection,
+              version.rkey,
+              version.operation,
+              retainedCid,
+              version.source_id,
+              version.source_revision,
+              version.source_time_us,
+              version.source_cursor,
+              version.indexed_at,
+            ];
+          }),
+        ),
+    );
+  }
+  return statements;
 }
 
 function buildRecordMutationStatements(
@@ -677,9 +878,22 @@ export async function projectEvents(
     phase?: "live" | "backfill";
     /** Statements committed after projection in the same database batch. */
     trailingStatements?: Statement[];
+    /** Internal: ingestRecords already checked durable source order. */
+    sourceOrderingChecked?: boolean;
+  },
+): Promise<MutationSelection> {
+  if (events.length === 0) return { applied: [], superseded: 0 };
+
+  const selection = options?.sourceOrderingChecked
+    ? { applied: events, superseded: 0 }
+    : await selectCurrentMutations(db, events);
+  events = selection.applied;
+  if (events.length === 0) {
+    if (options?.trailingStatements?.length) {
+      await db.batch(options.trailingStatements);
+    }
+    return selection;
   }
-): Promise<void> {
-  if (events.length === 0) return;
 
   const followCollections = getFeedFollowShortNames(config);
   const hasCountingRelations =
@@ -749,9 +963,12 @@ export async function projectEvents(
     }
   }
 
-  // Storage runs first so FTS, feeds, and count statements in the same atomic
-  // batch observe the final records.
-  batch.unshift(...buildRecordMutationStatements(db, storageMutations.values()));
+  // Storage and durable version/tombstone metadata run first so FTS, feeds,
+  // and count statements in the same atomic batch observe the final records.
+  batch.unshift(
+    ...buildRecordMutationStatements(db, storageMutations.values()),
+    ...buildRecordVersionStatements(db, events, existingMap),
+  );
 
   // Build deduplicated count statements — one UPDATE per unique target.
   batch.push(...buildBatchCountStatements(db, config, countTargets));
@@ -791,6 +1008,8 @@ export async function projectEvents(
       }
     }
   }
+
+  return selection;
 }
 
 /** Rebuild projections that are intentionally skipped during canonical bulk

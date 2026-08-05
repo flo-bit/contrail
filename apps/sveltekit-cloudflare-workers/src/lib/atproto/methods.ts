@@ -20,9 +20,11 @@ import * as TID from '@atcute/tid';
  * Parses an AT Protocol URI into its components.
  */
 export function parseUri(uri: string) {
-	const parts = parseResourceUri(uri);
-	if (!parts.ok) return;
-	return parts.value;
+	try {
+		return parseResourceUri(uri);
+	} catch {
+		return;
+	}
 }
 
 /**

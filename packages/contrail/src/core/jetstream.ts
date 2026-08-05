@@ -10,8 +10,8 @@ import {
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
-import { createIngestEvent, ingestRecords } from "./ingest";
+import { initSchema, getLastCursor, saveCursor, saveCursorStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
@@ -275,12 +275,26 @@ export async function ingestEvents(
       collected.push(
         createIngestEvent({
           did: event.did,
-          timeUs: event.time_us,
+          timeUs:
+            commit.operation === "delete"
+              ? event.time_us
+              : recordTimeUs(
+                  commit.record,
+                  commit.collection,
+                  config,
+                  event.time_us,
+                ),
           collection: commit.collection,
           operation: commit.operation,
           rkey: commit.rkey,
           cid: commit.operation === "delete" ? null : commit.cid,
           value: commit.operation === "delete" ? undefined : commit.record,
+          source: {
+            id: "jetstream",
+            time_us: event.time_us,
+            revision: commit.rev,
+            cursor: String(event.time_us),
+          },
         }),
       );
 
@@ -337,11 +351,20 @@ export async function ingestEvents(
       `[ingest] ${filteredUnknownDid} events filtered (unknown did). sample dids: ${sample}`
     );
   }
-  const lastCursor = subscription.cursor || null;
+  const subscriptionCursor = subscription.cursor || null;
+  // @atcute may advance its internal cursor when an event enters its buffer,
+  // before the async iterator yields that event. Persist only through the last
+  // event Contrail actually observed; anything buffered is deliberately replayed.
+  const lastCursor =
+    lastYieldedTimeUs === null
+      ? subscriptionCursor
+      : subscriptionCursor === null
+        ? lastYieldedTimeUs
+        : Math.min(subscriptionCursor, lastYieldedTimeUs);
 
   const cursorGap =
-    lastCursor !== null && lastYieldedTimeUs !== null
-      ? lastCursor - lastYieldedTimeUs
+    subscriptionCursor !== null && lastYieldedTimeUs !== null
+      ? subscriptionCursor - lastYieldedTimeUs
       : null;
 
   // Detect the library's internal cursor rollback (picks a different URL → rolls
@@ -352,14 +375,14 @@ export async function ingestEvents(
       : 0;
 
   log.log(
-    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, candidates=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
+    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, candidates=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${subscriptionCursor ?? "none"}, safe_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
   );
 
   if (cursorGap !== null && cursorGap > 1000) {
     log.warn(
       `[ingest] CURSOR GAP: subscription cursor is ${cursorGap}us (${Math.floor(
         cursorGap / 1000
-      )}ms) ahead of last yielded event — buffered events may be dropped`
+      )}ms) ahead of last yielded event — saving safe_cursor=${lastCursor ?? "none"}; buffered events will replay`
     );
   }
 
@@ -450,7 +473,16 @@ export async function runIngestCycle(
   const newlyKnownDids: string[] = [];
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
-    const result = await ingestRecords(db, batch, config, { knownDids });
+    const isFinalBatch = i + BATCH_SIZE >= events.length;
+    const result = await ingestRecords(db, batch, config, {
+      knownDids,
+      // Earlier batches may commit without moving the cursor. A crash replays
+      // them safely; the final batch atomically commits the exact source cursor.
+      trailingStatements:
+        isFinalBatch && lastCursor !== null
+          ? [saveCursorStatement(db, lastCursor)]
+          : undefined,
+    });
     accepted.push(...result.accepted);
     if (knownDids) {
       for (const did of result.discoveredDids) {
@@ -473,20 +505,17 @@ export async function runIngestCycle(
     log.log(`[ingest] applied ${identityUpdates.size} identity event(s)`);
   }
 
-  // Persist the cursor BEFORE the best-effort enrichment tail below. Records are
-  // already durably projected and handle changes recorded, so the
-  // cursor's forward progress is real and must be committed now. The steps that
-  // follow — refreshStaleIdentities especially — make per-DID network calls and
-  // can run long; if the cron isolate is aborted (e.g. a scheduled-invocation
-  // deadline) while they run, an un-saved cursor makes the next cycle re-drain the
-  // identical window forever. Identity refresh is idempotent and staleness-driven,
-  // so deferring it past the save costs nothing.
-  if (lastCursor !== null) {
+  // A commit batch saves its source cursor in the projection transaction above.
+  // An identity-only or fully filtered stream has no canonical record batch, so
+  // its cursor can advance independently after best-effort identity handling.
+  if (lastCursor !== null && events.length === 0) {
     await saveCursor(db, lastCursor);
+  }
+  if (lastCursor !== null) {
     log.log(
       `[ingest] saved cursor=${lastCursor} (advanced ${
         cursor !== null ? lastCursor - cursor : "n/a"
-      }us)`
+      }us, atomic=${events.length > 0})`,
     );
   } else {
     log.log(`[ingest] no cursor returned from subscription; not saving`);

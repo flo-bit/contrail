@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
-import { DEV_PORT } from './src/lib/atproto/port';
+import { DEV_PORT } from './src/lib/atproto/port.ts';
 
 export default defineConfig({
 	plugins: [sveltekit(), tailwindcss()],

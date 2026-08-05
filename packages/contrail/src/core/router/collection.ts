@@ -289,8 +289,10 @@ export function registerCollectionRoutes(
         const rawUri = c.req.query("uri");
         if (!rawUri) return c.json({ error: "uri parameter required" }, 400);
 
-        const parsed = parseResourceUri(rawUri);
-        if (!parsed.ok || parsed.value.rkey === undefined) {
+        let parsed: ReturnType<typeof parseResourceUri>;
+        try {
+          parsed = parseResourceUri(rawUri);
+        } catch {
           return c.json(
             {
               error: "InvalidRequest",
@@ -299,9 +301,18 @@ export function registerCollectionRoutes(
             400,
           );
         }
-        const did = await resolveActor(db, parsed.value.repo, config);
+        if (parsed.collection === undefined || parsed.rkey === undefined) {
+          return c.json(
+            {
+              error: "InvalidRequest",
+              message: "uri must be at://<actor>/<collection>/<rkey>",
+            },
+            400,
+          );
+        }
+        const did = await resolveActor(db, parsed.repo, config);
         if (!did) return c.json({ error: "Could not resolve actor" }, 400);
-        const uri = `at://${did}/${parsed.value.collection}/${parsed.value.rkey}`;
+        const uri = `at://${did}/${parsed.collection}/${parsed.rkey}`;
 
         const relations = colConfig.relations ?? {};
         const references = colConfig.references ?? {};

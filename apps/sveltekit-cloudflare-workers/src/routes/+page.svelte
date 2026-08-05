@@ -70,10 +70,15 @@
 					if (event.commit.operation !== 'create') continue;
 
 					const { did } = event;
-					const { rkey, record } = event.commit as {
-						rkey: string;
-						record: { status: string; createdAt: string };
-					};
+					const { rkey, record } = event.commit;
+					if (
+						record === null ||
+						typeof record !== 'object' ||
+						typeof record.status !== 'string' ||
+						typeof record.createdAt !== 'string'
+					) {
+						continue;
+					}
 					const key = `${did}-${rkey}`;
 
 					if (seenKeys.has(key)) continue;
