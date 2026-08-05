@@ -1,8 +1,14 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { Contrail, type ContrailConfig, type Database } from "@atmo-dev/contrail";
+import { createRequire } from "node:module";
+import {
+  Contrail,
+  type ContrailConfig,
+  type Database,
+  type LexiconDoc,
+} from "@atmo-dev/contrail";
 import { getPlatformProxy } from "wrangler";
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -10,6 +16,7 @@ const CONFIG_DIR = resolve(APP_DIR, "configs");
 const CACHE_DIR = resolve(APP_DIR, ".cache");
 const RESULTS_DIR = resolve(APP_DIR, "results");
 const WRANGLER_CONFIG = resolve(APP_DIR, "wrangler.jsonc");
+const require = createRequire(import.meta.url);
 
 interface Options {
   config: string;
@@ -19,6 +26,7 @@ interface Options {
   maxAttempts: number;
   keepCache: boolean;
   excludeDids: string[];
+  validationLexicons?: string;
 }
 
 function positiveInteger(raw: string | undefined, name: string, fallback: number): number {
@@ -37,6 +45,7 @@ function parseArgs(argv: string[]): Options {
   let didsPerPdsRaw: string | undefined;
   let maxAttemptsRaw: string | undefined;
   let keepCache = false;
+  let validationLexicons: string | undefined;
   const excludeDids: string[] = [];
 
   for (let index = 0; index < argv.length; index++) {
@@ -58,6 +67,10 @@ function parseArgs(argv: string[]): Options {
     } else if (arg === "--exclude-did") excludeDids.push(argv[++index]);
     else if (arg.startsWith("--exclude-did=")) {
       excludeDids.push(arg.slice("--exclude-did=".length));
+    } else if (arg === "--validation-lexicons") {
+      validationLexicons = argv[++index];
+    } else if (arg.startsWith("--validation-lexicons=")) {
+      validationLexicons = arg.slice("--validation-lexicons=".length);
     } else if (arg === "--keep-cache") keepCache = true;
     else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: pnpm bench --config <file> [options]
@@ -69,6 +82,8 @@ Options:
   --dids-per-pds <n>    Concurrent accounts per PDS (default: 3)
   --max-attempts <n>    Immediate attempts per failed account (default: 1)
   --exclude-did <did>   Skip an actor after discovery (repeatable)
+  --validation-lexicons <dir>
+                        Enable strict Lexicon + CID validation with JSON docs
   --keep-cache          Keep the disposable local D1 after the run
 `);
       process.exit(0);
@@ -86,6 +101,7 @@ Options:
     maxAttempts: positiveInteger(maxAttemptsRaw, "--max-attempts", 1),
     keepCache,
     excludeDids,
+    validationLexicons,
   };
 }
 
@@ -102,6 +118,38 @@ async function resolveConfigPath(input: string): Promise<string> {
     }
   }
   throw new Error(`Config not found: ${input}`);
+}
+
+async function loadLexiconDirectory(input: string): Promise<{
+  path: string;
+  documents: object[];
+}> {
+  const path = isAbsolute(input) ? input : resolve(process.cwd(), input);
+  const entries = await readdir(path, { recursive: true, withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => resolve(entry.parentPath, entry.name))
+    .sort();
+  if (files.length === 0) throw new Error(`No Lexicon JSON files found: ${path}`);
+  const documents = await Promise.all(
+    files.map(async (file) => JSON.parse(await readFile(file, "utf8")) as object),
+  );
+  return { path, documents };
+}
+
+async function installedPackageVersion(
+  name: string,
+  packageRequire: NodeJS.Require = require,
+): Promise<string | null> {
+  try {
+    const packagePath = packageRequire.resolve(`${name}/package.json`);
+    const metadata = JSON.parse(await readFile(packagePath, "utf8")) as {
+      version?: unknown;
+    };
+    return typeof metadata.version === "string" ? metadata.version : null;
+  } catch {
+    return null;
+  }
 }
 
 function elapsed(start: number): number {
@@ -187,7 +235,26 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const configPath = await resolveConfigPath(options.config);
   const config = JSON.parse(await readFile(configPath, "utf8")) as ContrailConfig;
-  const name = safeName(configPath);
+  const validation = options.validationLexicons
+    ? await loadLexiconDirectory(options.validationLexicons)
+    : null;
+  if (validation) {
+    config.validation = {
+      lexicons: validation.documents as LexiconDoc[],
+      strict: true,
+      verifyCid: true,
+    };
+  }
+  const wranglerPackagePath = require.resolve("wrangler/package.json");
+  const runtime = {
+    node: process.version,
+    wrangler: await installedPackageVersion("wrangler"),
+    workerd: await installedPackageVersion(
+      "workerd",
+      createRequire(wranglerPackagePath),
+    ),
+  };
+  const name = `${safeName(configPath)}${validation ? "-validated" : ""}`;
   const cachePath = resolve(
     CACHE_DIR,
     `${name}-r${options.concurrency}-h${options.pdsConcurrency}-d${options.didsPerPds}`,
@@ -199,11 +266,16 @@ async function main(): Promise<void> {
 
   console.log(`config:       ${configPath}`);
   console.log(`backend:      fresh local D1`);
+  console.log(
+    `runtime:      Wrangler ${runtime.wrangler ?? "unknown"}, ` +
+      `workerd ${runtime.workerd ?? "unknown"}`,
+  );
   console.log(`resolution:   ${options.concurrency}`);
   console.log(`PDS hosts:   ${options.pdsConcurrency}`);
   console.log(`DIDs / PDS:  ${options.didsPerPds}`);
   console.log(`max attempts: ${options.maxAttempts}`);
   console.log(`excluded:     ${options.excludeDids.length} actors`);
+  console.log(`validation:   ${validation ? `${validation.documents.length} Lexicons + CID` : "disabled"}`);
   console.log(`cache:        reset ${cachePath}`);
 
   const startedAt = new Date();
@@ -217,6 +289,7 @@ async function main(): Promise<void> {
   let acceptedRecords = 0;
   let backfillMetrics: any;
   let overview: any;
+  let diagnostics: any;
   let fetchInstrumentation: ReturnType<typeof instrumentFetch> | undefined;
 
   try {
@@ -276,6 +349,7 @@ async function main(): Promise<void> {
       .fetch(new Request("http://benchmark/status"));
     if (!response.ok) throw new Error(`Status request failed: ${response.status}`);
     overview = await response.json();
+    diagnostics = await contrail.diagnostics();
   } finally {
     fetchInstrumentation?.restore();
     await proxy?.dispose();
@@ -303,12 +377,21 @@ async function main(): Promise<void> {
     version: 1,
     config: relativeConfig.startsWith("..") ? configPath : relativeConfig,
     backend: "wrangler-local-d1",
+    runtime,
     options: {
       concurrency: options.concurrency,
       pdsConcurrency: options.pdsConcurrency,
       didsPerPds: options.didsPerPds,
       maxAttempts: options.maxAttempts,
       excludedDids: options.excludeDids,
+      validation: validation
+        ? {
+            lexicons: relative(APP_DIR, validation.path),
+            documents: validation.documents.length,
+            strict: true,
+            verifyCid: true,
+          }
+        : null,
     },
     started_at: startedAt.toISOString(),
     completed_at: completedAt.toISOString(),
@@ -336,6 +419,7 @@ async function main(): Promise<void> {
     },
     backfill: overview.backfill,
     collections: overview.collections,
+    ingest_diagnostics: diagnostics,
   };
 
   const timestamp = completedAt.toISOString().replace(/[:.]/g, "-");
@@ -359,6 +443,12 @@ async function main(): Promise<void> {
       `${overview.backfill.accounts.failed} failed`,
   );
   console.log(`network max:  ${result.network.max_concurrent} concurrent requests`);
+  const rejected = (diagnostics ?? []).reduce(
+    (total: number, diagnostic: { total?: number }) =>
+      total + Number(diagnostic.total ?? 0),
+    0,
+  );
+  console.log(`rejections:   ${rejected} aggregate admission decisions`);
   if (backfillMetrics) {
     console.log(
       `phases:       resolution ${(backfillMetrics.resolution_ms / 1000).toFixed(2)}s, ` +

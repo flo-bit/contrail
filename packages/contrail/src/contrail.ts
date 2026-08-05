@@ -9,6 +9,8 @@ import {
   validateConfig,
 } from "./core/types";
 import { initSchema } from "./core/db/schema";
+import { prepareRecordValidation } from "./core/validation";
+import { getIngestDiagnostics } from "./core/diagnostics";
 import { optimizeDatabase } from "./core/db/optimize";
 import { queryRecords, type QueryOptions } from "./core/db/records";
 import {
@@ -55,6 +57,7 @@ export class Contrail {
     const { db, ...configInput } = options;
     this.config = resolveConfig(configInput);
     validateConfig(this.config);
+    prepareRecordValidation(this.config);
     this._db = db;
   }
 
@@ -76,6 +79,11 @@ export class Contrail {
    *  call it directly. */
   async optimize(db?: Database): Promise<void> {
     await optimizeDatabase(this.getDb(db), optimizeAnalysisLimit(this.config));
+  }
+
+  /** Read private aggregate ingest rejection counters. */
+  async diagnostics(db?: Database) {
+    return getIngestDiagnostics(this.getDb(db));
   }
 
   /** Query records from a collection. */

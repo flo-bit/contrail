@@ -6,6 +6,7 @@ import {
   discoverDIDs,
   finishBackfillRun,
   getBackfillStatus,
+  getIngestDiagnostics,
   initSchema,
   queryRecords,
   resolveConfig,
@@ -113,6 +114,15 @@ describe("backfill failure state", () => {
               uri: `at://${actor}/${follow}/one`,
               cid: "follow-cid",
               value: { $type: follow, subject, createdAt: "2026-01-01T00:00:00Z" }
+            },
+            {
+              uri: `at://${actor}/${follow}/outside`,
+              cid: "outside-cid",
+              value: {
+                $type: follow,
+                subject: "did:plc:not-discovered",
+                createdAt: "2026-01-01T00:00:00Z"
+              }
             }
           ]
         }),
@@ -129,6 +139,72 @@ describe("backfill failure state", () => {
       .first<{ source_id: string; source_time_us: number }>();
     expect(version?.source_id).toBe("pds-backfill");
     expect(version?.source_time_us).toBeTypeOf("number");
+    expect(
+      (await getIngestDiagnostics(db)).find(
+        (entry) => entry.category === "unknown_subject",
+      )?.total,
+    ).toBe(1);
+  });
+
+  it("lets an authoritative PDS observation replace a future-skewed tombstone", async () => {
+    const db = await createTestDbWithSchema();
+    const uri = `at://${DID}/${EVENT}/authoritative`;
+    await db
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind(DID, "backfill.test", "https://pds.test", Date.now())
+      .run();
+    await ingestRecords(db, [
+      {
+        ...makeEvent({
+          uri,
+          did: DID,
+          collection: EVENT,
+          rkey: "authoritative",
+          operation: "delete",
+          cid: null,
+          record: null,
+        }),
+        source: {
+          id: "jetstream",
+          time_us: Date.now() * 1000 + 60_000_000,
+          revision: null,
+          cursor: "future-skew",
+        },
+      },
+    ]);
+
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          records: [
+            {
+              uri,
+              cid: "current-pds-cid",
+              value: {
+                $type: EVENT,
+                name: "Current PDS record",
+                startsAt: "2026-01-01T00:00:00Z",
+                mode: "virtual",
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await backfillUser(db, DID, EVENT, Infinity, TEST_CONFIG, {
+      maxRetries: 0,
+    });
+
+    const records = await queryRecords(db, TEST_CONFIG, { collection: "event" });
+    expect(records.records.map((record) => record.uri)).toContain(uri);
+    expect(
+      await db
+        .prepare("SELECT source_id FROM record_versions WHERE uri = ?")
+        .bind(uri)
+        .first<{ source_id: string }>(),
+    ).toEqual({ source_id: "pds-backfill" });
   });
 
   it("starts the next queued account without waiting for a slow worker", async () => {

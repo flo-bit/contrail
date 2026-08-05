@@ -1,3 +1,4 @@
+import type { LexiconDoc } from "@atcute/lexicon-doc";
 import type { SqlDialect } from "./dialect";
 
 // Database interface — D1 implements this natively
@@ -143,9 +144,9 @@ export interface CollectionConfig {
   searchable?: string[] | false;
   /** XRPC methods to emit. Defaults to ['listRecords', 'getRecord']. */
   methods?: CollectionMethod[];
-  /** JSON field on the record used as the canonical event time, parsed and
-   *  written into `time_us` during backfill (and clamped to now). Default
-   *  `"createdAt"`. Set to `false` to disable parsing and keep ingest time. */
+  /** JSON field used as record/application time across live ingest, backfill,
+   *  notify, and enrichment (clamped to source observation time). Default
+   *  `"createdAt"`. Set to `false` to use source observation time. */
   timeField?: string | false;
   /** JSON field on the record holding a DID that this record points at
    *  (e.g. `"subject"` for follows). When set on a `discover: false`
@@ -226,11 +227,25 @@ export interface Logger {
   error(...args: any[]): void;
 }
 
+export interface IngestValidationConfig {
+  /** Lexicon documents for every configured record collection and its refs. */
+  lexicons: LexiconDoc[];
+  /** Recompute authoritative record CIDs from canonical DAG-CBOR (default true). */
+  verifyCid?: boolean;
+  /** Enforce strict blob size/MIME constraints as well as normal Lexicon rules (default true). */
+  strict?: boolean;
+  /** Sources allowed to emit CID-less creates/updates. Defaults to local/synthetic sources only. */
+  allowCidlessSources?: string[];
+}
+
 export interface ContrailConfig {
   namespace: string;
   /** Collections to index, keyed by short name. Short names become endpoint URL segments
    *  (`<namespace>.<short>.listRecords`) and table suffixes (`records_<short>`). */
   collections: Record<string, CollectionConfig>;
+  /** Optional shared runtime Lexicon and CID validation. When configured,
+   * every create/update from every source passes through it before projection. */
+  validation?: IngestValidationConfig;
   profiles?: (string | ProfileConfig)[];
   relays?: string[];
   /** Jetstream endpoints to ingest from (defaults to {@link DEFAULT_JETSTREAMS}).

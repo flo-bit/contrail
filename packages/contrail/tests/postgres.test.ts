@@ -57,7 +57,7 @@ if (!PG_URL) {
     const tables = await pool.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public'
        AND (tablename LIKE 'records_%' OR tablename LIKE 'fts_%'
-            OR tablename IN ('backfills', 'discovery', 'cursor', 'identities', 'feed_items', 'feed_backfills'))`
+            OR tablename IN ('_contrail_meta', 'backfills', 'backfill_state', 'discovery', 'cursor', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills'))`
     );
     for (const { tablename } of tables.rows) {
       await pool.query(`DROP TABLE IF EXISTS ${tablename} CASCADE`);

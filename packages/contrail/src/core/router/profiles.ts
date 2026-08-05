@@ -2,6 +2,7 @@ import type { Database, ContrailConfig, RecordRow, ProfileConfig } from "../type
 import { recordsTableName, normalizeProfileConfig } from "../types";
 import { resolveIdentities } from "../identity";
 import { getPDS } from "../client";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
 import type { Did } from "@atcute/lexicons";
 import { batchedInQuery } from "./helpers";
 
@@ -47,6 +48,7 @@ export async function resolveProfiles(
 
   const profileConfigs = config.profiles.map(normalizeProfileConfig);
   const result: Record<string, ProfileEntry[]> = {};
+  const indexedUris = new Set<string>();
 
   // Batch-lookup profile records for each configured profile collection
   for (const pc of profileConfigs) {
@@ -63,6 +65,7 @@ export async function resolveProfiles(
     );
 
     for (const row of rows) {
+      indexedUris.add(row.uri);
       let value: unknown = null;
       if (row.record) {
         try {
@@ -87,10 +90,17 @@ export async function resolveProfiles(
   // Resolve identities for all DIDs
   const identities = await resolveIdentities(db, dids, config);
 
-  // Fetch missing profile records from PDS on demand
-  const missingDids = dids.filter((d) => !result[d]);
-  if (missingDids.length > 0 && profileConfigs.length > 0) {
-    const fetched = await fetchMissingProfiles(db, config, missingDids);
+  // Fetch each missing (DID, profile collection) independently. One cached
+  // profile collection must not make another configured collection look done.
+  const missingProfiles = dids.flatMap((did) =>
+    profileConfigs.flatMap((profile) => {
+      const rkey = profile.rkey ?? "self";
+      const uri = `at://${did}/${profile.collection}/${rkey}`;
+      return indexedUris.has(uri) ? [] : [{ did, profile }];
+    }),
+  );
+  if (missingProfiles.length > 0) {
+    const fetched = await fetchMissingProfiles(db, config, missingProfiles);
     for (const [did, entries] of Object.entries(fetched)) {
       if (!result[did]) result[did] = [];
       result[did].push(...entries);
@@ -122,60 +132,73 @@ export async function resolveProfiles(
 async function fetchMissingProfiles(
   db: Database,
   config: ContrailConfig,
-  dids: string[]
+  missing: Array<{ did: string; profile: ProfileConfig }>,
 ): Promise<Record<string, ProfileEntry[]>> {
-  const result: Record<string, ProfileEntry[]> = {};
-  const profileConfigs = config.profiles!.map(normalizeProfileConfig);
+  const fetched = await Promise.all(
+    missing.map(async ({ did, profile }) => {
+      const { collection, rkey: configRkey } = profile;
+      const rkey = configRkey ?? "self";
+      const uri = `at://${did}/${collection}/${rkey}`;
+      try {
+        const pds = await getPDS(did as Did, db, config);
+        if (!pds) return null;
 
-  await Promise.all(
-    dids.flatMap((did) =>
-      profileConfigs.map(async (pc) => {
-        const { collection, rkey: configRkey, shortName } = pc;
-        const rkey = configRkey ?? "self";
-        const table = recordsTableName(shortName ?? collection);
-        try {
-          const pds = await getPDS(did as Did, db, config);
-          if (!pds) return;
+        const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);
+        url.searchParams.set("repo", did);
+        url.searchParams.set("collection", collection);
+        url.searchParams.set("rkey", rkey);
 
-          const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);
-          url.searchParams.set("repo", did);
-          url.searchParams.set("collection", collection);
-          url.searchParams.set("rkey", rkey);
-
-          const res = await fetch(url.toString());
-          if (!res.ok) return;
-
-          const data = (await res.json()) as { uri?: string; value?: unknown; cid?: string };
-          if (!data.value || !data.cid) return;
-
-          const uri = data.uri ?? `at://${did}/${collection}/${rkey}`;
-          const record = data.value;
-          const cid = data.cid;
-
-          // Index into D1 for future requests
-          await db
-            .prepare(
-              `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, indexed_at = excluded.indexed_at`
-            )
-            .bind(uri, did, rkey, cid, JSON.stringify(record), Date.now() * 1000, Date.now())
-            .run();
-
-          if (!result[did]) result[did] = [];
-          result[did].push({
-            did,
-            handle: null,
-            uri,
-            collection,
-            rkey,
-            cid,
-            value: record,
-          });
-        } catch {
-          // Skip failures silently
+        const response = await fetch(url.toString());
+        if (!response.ok) return null;
+        const data = (await response.json()) as {
+          uri?: string;
+          value?: unknown;
+          cid?: string;
+        };
+        if (!data.value || !data.cid || (data.uri && data.uri !== uri)) {
+          return null;
         }
-      })
-    )
+
+        const nowUs = Date.now() * 1000;
+        return createIngestEvent({
+          uri,
+          did,
+          collection,
+          rkey,
+          operation: "create",
+          cid: data.cid,
+          value: data.value,
+          timeUs: recordTimeUs(data.value, collection, config, nowUs),
+          indexedAt: nowUs,
+          source: {
+            id: "pds-profile",
+            time_us: nowUs,
+            revision: null,
+            cursor: null,
+          },
+        });
+      } catch {
+        return null;
+      }
+    }),
   );
 
+  const events = fetched.filter((event) => event !== null);
+  if (events.length === 0) return {};
+  const { accepted } = await ingestRecords(db, events, config);
+  const result: Record<string, ProfileEntry[]> = {};
+  for (const event of accepted) {
+    if (event.operation === "delete") continue;
+    if (!result[event.did]) result[event.did] = [];
+    result[event.did].push({
+      did: event.did,
+      handle: null,
+      uri: event.uri,
+      collection: event.collection,
+      rkey: event.rkey,
+      cid: event.cid,
+      value: event.record ? JSON.parse(event.record) : null,
+    });
+  }
   return result;
 }
