@@ -1,5 +1,17 @@
 # @atmo-dev/contrail
 
+## 0.13.0
+
+### Minor Changes
+
+- 8c5cea6: Collapse Contrail into one public package and one AppView implementation. Remove the spaces, authority, record-host, community, realtime, sync, and custom Lexicon-tooling products. Route Jetstream, persistent, backfill, and immediate synchronization records through the shared `ingestRecords` admission and projection path. Make materialized relation counts converge when children arrive before parents, and prevent transient PDS failures from being interpreted as authoritative deletions. Keep dependent-subject filtering scoped to dependent collections and restore typed example XRPC clients with Atcute's generator. Preserve `node:sqlite` in the published adapter, make all query and search cursors stable across tied and typed/null rows, use Worker-safe cursor encoding, and bound the complete notify resolution/fetch/body operation. Admit newly discovered actors and their dependent mutations as one batch, and keep subject decisions mutation-local so deletes always pass. Existing pagination cursors from 0.12 are intentionally invalidated by the new stable cursor format; clients should discard persisted cursor tokens when upgrading. Local development now launches Wrangler through the workspace's pnpm installation instead of invoking `npx`.
+- a8a2b45: Remove the incomplete `refresh` PDS sweep from the public API, CLI, Wrangler helpers, examples, and documentation. Normal ingestion resumes from its saved source cursor; deployments whose source history has expired should rebuild into a fresh database rather than rely on partial reconciliation that cannot safely infer deletions.
+
+### Patch Changes
+
+- ad9557c: Keep failed PDS and relay work pending with bounded retries instead of marking account rows complete. Retry due PDS accounts automatically in small scheduled slices with persisted exponential backoff up to 48 hours, a ten-scheduled-attempt limit, and an overlap lease. Add durable backfill and discovery state to the JSON overview and `/status` endpoint, including running/complete state, retry timing, per-collection progress, and mutually exclusive complete/pending/retrying/failed account counts.
+- c74aec5: Group historical fetches by PDS with bounded per-host concurrency, stream resolved identities directly into host workers, cancel timed-out requests, defer failed initial accounts to scheduled retries, atomically commit canonical pages with cursor checkpoints, and rebuild FTS and relation counts with set-based SQL after canonical bulk loading. SQLite batches now use synchronous transactions so concurrent backfill work cannot overlap or partially commit.
+
 ## 0.12.2
 
 ### Patch Changes
