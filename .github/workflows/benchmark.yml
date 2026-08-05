@@ -1,0 +1,95 @@
+name: Pull request benchmark
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Native SQLite backfill
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Contrail
+        run: pnpm --filter @atmo-dev/contrail build
+
+      - name: Run benchmark
+        run: >-
+          pnpm bench
+          --backend sqlite
+          --config calendar-records-only.config.json
+          --concurrency 100
+          --pds-concurrency 20
+          --dids-per-pds 3
+          --max-attempts 1
+
+      - name: Publish benchmark summary
+        if: always()
+        shell: bash
+        run: |
+          result="$(find apps/benchmark/results -type f -name 'calendar-records-only-sqlite-*.json' -print -quit)"
+          if [[ -z "$result" ]]; then
+            printf '## Native SQLite benchmark\n\nThe benchmark did not produce a result.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          RESULT_PATH="$result" node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { basename } from "node:path";
+
+          const result = JSON.parse(readFileSync(process.env.RESULT_PATH, "utf8"));
+          const seconds = (milliseconds) => `${(Number(milliseconds) / 1000).toFixed(2)} s`;
+          const integer = (value) => Number(value).toLocaleString("en-US");
+          const decimal = (value) => Number(value).toFixed(2);
+          const accounts = result.backfill?.accounts ?? {};
+          const lines = [
+            "## Native SQLite benchmark",
+            "",
+            "| Metric | Result |",
+            "| --- | ---: |",
+            `| Total time | ${seconds(result.timings_ms.total)} |`,
+            `| Backfill time | ${seconds(result.timings_ms.backfill)} |`,
+            `| Indexed records | ${integer(result.indexed_records)} |`,
+            `| Accepted records/s | ${decimal(result.throughput.accepted_records_per_second)} |`,
+            `| Indexed records/s | ${decimal(result.throughput.indexed_records_per_second)} |`,
+            `| Complete accounts | ${integer(accounts.complete ?? 0)} |`,
+            `| Retrying accounts | ${integer(accounts.retrying ?? 0)} |`,
+            "",
+            `Runtime: Node ${result.runtime.node}, SQLite ${result.runtime.sqlite ?? "unknown"}`,
+            "",
+            `Artifact source: \`${basename(process.env.RESULT_PATH)}\``,
+          ];
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+          NODE
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-pr-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: apps/benchmark/results/*.json
+          if-no-files-found: ignore
+          retention-days: 14
