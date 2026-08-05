@@ -8,6 +8,12 @@ From the repository root:
 pnpm bench --config calendar.config.json
 ```
 
+D1 is the default backend. Use `--backend sqlite` for a fresh in-memory native SQLite run; the result records Node and SQLite versions and gains `-sqlite` in its filename:
+
+```bash
+pnpm bench --backend sqlite --config calendar-records-only.config.json
+```
+
 `calendar.config.json` mirrors the retained indexing shape from `11-atproto/02-atmo-rsvp`: calendar events, RSVPs, profiles, follows/feeds, query indexes, relation counts, and event full-text search. Removed product modules and read-only pipeline handlers are intentionally absent because they do not participate in indexing. External sinks are also omitted so the benchmark measures Contrail and D1 rather than Meilisearch latency.
 
 To run the same full workload with strict runtime Lexicon validation and canonical DAG-CBOR CID verification enabled:
@@ -43,7 +49,7 @@ The current defaults are 100 concurrent identity resolutions, 20 active PDS host
 
 Before every run the harness recursively deletes its config/concurrency-specific `.cache` directory. It disposes and deletes the local D1 afterward as well; pass `--keep-cache` only for debugging.
 
-Results are written to ignored JSON files under `results/`. Selected reference runs live in `baselines/`: [`calendar-default.json`](baselines/calendar-default.json) is the original 774.49-second global-concurrency run, [`calendar-host-aware.json`](baselines/calendar-host-aware.json) is the 219.74-second host-aware result with set-based derived projection rebuilds, and [`calendar-pipelined.json`](baselines/calendar-pipelined.json) is the comparable 134.98-second result after streaming identity resolution and atomically checkpointing projected pages. [`calendar-runtime-comparison.json`](baselines/calendar-runtime-comparison.json) isolates the local workerd regression from Contrail changes, while [`calendar-validation-comparison.json`](baselines/calendar-validation-comparison.json) retains the final adjacent validation-disabled/enabled pair.
+Results are written to ignored JSON files under `results/`. Selected reference runs live in `baselines/`: [`calendar-default.json`](baselines/calendar-default.json) is the original 774.49-second global-concurrency run, [`calendar-host-aware.json`](baselines/calendar-host-aware.json) is the 219.74-second host-aware result with set-based derived projection rebuilds, and [`calendar-pipelined.json`](baselines/calendar-pipelined.json) is the comparable 134.98-second result after streaming identity resolution and atomically checkpointing projected pages. [`calendar-runtime-comparison.json`](baselines/calendar-runtime-comparison.json) isolates the local workerd regression from Contrail changes, [`calendar-validation-comparison.json`](baselines/calendar-validation-comparison.json) retains the final adjacent validation-disabled/enabled D1 pair, and [`calendar-sqlite-validated.json`](baselines/calendar-sqlite-validated.json) records the validated native-SQLite records-only run.
 
 Each result includes:
 
@@ -51,7 +57,7 @@ Each result includes:
 - accepted and indexed records;
 - records per second;
 - peak RSS;
-- exact Node, Wrangler, and workerd versions;
+- exact Node plus Wrangler/workerd or native SQLite versions;
 - account and per-collection backfill state;
 - bounded aggregate ingest rejection diagnostics;
 - validation/CID settings when enabled; and

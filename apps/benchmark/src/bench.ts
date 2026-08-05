@@ -9,6 +9,7 @@ import {
   type Database,
   type LexiconDoc,
 } from "@atmo-dev/contrail";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { getPlatformProxy } from "wrangler";
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,8 +19,11 @@ const RESULTS_DIR = resolve(APP_DIR, "results");
 const WRANGLER_CONFIG = resolve(APP_DIR, "wrangler.jsonc");
 const require = createRequire(import.meta.url);
 
+type BenchmarkBackend = "d1" | "sqlite";
+
 interface Options {
   config: string;
+  backend: BenchmarkBackend;
   concurrency: number;
   pdsConcurrency: number;
   didsPerPds: number;
@@ -40,6 +44,7 @@ function positiveInteger(raw: string | undefined, name: string, fallback: number
 
 function parseArgs(argv: string[]): Options {
   let config: string | undefined;
+  let backend: BenchmarkBackend = "d1";
   let concurrencyRaw: string | undefined;
   let pdsConcurrencyRaw: string | undefined;
   let didsPerPdsRaw: string | undefined;
@@ -52,7 +57,13 @@ function parseArgs(argv: string[]): Options {
     const arg = argv[index];
     if (arg === "--config") config = argv[++index];
     else if (arg.startsWith("--config=")) config = arg.slice("--config=".length);
-    else if (arg === "--concurrency") concurrencyRaw = argv[++index];
+    else if (arg === "--backend" || arg.startsWith("--backend=")) {
+      const value = arg === "--backend" ? argv[++index] : arg.slice("--backend=".length);
+      if (value !== "d1" && value !== "sqlite") {
+        throw new Error(`--backend must be d1 or sqlite (got ${value})`);
+      }
+      backend = value;
+    } else if (arg === "--concurrency") concurrencyRaw = argv[++index];
     else if (arg.startsWith("--concurrency=")) {
       concurrencyRaw = arg.slice("--concurrency=".length);
     } else if (arg === "--pds-concurrency") pdsConcurrencyRaw = argv[++index];
@@ -77,6 +88,7 @@ function parseArgs(argv: string[]): Options {
 
 Options:
   --config <file>       JSON config path or filename under configs/ (required)
+  --backend <name>      d1 (default) or native sqlite
   --concurrency <n>     Concurrent identity resolutions (default: 100)
   --pds-concurrency <n> Concurrent PDS hosts (default: 20)
   --dids-per-pds <n>    Concurrent accounts per PDS (default: 3)
@@ -95,6 +107,7 @@ Options:
   if (!config) throw new Error("--config is required");
   return {
     config,
+    backend,
     concurrency: positiveInteger(concurrencyRaw, "--concurrency", 100),
     pdsConcurrency: positiveInteger(pdsConcurrencyRaw, "--pds-concurrency", 20),
     didsPerPds: positiveInteger(didsPerPdsRaw, "--dids-per-pds", 3),
@@ -245,30 +258,41 @@ async function main(): Promise<void> {
       verifyCid: true,
     };
   }
-  const wranglerPackagePath = require.resolve("wrangler/package.json");
+  const wranglerPackagePath =
+    options.backend === "d1" ? require.resolve("wrangler/package.json") : null;
   const runtime = {
     node: process.version,
-    wrangler: await installedPackageVersion("wrangler"),
-    workerd: await installedPackageVersion(
-      "workerd",
-      createRequire(wranglerPackagePath),
-    ),
+    wrangler:
+      options.backend === "d1" ? await installedPackageVersion("wrangler") : null,
+    workerd: wranglerPackagePath
+      ? await installedPackageVersion("workerd", createRequire(wranglerPackagePath))
+      : null,
+    sqlite: options.backend === "sqlite" ? (process.versions.sqlite ?? null) : null,
   };
-  const name = `${safeName(configPath)}${validation ? "-validated" : ""}`;
+  const name = `${safeName(configPath)}${
+    options.backend === "sqlite" ? "-sqlite" : ""
+  }${validation ? "-validated" : ""}`;
   const cachePath = resolve(
     CACHE_DIR,
     `${name}-r${options.concurrency}-h${options.pdsConcurrency}-d${options.didsPerPds}`,
   );
 
-  await rm(cachePath, { recursive: true, force: true });
-  await mkdir(cachePath, { recursive: true });
+  if (options.backend === "d1") {
+    await rm(cachePath, { recursive: true, force: true });
+    await mkdir(cachePath, { recursive: true });
+  }
   await mkdir(RESULTS_DIR, { recursive: true });
 
   console.log(`config:       ${configPath}`);
-  console.log(`backend:      fresh local D1`);
   console.log(
-    `runtime:      Wrangler ${runtime.wrangler ?? "unknown"}, ` +
-      `workerd ${runtime.workerd ?? "unknown"}`,
+    `backend:      ${
+      options.backend === "d1" ? "fresh local D1" : "fresh in-memory native SQLite"
+    }`,
+  );
+  console.log(
+    options.backend === "d1"
+      ? `runtime:      Wrangler ${runtime.wrangler ?? "unknown"}, workerd ${runtime.workerd ?? "unknown"}`
+      : `runtime:      Node ${runtime.node}, SQLite ${runtime.sqlite ?? "unknown"}`,
   );
   console.log(`resolution:   ${options.concurrency}`);
   console.log(`PDS hosts:   ${options.pdsConcurrency}`);
@@ -276,7 +300,7 @@ async function main(): Promise<void> {
   console.log(`max attempts: ${options.maxAttempts}`);
   console.log(`excluded:     ${options.excludeDids.length} actors`);
   console.log(`validation:   ${validation ? `${validation.documents.length} Lexicons + CID` : "disabled"}`);
-  console.log(`cache:        reset ${cachePath}`);
+  if (options.backend === "d1") console.log(`cache:        reset ${cachePath}`);
 
   const startedAt = new Date();
   const totalStart = performance.now();
@@ -294,16 +318,20 @@ async function main(): Promise<void> {
 
   try {
     let phaseStart = performance.now();
-    proxy = await getPlatformProxy({
-      configPath: WRANGLER_CONFIG,
-      persist: { path: cachePath },
-      remoteBindings: false,
-      envFiles: [],
-    });
+    let db: Database;
+    if (options.backend === "sqlite") {
+      db = createSqliteDatabase(":memory:");
+    } else {
+      proxy = await getPlatformProxy({
+        configPath: WRANGLER_CONFIG,
+        persist: { path: cachePath },
+        remoteBindings: false,
+        envFiles: [],
+      });
+      db = (proxy.env as Record<string, unknown>).DB as Database;
+    }
     bindingMs = elapsed(phaseStart);
     fetchInstrumentation = instrumentFetch();
-
-    const db = (proxy.env as Record<string, unknown>).DB as Database;
     const contrail = new Contrail({ ...config, db });
 
     phaseStart = performance.now();
@@ -353,7 +381,7 @@ async function main(): Promise<void> {
   } finally {
     fetchInstrumentation?.restore();
     await proxy?.dispose();
-    if (!options.keepCache) {
+    if (options.backend === "d1" && !options.keepCache) {
       await rm(cachePath, { recursive: true, force: true });
     }
   }
@@ -376,7 +404,7 @@ async function main(): Promise<void> {
     format: "contrail.backfill-benchmark",
     version: 1,
     config: relativeConfig.startsWith("..") ? configPath : relativeConfig,
-    backend: "wrangler-local-d1",
+    backend: options.backend === "d1" ? "wrangler-local-d1" : "native-sqlite",
     runtime,
     options: {
       concurrency: options.concurrency,
