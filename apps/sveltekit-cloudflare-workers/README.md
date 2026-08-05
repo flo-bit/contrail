@@ -45,11 +45,11 @@ Wrangler bindings (`wrangler.jsonc`):
 ## Deploy
 
 ```sh
-npx wrangler d1 create statusphere
+pnpm wrangler d1 create statusphere
 # Add database_id to wrangler.jsonc
 
 pnpm build
-npx wrangler deploy
+pnpm wrangler deploy
 ```
 
 ## How it works

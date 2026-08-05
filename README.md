@@ -67,7 +67,7 @@ Add a D1 binding and one-minute cron to `wrangler.jsonc`:
 Then deploy and backfill:
 
 ```bash
-npx wrangler d1 create contrail
+pnpm wrangler d1 create contrail
 pnpm wrangler deploy
 pnpm contrail backfill --remote
 ```

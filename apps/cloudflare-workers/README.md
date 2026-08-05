@@ -16,7 +16,7 @@ backfills run via the `contrail` cli from the library (see `package.json` script
 
 ```bash
 pnpm install
-npx wrangler d1 create contrail          # copy database_id into wrangler.jsonc
+pnpm wrangler d1 create contrail         # copy database_id into wrangler.jsonc
 pnpm contrail backfill --remote          # discover + backfill historical events
 pnpm deploy                              # deploy the worker
 ```

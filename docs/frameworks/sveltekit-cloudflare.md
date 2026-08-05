@@ -183,9 +183,9 @@ declare global {
 ## 7. Deploy + backfill
 
 ```bash
-npx wrangler d1 create yourapp       # copy the id into wrangler.jsonc
+pnpm wrangler d1 create yourapp       # copy the id into wrangler.jsonc
 pnpm build && pnpm wrangler deploy
-npx wrangler secret put CRON_SECRET  # paste any random string
+pnpm wrangler secret put CRON_SECRET  # paste any random string
 pnpm contrail backfill --remote      # one-time historical backfill
 ```
 

@@ -1,0 +1,68 @@
+{
+  "format": "contrail.backfill-benchmark-baseline",
+  "version": 1,
+  "config": "configs/calendar.config.json",
+  "implementation_commit": "6406cdc70d43bfb55a8d5d5d3869ed6a2020ccec",
+  "environment": {
+    "os": "Darwin 25.4.0 arm64",
+    "cpu": "Apple M1 Pro",
+    "memory_bytes": 17179869184,
+    "node": "26.5.0",
+    "backend": "wrangler-local-d1"
+  },
+  "options": {
+    "concurrency": 100,
+    "pdsConcurrency": 20,
+    "didsPerPds": 3,
+    "maxAttempts": 1
+  },
+  "started_at": "2026-08-05T00:33:54.430Z",
+  "completed_at": "2026-08-05T00:36:09.411Z",
+  "timings_ms": {
+    "binding": 309.11,
+    "init": 268.88,
+    "discovery": 1705.78,
+    "backfill": 132264.39,
+    "total": 134979.27,
+    "identity_resolution": 14721.7,
+    "derived_rebuild": 1032.77
+  },
+  "throughput": {
+    "accepted_records_per_second": 659.72,
+    "indexed_records_per_second": 646.37
+  },
+  "discovered_accounts": 1633,
+  "accepted_records": 87257,
+  "indexed_records": 87246,
+  "peak_rss_kib": 653536,
+  "network_max_concurrent": 150,
+  "accounts": {
+    "total": 1633,
+    "complete": 1589,
+    "pending": 0,
+    "retrying": 44,
+    "failed": 0
+  },
+  "collections": [
+    {
+      "collection": "community.lexicon.calendar.event",
+      "records": 14610,
+      "unique_users": 318
+    },
+    {
+      "collection": "community.lexicon.calendar.rsvp",
+      "records": 6272,
+      "unique_users": 1430
+    },
+    {
+      "collection": "app.bsky.actor.profile",
+      "records": 1399,
+      "unique_users": 1394
+    },
+    {
+      "collection": "app.bsky.graph.follow",
+      "records": 64965,
+      "unique_users": 1283
+    }
+  ]
+}

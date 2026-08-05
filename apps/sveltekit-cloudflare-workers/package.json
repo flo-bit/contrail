@@ -16,10 +16,10 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint .",
-		"env:generate-key": "npx tsx src/lib/atproto/scripts/generate-key.ts",
-		"env:generate-secret": "npx tsx src/lib/atproto/scripts/generate-secret.ts",
-		"env:setup-dev": "npx tsx src/lib/atproto/scripts/setup-dev.ts",
-		"tunnel": "npx tsx src/lib/atproto/scripts/tunnel.ts"
+		"env:generate-key": "tsx src/lib/atproto/scripts/generate-key.ts",
+		"env:generate-secret": "tsx src/lib/atproto/scripts/generate-secret.ts",
+		"env:setup-dev": "tsx src/lib/atproto/scripts/setup-dev.ts",
+		"tunnel": "tsx src/lib/atproto/scripts/tunnel.ts"
 	},
 	"devDependencies": {
 		"@atcute/atproto": "^3.1.10",

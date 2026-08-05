@@ -28,7 +28,7 @@ The current defaults are 100 concurrent identity resolutions, 20 active PDS host
 
 Before every run the harness recursively deletes its config/concurrency-specific `.cache` directory. It disposes and deletes the local D1 afterward as well; pass `--keep-cache` only for debugging.
 
-Results are written to ignored JSON files under `results/`. Selected reference runs live in `baselines/`: [`calendar-default.json`](baselines/calendar-default.json) is the original 774.49-second global-concurrency run, while [`calendar-host-aware.json`](baselines/calendar-host-aware.json) is the comparable 219.74-second host-aware run with set-based derived projection rebuilds.
+Results are written to ignored JSON files under `results/`. Selected reference runs live in `baselines/`: [`calendar-default.json`](baselines/calendar-default.json) is the original 774.49-second global-concurrency run, [`calendar-host-aware.json`](baselines/calendar-host-aware.json) is the 219.74-second host-aware result with set-based derived projection rebuilds, and [`calendar-pipelined.json`](baselines/calendar-pipelined.json) is the comparable 134.98-second result after streaming identity resolution and atomically checkpointing projected pages.
 
 Each result includes:
 

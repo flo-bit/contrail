@@ -86,7 +86,7 @@ export function registerDev(cli: CAC): void {
       // production; --test-scheduled enables the manual-trigger endpoint).
       const cronUrl = `http://localhost:8787/__scheduled?cron=${encodeURIComponent(options.cron)}`;
 
-      const wrangler = spawn("npx", ["wrangler", "dev", "--test-scheduled"], {
+      const wrangler = spawn("pnpm", ["exec", "wrangler", "dev", "--test-scheduled"], {
         stdio: "inherit",
         shell: process.platform === "win32",
         cwd: options.root,

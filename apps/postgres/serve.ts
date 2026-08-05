@@ -2,7 +2,7 @@
  * Serve the Contrail XRPC API over HTTP using PostgreSQL.
  *
  * Usage:
- *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" npx tsx serve.ts
+ *   DATABASE_URL="postgresql://contrail:contrail@localhost:5432/contrail" pnpm exec tsx serve.ts
  */
 import pg from "pg";
 import { createServer } from "node:http";
