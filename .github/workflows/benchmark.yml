@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: pr-benchmark-${{ github.event.pull_request.number }}
@@ -52,13 +53,14 @@ jobs:
         run: |
           result="$(find apps/benchmark/results -type f -name 'calendar-records-only-sqlite-*.json' -print -quit)"
           if [[ -z "$result" ]]; then
-            printf '## Native SQLite benchmark\n\nThe benchmark did not produce a result.\n' >> "$GITHUB_STEP_SUMMARY"
+            printf '## Native SQLite benchmark\n\nThe benchmark did not produce a result.\n' > "$RUNNER_TEMP/benchmark-comment.md"
+            cat "$RUNNER_TEMP/benchmark-comment.md" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           RESULT_PATH="$result" node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
-          import { basename } from "node:path";
+          import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+          import { basename, join } from "node:path";
 
           const result = JSON.parse(readFileSync(process.env.RESULT_PATH, "utf8"));
           const seconds = (milliseconds) => `${(Number(milliseconds) / 1000).toFixed(2)} s`;
@@ -82,8 +84,55 @@ jobs:
             "",
             `Artifact source: \`${basename(process.env.RESULT_PATH)}\``,
           ];
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+          const report = `${lines.join("\n")}\n`;
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, report);
+          writeFileSync(join(process.env.RUNNER_TEMP, "benchmark-comment.md"), report);
           NODE
+
+      - name: Comment on pull request
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { readFileSync } = require("node:fs");
+            const { join } = require("node:path");
+            const marker = "<!-- contrail-native-sqlite-benchmark -->";
+            const report = readFileSync(
+              join(process.env.RUNNER_TEMP, "benchmark-comment.md"),
+              "utf8",
+            );
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n${report}\n[View workflow run](${runUrl})`;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find(
+              (comment) =>
+                comment.user?.login === "github-actions[bot]" &&
+                comment.body?.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
       - name: Upload benchmark result
         if: always()
