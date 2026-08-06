@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.14.1
+
+### Patch Changes
+
+- 2826860: Remove the best-effort post-commit sink API. Contrail now limits core ingestion to transactional SQL projection instead of invoking external callbacks after live or historical commits.
+
 ## 0.14.0
 
 ### Minor Changes
