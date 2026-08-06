@@ -521,8 +521,10 @@ export interface RecordRow {
 }
 
 export interface MutationSource {
-  /** Stable adapter identifier, for example `jetstream` or `pds-backfill`. */
+  /** Stable logical source identifier, for example `jetstream` or `pds-backfill`. */
   id: string;
+  /** Continuity epoch for opaque cursors. Missing on legacy adapters. */
+  epoch?: string | null;
   /** Source observation/event time, independent of record application time. */
   time_us: number;
   /** Monotonic repository revision when the source provides one. */

@@ -7,6 +7,7 @@ import {
   type MutationBatch,
   type PreparedSnapshot,
   type SnapshotBatch,
+  type SnapshotProgress,
   type SnapshotRecord,
   type SnapshotSource,
   type SourceMutation,
@@ -76,7 +77,7 @@ class MemoryTarget implements BootstrapTarget {
       phase: "snapshot",
       snapshot: structuredClone(snapshot),
       captureFrom: structuredClone(captureFrom),
-      snapshotProgress: null,
+      snapshotProgress: [],
       snapshotComplete: false,
       catchupThrough: null,
       changeCheckpoint: null,
@@ -86,7 +87,11 @@ class MemoryTarget implements BootstrapTarget {
   async applySnapshotBatch(_snapshot: PreparedSnapshot, batch: SnapshotBatch) {
     for (const item of batch.records) this.records.set(item.uri, item);
     this.snapshotBatches++;
-    this.state!.snapshotProgress = batch.progress;
+    const index = this.state!.snapshotProgress.findIndex(
+      (item) => item.partition === batch.progress.partition,
+    );
+    if (index < 0) this.state!.snapshotProgress.push(batch.progress);
+    else this.state!.snapshotProgress[index] = batch.progress;
     this.state!.snapshotComplete = batch.done;
   }
 
@@ -121,7 +126,7 @@ class MemoryTarget implements BootstrapTarget {
 
 function snapshotSource(options: {
   snapshot: PreparedSnapshot;
-  batches(progress?: string): SnapshotBatch[];
+  batches(progress?: SnapshotProgress[]): SnapshotBatch[];
   calls?: string[];
 }): SnapshotSource {
   return {
@@ -131,7 +136,8 @@ function snapshotSource(options: {
       return structuredClone(options.snapshot);
     },
     async *read({ progress }) {
-      options.calls?.push(`snapshot:${progress ?? "start"}`);
+      const cursor = progress?.find((item) => item.partition === "main")?.cursor;
+      options.calls?.push(`snapshot:${cursor ?? "start"}`);
       for (const batch of options.batches(progress)) yield structuredClone(batch);
     },
   };
@@ -190,7 +196,8 @@ describe("bootstrap source orchestration", () => {
           // Alice was sampled at different moments: A already reflects cursor
           // 3, B is stale at cursor 2, and C did not exist when sampled.
           records: [record("a", 3), record("b", 2)],
-          progress: "done",
+          sourceTimeUs: 3,
+          progress: { partition: "main", cursor: null, complete: true },
           done: true,
         },
       ],
@@ -238,7 +245,12 @@ describe("bootstrap source orchestration", () => {
       }),
       calls,
       batches: () => [
-        { records: [record("a", 5)], progress: "done", done: true },
+        {
+          records: [record("a", 5)],
+          sourceTimeUs: 5,
+          progress: { partition: "main", cursor: null, complete: true },
+          done: true,
+        },
       ],
     });
     const changes = changeSource({
@@ -275,15 +287,35 @@ describe("bootstrap source orchestration", () => {
     const snapshot = snapshotSource({
       snapshot: prepared(),
       batches(progress) {
-        reads.push(progress);
-        if (progress === "part-1") {
+        const cursor = progress?.find((item) => item.partition === "main")?.cursor;
+        reads.push(cursor);
+        if (cursor === "part-1") {
           return [
-            { records: [record("b", 2)], progress: "done", done: true },
+            {
+              records: [record("b", 2)],
+              sourceTimeUs: 2,
+              progress: { partition: "main", cursor: null, complete: true },
+              done: true,
+            },
           ];
         }
         return [
-          { records: [record("a", 1)], progress: "part-1", done: false },
-          { records: [record("b", 2)], progress: "done", done: true },
+          {
+            records: [record("a", 1)],
+            sourceTimeUs: 1,
+            progress: {
+              partition: "main",
+              cursor: "part-1",
+              complete: false,
+            },
+            done: false,
+          },
+          {
+            records: [record("b", 2)],
+            sourceTimeUs: 2,
+            progress: { partition: "main", cursor: null, complete: true },
+            done: true,
+          },
         ];
       },
     });
@@ -291,7 +323,7 @@ describe("bootstrap source orchestration", () => {
     const target = new MemoryTarget();
     const apply = target.applySnapshotBatch.bind(target);
     target.applySnapshotBatch = async (preparedSnapshot, batch) => {
-      if (batch.progress === "done" && failSecondBatch) {
+      if (batch.progress.complete && failSecondBatch) {
         failSecondBatch = false;
         throw new Error("injected snapshot failure");
       }
@@ -325,7 +357,14 @@ describe("bootstrap source orchestration", () => {
   it("commits an empty change batch to prove progress through the target", async () => {
     const snapshot = snapshotSource({
       snapshot: prepared(),
-      batches: () => [{ records: [], progress: "done", done: true }],
+      batches: () => [
+        {
+          records: [],
+          sourceTimeUs: 1,
+          progress: { partition: "main", cursor: null, complete: true },
+          done: true,
+        },
+      ],
     });
     const target = new MemoryTarget();
 

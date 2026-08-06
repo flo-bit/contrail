@@ -43,11 +43,21 @@ export interface PreparedSnapshot {
   through?: SourcePosition;
 }
 
+export interface SnapshotProgress {
+  /** Stable provider-owned partition, such as one collection/repository pair. */
+  partition: string;
+  /** Opaque resume token within this partition, or null once complete. */
+  cursor: string | null;
+  complete: boolean;
+}
+
 export interface SnapshotBatch {
   records: SnapshotRecord[];
-  /** Opaque resume token within this exact prepared snapshot. */
-  progress: string;
-  /** True only after every requested collection has been emitted. */
+  /** Source observation time for ordering snapshot rows against later changes. */
+  sourceTimeUs: number;
+  /** Progress for the partition represented by this batch. */
+  progress: SnapshotProgress;
+  /** True only after every requested snapshot partition has completed. */
   done: boolean;
 }
 
@@ -61,7 +71,7 @@ export interface SnapshotSource {
   }): Promise<PreparedSnapshot>;
   read(options: {
     snapshot: PreparedSnapshot;
-    progress?: string;
+    progress?: SnapshotProgress[];
     signal?: AbortSignal;
   }): AsyncIterable<SnapshotBatch>;
 }
@@ -119,7 +129,7 @@ export interface BootstrapRunState {
   phase: BootstrapPhase;
   snapshot: PreparedSnapshot;
   captureFrom: SourcePosition;
-  snapshotProgress: string | null;
+  snapshotProgress: SnapshotProgress[];
   snapshotComplete: boolean;
   catchupThrough: SourcePosition | null;
   changeCheckpoint: SourcePosition | null;
@@ -230,7 +240,7 @@ export async function bootstrapFreshProjection(options: {
       phase: "snapshot",
       snapshot,
       captureFrom,
-      snapshotProgress: null,
+      snapshotProgress: [],
       snapshotComplete: false,
       catchupThrough: null,
       changeCheckpoint: null,
@@ -243,7 +253,7 @@ export async function bootstrapFreshProjection(options: {
     let sawDone = false;
     for await (const batch of snapshotSource.read({
       snapshot: state.snapshot,
-      ...(state.snapshotProgress === null
+      ...(state.snapshotProgress.length === 0
         ? {}
         : { progress: state.snapshotProgress }),
       signal,
@@ -252,7 +262,11 @@ export async function bootstrapFreshProjection(options: {
         throw new Error(`Snapshot ${state.snapshot.id} emitted data after done`);
       }
       await target.applySnapshotBatch(state.snapshot, batch);
-      state.snapshotProgress = batch.progress;
+      const progressIndex = state.snapshotProgress.findIndex(
+        (item) => item.partition === batch.progress.partition,
+      );
+      if (progressIndex < 0) state.snapshotProgress.push(batch.progress);
+      else state.snapshotProgress[progressIndex] = batch.progress;
       state.snapshotComplete = batch.done;
       sawDone = batch.done;
     }

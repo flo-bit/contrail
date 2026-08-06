@@ -60,6 +60,9 @@ export function createIngestEvent(input: RecordEventInput): IngestEvent {
     indexed_at: indexedAt,
     source: {
       id: input.source?.id ?? "local",
+      ...(input.source?.epoch === undefined
+        ? {}
+        : { epoch: input.source.epoch }),
       // Preserve pre-0.13.1 ordering for callers that do not yet provide a
       // separate source clock; adapters always pass source.time_us explicitly.
       time_us: input.source?.time_us ?? input.timeUs,

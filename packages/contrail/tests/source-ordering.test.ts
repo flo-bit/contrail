@@ -44,6 +44,7 @@ function mutation(options: {
   name?: string;
   recordTime?: number;
   sourceId?: string;
+  epoch?: string;
 }): IngestEvent {
   return createIngestEvent({
     uri: URI,
@@ -60,6 +61,7 @@ function mutation(options: {
     indexedAt: options.sourceTime + 10_000,
     source: {
       id: options.sourceId ?? "fake-source",
+      ...(options.epoch === undefined ? {} : { epoch: options.epoch }),
       time_us: options.sourceTime,
       revision: options.revision ?? null,
       cursor: String(options.sourceTime),
@@ -117,6 +119,57 @@ describe("durable source ordering", () => {
     expect(await visibleName(db, resolved)).toBe("new");
     expect(stale.accepted).toHaveLength(0);
     expect(stale.dropped.superseded).toBe(2);
+  });
+
+  it("does not compare opaque cursors across source epochs", async () => {
+    const resolved = config();
+    const db = await setup(resolved);
+    await ingestRecords(
+      db,
+      [
+        mutation({
+          operation: "delete",
+          sourceTime: 100,
+          sourceId: "same-source",
+          epoch: "epoch-a",
+          revision: null,
+        }),
+      ],
+      resolved,
+    );
+
+    const nextEpoch = await ingestRecords(
+      db,
+      [
+        {
+          ...mutation({
+            operation: "delete",
+            sourceTime: 100,
+            sourceId: "same-source",
+            epoch: "epoch-b",
+            revision: null,
+          }),
+          source: {
+            id: "same-source",
+            epoch: "epoch-b",
+            time_us: 100,
+            revision: null,
+            cursor: "1",
+          },
+        },
+      ],
+      resolved,
+    );
+
+    expect(nextEpoch.accepted).toHaveLength(1);
+    expect(
+      await db
+        .prepare(
+          "SELECT source_epoch, source_cursor FROM record_versions WHERE uri = ?",
+        )
+        .bind(URI)
+        .first(),
+    ).toEqual({ source_epoch: "epoch-b", source_cursor: "1" });
   });
 
   it("does not let a stale delete remove a newer record", async () => {
