@@ -167,7 +167,7 @@ export async function backfillFollowersFromConstellation(
               timeUs: timestamp,
               indexedAt: nowUs,
               // The backlink API has no record CID. TID-derived source metadata
-              // is stable across repeated acquisitions, keeping sinks/feed fanout
+              // is stable across repeated acquisitions, keeping feed fanout
               // idempotent while the shared validator treats this as synthetic.
               source: {
                 id: "constellation",

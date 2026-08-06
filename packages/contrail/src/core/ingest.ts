@@ -104,7 +104,6 @@ export interface IngestRecordsOptions {
   skipDerivedProjections?: boolean;
   /** Pre-fetched rows, used by immediate synchronization. */
   existing?: Map<string, ExistingRecordInfo>;
-  phase?: "live" | "backfill";
   /** Known actors used to filter dependent records without another DB read. */
   knownDids?: ReadonlySet<string>;
   /** Statements committed after projection in the same database batch. */

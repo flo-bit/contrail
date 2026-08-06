@@ -8,7 +8,6 @@ import type {
   RecordRow,
   RecordSource,
 } from "../types";
-import type { RecordEvent } from "../sinks/types";
 import {
   getNestedValue,
   getRelationField,
@@ -887,9 +886,6 @@ export async function projectEvents(
     skipDerivedProjections?: boolean;
     /** Pre-fetched existing records — skips the internal lookup when provided */
     existing?: Map<string, ExistingRecordInfo>;
-    /** Ingest phase forwarded to `config.sinks`. `"live"` for jetstream /
-     *  persistent ingest (default), `"backfill"` for replay / rebuild. */
-    phase?: "live" | "backfill";
     /** Statements committed after projection in the same database batch. */
     trailingStatements?: Statement[];
     /** Internal: ingestRecords already checked durable source order. */
@@ -991,53 +987,6 @@ export async function projectEvents(
   }
 
   await db.batch(batch);
-
-  // Fan out to write-only sinks (derived indexes, audit logs, webhooks).
-  // This fires on both the live and backfill
-  // paths (driven by `options.phase`), carries one deduplicated event per
-  // record, and isolates failures so a throwing sink never blocks ingestion.
-  const sinks = config.sinks;
-  if (sinks && sinks.length > 0) {
-    // An absent-row tombstone is canonical ordering state, not an externally
-    // visible deletion. Publish deletes only when this transaction removed a
-    // previously visible record.
-    const records: RecordEvent[] = events
-      .filter(
-        (event) =>
-          event.operation !== "delete" || existingMap.has(event.uri),
-      )
-      .map((event) =>
-        event.operation === "delete"
-          ? {
-              kind: "deleted",
-              uri: event.uri,
-              did: event.did,
-              collection: event.collection,
-              rkey: event.rkey,
-            }
-          : {
-              kind: "created",
-              uri: event.uri,
-              did: event.did,
-              collection: event.collection,
-              rkey: event.rkey,
-              cid: event.cid,
-              record: event.record ? safeParseJson(event.record) : {},
-              time_us: event.time_us,
-            },
-      );
-    if (records.length === 0) return selection;
-    const ctx = { phase: options?.phase ?? "live" } as const;
-    const logger = config.logger ?? console;
-    for (const sink of sinks) {
-      try {
-        await sink.onRecords(records, ctx);
-      } catch (err) {
-        logger.error("[sink] onRecords failed", err);
-      }
-    }
-  }
-
   return selection;
 }
 
@@ -1160,15 +1109,6 @@ export async function rebuildDerivedProjections(
   }
 
   if (countStatements.length > 0) await db.batch(countStatements);
-}
-
-function safeParseJson(s: string): Record<string, unknown> {
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
 }
 
 // --- Count columns ---

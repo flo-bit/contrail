@@ -9,7 +9,6 @@ import {
   resolveConfig,
   resolveProfiles,
   type Database,
-  type RecordEvent,
 } from "../src/index";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 
@@ -54,7 +53,7 @@ async function cidFor(record: unknown) {
   return toString(await create(CODEC_DCBOR, encode(record)));
 }
 
-async function setup(options?: { rejectB?: boolean; sink?: RecordEvent[][] }) {
+async function setup(options?: { rejectB?: boolean }) {
   const config = resolveConfig({
     namespace: "com.example",
     logger,
@@ -75,15 +74,6 @@ async function setup(options?: { rejectB?: boolean; sink?: RecordEvent[][] }) {
     validation: {
       lexicons: [profileLexicon(PROFILE_A), profileLexicon(PROFILE_B)],
     },
-    sinks: options?.sink
-      ? [
-          {
-            async onRecords(records) {
-              options.sink!.push(records);
-            },
-          },
-        ]
-      : undefined,
   });
   const db = createSqliteDatabase(":memory:");
   await initSchema(db, config);
@@ -127,11 +117,9 @@ afterEach(() => {
 });
 
 describe("profile enrichment through shared ingestion", () => {
-  it("checks each profile collection and applies validation, optional FTS, sinks, and source metadata", async () => {
-    const sinkBatches: RecordEvent[][] = [];
-    const { config, db } = await setup({ sink: sinkBatches });
+  it("checks each profile collection and applies validation, optional FTS, and source metadata", async () => {
+    const { config, db } = await setup();
     await seedProfileA(db, config);
-    sinkBatches.length = 0;
     const profileB = { $type: PROFILE_B, displayName: "Fetched B" };
     const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -154,8 +142,6 @@ describe("profile enrichment through shared ingestion", () => {
       PROFILE_A,
       PROFILE_B,
     ]);
-    expect(sinkBatches).toHaveLength(1);
-    expect(sinkBatches[0][0].collection).toBe(PROFILE_B);
     expect(
       await db
         .prepare(
@@ -178,10 +164,8 @@ describe("profile enrichment through shared ingestion", () => {
   });
 
   it("does not return or persist a fetched profile rejected by normal admission", async () => {
-    const sinkBatches: RecordEvent[][] = [];
-    const { config, db } = await setup({ rejectB: true, sink: sinkBatches });
+    const { config, db } = await setup({ rejectB: true });
     await seedProfileA(db, config);
-    sinkBatches.length = 0;
     const rejected = { $type: PROFILE_B, displayName: "Rejected" };
     vi.stubGlobal(
       "fetch",
@@ -203,8 +187,5 @@ describe("profile enrichment through shared ingestion", () => {
     expect(
       (await queryRecords(db, config, { collection: "profileB" })).records,
     ).toHaveLength(0);
-    // The exclusion is ordering state, not a visible create/delete, so it does
-    // not reach extensions when no prior profile existed.
-    expect(sinkBatches).toHaveLength(0);
   });
 });

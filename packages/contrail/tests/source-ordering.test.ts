@@ -74,17 +74,8 @@ async function visibleName(db: Database, resolved = config()) {
 }
 
 describe("durable source ordering", () => {
-  it("rejects stale and duplicate updates before projections and sinks", async () => {
-    const sinkBatches: string[][] = [];
-    const resolved = config({
-      sinks: [
-        {
-          async onRecords(records) {
-            sinkBatches.push(records.map((record) => record.uri));
-          },
-        },
-      ],
-    });
+  it("rejects stale and duplicate updates before projection", async () => {
+    const resolved = config();
     const db = await setup(resolved);
     const newest = mutation({
       operation: "update",
@@ -126,7 +117,6 @@ describe("durable source ordering", () => {
     expect(await visibleName(db, resolved)).toBe("new");
     expect(stale.accepted).toHaveLength(0);
     expect(stale.dropped.superseded).toBe(2);
-    expect(sinkBatches).toHaveLength(1);
   });
 
   it("does not let a stale delete remove a newer record", async () => {

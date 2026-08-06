@@ -14,7 +14,7 @@ D1 is the default backend. Use `--backend sqlite` for a fresh in-memory native S
 pnpm bench --backend sqlite --config calendar-records-only.config.json
 ```
 
-`calendar.config.json` mirrors the retained indexing shape from `11-atproto/02-atmo-rsvp`: calendar events, RSVPs, profiles, follows/feeds, query indexes, relation counts, and event full-text search. Removed product modules and read-only pipeline handlers are intentionally absent because they do not participate in indexing. External sinks are also omitted so the benchmark measures Contrail and D1 rather than Meilisearch latency.
+`calendar.config.json` mirrors the retained indexing shape from `11-atproto/02-atmo-rsvp`: calendar events, RSVPs, profiles, follows/feeds, query indexes, relation counts, and event full-text search. Removed product modules and read-only pipeline handlers are intentionally absent because they do not participate in indexing.
 
 To run the same full workload with strict runtime Lexicon validation and canonical DAG-CBOR CID verification enabled:
 
@@ -69,4 +69,4 @@ Each result includes:
 
 ## Adding configs
 
-Put portable JSON `ContrailConfig` files in `configs/`. The harness also accepts absolute paths or paths relative to the current directory. JSON configs cannot contain callbacks, custom query functions, or sinks; those should be omitted or represented by a benchmark-specific code harness when they materially affect ingestion.
+Put portable JSON `ContrailConfig` files in `configs/`. The harness also accepts absolute paths or paths relative to the current directory. JSON configs cannot contain callbacks or custom query functions; those should be omitted or represented by a benchmark-specific code harness when they materially affect ingestion.
