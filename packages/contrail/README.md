@@ -72,6 +72,14 @@ After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritativ
 
 Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact yielded cursor in the same transaction. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
 
+## Fresh generations (experimental)
+
+`PdsSnapshotSource`, `JetstreamChangeSource`, `DatabaseBootstrapTarget`, and `bootstrapFreshProjection()` build an unpublished database with capture-first replay. The capture mark is durable before relay discovery starts; PDS partition cursors and Jetstream checkpoints commit with their records. Completion rebuilds deferred projections, verifies aggregate record/version consistency, and stores only bounded failure categories.
+
+Jetstream generation replay requires an operator-owned continuity epoch and retention guarantee. It uses real stream events as marks, never wall clock or a quiet socket. Optional busy watermark collections can prove progress without being projected.
+
+A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
+
 ## Runtime record validation
 
 Pass the record Lexicons for every configured collection and their transitive references to enable shared strict validation and CID verification:

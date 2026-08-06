@@ -20,6 +20,7 @@ export * from "./core/ingest";
 export * from "./core/sources";
 export * from "./core/bootstrap";
 export * from "./core/verification";
+export * from "./core/generations";
 export * from "./core/pds-snapshot";
 export * from "./core/jetstream-source";
 export * from "./core/jetstream";
