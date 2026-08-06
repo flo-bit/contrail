@@ -34,6 +34,19 @@ const BACKFILL_RETRY_BASE_MS = 15 * 60_000;
 const BACKFILL_RETRY_MAX_MS = 48 * 60 * 60_000;
 const DEFAULT_SCHEDULED_MAX_ATTEMPTS = 10;
 const DERIVED_PROJECTIONS_DIRTY_KEY = "backfill_derived_projections_dirty";
+/** Legacy Jetstream v1 uses wall-clock microseconds as its replay coordinate.
+ * Keep the same overlap Atcute uses for multi-endpoint clock skew. The future
+ * source adapter replaces this compatibility marker with a source-owned epoch
+ * and cursor. */
+const INITIAL_CAPTURE_OVERLAP_US = 10_000_000;
+
+async function ensureInitialReplayBoundary(db: Database): Promise<void> {
+  if ((await getLastCursor(db)) !== null) return;
+  await saveCursor(
+    db,
+    Math.max(0, Date.now() * 1000 - INITIAL_CAPTURE_OVERLAP_US),
+  );
+}
 
 export interface BackfillCollectionMetrics {
   requests: number;
@@ -683,11 +696,9 @@ async function backfillPendingWork(
   const metrics = emptyBackfillMetrics();
   const aggregateDiagnostics: IngestDiagnosticCounts = {};
 
-  // Anchor the jetstream cursor to now if it hasn't been set yet, so records
-  // emitted during backfill are replayed once jetstream starts.
-  if ((await getLastCursor(db)) === null) {
-    await saveCursor(db, Date.now() * 1000);
-  }
+  // Direct callers may begin with already-discovered work. Capture before the
+  // first PDS request so changes racing the sampled scan remain replayable.
+  await ensureInitialReplayBoundary(db);
 
   // Mark the set-based catch-up dirty before canonical writes. A crash can leave
   // search/count projections stale, so status stays incomplete and the next
@@ -1157,6 +1168,11 @@ export async function discoverDIDs(
   const collections = getDiscoverableNsids(config);
   const relays = config.relays ?? DEFAULT_RELAYS;
   if (relays.length === 0 || collections.length === 0) return [];
+
+  // Capture before relay discovery as well as before PDS crawling. Otherwise a
+  // repository created after its relay page was scanned but before the later
+  // PDS phase could fall before the live cursor and disappear from both paths.
+  await ensureInitialReplayBoundary(db);
 
   const discovered: string[] = [];
   await ensureDiscoveryRows(db, collections, relays);
