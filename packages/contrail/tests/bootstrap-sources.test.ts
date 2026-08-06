@@ -72,16 +72,22 @@ class MemoryTarget implements BootstrapTarget {
     return this.state ? structuredClone(this.state) : null;
   }
 
-  async begin(snapshot: PreparedSnapshot, captureFrom: SourcePosition) {
+  async beginCapture(captureFrom: SourcePosition) {
     this.state = {
-      phase: "snapshot",
-      snapshot: structuredClone(snapshot),
+      phase: "preparing",
+      snapshot: null,
       captureFrom: structuredClone(captureFrom),
       snapshotProgress: [],
       snapshotComplete: false,
       catchupThrough: null,
       changeCheckpoint: null,
     };
+  }
+
+  async setSnapshot(snapshot: PreparedSnapshot, captureFrom: SourcePosition) {
+    this.state!.phase = "snapshot";
+    this.state!.snapshot = structuredClone(snapshot);
+    this.state!.captureFrom = structuredClone(captureFrom);
   }
 
   async applySnapshotBatch(_snapshot: PreparedSnapshot, batch: SnapshotBatch) {
@@ -151,6 +157,7 @@ function changeSource(options: {
   let markIndex = 0;
   return {
     id: "changes",
+    semantics,
     async mark() {
       const cursor = options.marks[markIndex++];
       if (cursor === undefined) throw new Error("Unexpected mark");
@@ -281,6 +288,58 @@ describe("bootstrap source orchestration", () => {
     ]);
   });
 
+  it("retains the original capture mark when snapshot preparation is retried", async () => {
+    const calls: string[] = [];
+    let attempts = 0;
+    const source: SnapshotSource = {
+      id: "retrying-snapshot",
+      async prepare() {
+        calls.push(`prepare:${++attempts}`);
+        if (attempts === 1) throw new Error("discovery unavailable");
+        return prepared();
+      },
+      async *read() {
+        yield {
+          records: [],
+          sourceTimeUs: 1,
+          progress: { partition: "main", cursor: null, complete: true },
+          done: true,
+        };
+      },
+    };
+    const changes = changeSource({ marks: [1, 3], mutations: [], calls });
+    const target = new MemoryTarget();
+
+    await expect(
+      bootstrapFreshProjection({
+        collections: [COLLECTION],
+        snapshotSource: source,
+        changeSource: changes,
+        target,
+      }),
+    ).rejects.toThrow("discovery unavailable");
+    expect(target.state).toMatchObject({
+      phase: "preparing",
+      captureFrom: position(1),
+    });
+
+    await bootstrapFreshProjection({
+      collections: [COLLECTION],
+      snapshotSource: source,
+      changeSource: changes,
+      target,
+    });
+
+    expect(calls).toEqual([
+      "mark:1",
+      "prepare:1",
+      "prepare:2",
+      "mark:3",
+      "changes:1-3",
+    ]);
+    expect(target.state?.phase).toBe("complete");
+  });
+
   it("resumes a pinned snapshot from its last committed progress", async () => {
     const reads: Array<string | undefined> = [];
     let failSecondBatch = true;
@@ -398,7 +457,33 @@ describe("bootstrap source orchestration", () => {
         target,
       }),
     ).rejects.toThrow("Snapshot boundary belongs to test-stream/old");
-    expect(target.state).toBeNull();
+    expect(target.state).toMatchObject({
+      phase: "preparing",
+      captureFrom: position(10),
+    });
+  });
+
+  it("blocks readiness when required source semantics are not guaranteed", async () => {
+    const target = new MemoryTarget();
+    const changes = changeSource({ marks: [1], mutations: [] });
+
+    await expect(
+      bootstrapFreshProjection({
+        collections: [COLLECTION],
+        snapshotSource: snapshotSource({
+          snapshot: prepared(),
+          batches: () => [],
+        }),
+        changeSource: changes,
+        target,
+        requiredSemantics: { accountLifecycle: true },
+      }),
+    ).rejects.toThrow("required accountLifecycle");
+
+    expect(target.state).toMatchObject({
+      phase: "snapshot",
+      snapshotComplete: false,
+    });
   });
 
   it("refuses partial and gapped coverage by default", async () => {
@@ -420,7 +505,10 @@ describe("bootstrap source orchestration", () => {
           target,
         }),
       ).rejects.toThrow(coverage.reason);
-      expect(target.state).toBeNull();
+      expect(target.state).toMatchObject({
+        phase: "preparing",
+        captureFrom: position(1),
+      });
     }
   });
 });

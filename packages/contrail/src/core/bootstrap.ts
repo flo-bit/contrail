@@ -2,7 +2,13 @@ import type { ContrailConfig, Database, IngestEvent, Statement } from "./types";
 import { recordTimeUs, createIngestEvent, ingestRecords } from "./ingest";
 import { getDependentNsids, recordsTableName } from "./types";
 import { rebuildDerivedProjections } from "./db/records";
+import {
+  BOOTSTRAP_VERIFICATION_META_KEY,
+  BootstrapVerificationError,
+  verifyBootstrapCandidate,
+} from "./verification";
 import type {
+  BootstrapFailureCategory,
   BootstrapRunState,
   BootstrapTarget,
   MutationBatch,
@@ -13,6 +19,23 @@ import type {
 } from "./sources";
 
 const BOOTSTRAP_STATE_ID = 1;
+/** Schema 9 predates the capture-before-prepare split. Keep its non-null
+ * snapshot column and phase constraint compatible by using a private sentinel. */
+const PREPARING_SNAPSHOT_JSON = "null";
+const BOOTSTRAP_FAILURE_META_KEY = "bootstrap_last_failure";
+const BOOTSTRAP_FAILURE_CATEGORIES = new Set<BootstrapFailureCategory>([
+  "snapshot-incomplete",
+  "catchup-incomplete",
+  "source-history-expired",
+  "verification-failed",
+  "bootstrap-failed",
+]);
+
+export interface BootstrapFailureReport {
+  category: BootstrapFailureCategory;
+  failedAt: number;
+  attempts: number;
+}
 
 interface BootstrapStateRow {
   phase: BootstrapRunState["phase"];
@@ -80,6 +103,38 @@ function parsePreparedSnapshot(serialized: string): PreparedSnapshot {
   return value as unknown as PreparedSnapshot;
 }
 
+export async function getBootstrapFailure(
+  db: Database,
+): Promise<BootstrapFailureReport | null> {
+  const row = await db
+    .prepare("SELECT value FROM _contrail_meta WHERE key = ?")
+    .bind(BOOTSTRAP_FAILURE_META_KEY)
+    .first<{ value: string }>();
+  if (!row) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(row.value);
+  } catch {
+    throw new Error("Durable bootstrap failure is not valid JSON");
+  }
+  if (
+    !isObject(value) ||
+    typeof value.category !== "string" ||
+    !BOOTSTRAP_FAILURE_CATEGORIES.has(
+      value.category as BootstrapFailureCategory,
+    ) ||
+    typeof value.failedAt !== "number" ||
+    !Number.isSafeInteger(value.failedAt) ||
+    value.failedAt < 0 ||
+    typeof value.attempts !== "number" ||
+    !Number.isSafeInteger(value.attempts) ||
+    value.attempts < 1
+  ) {
+    throw new Error("Durable bootstrap failure is malformed");
+  }
+  return value as unknown as BootstrapFailureReport;
+}
+
 function sourceTimeUs(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${label} must be a non-negative safe microsecond value`);
@@ -126,7 +181,8 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     if (!(["snapshot", "catchup", "complete"] as string[]).includes(row.phase)) {
       throw new Error(`Invalid durable bootstrap phase: ${row.phase}`);
     }
-    const snapshot = parsePreparedSnapshot(row.snapshot_json);
+    const preparing = row.snapshot_json === PREPARING_SNAPSHOT_JSON;
+    const snapshot = preparing ? null : parsePreparedSnapshot(row.snapshot_json);
     const progressRows = await this.db
       .prepare(
         "SELECT partition, cursor, completed FROM bootstrap_snapshot_progress WHERE bootstrap_id = ? ORDER BY partition",
@@ -141,7 +197,7 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     );
     if (!captureFrom) throw new Error("Durable bootstrap capture is missing");
     return {
-      phase: row.phase,
+      phase: preparing ? "preparing" : row.phase,
       snapshot,
       captureFrom,
       snapshotProgress: (progressRows.results ?? []).map((item) => ({
@@ -165,10 +221,7 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     };
   }
 
-  async begin(
-    snapshot: PreparedSnapshot,
-    captureFrom: SourcePosition,
-  ): Promise<void> {
+  async beginCapture(captureFrom: SourcePosition): Promise<void> {
     const now = Date.now();
     await this.db
       .prepare(
@@ -179,7 +232,7 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
       )
       .bind(
         BOOTSTRAP_STATE_ID,
-        JSON.stringify(snapshot),
+        PREPARING_SNAPSHOT_JSON,
         captureFrom.source,
         captureFrom.epoch,
         captureFrom.cursor,
@@ -187,6 +240,33 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
         now,
       )
       .run();
+  }
+
+  async setSnapshot(
+    snapshot: PreparedSnapshot,
+    captureFrom: SourcePosition,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE bootstrap_state
+         SET phase = 'snapshot', snapshot_json = ?, capture_source = ?,
+             capture_epoch = ?, capture_cursor = ?, updated_at = ?
+         WHERE id = ? AND phase = 'snapshot' AND snapshot_json = ?`,
+      )
+      .bind(
+        JSON.stringify(snapshot),
+        captureFrom.source,
+        captureFrom.epoch,
+        captureFrom.cursor,
+        Date.now(),
+        BOOTSTRAP_STATE_ID,
+        PREPARING_SNAPSHOT_JSON,
+      )
+      .run();
+    const state = await this.load();
+    if (state?.phase !== "snapshot" || !state.snapshot) {
+      throw new Error("Could not pin the prepared bootstrap snapshot");
+    }
   }
 
   async applySnapshotBatch(
@@ -327,10 +407,37 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
   }
 
   async complete(): Promise<void> {
+    const before = await this.load();
+    if (
+      before?.phase !== "catchup" ||
+      !before.catchupThrough ||
+      !before.changeCheckpoint ||
+      before.catchupThrough.source !== before.changeCheckpoint.source ||
+      before.catchupThrough.epoch !== before.changeCheckpoint.epoch ||
+      before.catchupThrough.cursor !== before.changeCheckpoint.cursor
+    ) {
+      throw new Error("Cannot complete bootstrap before catch-up reaches its target");
+    }
     if (this.options.deferDerivedProjections) {
       await rebuildDerivedProjections(this.db, this.config);
     }
-    await this.db
+    const report = await verifyBootstrapCandidate(this.db, this.config);
+    const verification = this.db
+      .prepare(
+        `INSERT INTO _contrail_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(BOOTSTRAP_VERIFICATION_META_KEY, JSON.stringify(report));
+    if (!report.ok) {
+      await verification.run();
+      throw new BootstrapVerificationError(report);
+    }
+
+    const now = Date.now();
+    const clearFailure = this.db
+      .prepare("DELETE FROM _contrail_meta WHERE key = ?")
+      .bind(BOOTSTRAP_FAILURE_META_KEY);
+    const completion = this.db
       .prepare(
         `UPDATE bootstrap_state
          SET phase = 'complete', finished_at = ?, updated_at = ?
@@ -339,12 +446,28 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
            AND change_epoch = catchup_epoch
            AND change_cursor = catchup_cursor`,
       )
-      .bind(Date.now(), Date.now(), BOOTSTRAP_STATE_ID)
-      .run();
+      .bind(now, now, BOOTSTRAP_STATE_ID);
+    await this.db.batch([verification, clearFailure, completion]);
     const state = await this.load();
     if (state?.phase !== "complete") {
       throw new Error("Cannot complete bootstrap before catch-up reaches its target");
     }
+  }
+
+  async recordFailure(category: BootstrapFailureCategory): Promise<void> {
+    const prior = await getBootstrapFailure(this.db);
+    const report: BootstrapFailureReport = {
+      category,
+      failedAt: Date.now(),
+      attempts: (prior?.attempts ?? 0) + 1,
+    };
+    await this.db
+      .prepare(
+        `INSERT INTO _contrail_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(BOOTSTRAP_FAILURE_META_KEY, JSON.stringify(report))
+      .run();
   }
 
   private async apply(
@@ -372,6 +495,13 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
       .prepare("SELECT did FROM identities")
       .all<{ did: string }>();
     for (const row of identityRows.results ?? []) known.add(row.did);
+    // Relay discovery defines acquisition scope before concurrent PDS workers
+    // necessarily resolve every identity. Load it directly so a dependent
+    // collection arriving first is not mistaken for an unknown actor.
+    const backfillRows = await this.db
+      .prepare("SELECT DISTINCT did FROM backfills")
+      .all<{ did: string }>();
+    for (const row of backfillRows.results ?? []) known.add(row.did);
     for (const [shortName, collection] of Object.entries(
       this.config.collections,
     )) {

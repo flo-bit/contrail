@@ -108,6 +108,7 @@ export interface MutationBatch {
 
 export interface ChangeSource {
   readonly id: string;
+  readonly semantics: SourceSemantics;
   /** Return a durable replay coordinate near the current source head. */
   mark(options: {
     collections: string[];
@@ -121,13 +122,17 @@ export interface ChangeSource {
   }): AsyncIterable<MutationBatch>;
 }
 
-export type BootstrapPhase = "snapshot" | "catchup" | "complete";
+export type BootstrapPhase =
+  | "preparing"
+  | "snapshot"
+  | "catchup"
+  | "complete";
 
 /** Durable coordinator state. Snapshot progress and mutation checkpoints are
  * separate because they belong to different cursor namespaces. */
 export interface BootstrapRunState {
   phase: BootstrapPhase;
-  snapshot: PreparedSnapshot;
+  snapshot: PreparedSnapshot | null;
   captureFrom: SourcePosition;
   snapshotProgress: SnapshotProgress[];
   snapshotComplete: boolean;
@@ -137,9 +142,19 @@ export interface BootstrapRunState {
 
 /** Projection-owned persistence seam. Implementations commit records and the
  * accompanying progress/checkpoint atomically in the destination database. */
+export type BootstrapFailureCategory =
+  | "snapshot-incomplete"
+  | "catchup-incomplete"
+  | "source-history-expired"
+  | "verification-failed"
+  | "bootstrap-failed";
+
 export interface BootstrapTarget {
   load(): Promise<BootstrapRunState | null>;
-  begin(snapshot: PreparedSnapshot, captureFrom: SourcePosition): Promise<void>;
+  /** Persist the capture boundary before snapshot preparation performs network work. */
+  beginCapture(captureFrom: SourcePosition): Promise<void>;
+  /** Pin the prepared snapshot, optionally replacing capture with its own boundary. */
+  setSnapshot(snapshot: PreparedSnapshot, captureFrom: SourcePosition): Promise<void>;
   applySnapshotBatch(
     snapshot: PreparedSnapshot,
     batch: SnapshotBatch,
@@ -147,6 +162,8 @@ export interface BootstrapTarget {
   beginCatchup(through: SourcePosition): Promise<void>;
   applyMutationBatch(batch: MutationBatch): Promise<void>;
   complete(): Promise<void>;
+  /** Persist only a bounded category; raw upstream errors stay private. */
+  recordFailure?(category: BootstrapFailureCategory): Promise<void>;
 }
 
 export interface BootstrapResult {
@@ -176,6 +193,40 @@ function assertCompatiblePosition(
       `${label} belongs to ${position.source}/${position.epoch}, expected ` +
         `${expected.source}/${expected.epoch}`,
     );
+  }
+}
+
+function assertSemantics(
+  snapshot: PreparedSnapshot,
+  changes: ChangeSource,
+  required: Partial<SourceSemantics> | undefined,
+): void {
+  if (!snapshot.semantics.ordinaryRecords) {
+    throw new Error(`Snapshot ${snapshot.id} does not guarantee ordinary records`);
+  }
+  for (const capability of [
+    "ordinaryRecords",
+    "ordinaryDeletes",
+    "explicitHead",
+  ] as const) {
+    if (!changes.semantics[capability]) {
+      throw new Error(
+        `Change source ${changes.id} does not guarantee ${capability}`,
+      );
+    }
+  }
+  for (const capability of Object.keys(required ?? {}) as Array<
+    keyof SourceSemantics
+  >) {
+    if (required?.[capability] !== true) continue;
+    if (
+      !snapshot.semantics[capability] ||
+      !changes.semantics[capability]
+    ) {
+      throw new Error(
+        `Bootstrap sources do not jointly guarantee required ${capability}`,
+      );
+    }
   }
 }
 
@@ -210,12 +261,13 @@ function assertCoverage(
  * A prepared point-in-time snapshot may supply its own upstream boundary;
  * sampled scans use the position marked before preparation begins.
  */
-export async function bootstrapFreshProjection(options: {
+async function runBootstrapFreshProjection(options: {
   collections: string[];
   snapshotSource: SnapshotSource;
   changeSource: ChangeSource;
   target: BootstrapTarget;
   allowPartial?: boolean;
+  requiredSemantics?: Partial<SourceSemantics>;
   signal?: AbortSignal;
 }): Promise<BootstrapResult> {
   const {
@@ -228,40 +280,49 @@ export async function bootstrapFreshProjection(options: {
   let state = await target.load();
 
   if (!state) {
-    // Mark before snapshot preparation so even a provider that performs relay
-    // discovery while preparing cannot open a capture gap.
+    // Persist the mark before snapshot preparation so discovery failure cannot
+    // move a later retry past repositories or records observed in the meantime.
     const marked = await changeSource.mark({ collections, signal });
-    const snapshot = await snapshotSource.prepare({ collections, signal });
-    assertCoverage(snapshot, collections, options.allowPartial === true);
-    const captureFrom = snapshot.through ?? marked;
-    assertCompatiblePosition(captureFrom, marked, "Snapshot boundary");
-    await target.begin(snapshot, captureFrom);
+    await target.beginCapture(marked);
     state = {
-      phase: "snapshot",
-      snapshot,
-      captureFrom,
+      phase: "preparing",
+      snapshot: null,
+      captureFrom: marked,
       snapshotProgress: [],
       snapshotComplete: false,
       catchupThrough: null,
       changeCheckpoint: null,
     };
+  }
+
+  if (!state.snapshot) {
+    const snapshot = await snapshotSource.prepare({ collections, signal });
+    assertCoverage(snapshot, collections, options.allowPartial === true);
+    const captureFrom = snapshot.through ?? state.captureFrom;
+    assertCompatiblePosition(captureFrom, state.captureFrom, "Snapshot boundary");
+    await target.setSnapshot(snapshot, captureFrom);
+    state.snapshot = snapshot;
+    state.captureFrom = captureFrom;
+    state.phase = "snapshot";
   } else {
     assertCoverage(state.snapshot, collections, options.allowPartial === true);
   }
 
+  const snapshot = state.snapshot;
+  assertSemantics(snapshot, changeSource, options.requiredSemantics);
   if (!state.snapshotComplete) {
     let sawDone = false;
     for await (const batch of snapshotSource.read({
-      snapshot: state.snapshot,
+      snapshot,
       ...(state.snapshotProgress.length === 0
         ? {}
         : { progress: state.snapshotProgress }),
       signal,
     })) {
       if (sawDone) {
-        throw new Error(`Snapshot ${state.snapshot.id} emitted data after done`);
+        throw new Error(`Snapshot ${snapshot.id} emitted data after done`);
       }
-      await target.applySnapshotBatch(state.snapshot, batch);
+      await target.applySnapshotBatch(snapshot, batch);
       const progressIndex = state.snapshotProgress.findIndex(
         (item) => item.partition === batch.progress.partition,
       );
@@ -271,7 +332,7 @@ export async function bootstrapFreshProjection(options: {
       sawDone = batch.done;
     }
     if (!state.snapshotComplete) {
-      throw new Error(`Snapshot ${state.snapshot.id} ended before done`);
+      throw new Error(`Snapshot ${snapshot.id} ended before done`);
     }
   }
 
@@ -318,8 +379,38 @@ export async function bootstrapFreshProjection(options: {
   }
 
   return {
-    snapshot: state.snapshot,
+    snapshot,
     captureFrom: state.captureFrom,
     through: state.catchupThrough,
   };
+}
+
+function failureCategory(error: unknown): BootstrapFailureCategory {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "PdsSnapshotIncompleteError") return "snapshot-incomplete";
+  if (name === "SourceCatchupIncompleteError") return "catchup-incomplete";
+  if (name === "SourceHistoryExpiredError") return "source-history-expired";
+  if (name === "BootstrapVerificationError") return "verification-failed";
+  return "bootstrap-failed";
+}
+
+export async function bootstrapFreshProjection(options: {
+  collections: string[];
+  snapshotSource: SnapshotSource;
+  changeSource: ChangeSource;
+  target: BootstrapTarget;
+  allowPartial?: boolean;
+  requiredSemantics?: Partial<SourceSemantics>;
+  signal?: AbortSignal;
+}): Promise<BootstrapResult> {
+  try {
+    return await runBootstrapFreshProjection(options);
+  } catch (error) {
+    try {
+      await options.target.recordFailure?.(failureCategory(error));
+    } catch {
+      // Failure telemetry must not replace the canonical source/projection error.
+    }
+    throw error;
+  }
 }

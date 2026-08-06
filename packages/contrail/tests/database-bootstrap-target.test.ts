@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  BootstrapVerificationError,
   DatabaseBootstrapTarget,
+  PdsSnapshotIncompleteError,
   bootstrapFreshProjection,
+  getBootstrapFailure,
+  getBootstrapVerification,
   initSchema,
   queryRecords,
   resolveConfig,
@@ -61,6 +65,89 @@ function config() {
 }
 
 describe("database bootstrap target", () => {
+  it("durably represents capture before a snapshot descriptor exists", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, resolved);
+    const target = new DatabaseBootstrapTarget(db, resolved);
+
+    await target.beginCapture(sourcePosition(1));
+
+    expect(await target.load()).toMatchObject({
+      phase: "preparing",
+      snapshot: null,
+      captureFrom: sourcePosition(1),
+      snapshotProgress: [],
+      snapshotComplete: false,
+    });
+  });
+
+  it("persists a bounded failure category without raw upstream details", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, resolved);
+    const target = new DatabaseBootstrapTarget(db, resolved);
+    const changes: ChangeSource = {
+      id: "jetstream",
+      semantics: snapshot().semantics,
+      async mark() {
+        return sourcePosition(1);
+      },
+      async *read() {},
+    };
+    const failingSnapshot: SnapshotSource = {
+      id: "pds",
+      async prepare() {
+        throw new PdsSnapshotIncompleteError(
+          `private upstream failed for ${DID}`,
+        );
+      },
+      async *read() {},
+    };
+
+    await expect(
+      bootstrapFreshProjection({
+        collections: [COLLECTION],
+        snapshotSource: failingSnapshot,
+        changeSource: changes,
+        target,
+      }),
+    ).rejects.toThrow("private upstream failed");
+
+    expect(await getBootstrapFailure(db)).toMatchObject({
+      category: "snapshot-incomplete",
+      attempts: 1,
+    });
+    const raw = await db
+      .prepare("SELECT value FROM _contrail_meta WHERE key = ?")
+      .bind("bootstrap_last_failure")
+      .first<{ value: string }>();
+    expect(raw?.value).not.toContain(DID);
+    expect((await target.load())?.phase).toBe("preparing");
+
+    const recoveredSnapshot: SnapshotSource = {
+      id: "pds",
+      async prepare() {
+        return snapshot();
+      },
+      async *read() {
+        yield {
+          records: [],
+          sourceTimeUs: 1,
+          progress: { partition: "pds", cursor: null, complete: true },
+          done: true,
+        };
+      },
+    };
+    await bootstrapFreshProjection({
+      collections: [COLLECTION],
+      snapshotSource: recoveredSnapshot,
+      changeSource: changes,
+      target,
+    });
+    expect(await getBootstrapFailure(db)).toBeNull();
+  });
+
   it("projects a sampled snapshot and ordered tail with durable epochs", async () => {
     const resolved = config();
     const db = createSqliteDatabase(":memory:");
@@ -83,6 +170,7 @@ describe("database bootstrap target", () => {
     let mark = 0;
     const changeSource: ChangeSource = {
       id: "jetstream",
+      semantics: prepared.semantics,
       async mark() {
         mark++;
         return sourcePosition(mark === 1 ? 1 : 3);
@@ -147,6 +235,40 @@ describe("database bootstrap target", () => {
       source_epoch: "epoch-one",
       source_cursor: "2",
     });
+    expect(await getBootstrapVerification(db)).toMatchObject({ ok: true });
+  });
+
+  it("blocks completion and persists aggregate verification failures", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, resolved);
+    const target = new DatabaseBootstrapTarget(db, resolved);
+    const prepared = snapshot();
+    await target.beginCapture(sourcePosition(1));
+    await target.setSnapshot(prepared, sourcePosition(1));
+    await target.applySnapshotBatch(prepared, {
+      records: [record("a", "orphan")],
+      sourceTimeUs: 1,
+      progress: { partition: "pds", cursor: null, complete: true },
+      done: true,
+    });
+    await target.beginCatchup(sourcePosition(1));
+    await db
+      .prepare("DELETE FROM record_versions WHERE uri = ?")
+      .bind(`at://${DID}/${COLLECTION}/a`)
+      .run();
+
+    await expect(target.complete()).rejects.toBeInstanceOf(
+      BootstrapVerificationError,
+    );
+
+    expect((await target.load())?.phase).toBe("catchup");
+    expect(await getBootstrapVerification(db)).toMatchObject({
+      ok: false,
+      checks: expect.arrayContaining([
+        { name: "visible-version:event", ok: false, failures: 1 },
+      ]),
+    });
   });
 
   it("rolls projection back when snapshot progress cannot commit", async () => {
@@ -155,7 +277,8 @@ describe("database bootstrap target", () => {
     await initSchema(db, resolved);
     const target = new DatabaseBootstrapTarget(db, resolved);
     const prepared = snapshot();
-    await target.begin(prepared, sourcePosition(1));
+    await target.beginCapture(sourcePosition(1));
+    await target.setSnapshot(prepared, sourcePosition(1));
     await db
       .prepare(
         `CREATE TRIGGER fail_bootstrap_progress
@@ -200,7 +323,8 @@ describe("database bootstrap target", () => {
     await initSchema(db, resolved);
     const target = new DatabaseBootstrapTarget(db, resolved);
     const prepared = snapshot();
-    await target.begin(prepared, sourcePosition(1));
+    await target.beginCapture(sourcePosition(1));
+    await target.setSnapshot(prepared, sourcePosition(1));
     await target.applySnapshotBatch(prepared, {
       records: [],
       sourceTimeUs: 1,
