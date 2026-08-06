@@ -116,7 +116,7 @@ export function prepareRecordValidation(
   return context;
 }
 
-/** Validate one parsed create/update before filters, projections, or sinks. */
+/** Validate one parsed create/update before filters or projection. */
 export async function validateCanonicalRecord(
   config: ContrailConfig,
   event: IngestEvent,

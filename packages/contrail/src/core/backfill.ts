@@ -401,8 +401,6 @@ async function backfillUserAttempt(
         aggregateDiagnostics: options?.aggregateDiagnostics,
         // Canonical projection and cursor acknowledgement commit atomically.
         trailingStatements: [checkpoint],
-        // Let sinks bulk-flush differently from live ingestion.
-        phase: "backfill",
       });
       totalInserted += result.accepted.length;
       if (metrics) {

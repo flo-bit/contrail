@@ -9,7 +9,6 @@ import {
   initSchema,
   queryRecords,
   resolveConfig,
-  type RecordEvent,
 } from "../src/index";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 
@@ -60,7 +59,7 @@ async function cidFor(record: unknown) {
   return toString(await create(CODEC_DCBOR, encode(record)));
 }
 
-async function setup(sinkBatches: RecordEvent[][]) {
+async function setup() {
   const config = resolveConfig({
     namespace: "com.example",
     profiles: [],
@@ -81,13 +80,6 @@ async function setup(sinkBatches: RecordEvent[][]) {
       url: "https://constellation.example.com",
       userAgent: "contrail-test",
     },
-    sinks: [
-      {
-        async onRecords(records) {
-          sinkBatches.push(records);
-        },
-      },
-    ],
   });
   const db = createSqliteDatabase(":memory:");
   await initSchema(db, config);
@@ -123,7 +115,6 @@ async function setup(sinkBatches: RecordEvent[][]) {
     ],
     config,
   );
-  sinkBatches.length = 0;
   return { config, db };
 }
 
@@ -132,9 +123,8 @@ afterEach(() => {
 });
 
 describe("Constellation enrichment through shared ingestion", () => {
-  it("uses normal validation/feed/sink projection and is idempotent", async () => {
-    const sinkBatches: RecordEvent[][] = [];
-    const { config, db } = await setup(sinkBatches);
+  it("uses normal validation, feed projection, and source ordering idempotently", async () => {
+    const { config, db } = await setup();
     const fetchSpy = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -180,11 +170,5 @@ describe("Constellation enrichment through shared ingestion", () => {
         .bind(FOLLOWER, EVENT_URI)
         .first(),
     ).toEqual({ actor: FOLLOWER, uri: EVENT_URI });
-    expect(sinkBatches).toHaveLength(1);
-    expect(sinkBatches[0]).toHaveLength(1);
-    expect(sinkBatches[0][0]).toMatchObject({
-      kind: "created",
-      collection: FOLLOW,
-    });
   });
 });

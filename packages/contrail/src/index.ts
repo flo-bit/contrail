@@ -14,7 +14,6 @@ export {
   validateExternalUrl,
 } from "./core/client";
 export type { ResolvedIdentity } from "./core/client";
-export * from "./core/sinks/types";
 
 // Ingestion and maintenance.
 export * from "./core/ingest";

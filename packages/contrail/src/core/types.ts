@@ -261,11 +261,6 @@ export interface ContrailConfig {
   /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
    *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`. */
   notify?: boolean | string;
-  /** Write-only, post-commit observers of applied records — derived indexes,
-   *  audit logs, webhook fan-outs. Each fires after every record-ingest commit
-   *  on both live and backfill paths, with failures isolated so a throwing
-   *  sink never blocks ingestion. */
-  sinks?: import("./sinks/types").Sink[];
   /** Labels module configuration. When set, contrail subscribes to the
    *  configured labelers, indexes their labels into a single `labels` table,
    *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile
