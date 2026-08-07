@@ -2,7 +2,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectPublicService } from "../src/cli/commands/connect";
+import {
+  connectPublicService,
+  ensureConsumerLexiconConfig,
+} from "../src/cli/commands/connect";
 import { generateLexiconTypesWithAtcute } from "../src/cli/atcute";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { createApp } from "../src/core/router";
@@ -101,17 +104,6 @@ describe("public service consumer integration", () => {
     const fetcher: typeof fetch = (input, init) =>
       app.fetch(new Request(input, init));
 
-    writeFileSync(
-      join(consumerRoot, "lex.config.js"),
-      `import { defineLexiconConfig } from "@atcute/lex-cli";
-export default defineLexiconConfig({
-  generate: {
-    files: ["lexicons/pulled/**/*.json"],
-    outdir: "src/lexicons/",
-  },
-});
-`,
-    );
     await connectPublicService({
       endpoint: "https://api.example.com",
       root: consumerRoot,
@@ -119,6 +111,11 @@ export default defineLexiconConfig({
       lock: "contrail.lock.json",
       fetcher,
     });
+    const generatedConfig = await ensureConsumerLexiconConfig({
+      root: consumerRoot,
+      out: "lexicons/pulled",
+    });
+    expect(generatedConfig.created).toBe(true);
     generateLexiconTypesWithAtcute(consumerRoot);
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });

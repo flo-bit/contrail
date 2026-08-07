@@ -19,6 +19,10 @@
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
     },
+    "./client": {
+      "types": "./dist/public-client.d.ts",
+      "import": "./dist/public-client.js"
+    },
     "./sqlite": {
       "types": "./dist/adapters/sqlite.d.ts",
       "import": "./dist/adapters/sqlite.js"
@@ -65,7 +69,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:built": "node tests/built-sqlite.mjs && node tests/built-lexicons.mjs",
+    "test:built": "node tests/built-sqlite.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
