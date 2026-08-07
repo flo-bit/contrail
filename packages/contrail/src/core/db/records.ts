@@ -553,6 +553,7 @@ export interface RecordVersionInfo {
   operation: "create" | "update" | "delete";
   cid: string | null;
   source_id: string;
+  source_epoch: string | null;
   source_revision: string | null;
   source_time_us: number;
   source_cursor: string | null;
@@ -569,6 +570,7 @@ function versionForEvent(event: IngestEvent): RecordVersionInfo {
     operation: event.operation,
     cid: event.cid,
     source_id: source?.id ?? "legacy-caller",
+    source_epoch: source?.epoch ?? null,
     // Before 0.13.1 callers had no separate source clock, so time_us is the
     // least surprising compatibility fallback for hand-built IngestEvents.
     source_time_us: source?.time_us ?? event.time_us,
@@ -616,6 +618,7 @@ export function compareRecordVersions(
   }
   if (
     left.source_id === right.source_id &&
+    left.source_epoch === right.source_epoch &&
     left.source_cursor !== null &&
     right.source_cursor !== null &&
     left.source_cursor !== right.source_cursor
@@ -631,6 +634,9 @@ export function compareRecordVersions(
   if (left.source_id !== right.source_id) {
     return left.source_id < right.source_id ? -1 : 1;
   }
+  const leftEpoch = left.source_epoch ?? "";
+  const rightEpoch = right.source_epoch ?? "";
+  if (leftEpoch !== rightEpoch) return leftEpoch < rightEpoch ? -1 : 1;
   return 0;
 }
 
@@ -645,7 +651,7 @@ export async function lookupRecordVersions(
     const placeholders = chunk.map(() => "?").join(",");
     const rows = await db
       .prepare(
-        `SELECT uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at FROM record_versions WHERE uri IN (${placeholders})`,
+        `SELECT uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at FROM record_versions WHERE uri IN (${placeholders})`,
       )
       .bind(...chunk)
       .all<RecordVersionInfo>();
@@ -770,7 +776,7 @@ const RECORD_UPSERT_BINDINGS = 7;
 const RECORD_UPSERT_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_UPSERT_BINDINGS
 );
-const RECORD_VERSION_BINDINGS = 11;
+const RECORD_VERSION_BINDINGS = 12;
 const RECORD_VERSION_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_VERSION_BINDINGS,
 );
@@ -789,12 +795,12 @@ function buildRecordVersionStatements(
   for (let index = 0; index < events.length; index += RECORD_VERSION_ROWS) {
     const chunk = events.slice(index, index + RECORD_VERSION_ROWS);
     const values = chunk
-      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .join(", ");
     statements.push(
       db
         .prepare(
-          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at`,
+          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_epoch = excluded.source_epoch, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at`,
         )
         .bind(
           ...chunk.flatMap((event) => {
@@ -811,6 +817,7 @@ function buildRecordVersionStatements(
               version.operation,
               retainedCid,
               version.source_id,
+              version.source_epoch,
               version.source_revision,
               version.source_time_us,
               version.source_cursor,

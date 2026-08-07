@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 8;
+export const CONTRAIL_SCHEMA_VERSION = 9;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -67,6 +67,33 @@ CREATE TABLE IF NOT EXISTS backfill_state (
   heartbeat_at ${dialect.bigintType},
   finished_at ${dialect.bigintType}
 );
+CREATE TABLE IF NOT EXISTS bootstrap_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  phase TEXT NOT NULL CHECK (phase IN ('snapshot', 'catchup', 'complete')),
+  snapshot_json TEXT NOT NULL,
+  capture_source TEXT NOT NULL,
+  capture_epoch TEXT NOT NULL,
+  capture_cursor TEXT NOT NULL,
+  snapshot_complete INTEGER NOT NULL DEFAULT 0,
+  catchup_source TEXT,
+  catchup_epoch TEXT,
+  catchup_cursor TEXT,
+  change_source TEXT,
+  change_epoch TEXT,
+  change_cursor TEXT,
+  started_at ${dialect.bigintType} NOT NULL,
+  updated_at ${dialect.bigintType} NOT NULL,
+  finished_at ${dialect.bigintType}
+);
+CREATE TABLE IF NOT EXISTS bootstrap_snapshot_progress (
+  bootstrap_id INTEGER NOT NULL,
+  partition TEXT NOT NULL,
+  cursor TEXT,
+  completed INTEGER NOT NULL DEFAULT 0,
+  updated_at ${dialect.bigintType} NOT NULL,
+  PRIMARY KEY (bootstrap_id, partition),
+  FOREIGN KEY (bootstrap_id) REFERENCES bootstrap_state(id)
+);
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
@@ -82,6 +109,7 @@ CREATE TABLE IF NOT EXISTS record_versions (
   operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
   cid TEXT,
   source_id TEXT NOT NULL,
+  source_epoch TEXT,
   source_revision TEXT,
   source_time_us ${dialect.bigintType} NOT NULL,
   source_cursor TEXT,
@@ -352,6 +380,11 @@ const MIGRATIONS: MigrationOp[] = [
     columnDef: "INTEGER NOT NULL DEFAULT 0",
   },
   {
+    table: "record_versions",
+    column: "source_epoch",
+    columnDef: "TEXT",
+  },
+  {
     table: "discovery",
     column: "retries",
     columnDef: "INTEGER NOT NULL DEFAULT 0",
@@ -414,8 +447,8 @@ async function seedLegacyRecordVersions(
     const table = recordsTableName(shortName);
     await db
       .prepare(
-        `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_revision, source_time_us, source_cursor, indexed_at)
-         SELECT uri, did, ?, rkey, 'update', cid, 'legacy', NULL, indexed_at, NULL, indexed_at FROM ${table}
+        `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at)
+         SELECT uri, did, ?, rkey, 'update', cid, 'legacy', NULL, NULL, indexed_at, NULL, indexed_at FROM ${table}
          WHERE 1 = 1 ON CONFLICT(uri) DO NOTHING`,
       )
       .bind(collection.collection)

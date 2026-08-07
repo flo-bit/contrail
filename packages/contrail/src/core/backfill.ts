@@ -23,6 +23,7 @@ import {
   heartbeatBackfillRun,
   tryStartBackfillRun,
 } from "./status";
+import { createStreamingHostScheduler, drainQueue } from "./scheduling";
 
 const PAGE_SIZE = 100;
 const DEFAULT_MAX_ATTEMPTS = 1;
@@ -34,6 +35,19 @@ const BACKFILL_RETRY_BASE_MS = 15 * 60_000;
 const BACKFILL_RETRY_MAX_MS = 48 * 60 * 60_000;
 const DEFAULT_SCHEDULED_MAX_ATTEMPTS = 10;
 const DERIVED_PROJECTIONS_DIRTY_KEY = "backfill_derived_projections_dirty";
+/** Legacy Jetstream v1 uses wall-clock microseconds as its replay coordinate.
+ * Keep the same overlap Atcute uses for multi-endpoint clock skew. The future
+ * source adapter replaces this compatibility marker with a source-owned epoch
+ * and cursor. */
+const INITIAL_CAPTURE_OVERLAP_US = 10_000_000;
+
+async function ensureInitialReplayBoundary(db: Database): Promise<void> {
+  if ((await getLastCursor(db)) !== null) return;
+  await saveCursor(
+    db,
+    Math.max(0, Date.now() * 1000 - INITIAL_CAPTURE_OVERLAP_US),
+  );
+}
 
 export interface BackfillCollectionMetrics {
   requests: number;
@@ -108,11 +122,16 @@ async function withRetry<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   label: string,
   maxRetries = 3,
-  timeoutMs = REQUEST_TIMEOUT_MS
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  parentSignal?: AbortSignal,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (parentSignal?.aborted) throw parentSignal.reason;
     const controller = new AbortController();
+    const abort = () => controller.abort(parentSignal?.reason);
+    parentSignal?.addEventListener("abort", abort, { once: true });
+    if (parentSignal?.aborted) abort();
     const timeout = setTimeout(
       () => controller.abort(new Error(`Timeout: ${label}`)),
       timeoutMs
@@ -120,13 +139,28 @@ async function withRetry<T>(
     try {
       return await fn(controller.signal);
     } catch (err) {
+      if (parentSignal?.aborted) throw parentSignal.reason;
       lastError = err;
     } finally {
       clearTimeout(timeout);
+      parentSignal?.removeEventListener("abort", abort);
     }
     if (attempt < maxRetries) {
-      const delay = Math.min(1000 * 2 ** attempt, 10000);
-      await new Promise((r) => setTimeout(r, delay));
+      const milliseconds = Math.min(1000 * 2 ** attempt, 10000);
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => {
+          parentSignal?.removeEventListener("abort", cancel);
+          resolve();
+        };
+        const timer = setTimeout(finish, milliseconds);
+        const cancel = () => {
+          clearTimeout(timer);
+          parentSignal?.removeEventListener("abort", cancel);
+          reject(parentSignal?.reason ?? new Error("Retry cancelled"));
+        };
+        parentSignal?.addEventListener("abort", cancel, { once: true });
+        if (parentSignal?.aborted) cancel();
+      });
     }
   }
   throw lastError;
@@ -479,158 +513,6 @@ export interface BackfillAllOptions {
   onMetrics?: (metrics: BackfillRunMetrics) => void;
 }
 
-/** Keep a fixed number of jobs active without batch barriers. Returning true
- * from consume requeues only that item, allowing paginated repositories to
- * yield fairly while completed slots refill immediately. */
-async function drainQueue<TItem, TResult>(
-  items: TItem[],
-  concurrency: number,
-  run: (item: TItem) => Promise<TResult>,
-  consume: (result: TResult) => boolean | void
-): Promise<void> {
-  if (items.length === 0) return;
-  const queue = [...items];
-  let nextIndex = 0;
-  let active = 0;
-  let settled = false;
-
-  await new Promise<void>((resolve, reject) => {
-    const pump = () => {
-      if (settled) return;
-      while (active < concurrency && nextIndex < queue.length) {
-        const item = queue[nextIndex++];
-        active++;
-        run(item).then(
-          (result) => {
-            active--;
-            if (consume(result) === true) queue.push(item);
-            if (active === 0 && nextIndex >= queue.length) {
-              settled = true;
-              resolve();
-            } else {
-              pump();
-            }
-          },
-          (error) => {
-            settled = true;
-            reject(error);
-          }
-        );
-      }
-    };
-    pump();
-  });
-}
-
-function createStreamingHostScheduler<TResult>(
-  hostConcurrency: number,
-  didsPerHost: number,
-  run: (pds: string, did: string) => Promise<TResult>,
-  consume: (result: TResult) => boolean | void
-): {
-  add(pds: string, did: string): void;
-  finish(): Promise<void>;
-} {
-  type HostState = {
-    pending: string[];
-    active: number;
-    queued: boolean;
-    running: boolean;
-  };
-  const hosts = new Map<string, HostState>();
-  const waiting: string[] = [];
-  let activeHosts = 0;
-  let producerDone = false;
-  let settled = false;
-  let resolveFinished!: () => void;
-  let rejectFinished!: (error: unknown) => void;
-  const finished = new Promise<void>((resolve, reject) => {
-    resolveFinished = resolve;
-    rejectFinished = reject;
-  });
-
-  const fail = (error: unknown) => {
-    if (settled) return;
-    settled = true;
-    rejectFinished(error);
-  };
-
-  const maybeFinish = () => {
-    if (settled || !producerDone) return;
-    if (activeHosts === 0 && waiting.length === 0) {
-      settled = true;
-      resolveFinished();
-    }
-  };
-
-  const pumpHosts = () => {
-    if (settled) return;
-    while (activeHosts < hostConcurrency && waiting.length > 0) {
-      const pds = waiting.shift()!;
-      const state = hosts.get(pds)!;
-      state.queued = false;
-      if (state.running || state.pending.length === 0) continue;
-      state.running = true;
-      activeHosts++;
-      pumpDids(pds, state);
-    }
-    maybeFinish();
-  };
-
-  const finishHost = (state: HostState) => {
-    if (!state.running) return;
-    state.running = false;
-    activeHosts--;
-    pumpHosts();
-  };
-
-  function pumpDids(pds: string, state: HostState): void {
-    if (settled) return;
-    while (state.active < didsPerHost && state.pending.length > 0) {
-      const did = state.pending.shift()!;
-      state.active++;
-      run(pds, did).then(
-        (result) => {
-          state.active--;
-          if (consume(result) === true) state.pending.push(did);
-          pumpDids(pds, state);
-        },
-        fail
-      );
-    }
-    if (state.active === 0 && state.pending.length === 0) {
-      finishHost(state);
-    }
-  }
-
-  return {
-    add(pds, did) {
-      if (producerDone) throw new Error("Cannot add work after scheduler finish");
-      let state = hosts.get(pds);
-      if (!state) {
-        state = { pending: [], active: 0, queued: false, running: false };
-        hosts.set(pds, state);
-      }
-      state.pending.push(did);
-      if (state.running) {
-        pumpDids(pds, state);
-      } else if (!state.queued) {
-        state.queued = true;
-        waiting.push(pds);
-        pumpHosts();
-      }
-    },
-    finish() {
-      producerDone = true;
-      for (const [pds, state] of hosts) {
-        if (state.running) pumpDids(pds, state);
-      }
-      pumpHosts();
-      return finished;
-    },
-  };
-}
-
 async function flushIngestDiagnostics(
   db: Database,
   counts: IngestDiagnosticCounts,
@@ -683,11 +565,9 @@ async function backfillPendingWork(
   const metrics = emptyBackfillMetrics();
   const aggregateDiagnostics: IngestDiagnosticCounts = {};
 
-  // Anchor the jetstream cursor to now if it hasn't been set yet, so records
-  // emitted during backfill are replayed once jetstream starts.
-  if ((await getLastCursor(db)) === null) {
-    await saveCursor(db, Date.now() * 1000);
-  }
+  // Direct callers may begin with already-discovered work. Capture before the
+  // first PDS request so changes racing the sampled scan remain replayable.
+  await ensureInitialReplayBoundary(db);
 
   // Mark the set-based catch-up dirty before canonical writes. A crash can leave
   // search/count projections stale, so status stays incomplete and the next
@@ -1024,7 +904,8 @@ interface DiscoveryPage {
 async function fetchPage(
   relay: string,
   collection: string,
-  cursor?: string
+  cursor?: string,
+  parentSignal?: AbortSignal,
 ): Promise<DiscoveryPage> {
   const url = new URL(
     `/xrpc/com.atproto.sync.listReposByCollection`,
@@ -1056,7 +937,10 @@ async function fetchPage(
       }
       return body as DiscoveryPage;
     },
-    `fetchPage(${relay}, ${collection})`
+    `fetchPage(${relay}, ${collection})`,
+    3,
+    REQUEST_TIMEOUT_MS,
+    parentSignal,
   );
 }
 
@@ -1149,19 +1033,35 @@ async function ensureDiscoveryRows(
   }
 }
 
+export interface DiscoverDIDsOptions {
+  /** Legacy direct callers anchor the live cursor before discovery. A bootstrap
+   * coordinator already owns a separate durable capture position. */
+  captureReplayBoundary?: boolean;
+  signal?: AbortSignal;
+}
+
 export async function discoverDIDs(
   db: Database,
   config: ContrailConfig,
-  deadline: number
+  deadline: number,
+  options: DiscoverDIDsOptions = {},
 ): Promise<string[]> {
   const collections = getDiscoverableNsids(config);
   const relays = config.relays ?? DEFAULT_RELAYS;
   if (relays.length === 0 || collections.length === 0) return [];
 
+  // Capture before relay discovery as well as before PDS crawling. Otherwise a
+  // repository created after its relay page was scanned but before the later
+  // PDS phase could fall before the live cursor and disappear from both paths.
+  if (options.captureReplayBoundary !== false) {
+    await ensureInitialReplayBoundary(db);
+  }
+
   const discovered: string[] = [];
   await ensureDiscoveryRows(db, collections, relays);
 
   for (const collection of collections) {
+    if (options.signal?.aborted) throw options.signal.reason;
     if (Date.now() >= deadline) break;
 
     let data: DiscoveryPage | null = null;
@@ -1184,10 +1084,16 @@ export async function discoverDIDs(
       if (row?.next_retry_at && row.next_retry_at > Date.now()) continue;
 
       try {
-        data = await fetchPage(r, collection, row?.cursor ?? undefined);
+        data = await fetchPage(
+          r,
+          collection,
+          row?.cursor ?? undefined,
+          options.signal,
+        );
         relay = r;
         break;
       } catch (error) {
+        if (options.signal?.aborted) throw options.signal.reason;
         await markDiscoveryFailed(
           db,
           collection,

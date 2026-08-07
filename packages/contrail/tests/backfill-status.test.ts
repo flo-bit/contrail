@@ -673,6 +673,40 @@ describe("scheduled backfill retries", () => {
 });
 
 describe("discovery failure state", () => {
+  it("anchors replay before the first relay discovery request", async () => {
+    const db = await createTestDbWithSchema();
+    const config = resolveConfig({
+      namespace: "com.example",
+      collections: { event: { collection: EVENT } },
+      relays: ["https://relay.test"],
+    });
+    let cursorDuringRequest: number | null = null;
+    const fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async () => {
+      cursorDuringRequest =
+        (
+          await db
+            .prepare("SELECT time_us FROM cursor WHERE id = 1")
+            .first<{ time_us: number }>()
+        )?.time_us ?? null;
+      return new Response(JSON.stringify({ repos: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    try {
+      const startedAtUs = Date.now() * 1000;
+      await discoverDIDs(db, config, Infinity);
+      expect(cursorDuringRequest).not.toBeNull();
+      expect(cursorDuringRequest!).toBeGreaterThanOrEqual(
+        startedAtUs - 10_000_000,
+      );
+      expect(cursorDuringRequest!).toBeLessThanOrEqual(Date.now() * 1000);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("keeps a failed relay pending and falls back to another relay", async () => {
     vi.useFakeTimers();
     const fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (input) => {
