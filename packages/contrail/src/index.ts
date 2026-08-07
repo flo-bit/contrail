@@ -2,6 +2,7 @@
 export type { LexiconDoc } from "@atcute/lexicon-doc";
 export { Contrail } from "./contrail";
 export type { AppOptions, ContrailOptions } from "./contrail";
+export * from "./public-service";
 
 // Configuration, storage, identity, and dialects.
 export * from "./core/types";
@@ -35,14 +36,19 @@ export * from "./core/constellation";
 // Database.
 export * from "./core/db/schema";
 export {
+  assertServingSourceCompatibility,
   getFeedPruneCursor,
   getLastCursor,
+  getServingSourcePosition,
   lookupExistingRecords,
   pruneActorFeed,
   pruneFeedItems,
   queryRecords,
   saveCursor,
   saveCursorStatement,
+  saveOrderedSourcePositionStatement,
+  saveServingSourcePositionStatement,
+  orderedSourcePosition,
   saveFeedPruneCursor,
   sweepFeedItems,
 } from "./core/db/records";
@@ -51,6 +57,7 @@ export type {
   FeedSweepResult,
   QueryOptions,
   SortOption,
+  ServingSourcePosition,
 } from "./core/db/records";
 export * from "./core/db/meta";
 export * from "./core/db/optimize";
@@ -60,7 +67,7 @@ export * from "./core/router";
 export * from "./core/router/notify";
 export * from "./core/router/profiles";
 export * from "./core/router/feed";
-export * from "./core/router/admin";
+export * from "./core/router/diagnostics";
 export * from "./core/router/collection";
 export * from "./core/router/hydrate";
 export * from "./core/router/helpers";

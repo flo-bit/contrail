@@ -41,11 +41,15 @@ const DERIVED_PROJECTIONS_DIRTY_KEY = "backfill_derived_projections_dirty";
  * and cursor. */
 const INITIAL_CAPTURE_OVERLAP_US = 10_000_000;
 
-async function ensureInitialReplayBoundary(db: Database): Promise<void> {
+async function ensureInitialReplayBoundary(
+  db: Database,
+  config: ContrailConfig,
+): Promise<void> {
   if ((await getLastCursor(db)) !== null) return;
   await saveCursor(
     db,
     Math.max(0, Date.now() * 1000 - INITIAL_CAPTURE_OVERLAP_US),
+    config.orderedSource,
   );
 }
 
@@ -567,7 +571,7 @@ async function backfillPendingWork(
 
   // Direct callers may begin with already-discovered work. Capture before the
   // first PDS request so changes racing the sampled scan remain replayable.
-  await ensureInitialReplayBoundary(db);
+  await ensureInitialReplayBoundary(db, config);
 
   // Mark the set-based catch-up dirty before canonical writes. A crash can leave
   // search/count projections stale, so status stays incomplete and the next
@@ -1054,7 +1058,7 @@ export async function discoverDIDs(
   // repository created after its relay page was scanned but before the later
   // PDS phase could fall before the live cursor and disappear from both paths.
   if (options.captureReplayBoundary !== false) {
-    await ensureInitialReplayBoundary(db);
+    await ensureInitialReplayBoundary(db, config);
   }
 
   const discovered: string[] = [];

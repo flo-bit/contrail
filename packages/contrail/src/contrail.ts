@@ -12,7 +12,11 @@ import { initSchema } from "./core/db/schema";
 import { prepareRecordValidation } from "./core/validation";
 import { getIngestDiagnostics } from "./core/diagnostics";
 import { optimizeDatabase } from "./core/db/optimize";
-import { queryRecords, type QueryOptions } from "./core/db/records";
+import {
+  assertServingSourceCompatibility,
+  queryRecords,
+  type QueryOptions,
+} from "./core/db/records";
 import {
   createIngestState,
   runIngestCycle,
@@ -69,7 +73,12 @@ export class Contrail {
 
   /** Initialize the database schema. */
   async init(db?: Database): Promise<void> {
-    await initSchema(this.getDb(db), this.config);
+    const database = this.getDb(db);
+    await initSchema(database, this.config);
+    await assertServingSourceCompatibility(
+      database,
+      this.config.orderedSource,
+    );
   }
 
   /** Refresh the SQLite query-planner statistics (bounded `PRAGMA optimize`) so

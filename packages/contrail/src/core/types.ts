@@ -238,6 +238,13 @@ export interface IngestValidationConfig {
   allowCidlessSources?: string[];
 }
 
+export interface OrderedSourceConfig {
+  /** Stable logical identifier of the primary ordered change source. */
+  source: string;
+  /** Operator-owned continuity epoch. Change it whenever cursor continuity changes. */
+  epoch: string;
+}
+
 export interface ContrailConfig {
   namespace: string;
   /** Collections to index, keyed by short name. Short names become endpoint URL segments
@@ -256,6 +263,10 @@ export interface ContrailConfig {
    *  connection (`runPersistent`), where the per-switch 10s skew rollback fires
    *  about once rather than every cycle. */
   jetstreams?: string[];
+  /** Identity of the ordered source consumed by live ingestion. Its opaque
+   * cursor is persisted atomically with projected mutations and may be exposed
+   * to clients as a cache invalidation coordinate. */
+  orderedSource?: OrderedSourceConfig;
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
   /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
@@ -382,6 +393,12 @@ export interface ResolvedContrailConfig extends ContrailConfig {
  * Resolve config: apply defaults, auto-add profile collections, compute queryable maps.
  */
 export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
+  if (
+    config.orderedSource &&
+    (!config.orderedSource.source.trim() || !config.orderedSource.epoch.trim())
+  ) {
+    throw new TypeError("orderedSource requires non-empty source and epoch values");
+  }
   const profiles = (config.profiles ?? DEFAULT_PROFILES).map(
     normalizeProfileConfig
   );
