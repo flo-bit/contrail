@@ -1,22 +1,19 @@
 import type { ContrailConfig } from "@atmo-dev/contrail";
-import { lexicons } from "../lexicons/generated";
 
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
-  profiles: [],
-  constellation: false,
+  profiles: ["app.bsky.actor.profile"],
   jetstreams: ["wss://jetstream1.us-east.bsky.network"],
   orderedSource: {
     source: "jetstream",
     epoch: "api-atmo-rsvp-primary-2026-08",
   },
-  validation: {
-    lexicons: lexicons as unknown as NonNullable<
-      ContrailConfig["validation"]
-    >["lexicons"],
-    strict: true,
-    verifyCid: true,
+  notify: true,
+  serviceAuth: {
+    audience: "did:web:api.atmo.rsvp",
+    methods: ["getFeed", "notifyOfUpdate"],
   },
+  maintenance: { optimize: true },
   collections: {
     event: {
       collection: "community.lexicon.calendar.event",
@@ -53,6 +50,25 @@ export const config: ContrailConfig = {
           field: "subject.uri",
         },
       },
+    },
+    profile: {
+      collection: "app.bsky.actor.profile",
+      discover: false,
+      methods: [],
+    },
+    follow: {
+      collection: "app.bsky.graph.follow",
+      discover: false,
+      subjectField: "subject",
+      methods: [],
+    },
+  },
+  feeds: {
+    network: {
+      targets: [
+        { collection: "event", maxItems: 100 },
+        { collection: "rsvp", maxItems: 250 },
+      ],
     },
   },
 };

@@ -15,8 +15,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "atmo-rsvp-contrail",
-      "database_id": "8a483108-4614-41c4-b9db-86b7a2ea27ca"
+      "database_name": "atmo-rsvp-contrail-g20260807",
+      "database_id": "e89f629a-17a8-4fd3-b3c0-a4c6c5ff3bf1"
     }
   ],
   "triggers": {
