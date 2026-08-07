@@ -8,7 +8,7 @@ import {
   jetstreamUrlOption,
   resolveConfig,
 } from "./types";
-import { initSchema, getLastCursor, saveCursorStatement } from "./db";
+import { initSchema, getLastCursor, saveCursorStatement, saveOrderedSourcePositionStatement } from "./db";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
@@ -162,7 +162,18 @@ async function streamAndFlush(
         try {
           ingestResult = await ingestRecords(db, batch, config, {
             knownDids,
-            trailingStatements: [saveCursorStatement(db, lastTimeUs)],
+            trailingStatements: [
+              saveCursorStatement(db, lastTimeUs),
+              ...(config.orderedSource
+                ? [
+                    saveOrderedSourcePositionStatement(
+                      db,
+                      config.orderedSource,
+                      lastTimeUs,
+                    ),
+                  ]
+                : []),
+            ],
           });
         } catch (error) {
           // The cursor transaction failed, so keep this exact batch at the front
@@ -313,7 +324,10 @@ async function streamAndFlush(
             cid: commit.operation === "delete" ? null : commit.cid,
             value: commit.operation === "delete" ? undefined : commit.record,
             source: {
-              id: "jetstream",
+              id: config.orderedSource?.source ?? "jetstream",
+              ...(config.orderedSource
+                ? { epoch: config.orderedSource.epoch }
+                : {}),
               time_us: event.time_us,
               revision: commit.rev,
               cursor: String(event.time_us),

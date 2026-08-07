@@ -4,22 +4,43 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get the current cursor position",
+      "description": "Get the committed primary ordered-source position",
       "output": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
           "properties": {
-            "time_us": {
+            "position": {
+              "type": "ref",
+              "ref": "#sourcePosition"
+            },
+            "updatedAt": {
               "type": "integer"
             },
-            "date": {
-              "type": "string"
-            },
-            "seconds_ago": {
-              "type": "integer"
+            "updatedAtDate": {
+              "type": "string",
+              "format": "datetime"
             }
           }
+        }
+      }
+    },
+    "sourcePosition": {
+      "type": "object",
+      "required": [
+        "source",
+        "epoch",
+        "cursor"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
         }
       }
     }

@@ -2,10 +2,9 @@ import type {} from '@atcute/lexicons';
 import * as v from '@atcute/lexicons/validations';
 import type {} from '@atcute/lexicons/ambient';
 import * as AppBskyActorProfile from "@atcute/bluesky/types/app/actor/profile";
-import * as XyzStatusphereStatus from "../../../xyz/statusphere/status.js";
 
 const _mainSchema = /*#__PURE__*/ v.query(
-	"statusphere.app.status.listRecords",
+	"statusphere.app.profile.listRecords",
 	{
 		"params": /*#__PURE__*/ v.object(
 			{
@@ -13,14 +12,6 @@ const _mainSchema = /*#__PURE__*/ v.query(
 				 * Filter by DID or handle
 				 */
 				"actor": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.actorIdentifierString()),
-				/**
-				 * Maximum value for createdAt
-				 */
-				"createdAtMax": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string()),
-				/**
-				 * Minimum value for createdAt
-				 */
-				"createdAtMin": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string()),
 				"cursor": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string()),
 				/**
 				 * @minimum 1
@@ -35,21 +26,9 @@ const _mainSchema = /*#__PURE__*/ v.query(
 					50
 				),
 				/**
-				 * Sort direction
-				 */
-				"order": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string<"asc" | "desc" | (string & {})>()),
-				/**
 				 * Include indexed profile and identity information
 				 */
 				"profiles": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.boolean()),
-				/**
-				 * Field to sort by (default: time_us)
-				 */
-				"sort": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string<"createdAt" | "status" | (string & {})>()),
-				/**
-				 * Filter by status
-				 */
-				"status": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string()),
 			}
 		),
 		"output": {
@@ -70,7 +49,7 @@ const _mainSchema = /*#__PURE__*/ v.query(
 );
 const _profileEntrySchema = /*#__PURE__*/ v.object(
 	{
-		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.status.listRecords#profileEntry")),
+		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.profile.listRecords#profileEntry")),
 		"cid": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.cidString()),
 		"collection": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.nsidString()),
 		"did": /*#__PURE__*/ v.didString(),
@@ -84,7 +63,7 @@ const _profileEntrySchema = /*#__PURE__*/ v.object(
 );
 const _recordSchema = /*#__PURE__*/ v.object(
 	{
-		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.status.listRecords#record")),
+		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.profile.listRecords#record")),
 		"cid": /*#__PURE__*/ v.cidString(),
 		"collection": /*#__PURE__*/ v.nsidString(),
 		"did": /*#__PURE__*/ v.didString(),
@@ -92,7 +71,7 @@ const _recordSchema = /*#__PURE__*/ v.object(
 		"time_us": /*#__PURE__*/ v.integer(),
 		"uri": /*#__PURE__*/ v.resourceUriString(),
 		get "value"() {
-			return XyzStatusphereStatus.mainSchema
+			return AppBskyActorProfile.mainSchema
 		},
 	}
 );
@@ -118,6 +97,6 @@ export interface $params extends v.InferInput<mainSchema['params']> {}
 export interface $output extends v.InferXRPCBodyInput<mainSchema['output']> {}
 declare module '@atcute/lexicons/ambient' {
 	interface XRPCQueries {
-		"statusphere.app.status.listRecords": mainSchema;
+		"statusphere.app.profile.listRecords": mainSchema;
 	}
 }

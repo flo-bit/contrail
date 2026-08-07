@@ -100,13 +100,6 @@ function collectionReference(
   return document?.defs?.main ? `${nsid}#main` : null;
 }
 
-function recordObjectSchema(sourceDirs: string[], nsid: string): any | null {
-  const path = findLexicon(sourceDirs, nsid);
-  const document = path ? readLexicon(path) : null;
-  const main = document?.defs?.main;
-  return main?.type === "record" && main.record ? main.record : null;
-}
-
 function groupsForRelation(
   sourceDirs: string[],
   config: ContrailConfig,
@@ -135,19 +128,13 @@ function groupsForRelation(
 function profileDefinitions(config: ContrailConfig, sourceDirs: string[]) {
   const profiles = config.profiles ?? [];
   if (profiles.length === 0) return {};
-  const definitions: Record<string, any> = {};
   const refs: string[] = [];
   for (const profile of profiles) {
     const collection =
       typeof profile === "string" ? profile : profile.collection;
-    const schema = recordObjectSchema(sourceDirs, collection);
-    if (!schema) continue;
-    const name = collection
-      .split(".")
-      .map((part, index) => (index === 0 ? part : capitalize(part)))
-      .join("");
-    definitions[name] = schema;
-    refs.push(`#${name}`);
+    if (collectionReference(sourceDirs, collection)) {
+      refs.push(`${collection}#main`);
+    }
   }
   const value =
     refs.length === 1
@@ -169,7 +156,6 @@ function profileDefinitions(config: ContrailConfig, sourceDirs: string[]) {
         rkey: { type: "string" },
       },
     },
-    ...definitions,
   };
 }
 
@@ -716,102 +702,98 @@ export function generateLexicons(
     log(`  ${nsid}`);
   };
 
-  if (surface === "full") {
-    emit(`${config.namespace}.getCursor`, {
+  emit(`${config.namespace}.getCursor`, {
+    lexicon: 1,
+    id: `${config.namespace}.getCursor`,
+    defs: {
+      main: {
+        type: "query",
+        description: "Get the committed primary ordered-source position",
+        output: {
+          encoding: "application/json",
+          schema: {
+            type: "object",
+            properties: {
+              position: { type: "ref", ref: "#sourcePosition" },
+              updatedAt: { type: "integer" },
+              updatedAtDate: { type: "string", format: "datetime" },
+            },
+          },
+        },
+      },
+      sourcePosition: {
+        type: "object",
+        required: ["source", "epoch", "cursor"],
+        properties: {
+          source: { type: "string" },
+          epoch: { type: "string" },
+          cursor: { type: "string" },
+        },
+      },
+    },
+  });
+  if ((config.profiles?.length ?? 0) > 0) {
+    emit(`${config.namespace}.getProfile`, {
       lexicon: 1,
-      id: `${config.namespace}.getCursor`,
+      id: `${config.namespace}.getProfile`,
       defs: {
         main: {
           type: "query",
-          description: "Get the current ingestion observation time",
+          parameters: {
+            type: "params",
+            required: ["actor"],
+            properties: {
+              actor: { type: "string", format: "at-identifier" },
+            },
+          },
           output: {
             encoding: "application/json",
             schema: {
               type: "object",
+              required: ["profiles"],
               properties: {
-                time_us: { type: "integer" },
-                date: { type: "string" },
-                seconds_ago: { type: "integer" },
+                profiles: {
+                  type: "array",
+                  items: { type: "ref", ref: "#profileEntry" },
+                },
               },
             },
           },
         },
+        ...profileDefinitions(config, sourceDirs),
       },
     });
-    emit(`${config.namespace}.getOverview`, {
+  }
+  const feed = feedLexicon(config, sourceDirs);
+  if (feed) emit(`${config.namespace}.getFeed`, feed);
+  if (surface === "full" && config.notify) {
+    emit(`${config.namespace}.notifyOfUpdate`, {
       lexicon: 1,
-      id: `${config.namespace}.getOverview`,
+      id: `${config.namespace}.notifyOfUpdate`,
       defs: {
         main: {
-          type: "query",
-          description: "Get aggregate projection status",
-          output: { encoding: "application/json", schema: { type: "unknown" } },
+          type: "procedure",
+          input: {
+            encoding: "application/json",
+            schema: {
+              type: "object",
+              properties: {
+                uri: { type: "string", format: "at-uri" },
+                uris: {
+                  type: "array",
+                  items: { type: "string", format: "at-uri" },
+                  maxLength: 25,
+                },
+              },
+            },
+          },
+          output: {
+            encoding: "application/json",
+            schema: { type: "unknown" },
+          },
         },
       },
     });
-    if ((config.profiles?.length ?? 0) > 0) {
-      emit(`${config.namespace}.getProfile`, {
-        lexicon: 1,
-        id: `${config.namespace}.getProfile`,
-        defs: {
-          main: {
-            type: "query",
-            parameters: {
-              type: "params",
-              required: ["actor"],
-              properties: {
-                actor: { type: "string", format: "at-identifier" },
-              },
-            },
-            output: {
-              encoding: "application/json",
-              schema: {
-                type: "object",
-                required: ["profiles"],
-                properties: {
-                  profiles: {
-                    type: "array",
-                    items: { type: "ref", ref: "#profileEntry" },
-                  },
-                },
-              },
-            },
-          },
-          ...profileDefinitions(config, sourceDirs),
-        },
-      });
-    }
-    if (config.notify) {
-      emit(`${config.namespace}.notifyOfUpdate`, {
-        lexicon: 1,
-        id: `${config.namespace}.notifyOfUpdate`,
-        defs: {
-          main: {
-            type: "procedure",
-            input: {
-              encoding: "application/json",
-              schema: {
-                type: "object",
-                properties: {
-                  uri: { type: "string", format: "at-uri" },
-                  uris: {
-                    type: "array",
-                    items: { type: "string", format: "at-uri" },
-                    maxLength: 25,
-                  },
-                },
-              },
-            },
-            output: {
-              encoding: "application/json",
-              schema: { type: "unknown" },
-            },
-          },
-        },
-      });
-    }
-    const feed = feedLexicon(config, sourceDirs);
-    if (feed) emit(`${config.namespace}.getFeed`, feed);
   }
 
   for (const [alias, collectionConfig] of Object.entries(

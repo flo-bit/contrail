@@ -4,17 +4,35 @@ import type {} from '@atcute/lexicons/ambient';
 import * as AppBskyActorProfile from "@atcute/bluesky/types/app/actor/profile";
 
 const _mainSchema = /*#__PURE__*/ v.query(
-	"statusphere.app.getProfile",
+	"statusphere.app.profile.getRecord",
 	{
-		"params": /*#__PURE__*/ v.object({
-			"actor": /*#__PURE__*/ v.actorIdentifierString(),
-		}),
+		"params": /*#__PURE__*/ v.object(
+			{
+				/**
+				 * Include indexed profile and identity information
+				 */
+				"profiles": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.boolean()),
+				/**
+				 * AT URI of the record
+				 */
+				"uri": /*#__PURE__*/ v.resourceUriString(),
+			}
+		),
 		"output": {
 			"type": "lex",
 			"schema": /*#__PURE__*/ v.object(
 				{
+					"cid": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.cidString()),
+					"collection": /*#__PURE__*/ v.nsidString(),
+					"did": /*#__PURE__*/ v.didString(),
 					get "profiles"() {
-						return /*#__PURE__*/ v.array(profileEntrySchema)
+						return /*#__PURE__*/ v.optional(/*#__PURE__*/ v.array(profileEntrySchema))
+					},
+					"rkey": /*#__PURE__*/ v.string(),
+					"time_us": /*#__PURE__*/ v.integer(),
+					"uri": /*#__PURE__*/ v.resourceUriString(),
+					get "value"() {
+						return AppBskyActorProfile.mainSchema
 					},
 				}
 			),
@@ -23,7 +41,7 @@ const _mainSchema = /*#__PURE__*/ v.query(
 );
 const _profileEntrySchema = /*#__PURE__*/ v.object(
 	{
-		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.getProfile#profileEntry")),
+		"$type": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.literal("statusphere.app.profile.getRecord#profileEntry")),
 		"cid": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.cidString()),
 		"collection": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.nsidString()),
 		"did": /*#__PURE__*/ v.didString(),
@@ -51,6 +69,6 @@ export interface $params extends v.InferInput<mainSchema['params']> {}
 export interface $output extends v.InferXRPCBodyInput<mainSchema['output']> {}
 declare module '@atcute/lexicons/ambient' {
 	interface XRPCQueries {
-		"statusphere.app.getProfile": mainSchema;
+		"statusphere.app.profile.getRecord": mainSchema;
 	}
 }
