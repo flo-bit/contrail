@@ -11,6 +11,7 @@ import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
 import { resolveProfiles } from "./profiles";
+import { createServiceAuthGate } from "../service-auth";
 import {
   describePublicService,
   normalizeLexiconDocuments,
@@ -32,7 +33,18 @@ export function createApp(
   options: CreateAppOptions = {},
 ): Hono {
   const app = new Hono();
-  app.use("*", cors());
+  app.use(
+    "*",
+    cors({
+      allowHeaders: [
+        "Authorization",
+        "Content-Type",
+        "Atproto-Accept-Labelers",
+      ],
+      exposeHeaders: ["Atproto-Content-Labelers", "WWW-Authenticate"],
+    }),
+  );
+  const serviceAuth = createServiceAuthGate(config);
 
   app.get("/", (c) => c.json({ status: "ok" }));
   app.get("/status", async (c) => {
@@ -72,6 +84,27 @@ export function createApp(
       c.header("etag", `\"${manifest.contract.digest}\"`);
       return c.json(manifest);
     });
+    if (
+      serviceAuth &&
+      serviceAuth.audience ===
+        `did:web:${new URL(options.publicService.endpoint).hostname}`
+    ) {
+      app.get("/.well-known/did.json", (c) => {
+        c.header("content-type", "application/did+ld+json; charset=UTF-8");
+        c.header("cache-control", "public, max-age=300");
+        return c.json({
+          "@context": ["https://www.w3.org/ns/did/v1"],
+          id: serviceAuth.audience,
+          service: [
+            {
+              id: `${serviceAuth.audience}#contrail`,
+              type: "ContrailService",
+              serviceEndpoint: options.publicService!.endpoint,
+            },
+          ],
+        });
+      });
+    }
     app.get("/lexicons", async (c) => {
       const service = await description;
       c.header("content-type", "application/json; charset=UTF-8");
@@ -140,8 +173,8 @@ export function createApp(
 
   registerCursorRoute(app, db, config);
   registerCollectionRoutes(app, db, config);
-  registerFeedRoutes(app, db, config);
-  registerNotifyRoute(app, db, config);
+  registerFeedRoutes(app, db, config, serviceAuth);
+  registerNotifyRoute(app, db, config, serviceAuth);
 
   return app;
 }

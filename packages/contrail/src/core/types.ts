@@ -1,4 +1,5 @@
 import type { LexiconDoc } from "@atcute/lexicon-doc";
+import { isDid } from "@atcute/lexicons/syntax";
 import type { SqlDialect } from "./dialect";
 
 // Database interface — D1 implements this natively
@@ -245,6 +246,19 @@ export interface OrderedSourceConfig {
   epoch: string;
 }
 
+export type AtprotoServiceAuthMethod = "getFeed" | "notifyOfUpdate";
+
+export interface AtprotoServiceAuthConfig {
+  /** Plain service DID used as the exact JWT audience. */
+  audience: string;
+  /** Built-in methods that require a method-bound AT Protocol service token. */
+  methods: AtprotoServiceAuthMethod[];
+  /** Maximum accepted token lifetime and age. Default: 300 seconds. */
+  maxTokenAgeSeconds?: number;
+  /** Optional DID resolver for private networks or controlled resolution. */
+  resolver?: import("@atcute/identity-resolver").DidDocumentResolver;
+}
+
 export interface ContrailConfig {
   namespace: string;
   /** Collections to index, keyed by short name. Short names become endpoint URL segments
@@ -270,8 +284,11 @@ export interface ContrailConfig {
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
   /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
-   *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`. */
+   *  Set to `true` for open access, or a string to require `Authorization: Bearer <secret>`.
+   *  Prefer `serviceAuth.methods: ["notifyOfUpdate"]` for portable user auth. */
   notify?: boolean | string;
+  /** Verify method-bound AT Protocol service JWTs for selected built-in routes. */
+  serviceAuth?: AtprotoServiceAuthConfig;
   /** Labels module configuration. When set, contrail subscribes to the
    *  configured labelers, indexes their labels into a single `labels` table,
    *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile
@@ -398,6 +415,38 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
     (!config.orderedSource.source.trim() || !config.orderedSource.epoch.trim())
   ) {
     throw new TypeError("orderedSource requires non-empty source and epoch values");
+  }
+  if (config.serviceAuth) {
+    if (!isDid(config.serviceAuth.audience)) {
+      throw new TypeError("serviceAuth.audience must be a plain DID");
+    }
+    if (
+      !Array.isArray(config.serviceAuth.methods) ||
+      new Set(config.serviceAuth.methods).size !== config.serviceAuth.methods.length
+    ) {
+      throw new TypeError("serviceAuth.methods must contain unique methods");
+    }
+    if (
+      config.serviceAuth.methods.includes("getFeed") &&
+      (!config.feeds || Object.keys(config.feeds).length === 0)
+    ) {
+      throw new TypeError("serviceAuth cannot protect getFeed without configured feeds");
+    }
+    if (
+      config.serviceAuth.methods.includes("notifyOfUpdate") &&
+      config.notify !== true
+    ) {
+      throw new TypeError(
+        "serviceAuth notifyOfUpdate requires notify: true and replaces shared-secret auth",
+      );
+    }
+    if (
+      config.serviceAuth.maxTokenAgeSeconds !== undefined &&
+      (!Number.isSafeInteger(config.serviceAuth.maxTokenAgeSeconds) ||
+        config.serviceAuth.maxTokenAgeSeconds <= 0)
+    ) {
+      throw new TypeError("serviceAuth.maxTokenAgeSeconds must be a positive integer");
+    }
   }
   const profiles = (config.profiles ?? DEFAULT_PROFILES).map(
     normalizeProfileConfig

@@ -1,4 +1,4 @@
-import { isNsid } from "@atcute/lexicons/syntax";
+import { isDid, isNsid } from "@atcute/lexicons/syntax";
 import type { ContrailConfig } from "./core/types.js";
 import {
   getCollectionMethods,
@@ -21,12 +21,24 @@ export interface PublicServiceCollection {
   references: string[];
 }
 
+export interface PublicServiceProtectedMethod {
+  id: string;
+  type: "query" | "procedure";
+}
+
+export interface PublicServiceAuthContract {
+  type: "atproto-service-auth";
+  audience: string;
+  methods: PublicServiceProtectedMethod[];
+}
+
 export interface PublicContract {
   format: "contrail.contract";
   version: 1;
   namespace: string;
   collections: PublicServiceCollection[];
   methods: string[];
+  serviceAuth?: PublicServiceAuthContract | null;
   lexiconDigest: string;
 }
 
@@ -40,6 +52,7 @@ export interface PublicServiceManifest {
   status: { url: string };
   collections: PublicServiceCollection[];
   methods: string[];
+  serviceAuth?: PublicServiceAuthContract | null;
 }
 
 export interface LexiconDocument {
@@ -151,22 +164,46 @@ function publicTopLevelMethods(config: ContrailConfig): string[] {
   return methods;
 }
 
+function publicServiceAuth(
+  config: ContrailConfig,
+): PublicServiceAuthContract | null {
+  if (!config.serviceAuth || config.serviceAuth.methods.length === 0)
+    return null;
+  const methods = config.serviceAuth.methods
+    .map((method): PublicServiceProtectedMethod =>
+      method === "getFeed"
+        ? { id: `${config.namespace}.getFeed`, type: "query" }
+        : { id: `${config.namespace}.notifyOfUpdate`, type: "procedure" },
+    )
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    type: "atproto-service-auth",
+    audience: config.serviceAuth.audience,
+    methods,
+  };
+}
+
 export function createPublicContract(
   config: ContrailConfig,
   lexiconDigest: string,
 ): PublicContract {
   const resolved = resolveConfig(config);
   const collections = publicCollections(resolved);
+  const serviceAuth = publicServiceAuth(resolved);
+  const protectedMethods = new Set(
+    serviceAuth?.methods.map((method) => method.id) ?? [],
+  );
   const methods = [
     ...publicTopLevelMethods(resolved),
     ...collections.flatMap((collection) => collection.methods),
-  ];
+  ].filter((method) => !protectedMethods.has(method));
   return {
     format: "contrail.contract",
     version: 1,
     namespace: resolved.namespace,
     collections,
     methods: [...new Set(methods)].sort(),
+    serviceAuth,
     lexiconDigest,
   };
 }
@@ -192,6 +229,15 @@ export function validateContractLexicons(
     if (document?.defs?.main?.type !== "query") {
       throw new Error(
         `public method requires a matching query Lexicon: ${method}`,
+      );
+    }
+  }
+  for (const method of contract.serviceAuth?.methods ?? []) {
+    const document = byId.get(method.id) as
+      { defs?: { main?: { type?: unknown } } } | undefined;
+    if (document?.defs?.main?.type !== method.type) {
+      throw new Error(
+        `protected method requires a matching ${method.type} Lexicon: ${method.id}`,
       );
     }
   }
@@ -261,6 +307,7 @@ export async function describePublicService(
     status: { url: `${endpoint}/status` },
     collections: contract.collections,
     methods: contract.methods,
+    serviceAuth: contract.serviceAuth,
   };
   return { endpoint, lexicons, manifest, canonicalLexicons };
 }
@@ -278,6 +325,7 @@ export function contractFromManifest(
     namespace: manifest.namespace,
     collections: manifest.collections,
     methods: manifest.methods,
+    serviceAuth: manifest.serviceAuth,
     lexiconDigest: manifest.lexicons.digest,
   };
 }
@@ -286,6 +334,9 @@ export function validateManifestContract(
   manifest: PublicServiceManifest,
   values: readonly object[],
 ): LexiconDocument[] {
+  if (!isPublicServiceAuthContract(manifest.serviceAuth)) {
+    throw new Error("service manifest contains invalid service auth");
+  }
   if (!uniqueStrings(manifest.methods)) {
     throw new Error("service manifest contains duplicate methods");
   }
@@ -296,6 +347,21 @@ export function validateManifestContract(
   const prefix = `${manifest.namespace}.`;
   if (manifest.methods.some((method) => !method.startsWith(prefix))) {
     throw new Error("service manifest method is outside its namespace");
+  }
+  const protectedMethods = manifest.serviceAuth?.methods ?? [];
+  const protectedIds = protectedMethods.map((method) => method.id);
+  if (!uniqueStrings(protectedIds)) {
+    throw new Error("service manifest contains duplicate protected methods");
+  }
+  if (protectedIds.some((method) => !method.startsWith(prefix))) {
+    throw new Error(
+      "service manifest protected method is outside its namespace",
+    );
+  }
+  if (protectedIds.some((method) => manifest.methods.includes(method))) {
+    throw new Error(
+      "service manifest method cannot be both anonymous and protected",
+    );
   }
   const advertised = new Set(manifest.methods);
   for (const collection of manifest.collections) {
@@ -313,6 +379,28 @@ export function validateManifestContract(
     }
   }
   return validateContractLexicons(contractFromManifest(manifest), values);
+}
+
+function isPublicServiceAuthContract(
+  value: unknown,
+): value is PublicServiceAuthContract | null | undefined {
+  if (value === null || value === undefined) return true;
+  if (!value || typeof value !== "object") return false;
+  const auth = value as Partial<PublicServiceAuthContract>;
+  return (
+    auth.type === "atproto-service-auth" &&
+    typeof auth.audience === "string" &&
+    isDid(auth.audience) &&
+    Array.isArray(auth.methods) &&
+    auth.methods.every(
+      (method) =>
+        !!method &&
+        typeof method === "object" &&
+        typeof method.id === "string" &&
+        isNsid(method.id) &&
+        (method.type === "query" || method.type === "procedure"),
+    )
+  );
 }
 
 export function isPublicServiceManifest(
@@ -335,6 +423,7 @@ export function isPublicServiceManifest(
     typeof manifest.status?.url !== "string" ||
     !Array.isArray(manifest.collections) ||
     !Array.isArray(manifest.methods) ||
+    !isPublicServiceAuthContract(manifest.serviceAuth) ||
     !manifest.methods.every(
       (method) => typeof method === "string" && isNsid(method),
     )
