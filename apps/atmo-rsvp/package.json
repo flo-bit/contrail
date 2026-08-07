@@ -1,0 +1,27 @@
+{
+  "name": "atmo-rsvp-public-contrail",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../../packages/contrail/dist/cli.js dev",
+    "deploy": "wrangler deploy",
+    "backfill:dev": "node ../../packages/contrail/dist/cli.js backfill --only records",
+    "lexicons": "node ../../packages/contrail/dist/cli.js lexicons generate --public",
+    "lexicons:all": "node ../../packages/contrail/dist/cli.js lexicons all --public",
+    "lexicons:check": "node ../../packages/contrail/dist/cli.js lexicons check --public",
+    "typecheck": "node ../../packages/contrail/dist/cli.js lexicons check --public && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*"
+  },
+  "devDependencies": {
+    "@atcute/lex-cli": "^3.2.1",
+    "@atcute/lexicons": "^2.0.3",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}
