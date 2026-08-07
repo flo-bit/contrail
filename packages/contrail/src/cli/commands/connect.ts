@@ -24,6 +24,7 @@ import {
   isPublicServiceManifest,
   normalizePublicServiceEndpoint,
   validateManifestContract,
+  type PublicServiceAuthContract,
   type PublicServiceManifest,
 } from "../../public-service.js";
 import { generateLexiconTypesWithAtcute } from "../atcute.js";
@@ -47,6 +48,7 @@ export interface ProviderLock {
   contractDigest: string;
   lexiconDigest: string;
   methods: string[];
+  serviceAuth: PublicServiceAuthContract | null;
   lexiconRoot: string;
 }
 
@@ -219,6 +221,7 @@ export async function connectPublicService(options: {
     contractDigest: manifest.contract.digest,
     lexiconDigest: manifest.lexicons.digest,
     methods: [...manifest.methods].sort(),
+    serviceAuth: manifest.serviceAuth ?? null,
     lexiconRoot: relative(projectRoot, providerRoot),
   };
   const lockDirectory = dirname(lockPath);

@@ -1,11 +1,12 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
+import type { ServiceAuthGate } from "../service-auth";
 import { shortNameForNsid, getFeedMutatingNsids } from "../types";
 import { lookupExistingRecords } from "../db/records";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
 import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
-import type { Did } from "@atcute/lexicons";
+import type { Did, Nsid } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
 
 /** Parse a canonical (DID-authority) record AT-URI into its components, or null
@@ -286,7 +287,8 @@ export async function processNotifyUris(
 export function registerNotifyRoute(
   app: Hono,
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  serviceAuth?: ServiceAuthGate | null
 ) {
   // Endpoint is off by default. Set config.notify to true or a secret string to enable.
   if (!config.notify) return;
@@ -295,6 +297,12 @@ export function registerNotifyRoute(
   const secret = typeof config.notify === "string" ? config.notify : null;
 
   app.post(`/xrpc/${ns}.notifyOfUpdate`, async (c) => {
+    const method = `${ns}.notifyOfUpdate` as Nsid;
+    const authorization = serviceAuth?.protects("notifyOfUpdate")
+      ? await serviceAuth.authorize(c.req.raw, method)
+      : null;
+    if (authorization?.response) return authorization.response;
+
     if (secret) {
       const auth = c.req.header("Authorization");
       if (auth !== `Bearer ${secret}`) {
@@ -315,6 +323,17 @@ export function registerNotifyRoute(
 
     if (uris.length > MAX_NOTIFY_URIS) {
       return c.json({ error: `max ${MAX_NOTIFY_URIS} URIs per request` }, 400);
+    }
+    if (authorization?.principal) {
+      for (const uri of uris) {
+        const parsed = parseAtUri(uri);
+        if (parsed && parsed.did !== authorization.principal.issuer) {
+          return c.json(
+            { error: "notified records must belong to the service-auth issuer" },
+            403
+          );
+        }
+      }
     }
 
     const result = await processNotifyUris(db, config, uris);

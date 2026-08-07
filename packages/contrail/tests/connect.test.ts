@@ -29,6 +29,12 @@ const sourceLexicon = {
   id: "community.lexicon.calendar.event",
   defs: { main: { type: "record" } },
 };
+const notifyMethod = "atmo.rsvp.notifyOfUpdate";
+const notifyLexicon = {
+  lexicon: 1,
+  id: notifyMethod,
+  defs: { main: { type: "procedure" } },
+};
 
 async function serviceFixture(values = [methodLexicon, sourceLexicon]) {
   const { digest } = await digestLexiconDocuments(values);
@@ -52,6 +58,7 @@ async function serviceFixture(values = [methodLexicon, sourceLexicon]) {
       },
     ],
     methods: [method],
+    serviceAuth: null,
   };
   manifest.contract.digest = await digestPublicContract(
     contractFromManifest(manifest),
@@ -131,6 +138,34 @@ describe("contrail connect", () => {
     ).toBe("keep");
   });
 
+  it("locks discoverable service-auth methods separately", async () => {
+    const root = await temporaryRoot();
+    const fixture = await serviceFixture([
+      methodLexicon,
+      sourceLexicon,
+      notifyLexicon,
+    ]);
+    fixture.manifest.serviceAuth = {
+      type: "atproto-service-auth",
+      audience: "did:web:api.atmo.rsvp",
+      methods: [{ id: notifyMethod, type: "procedure" }],
+    };
+    fixture.manifest.contract.digest = await digestPublicContract(
+      contractFromManifest(fixture.manifest),
+    );
+
+    const result = await connectPublicService({
+      endpoint,
+      root,
+      out: "lexicons/pulled",
+      lock: "contrail.lock.json",
+      fetcher: fixture.fetcher,
+    });
+
+    expect(result.lock.methods).toEqual([method]);
+    expect(result.lock.serviceAuth).toEqual(fixture.manifest.serviceAuth);
+  });
+
   it("preserves the previous provider and lock when an update fails validation", async () => {
     const root = await temporaryRoot();
     const fixture = await serviceFixture();
@@ -206,6 +241,33 @@ describe("contrail connect", () => {
         fetcher: fixture.fetcher,
       }),
     ).rejects.toThrow("matching query Lexicon");
+  });
+
+  it("rejects protected methods without matching procedure or query Lexicons", async () => {
+    const root = await temporaryRoot();
+    const fixture = await serviceFixture([
+      methodLexicon,
+      sourceLexicon,
+      { ...notifyLexicon, defs: { main: { type: "query" } } },
+    ]);
+    fixture.manifest.serviceAuth = {
+      type: "atproto-service-auth",
+      audience: "did:web:api.atmo.rsvp",
+      methods: [{ id: notifyMethod, type: "procedure" }],
+    };
+    fixture.manifest.contract.digest = await digestPublicContract(
+      contractFromManifest(fixture.manifest),
+    );
+
+    await expect(
+      connectPublicService({
+        endpoint,
+        root,
+        out: "lexicons/pulled",
+        lock: "contrail.lock.json",
+        fetcher: fixture.fetcher,
+      }),
+    ).rejects.toThrow("matching procedure Lexicon");
   });
 
   it("rejects inconsistent method namespaces and collection capabilities", async () => {

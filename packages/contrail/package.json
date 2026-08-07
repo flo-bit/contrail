@@ -79,12 +79,14 @@
     "@atcute/lexicon-doc": "3.0.2",
     "@atcute/lexicons": "^2.0.3",
     "@atcute/tid": "1.1.4",
+    "@atcute/xrpc-server": "^2.0.2",
     "cac": "^7.0.0",
     "hono": "^4.13.0",
     "jiti": "^2.7.0",
     "valibot": "1.4.2"
   },
   "devDependencies": {
+    "@atcute/crypto": "2.4.4",
     "@cloudflare/workers-types": "^5.20260804.1",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
