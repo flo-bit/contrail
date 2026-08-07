@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   connectPublicService,
+  ensureConsumerClientModule,
   ensureConsumerLexiconConfig,
+  type ProviderLock,
 } from "../src/cli/commands/connect";
 import {
   contractFromManifest,
@@ -38,6 +40,25 @@ const notifyLexicon = {
   id: notifyMethod,
   defs: { main: { type: "procedure" } },
 };
+
+function providerLock(): ProviderLock {
+  return {
+    format: "contrail.provider-lock",
+    version: 1,
+    endpoint,
+    namespace: "atmo.rsvp",
+    contractDigest: `sha256:${"a".repeat(64)}`,
+    lexiconDigest: `sha256:${"b".repeat(64)}`,
+    methods: [method],
+    collections: ["community.lexicon.calendar.event"],
+    serviceAuth: {
+      type: "atproto-service-auth",
+      audience: "did:web:api.atmo.rsvp",
+      methods: [{ id: notifyMethod, type: "procedure" }],
+    },
+    lexiconRoot: "src/contrail/lexicons/api.atmo.rsvp",
+  };
+}
 
 async function serviceFixture(values = [methodLexicon, sourceLexicon]) {
   const { digest } = await digestLexiconDocuments(values);
@@ -88,26 +109,117 @@ describe("contrail connect", () => {
     const root = await temporaryRoot();
     const generated = await ensureConsumerLexiconConfig({
       root,
-      out: "lexicons/providers",
+      out: "src/contrail/lexicons",
+      lock: providerLock(),
     });
     expect(generated.created).toBe(true);
     expect(await readFile(generated.path, "utf8")).toContain(
-      'files: ["lexicons/providers/**/*.json"]',
+      'files: ["src/contrail/lexicons/**/*.json"]',
     );
     expect(await readFile(generated.path, "utf8")).toContain(
-      'outdir: "src/lexicons/"',
+      'outdir: "src/contrail/types/"',
+    );
+    expect(await readFile(generated.path, "utf8")).toContain(
+      'endpoint: "https://api.atmo.rsvp"',
+    );
+    expect(await readFile(generated.path, "utf8")).toContain(
+      'serviceDid: "did:web:api.atmo.rsvp"',
+    );
+    expect(await readFile(generated.path, "utf8")).toContain(
+      'scope: "rpc?lxm=*&aud=did:web:api.atmo.rsvp"',
+    );
+    expect(await readFile(generated.path, "utf8")).toContain(
+      '"community.lexicon.calendar.event",',
+    );
+    const updated = await ensureConsumerLexiconConfig({
+      root,
+      out: "src/contrail/lexicons",
+      lock: { ...providerLock(), endpoint: "https://next.example.com" },
+    });
+    expect(updated.updated).toBe(true);
+    expect(await readFile(updated.path, "utf8")).toContain(
+      'endpoint: "https://next.example.com"',
     );
 
     await writeFile(join(root, "lex.config.ts"), "export default { mine: true }");
     await rm(generated.path);
     const existing = await ensureConsumerLexiconConfig({
       root,
-      out: "lexicons/other",
+      out: "src/other",
+      lock: providerLock(),
     });
     expect(existing.created).toBe(false);
     expect(existing.path).toBe(join(root, "lex.config.ts"));
     expect(await readFile(existing.path, "utf8")).toBe(
       "export default { mine: true }",
+    );
+  });
+
+  it("generates TypeScript or JavaScript client modules without replacing one", async () => {
+    const root = await temporaryRoot();
+    const fixture = await serviceFixture([
+      methodLexicon,
+      sourceLexicon,
+      notifyLexicon,
+    ]);
+    fixture.manifest.serviceAuth = {
+      type: "atproto-service-auth",
+      audience: "did:web:api.atmo.rsvp",
+      methods: [{ id: notifyMethod, type: "procedure" }],
+    };
+    fixture.manifest.contract.digest = await digestPublicContract(
+      contractFromManifest(fixture.manifest),
+    );
+    const { lock } = await connectPublicService({
+      endpoint,
+      root,
+      out: "lexicons/pulled",
+      lock: "contrail.lock.json",
+      fetcher: fixture.fetcher,
+    });
+
+    const generated = await ensureConsumerClientModule({ root, lock });
+    expect(generated.created).toBe(true);
+    const source = await readFile(generated.path, "utf8");
+    expect(source).toContain(
+      'import type {} from "./types/index.js"',
+    );
+    expect(source).toContain(`endpoint: ${JSON.stringify(endpoint)}`);
+    expect(source).toContain(
+      'serviceDid: "did:web:api.atmo.rsvp"',
+    );
+    expect(source).toContain(
+      'scope: "rpc?lxm=*&aud=did:web:api.atmo.rsvp"',
+    );
+    expect(source).toContain('"community.lexicon.calendar.event",');
+    expect(source).toContain(
+      `notifyMethod: ${JSON.stringify(notifyMethod)}`,
+    );
+
+    const updated = await ensureConsumerClientModule({
+      root,
+      lock: { ...lock, endpoint: "https://next.example.com" },
+    });
+    expect(updated.updated).toBe(true);
+    expect(await readFile(updated.path, "utf8")).toContain(
+      'endpoint: "https://next.example.com"',
+    );
+
+    await writeFile(generated.path, "export const mine = true;\n");
+    const existing = await ensureConsumerClientModule({ root, lock });
+    expect(existing.created).toBe(false);
+    expect(await readFile(existing.path, "utf8")).toBe(
+      "export const mine = true;\n",
+    );
+
+    const javascript = await ensureConsumerClientModule({
+      root,
+      file: "client/contrail.js",
+      lock,
+    });
+    expect(javascript.created).toBe(true);
+    expect(await readFile(javascript.path, "utf8")).not.toContain(
+      "lexicons/index",
     );
   });
 
