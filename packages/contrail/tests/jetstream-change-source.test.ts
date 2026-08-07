@@ -62,6 +62,20 @@ function config() {
 }
 
 describe("Jetstream change source", () => {
+  it("requires the bootstrap epoch to match the configured live source", () => {
+    const configured = resolveConfig({
+      ...config(),
+      orderedSource: { source: "jetstream", epoch: "live-epoch" },
+    });
+    expect(
+      () =>
+        new JetstreamChangeSource(configured, {
+          epoch: "different-epoch",
+          retentionUs: 60_000_000,
+        }),
+    ).toThrow("does not match configured ordered source");
+  });
+
   it("uses real stream events as marks and replays through the exact watermark", async () => {
     const nowUs = Date.now() * 1000;
     const start = nowUs - 20_000;

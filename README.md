@@ -92,6 +92,27 @@ pnpm contrail lexicons check
 
 Use `contrail lexicons all` to generate Contrail methods, pull referenced source Lexicons, and generate TypeScript types in one pass. The `pull` and `types` actions are also available separately. Contrail owns its config-specific query generation while delegating generic pulling and TypeScript generation to [Atcute](https://github.com/mary-ext/atcute).
 
+## Public read-through services
+
+A deployment can publish a verified contract and Lexicon bundle for independent typed clients:
+
+```ts
+export default createWorker(config, {
+  lexicons,
+  publicService: { endpoint: "https://api.example.com" },
+});
+```
+
+Contrail remains a read-through cache over public AT Protocol data: anonymous reads may resolve identities, fetch missing public records, and improve profile or feed projections. Custom query handlers are public when they have matching authored query Lexicons. Anonymous discovery uses the HTTPS origin directly and does not require a service DID. The optional `notifyOfUpdate` procedure is not advertised in the anonymous read contract.
+
+Consumers connect and generate Atcute types with one command:
+
+```bash
+pnpm contrail connect https://api.example.com
+```
+
+`getCursor` returns the committed opaque `{ source, epoch, cursor }` position of the primary ordered source. Compare complete positions for equality only; a source or epoch change requires a full client refetch. To avoid racing ingestion, read a position before and after a query and accept the query snapshot only when both positions match.
+
 ## Other databases
 
 ```ts
