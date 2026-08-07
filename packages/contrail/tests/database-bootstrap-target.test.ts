@@ -6,6 +6,7 @@ import {
   bootstrapFreshProjection,
   getBootstrapFailure,
   getBootstrapVerification,
+  getServingSourcePosition,
   initSchema,
   queryRecords,
   resolveConfig,
@@ -236,6 +237,9 @@ describe("database bootstrap target", () => {
       source_cursor: "2",
     });
     expect(await getBootstrapVerification(db)).toMatchObject({ ok: true });
+    expect(await getServingSourcePosition(db)).toMatchObject({
+      position: sourcePosition(3),
+    });
   });
 
   it("blocks completion and persists aggregate verification failures", async () => {
@@ -315,6 +319,60 @@ describe("database bootstrap target", () => {
       (await queryRecords(db, resolved, { collection: "event" })).records,
     ).toHaveLength(1);
     expect((await target.load())?.phase).toBe("complete");
+  });
+
+  it("rolls projection and checkpoint back when source position cannot commit", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, resolved);
+    const target = new DatabaseBootstrapTarget(db, resolved);
+    const prepared = snapshot();
+    await target.beginCapture(sourcePosition(1));
+    await target.setSnapshot(prepared, sourcePosition(1));
+    await target.applySnapshotBatch(prepared, {
+      records: [],
+      sourceTimeUs: 1,
+      progress: { partition: "pds", cursor: null, complete: true },
+      done: true,
+    });
+    await target.beginCatchup(sourcePosition(2));
+    await db
+      .prepare(
+        `CREATE TRIGGER fail_source_position
+         BEFORE INSERT ON source_position
+         BEGIN SELECT RAISE(ABORT, 'injected source position failure'); END`,
+      )
+      .run();
+    const batch = {
+      mutations: [
+        {
+          operation: "put" as const,
+          ...record("a", "atomic"),
+          sourceTimeUs: 2,
+          position: sourcePosition(2),
+        },
+      ],
+      checkpoint: sourcePosition(2),
+      caughtUp: true,
+    };
+
+    await expect(target.applyMutationBatch(batch)).rejects.toThrow(
+      "injected source position failure",
+    );
+    expect(
+      (await queryRecords(db, resolved, { collection: "event" })).records,
+    ).toHaveLength(0);
+    expect((await target.load())?.changeCheckpoint).toEqual(sourcePosition(1));
+    expect(await getServingSourcePosition(db)).toBeNull();
+
+    await db.prepare("DROP TRIGGER fail_source_position").run();
+    await target.applyMutationBatch(batch);
+    expect(
+      (await queryRecords(db, resolved, { collection: "event" })).records,
+    ).toHaveLength(1);
+    expect(await getServingSourcePosition(db)).toMatchObject({
+      position: sourcePosition(2),
+    });
   });
 
   it("rejects a mutation position from another epoch before advancing progress", async () => {

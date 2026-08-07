@@ -98,7 +98,7 @@ function fixture() {
       },
     },
   };
-  return { root, config, pulled };
+  return { root, config, pulled, write };
 }
 
 function parameters(document: any): Record<string, any> {
@@ -118,10 +118,15 @@ describe("Contrail Lexicon generation", () => {
     expect(result.methods).toEqual([
       "example.public.event.getRecord",
       "example.public.event.listRecords",
+      "example.public.getCursor",
       "example.public.rsvp.getRecord",
       "example.public.rsvp.listRecords",
     ]);
-    expect(result.generated["example.public.getCursor"]).toBeUndefined();
+    expect(result.generated["example.public.getCursor"]).toBeDefined();
+    expect(
+      (result.generated["example.public.getCursor"] as any).defs.sourcePosition
+        .required,
+    ).toEqual(["source", "epoch", "cursor"]);
 
     const event = result.generated["example.public.event.listRecords"] as any;
     const params = parameters(event);
@@ -149,6 +154,34 @@ describe("Contrail Lexicon generation", () => {
     );
   });
 
+  it("references profile record schemas without duplicating their definitions", () => {
+    const { root, config, write } = fixture();
+    write("community.example.profile", {
+      lexicon: 1,
+      id: "community.example.profile",
+      defs: {
+        main: {
+          type: "record",
+          key: "literal:self",
+          record: {
+            type: "object",
+            properties: { displayName: { type: "string" } },
+          },
+        },
+      },
+    });
+    config.profiles = [
+      { collection: "community.example.profile", shortName: "profile" },
+    ];
+    const result = generateLexicons({ config, rootDir: root, quiet: true });
+    const profile = result.generated["example.public.getProfile"] as any;
+    expect(profile.defs.profileEntry.properties.value).toEqual({
+      type: "ref",
+      ref: "community.example.profile#main",
+    });
+    expect(profile.defs.communityExampleProfile).toBeUndefined();
+  });
+
   it("respects disabled standard methods", () => {
     const { root, config } = fixture();
     config.collections.event!.methods = ["listRecords"];
@@ -170,7 +203,7 @@ describe("Contrail Lexicon generation", () => {
     };
     const result = generateLexicons({ config, rootDir: root, quiet: true });
     expect(result.methods).toContain("example.public.getCursor");
-    expect(result.methods).toContain("example.public.getOverview");
+    expect(result.methods).not.toContain("example.public.getOverview");
     expect(result.methods).toContain("example.public.notifyOfUpdate");
     expect(result.methods).toContain("example.public.getFeed");
     const feed = result.generated["example.public.getFeed"] as any;

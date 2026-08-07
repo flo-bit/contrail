@@ -1,20 +1,26 @@
 {
   "lexicon": 1,
-  "id": "com.example.event.getRecord",
+  "id": "com.example.profile.listRecords",
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get a community.lexicon.calendar.event record by AT URI",
+      "description": "Query app.bsky.actor.profile records",
       "parameters": {
         "type": "params",
-        "required": [
-          "uri"
-        ],
         "properties": {
-          "uri": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "actor": {
             "type": "string",
-            "format": "at-uri",
-            "description": "AT URI of the record"
+            "format": "at-identifier",
+            "description": "Filter by DID or handle"
           },
           "profiles": {
             "type": "boolean",
@@ -27,39 +33,18 @@
         "schema": {
           "type": "object",
           "required": [
-            "uri",
-            "value",
-            "did",
-            "collection",
-            "rkey",
-            "time_us"
+            "records"
           ],
           "properties": {
-            "uri": {
-              "type": "string",
-              "format": "at-uri"
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#record"
+              }
             },
-            "cid": {
-              "type": "string",
-              "format": "cid"
-            },
-            "value": {
-              "type": "ref",
-              "ref": "community.lexicon.calendar.event#main"
-            },
-            "did": {
-              "type": "string",
-              "format": "did"
-            },
-            "collection": {
-              "type": "string",
-              "format": "nsid"
-            },
-            "rkey": {
+            "cursor": {
               "type": "string"
-            },
-            "time_us": {
-              "type": "integer"
             },
             "profiles": {
               "type": "array",
@@ -69,6 +54,46 @@
               }
             }
           }
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "uri",
+        "cid",
+        "value",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "app.bsky.actor.profile#main"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "time_us": {
+          "type": "integer"
         }
       }
     },

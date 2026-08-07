@@ -89,7 +89,34 @@ pnpm contrail lexicons generate
 pnpm contrail lexicons check
 ```
 
-`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only the collection methods intended for a public read surface. Generated `lex.config.js` files carry an ownership marker; existing user-owned Atcute configuration is never replaced. Pass `--no-atcute-config` to manage that file yourself. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
+`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only methods advertised by the anonymous read surface. Generated `lex.config.js` files carry an ownership marker; existing user-owned Atcute configuration is never replaced. Pass `--no-atcute-config` to manage that file yourself. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
+
+## Public read-through service
+
+```ts
+export default createWorker(config, {
+  lexicons,
+  publicService: { endpoint: "https://api.example.com" },
+});
+```
+
+Discovery at `/.well-known/contrail` advertises a canonical contract digest and a content-addressed Lexicon bundle. Collection reads, profiles, feeds, and authored custom queries remain anonymous read-through operations: they may acquire public AT Protocol data and improve the cache behind the response. `notifyOfUpdate` remains separately controlled by `config.notify` and is not part of the anonymous contract.
+
+Configure the primary ordered source so `getCursor` can expose its committed position:
+
+```ts
+const config = {
+  orderedSource: {
+    source: "jetstream",
+    epoch: "primary-2026", // change whenever cursor continuity changes
+  },
+  // ...
+};
+```
+
+The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
+
+Connect an independent consumer with `contrail connect <https-origin>`. A repeated connection requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons.
 
 ## Runtime record validation
 
