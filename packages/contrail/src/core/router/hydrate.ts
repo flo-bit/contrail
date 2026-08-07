@@ -93,8 +93,17 @@ export async function resolveHydrates(
               .filter((record) => record.did === matchedValue)
               .map((record) => record.uri)
           : [matchedValue];
-      const groupValue = relation.groupBy
+      const rawGroupValue = relation.groupBy
         ? String(getNestedValue(value, relation.groupBy) ?? "other")
+        : "_flat";
+      const configuredGroup = relation.groups
+        ? Object.entries(relation.groups).find(
+            ([name, token]) =>
+              name === rawGroupValue || token === rawGroupValue,
+          )?.[0]
+        : undefined;
+      const groupValue = relation.groupBy
+        ? (configuredGroup ?? (relation.groups ? "other" : rawGroupValue))
         : "_flat";
 
       for (const parentUri of parentUris) {

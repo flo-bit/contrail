@@ -81,7 +81,16 @@ GET /status
 
 The JSON status response reports live cursor lag, indexed records, known backfill progress, and mutually exclusive pending/retrying/failed account counts. Failed PDS work is retried automatically in small scheduled slices with backoff up to 48 hours.
 
-For ordinary Lexicon parsing, validation, pulling, and TypeScript generation, use [Atcute](https://github.com/mary-ext/atcute) directly. Contrail no longer ships a separate Lexicon toolchain.
+## Lexicons
+
+Generate query Lexicons from the Contrail config and detect checked-in drift:
+
+```bash
+pnpm contrail lexicons generate
+pnpm contrail lexicons check
+```
+
+Use `contrail lexicons all` to generate Contrail methods, pull referenced source Lexicons, and generate TypeScript types in one pass. The `pull` and `types` actions are also available separately. Contrail owns its config-specific query generation while delegating generic pulling and TypeScript generation to [Atcute](https://github.com/mary-ext/atcute).
 
 ## Other databases
 

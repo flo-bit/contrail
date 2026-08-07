@@ -10,6 +10,7 @@ export default defineConfig({
     "src/worker/index.ts",
     "src/cli.ts",
     "src/cli-config.ts",
+    "src/lexicons/index.ts",
   ],
   format: ["esm"],
   dts: true,

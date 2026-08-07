@@ -216,6 +216,9 @@ importers:
       '@atcute/jetstream':
         specifier: ^2.0.2
         version: 2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)
+      '@atcute/lex-cli':
+        specifier: ^3.2.1
+        version: 3.2.1(@atcute/cbor@2.3.6(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(prettier@3.9.6)(typescript@6.0.3)
       '@atcute/lexicon-doc':
         specifier: 3.0.2
         version: 3.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)
