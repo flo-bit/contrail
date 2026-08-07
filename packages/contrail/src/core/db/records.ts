@@ -566,10 +566,20 @@ export async function assertServingSourceCompatibility(
 ): Promise<void> {
   if (!orderedSource) return;
   const existing = await getServingSourcePosition(db);
+  if (!existing) {
+    const legacyCursor = await getLastCursor(db);
+    if (legacyCursor !== null) {
+      await saveOrderedSourcePositionStatement(
+        db,
+        orderedSource,
+        legacyCursor,
+      ).run();
+    }
+    return;
+  }
   if (
-    existing &&
-    (existing.position.source !== orderedSource.source ||
-      existing.position.epoch !== orderedSource.epoch)
+    existing.position.source !== orderedSource.source ||
+    existing.position.epoch !== orderedSource.epoch
   ) {
     throw new Error(
       `configured ordered source ${orderedSource.source}/${orderedSource.epoch} ` +

@@ -42,6 +42,22 @@ describe("serving source positions", () => {
     });
   });
 
+  it("adopts an existing legacy cursor when an ordered source is configured", async () => {
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, config);
+    await saveCursor(db, 777);
+
+    await new Contrail(config).init(db);
+
+    expect(await getServingSourcePosition(db)).toMatchObject({
+      position: {
+        source: "jetstream",
+        epoch: "primary-2026",
+        cursor: "777",
+      },
+    });
+  });
+
   it("rejects a configured continuity epoch that differs from durable state", async () => {
     const db = createSqliteDatabase(":memory:");
     await initSchema(db, config);
