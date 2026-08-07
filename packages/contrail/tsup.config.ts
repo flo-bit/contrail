@@ -4,6 +4,7 @@ export default defineConfig({
   entry: [
     "src/index.ts",
     "src/server.ts",
+    "src/public-client.ts",
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
     "src/workers/backfill.ts",

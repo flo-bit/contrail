@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectPublicService } from "../src/cli/commands/connect";
+import {
+  connectPublicService,
+  ensureConsumerLexiconConfig,
+} from "../src/cli/commands/connect";
 import {
   contractFromManifest,
   digestLexiconDocuments,
@@ -81,6 +84,33 @@ async function temporaryRoot() {
 }
 
 describe("contrail connect", () => {
+  it("creates a default Atcute config without replacing consumer config", async () => {
+    const root = await temporaryRoot();
+    const generated = await ensureConsumerLexiconConfig({
+      root,
+      out: "lexicons/providers",
+    });
+    expect(generated.created).toBe(true);
+    expect(await readFile(generated.path, "utf8")).toContain(
+      'files: ["lexicons/providers/**/*.json"]',
+    );
+    expect(await readFile(generated.path, "utf8")).toContain(
+      'outdir: "src/lexicons/"',
+    );
+
+    await writeFile(join(root, "lex.config.ts"), "export default { mine: true }");
+    await rm(generated.path);
+    const existing = await ensureConsumerLexiconConfig({
+      root,
+      out: "lexicons/other",
+    });
+    expect(existing.created).toBe(false);
+    expect(existing.path).toBe(join(root, "lex.config.ts"));
+    expect(await readFile(existing.path, "utf8")).toBe(
+      "export default { mine: true }",
+    );
+  });
+
   it("verifies and atomically locks a discovered service", async () => {
     const root = await temporaryRoot();
     const { fetcher, manifest, values } = await serviceFixture();
