@@ -1,1 +1,2 @@
 - allow running custom functions before ingestion (e.g. for filtering out unallowed writes)
+- replace production `backfill --remote` usage with a repeatable fresh-generation pipeline: build and verify native SQLite, export canonical tables, import into fresh D1, rebuild derived projections, verify readiness, then activate; keep `contrail backfill` for local development

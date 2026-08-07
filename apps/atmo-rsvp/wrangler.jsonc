@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atmo-rsvp-contrail",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-12-25",
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    {
+      "pattern": "api.atmo.rsvp",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "atmo-rsvp-contrail",
+      "database_id": "8a483108-4614-41c4-b9db-86b7a2ea27ca"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/1 * * * *"]
+  }
+}
