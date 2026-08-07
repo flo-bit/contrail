@@ -108,7 +108,7 @@ Contrail remains a read-through cache over public AT Protocol data: anonymous re
 Consumers connect and generate Atcute types with one command:
 
 ```bash
-pnpm contrail connect https://api.example.com
+pnpx @atmo-dev/contrail connect https://api.example.com
 ```
 
 Public-service mode requires `orderedSource`; `getCursor` then returns the committed opaque `{ source, epoch, cursor }` position of that primary source. Compare complete positions for equality only; a source or epoch change requires a full client refetch. To avoid racing ingestion, read a position before and after a query and accept the query snapshot only when both positions match. Existing non-public deployments without `orderedSource` retain the legacy `time_us`, `date`, and `seconds_ago` response.
@@ -128,6 +128,10 @@ See [Indexing](docs/01-indexing.md) for adapter setup and [Querying](docs/02-que
 - [Querying](docs/02-querying.md)
 - [Feeds](docs/04-feeds.md)
 - [Labels](docs/09-labels.md)
+- Public Contrail services:
+  - [Creating a service](docs/public-services/creating.md)
+  - [Using a service](docs/public-services/using.md)
+  - [Example: api.atmo.rsvp](docs/public-services/api-atmo-rsvp.md)
 - [SvelteKit + Cloudflare](docs/frameworks/sveltekit-cloudflare.md)
 
 ## Repository layout
