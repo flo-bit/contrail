@@ -1,0 +1,56 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.notifyOfUpdate",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Fetch changed records from their authoritative PDS for immediate indexing",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "uris": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "at-uri"
+              },
+              "maxLength": 25
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "indexed",
+            "deleted"
+          ],
+          "properties": {
+            "indexed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deleted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
