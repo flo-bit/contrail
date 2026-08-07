@@ -18,6 +18,31 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  apps/atmo-rsvp:
+    dependencies:
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../../packages/contrail
+    devDependencies:
+      '@atcute/lex-cli':
+        specifier: ^3.2.1
+        version: 3.2.1(@atcute/cbor@2.3.6(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(prettier@3.9.6)(typescript@6.0.3)
+      '@atcute/lexicons':
+        specifier: ^2.0.3
+        version: 2.0.3
+      '@cloudflare/workers-types':
+        specifier: ^5.20260804.1
+        version: 5.20260804.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@26.1.2)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6))
+      wrangler:
+        specifier: ^4.118.0
+        version: 4.118.0(@cloudflare/workers-types@5.20260804.1)
+
   apps/benchmark:
     dependencies:
       '@atmo-dev/contrail':
@@ -5681,6 +5706,14 @@ snapshots:
     optionalDependencies:
       vite: 8.2.0(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.23.6)
 
+  '@vitest/mocker@4.1.10(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6))':
+    dependencies:
+      '@vitest/spy': 4.1.10
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)
+
   '@vitest/pretty-format@4.1.10':
     dependencies:
       tinyrainbow: 3.1.1
@@ -7200,6 +7233,33 @@ snapshots:
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.1
       vite: 8.2.0(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.23.6)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@types/node': 26.1.2
+    transitivePeerDependencies:
+      - msw
+
+  vitest@4.1.10(@types/node@26.1.2)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)):
+    dependencies:
+      '@vitest/expect': 4.1.10
+      '@vitest/mocker': 4.1.10(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6))
+      '@vitest/pretty-format': 4.1.10
+      '@vitest/runner': 4.1.10
+      '@vitest/snapshot': 4.1.10
+      '@vitest/spy': 4.1.10
+      '@vitest/utils': 4.1.10
+      es-module-lexer: 2.3.1
+      expect-type: 1.4.0
+      magic-string: 0.30.21
+      obug: 2.1.4
+      pathe: 2.0.3
+      picomatch: 4.0.5
+      std-env: 4.2.0
+      tinybench: 2.9.0
+      tinyexec: 1.3.0
+      tinyglobby: 0.2.17
+      tinyrainbow: 3.1.1
+      vite: 8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 26.1.2

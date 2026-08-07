@@ -1,0 +1,163 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.event.getRecord",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get a community.lexicon.calendar.event record by AT URI",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT URI of the record"
+          },
+          "hydrateRsvps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Number of rsvps records to embed"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "uri",
+            "value",
+            "did",
+            "collection",
+            "rkey",
+            "time_us"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid"
+            },
+            "value": {
+              "type": "ref",
+              "ref": "community.lexicon.calendar.event#main"
+            },
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            },
+            "time_us": {
+              "type": "integer"
+            },
+            "rsvpsCount": {
+              "type": "integer",
+              "description": "Total rsvps count"
+            },
+            "rsvpsGoingCount": {
+              "type": "integer",
+              "description": "rsvps count where status = going"
+            },
+            "rsvpsInterestedCount": {
+              "type": "integer",
+              "description": "rsvps count where status = interested"
+            },
+            "rsvpsNotgoingCount": {
+              "type": "integer",
+              "description": "rsvps count where status = notgoing"
+            },
+            "rsvps": {
+              "type": "ref",
+              "ref": "#hydrateRsvps"
+            }
+          }
+        }
+      }
+    },
+    "hydrateRsvpsRecord": {
+      "type": "object",
+      "required": [
+        "uri",
+        "value",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.rsvp#main"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "time_us": {
+          "type": "integer"
+        }
+      }
+    },
+    "hydrateRsvps": {
+      "type": "object",
+      "properties": {
+        "going": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "interested": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "notgoing": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "other": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        }
+      }
+    }
+  }
+}

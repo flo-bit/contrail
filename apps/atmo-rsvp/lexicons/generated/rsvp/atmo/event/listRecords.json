@@ -1,0 +1,263 @@
+{
+  "lexicon": 1,
+  "id": "rsvp.atmo.event.listRecords",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Query community.lexicon.calendar.event records",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "format": "at-identifier",
+            "description": "Filter by an indexed DID or cached handle"
+          },
+          "search": {
+            "type": "string",
+            "description": "Full-text search across: name, description"
+          },
+          "createdAtMin": {
+            "type": "string",
+            "description": "Minimum value for createdAt"
+          },
+          "createdAtMax": {
+            "type": "string",
+            "description": "Maximum value for createdAt"
+          },
+          "endsAtMin": {
+            "type": "string",
+            "description": "Minimum value for endsAt"
+          },
+          "endsAtMax": {
+            "type": "string",
+            "description": "Maximum value for endsAt"
+          },
+          "mode": {
+            "type": "string",
+            "description": "Filter by mode"
+          },
+          "startsAtMin": {
+            "type": "string",
+            "description": "Minimum value for startsAt"
+          },
+          "startsAtMax": {
+            "type": "string",
+            "description": "Maximum value for startsAt"
+          },
+          "status": {
+            "type": "string",
+            "description": "Filter by status"
+          },
+          "rsvpsCountMin": {
+            "type": "integer",
+            "description": "Minimum total rsvps count"
+          },
+          "rsvpsGoingCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = going"
+          },
+          "rsvpsInterestedCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = interested"
+          },
+          "rsvpsNotgoingCountMin": {
+            "type": "integer",
+            "description": "Minimum rsvps count where status = notgoing"
+          },
+          "hydrateRsvps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Number of rsvps records to embed"
+          },
+          "sort": {
+            "type": "string",
+            "knownValues": [
+              "createdAt",
+              "endsAt",
+              "mode",
+              "rsvpsCount",
+              "rsvpsGoingCount",
+              "rsvpsInterestedCount",
+              "rsvpsNotgoingCount",
+              "startsAt",
+              "status"
+            ],
+            "description": "Field to sort by (default: time_us)"
+          },
+          "order": {
+            "type": "string",
+            "knownValues": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort direction"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "records"
+          ],
+          "properties": {
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#record"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "uri",
+        "cid",
+        "value",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.event#main"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "time_us": {
+          "type": "integer"
+        },
+        "rsvpsCount": {
+          "type": "integer",
+          "description": "Total rsvps count"
+        },
+        "rsvpsGoingCount": {
+          "type": "integer",
+          "description": "rsvps count where status = going"
+        },
+        "rsvpsInterestedCount": {
+          "type": "integer",
+          "description": "rsvps count where status = interested"
+        },
+        "rsvpsNotgoingCount": {
+          "type": "integer",
+          "description": "rsvps count where status = notgoing"
+        },
+        "rsvps": {
+          "type": "ref",
+          "ref": "#hydrateRsvps"
+        }
+      }
+    },
+    "hydrateRsvpsRecord": {
+      "type": "object",
+      "required": [
+        "uri",
+        "value",
+        "did",
+        "collection",
+        "rkey",
+        "time_us"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "community.lexicon.calendar.rsvp#main"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        },
+        "time_us": {
+          "type": "integer"
+        }
+      }
+    },
+    "hydrateRsvps": {
+      "type": "object",
+      "properties": {
+        "going": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "interested": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "notgoing": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        },
+        "other": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#hydrateRsvpsRecord"
+          }
+        }
+      }
+    }
+  }
+}
