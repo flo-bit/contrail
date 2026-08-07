@@ -18,12 +18,19 @@ import { Contrail } from "../contrail.js";
 import { createHandler } from "../server.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillRetryOptions } from "../core/backfill.js";
+import {
+  normalizePublicServiceEndpoint,
+  validatePublicServiceLexicons,
+  type PublicServiceOptions,
+} from "../public-service.js";
 
 export interface CreateWorkerOptions {
   /** D1 binding name in wrangler env. Default: `"DB"`. */
   binding?: string;
   /** Bundled Lexicon documents to expose for application type generation. */
   lexicons?: object[];
+  /** Enable stable discovery and Lexicon routes for anonymous remote clients. */
+  publicService?: PublicServiceOptions;
   /** Bounded pending-account retry slice after each scheduled ingest. Enabled
    *  by default; pass `false` to disable or options to tune its budget. */
   backfillRetries?: BackfillRetryOptions | false;
@@ -39,9 +46,14 @@ export function createWorker(
   options: CreateWorkerOptions = {}
 ) {
   const binding = options.binding ?? "DB";
+  if (options.publicService) {
+    normalizePublicServiceEndpoint(options.publicService.endpoint);
+    validatePublicServiceLexicons(config, options.lexicons ?? []);
+  }
   const contrail = new Contrail(config);
   const handle = createHandler(contrail, {
     lexicons: options.lexicons,
+    publicService: options.publicService,
   });
 
   let ready = false;

@@ -1,7 +1,10 @@
 import type { ContrailConfig, Database, IngestEvent, Statement } from "./types";
 import { recordTimeUs, createIngestEvent, ingestRecords } from "./ingest";
 import { getDependentNsids, recordsTableName } from "./types";
-import { rebuildDerivedProjections } from "./db/records";
+import {
+  rebuildDerivedProjections,
+  saveServingSourcePositionStatement,
+} from "./db/records";
 import {
   BOOTSTRAP_VERIFICATION_META_KEY,
   BootstrapVerificationError,
@@ -403,7 +406,14 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
         Date.now(),
         BOOTSTRAP_STATE_ID,
       );
-    await this.apply(events, [checkpoint], false);
+    await this.apply(
+      events,
+      [
+        checkpoint,
+        saveServingSourcePositionStatement(this.db, batch.checkpoint),
+      ],
+      false,
+    );
   }
 
   async complete(): Promise<void> {

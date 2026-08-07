@@ -7,6 +7,7 @@ import type {
   IngestEvent,
   RecordRow,
   RecordSource,
+  OrderedSourceConfig,
 } from "../types";
 import {
   getNestedValue,
@@ -24,6 +25,7 @@ import {
 } from "../types";
 import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
 import { ftsQueryClause, getDialect } from "../dialect";
+import type { SourcePosition } from "../sources";
 
 // --- Counts ---
 
@@ -508,7 +510,112 @@ export async function saveFeedPruneCursor(
     .run();
 }
 
-// --- Cursor ---
+// --- Cursor and ordered source position ---
+
+export interface ServingSourcePosition {
+  position: SourcePosition;
+  updatedAt: number;
+}
+
+export async function getServingSourcePosition(
+  db: Database,
+): Promise<ServingSourcePosition | null> {
+  const row = await db
+    .prepare(
+      "SELECT source, epoch, cursor, updated_at FROM source_position WHERE id = 1",
+    )
+    .first<{
+      source: string;
+      epoch: string;
+      cursor: string;
+      updated_at: number;
+    }>();
+  return row
+    ? {
+        position: {
+          source: row.source,
+          epoch: row.epoch,
+          cursor: row.cursor,
+        },
+        updatedAt: Number(row.updated_at),
+      }
+    : null;
+}
+
+export function saveServingSourcePositionStatement(
+  db: Database,
+  position: SourcePosition,
+  updatedAt = Date.now(),
+): Statement {
+  return db
+    .prepare(
+      `INSERT INTO source_position (id, source, epoch, cursor, updated_at)
+       VALUES (1, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         source = excluded.source,
+         epoch = excluded.epoch,
+         cursor = excluded.cursor,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(position.source, position.epoch, position.cursor, updatedAt);
+}
+
+export async function assertServingSourceCompatibility(
+  db: Database,
+  orderedSource?: OrderedSourceConfig,
+): Promise<void> {
+  if (!orderedSource) return;
+  const existing = await getServingSourcePosition(db);
+  if (
+    existing &&
+    (existing.position.source !== orderedSource.source ||
+      existing.position.epoch !== orderedSource.epoch)
+  ) {
+    throw new Error(
+      `configured ordered source ${orderedSource.source}/${orderedSource.epoch} ` +
+        `does not match durable source position ` +
+        `${existing.position.source}/${existing.position.epoch}`,
+    );
+  }
+}
+
+export function orderedSourcePosition(
+  orderedSource: OrderedSourceConfig,
+  cursor: number | string,
+): SourcePosition {
+  return {
+    source: orderedSource.source,
+    epoch: orderedSource.epoch,
+    cursor: String(cursor),
+  };
+}
+
+export function saveOrderedSourcePositionStatement(
+  db: Database,
+  orderedSource: OrderedSourceConfig,
+  timeUs: number,
+  updatedAt = Date.now(),
+): Statement {
+  const position = orderedSourcePosition(orderedSource, timeUs);
+  return db
+    .prepare(
+      `INSERT INTO source_position (id, source, epoch, cursor, updated_at)
+       SELECT 1, ?, ?, ?, ?
+       WHERE (SELECT time_us FROM cursor WHERE id = 1) = ?
+       ON CONFLICT(id) DO UPDATE SET
+         source = excluded.source,
+         epoch = excluded.epoch,
+         cursor = excluded.cursor,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      position.source,
+      position.epoch,
+      position.cursor,
+      updatedAt,
+      timeUs,
+    );
+}
 
 export async function getLastCursor(db: Database): Promise<number | null> {
   const row = await db
@@ -531,8 +638,15 @@ export function saveCursorStatement(
 export async function saveCursor(
   db: Database,
   timeUs: number,
+  orderedSource?: OrderedSourceConfig,
 ): Promise<void> {
-  await saveCursorStatement(db, timeUs).run();
+  const statements = [saveCursorStatement(db, timeUs)];
+  if (orderedSource) {
+    statements.push(
+      saveOrderedSourcePositionStatement(db, orderedSource, timeUs),
+    );
+  }
+  await db.batch(statements);
 }
 
 // --- Existing record lookup ---
