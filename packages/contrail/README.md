@@ -80,6 +80,17 @@ Jetstream generation replay requires an operator-owned continuity epoch and rete
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 
+## Generate Lexicons
+
+Generate XRPC query Lexicons from the Contrail config and check them for drift:
+
+```bash
+pnpm contrail lexicons generate
+pnpm contrail lexicons check
+```
+
+`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only the collection methods intended for a public read surface. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
+
 ## Runtime record validation
 
 Pass the record Lexicons for every configured collection and their transitive references to enable shared strict validation and CID verification:

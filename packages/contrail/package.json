@@ -38,6 +38,10 @@
     "./cli-config": {
       "types": "./dist/cli-config.d.ts",
       "import": "./dist/cli-config.js"
+    },
+    "./lexicons": {
+      "types": "./dist/lexicons/index.d.ts",
+      "import": "./dist/lexicons/index.js"
     }
   },
   "bin": {
@@ -61,7 +65,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:built": "node tests/built-sqlite.mjs",
+    "test:built": "node tests/built-sqlite.mjs && node tests/built-lexicons.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -71,6 +75,7 @@
     "@atcute/client": "^5.1.1",
     "@atcute/identity-resolver": "^2.0.1",
     "@atcute/jetstream": "^2.0.2",
+    "@atcute/lex-cli": "^3.2.1",
     "@atcute/lexicon-doc": "3.0.2",
     "@atcute/lexicons": "^2.0.3",
     "@atcute/tid": "1.1.4",
