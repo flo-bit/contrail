@@ -766,13 +766,19 @@ export function generateLexicons(
   }
   const feed = feedLexicon(config, sourceDirs);
   if (feed) emit(`${config.namespace}.getFeed`, feed);
-  if (surface === "full" && config.notify) {
+  if (
+    config.notify &&
+    (surface === "full" ||
+      config.serviceAuth?.methods.includes("notifyOfUpdate") === true)
+  ) {
     emit(`${config.namespace}.notifyOfUpdate`, {
       lexicon: 1,
       id: `${config.namespace}.notifyOfUpdate`,
       defs: {
         main: {
           type: "procedure",
+          description:
+            "Fetch changed records from their authoritative PDS for immediate indexing",
           input: {
             encoding: "application/json",
             schema: {
@@ -789,7 +795,18 @@ export function generateLexicons(
           },
           output: {
             encoding: "application/json",
-            schema: { type: "unknown" },
+            schema: {
+              type: "object",
+              required: ["indexed", "deleted"],
+              properties: {
+                indexed: { type: "integer", minimum: 0 },
+                deleted: { type: "integer", minimum: 0 },
+                errors: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+              },
+            },
           },
         },
       },

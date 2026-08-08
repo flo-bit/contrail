@@ -16,6 +16,10 @@
             "format": "at-uri",
             "description": "AT URI of the record"
           },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include indexed profile and identity information"
+          },
           "hydrateEvent": {
             "type": "boolean",
             "description": "Embed the referenced event record"
@@ -64,6 +68,13 @@
             "event": {
               "type": "ref",
               "ref": "#refEventRecord"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
             }
           }
         }
@@ -105,6 +116,40 @@
         },
         "time_us": {
           "type": "integer"
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "app.bsky.actor.profile#main"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
         }
       }
     }

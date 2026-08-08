@@ -2,7 +2,11 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectPublicService } from "../src/cli/commands/connect";
+import {
+  connectPublicService,
+  ensureConsumerClientModule,
+  ensureConsumerLexiconConfig,
+} from "../src/cli/commands/connect";
 import { generateLexiconTypesWithAtcute } from "../src/cli/atcute";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { createApp } from "../src/core/router";
@@ -101,35 +105,31 @@ describe("public service consumer integration", () => {
     const fetcher: typeof fetch = (input, init) =>
       app.fetch(new Request(input, init));
 
-    writeFileSync(
-      join(consumerRoot, "lex.config.js"),
-      `import { defineLexiconConfig } from "@atcute/lex-cli";
-export default defineLexiconConfig({
-  generate: {
-    files: ["lexicons/pulled/**/*.json"],
-    outdir: "src/lexicons/",
-  },
-});
-`,
-    );
-    await connectPublicService({
+    const connection = await connectPublicService({
       endpoint: "https://api.example.com",
       root: consumerRoot,
-      out: "lexicons/pulled",
+      out: "src/contrail/lexicons",
       lock: "contrail.lock.json",
       fetcher,
     });
+    const generatedConfig = await ensureConsumerLexiconConfig({
+      root: consumerRoot,
+      out: "src/contrail/lexicons",
+      lock: connection.lock,
+    });
+    expect(generatedConfig.created).toBe(true);
     generateLexiconTypesWithAtcute(consumerRoot);
+    const generatedClient = await ensureConsumerClientModule({
+      root: consumerRoot,
+      lock: connection.lock,
+    });
+    expect(generatedClient.created).toBe(true);
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });
     writeFileSync(
       join(consumerRoot, "src", "consumer.ts"),
-      `import { Client, simpleFetchHandler } from "@atcute/client";
-import "./lexicons/index.js";
-const client = new Client({
-  handler: simpleFetchHandler({ service: "https://api.example.com" }),
-});
-const response = await client.get("com.example.event.listRecords", {
+      `import { contrail } from "./contrail/index.js";
+const response = await contrail.get("com.example.event.listRecords", {
   params: { name: "Typed event", limit: 1 },
 });
 if (response.ok) {

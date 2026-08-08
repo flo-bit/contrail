@@ -17,6 +17,9 @@ export default defineLexiconConfig({
         type: "atproto",
         mode: "nsids",
         nsids: [
+          "app.bsky.actor.profile",
+          "app.bsky.graph.follow",
+          "com.atproto.label.defs",
           "com.atproto.repo.strongRef",
           "community.lexicon.calendar.event",
           "community.lexicon.calendar.rsvp",

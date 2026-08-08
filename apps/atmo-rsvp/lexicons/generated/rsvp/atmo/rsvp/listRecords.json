@@ -22,6 +22,10 @@
             "format": "at-identifier",
             "description": "Filter by an indexed DID or cached handle"
           },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include indexed profile and identity information"
+          },
           "createdAtMin": {
             "type": "string",
             "description": "Minimum value for createdAt"
@@ -78,6 +82,13 @@
             },
             "cursor": {
               "type": "string"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
             }
           }
         }
@@ -163,6 +174,40 @@
         },
         "time_us": {
           "type": "integer"
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "app.bsky.actor.profile#main"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
         }
       }
     }
