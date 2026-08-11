@@ -89,7 +89,7 @@ pnpm contrail lexicons generate
 pnpm contrail lexicons check
 ```
 
-`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only the collection methods intended for a public read surface. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
+`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only the collection methods intended for a public read surface. Generated `lex.config.js` files carry an ownership marker; existing user-owned Atcute configuration is never replaced. Pass `--no-atcute-config` to manage that file yourself. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
 
 ## Runtime record validation
 

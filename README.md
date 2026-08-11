@@ -90,7 +90,7 @@ pnpm contrail lexicons generate
 pnpm contrail lexicons check
 ```
 
-Use `contrail lexicons all` to generate Contrail methods, pull referenced source Lexicons, and generate TypeScript types in one pass. The `pull` and `types` actions are also available separately. Contrail owns its config-specific query generation while delegating generic pulling and TypeScript generation to [Atcute](https://github.com/mary-ext/atcute).
+Use `contrail lexicons all` to generate Contrail methods, pull referenced source Lexicons, and generate TypeScript types in one pass. The `pull` and `types` actions are also available separately. Contrail updates `lex.config.js` only when the file carries its generated marker; user-owned Atcute configuration is preserved. Pass `--no-atcute-config` to skip creating or checking that generated file. Contrail owns its config-specific query generation while delegating generic pulling and TypeScript generation to [Atcute](https://github.com/mary-ext/atcute).
 
 ## Other databases
 

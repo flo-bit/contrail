@@ -16,6 +16,7 @@ interface LexiconOptions {
   root: string;
   output: string;
   public?: boolean;
+  atcuteConfig?: boolean;
 }
 
 function surface(options: LexiconOptions): LexiconSurface {
@@ -29,6 +30,7 @@ async function generate(options: LexiconOptions) {
     rootDir: resolve(options.root),
     outputDir: resolve(options.root, options.output),
     surface: surface(options),
+    writeAtcuteConfig: options.atcuteConfig !== false,
   });
 }
 
@@ -44,6 +46,10 @@ export function registerLexicons(cli: CAC): void {
       default: join("lexicons", "generated"),
     })
     .option("--public", "Generate only methods exposed by public read mode")
+    .option(
+      "--no-atcute-config",
+      "Do not create or update a generated lex.config.js",
+    )
     .action(async (action: string, options: LexiconOptions) => {
       const root = resolve(options.root);
       if (action === "generate") {
@@ -57,6 +63,7 @@ export function registerLexicons(cli: CAC): void {
           rootDir: root,
           outputDir: resolve(root, options.output),
           surface: surface(options),
+          writeAtcuteConfig: options.atcuteConfig !== false,
         });
         console.log("Contrail Lexicons are current.");
         return;
