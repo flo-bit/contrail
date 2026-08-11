@@ -116,7 +116,7 @@ const config = {
 
 The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
 
-Connect an independent consumer with `contrail connect <https-origin>`. A repeated connection requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons.
+Connect an independent consumer with `contrail connect <https-origin>`. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Switching providers or output roots requires removing the existing connection deliberately, so stale Lexicons cannot remain under a broad generator glob.
 
 ## Runtime record validation
 

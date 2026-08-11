@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectPublicService } from "../src/cli/commands/connect";
+import {
+  connectPublicService,
+  type ProviderLock,
+} from "../src/cli/commands/connect";
 import {
   contractFromManifest,
   digestLexiconDocuments,
@@ -29,6 +32,19 @@ const sourceLexicon = {
   id: "community.lexicon.calendar.event",
   defs: { main: { type: "record" } },
 };
+
+function providerLock(): ProviderLock {
+  return {
+    format: "contrail.provider-lock",
+    version: 1,
+    endpoint,
+    namespace: "atmo.rsvp",
+    contractDigest: `sha256:${"a".repeat(64)}`,
+    lexiconDigest: `sha256:${"b".repeat(64)}`,
+    methods: [method],
+    lexiconRoot: "lexicons/pulled/api.atmo.rsvp",
+  };
+}
 
 async function serviceFixture(values = [methodLexicon, sourceLexicon]) {
   const { digest } = await digestLexiconDocuments(values);
@@ -129,6 +145,44 @@ describe("contrail connect", () => {
     expect(
       await readFile(join(root, "lexicons/pulled/consumer-owned.json"), "utf8"),
     ).toBe("keep");
+  });
+
+  it("refuses to repoint an existing lock or abandon its owned output", async () => {
+    const root = await temporaryRoot();
+    const lockPath = join(root, "contrail.lock.json");
+    const fetcher = vi.fn();
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        ...providerLock(),
+        endpoint: "https://old.example.com",
+      })}\n`,
+    );
+
+    await expect(
+      connectPublicService({
+        endpoint,
+        root,
+        out: "lexicons/pulled",
+        lock: "contrail.lock.json",
+        fetcher,
+        update: true,
+      }),
+    ).rejects.toThrow("remove the existing connection before switching endpoints");
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await writeFile(lockPath, `${JSON.stringify(providerLock())}\n`);
+    await expect(
+      connectPublicService({
+        endpoint,
+        root,
+        out: "different-lexicons",
+        lock: "contrail.lock.json",
+        fetcher,
+        update: true,
+      }),
+    ).rejects.toThrow("reuse its output path");
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("preserves the previous provider and lock when an update fails validation", async () => {

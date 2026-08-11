@@ -50,6 +50,34 @@ export interface ProviderLock {
   lexiconRoot: string;
 }
 
+async function readProviderLock(path: string): Promise<ProviderLock | null> {
+  let source: string;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(source) as unknown;
+  } catch {
+    throw new Error("existing Contrail provider lock is not valid JSON");
+  }
+  const lock = value as Partial<ProviderLock>;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    lock.format !== "contrail.provider-lock" ||
+    lock.version !== 1 ||
+    typeof lock.endpoint !== "string" ||
+    typeof lock.lexiconRoot !== "string"
+  ) {
+    throw new Error("existing Contrail provider lock is malformed");
+  }
+  return lock as ProviderLock;
+}
+
 async function readJson(response: Response, label: string): Promise<unknown> {
   if (!response.ok) {
     throw new Error(
@@ -136,14 +164,27 @@ export async function connectPublicService(options: {
   const endpoint = normalizePublicServiceEndpoint(options.endpoint);
   const projectRoot = resolve(options.root);
   const lockPath = resolveInsideRoot(projectRoot, options.lock);
-  if (!options.update) {
-    try {
-      await readFile(lockPath, "utf8");
+  const outputRoot = resolveInsideRoot(projectRoot, options.out);
+  const providerKey = new URL(endpoint).host.replace(/[^a-zA-Z0-9.-]/g, "_");
+  const providerRoot = resolveInsideRoot(outputRoot, providerKey);
+  const existingLock = await readProviderLock(lockPath);
+  if (existingLock && !options.update) {
+    throw new Error(
+      "a Contrail provider lock already exists; rerun with --update",
+    );
+  }
+  if (existingLock) {
+    if (normalizePublicServiceEndpoint(existingLock.endpoint) !== endpoint) {
       throw new Error(
-        "a Contrail provider lock already exists; rerun with --update",
+        `provider lock targets ${existingLock.endpoint}; remove the existing connection before switching endpoints`,
       );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (
+      resolveInsideRoot(projectRoot, existingLock.lexiconRoot) !== providerRoot
+    ) {
+      throw new Error(
+        `provider lock owns ${existingLock.lexiconRoot}; reuse its output path or remove the existing connection`,
+      );
     }
   }
   const fetcher = options.fetcher ?? fetch;
@@ -200,9 +241,6 @@ export async function connectPublicService(options: {
     );
   }
 
-  const outputRoot = resolveInsideRoot(projectRoot, options.out);
-  const providerKey = new URL(endpoint).host.replace(/[^a-zA-Z0-9.-]/g, "_");
-  const providerRoot = resolveInsideRoot(outputRoot, providerKey);
   await mkdir(outputRoot, { recursive: true });
   const stagedProvider = await mkdtemp(join(outputRoot, `.${providerKey}-`));
   for (const document of lexicons) {
