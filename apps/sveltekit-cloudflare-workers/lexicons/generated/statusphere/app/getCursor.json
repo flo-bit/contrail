@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get the current cursor position",
+      "description": "Get the current ingestion observation time",
       "output": {
         "encoding": "application/json",
         "schema": {

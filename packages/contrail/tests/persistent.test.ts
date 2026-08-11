@@ -3,7 +3,11 @@ import type { ContrailConfig, Database } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 import { runPersistent } from "../src/index";
-import { getLastCursor, queryRecords } from "../src/index";
+import {
+  getLastCursor,
+  getServingSourcePosition,
+  queryRecords,
+} from "../src/index";
 import { initSchema } from "../src/index";
 
 const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
@@ -48,7 +52,11 @@ function mockSubscription(events: Array<{ kind: string; did: string; time_us: nu
 }
 
 describe("runPersistent", () => {
-  it("flushes when batch size is reached", async () => {
+  it("flushes records and the ordered source position atomically", async () => {
+    const config = resolveConfig({
+      ...TEST_CONFIG,
+      orderedSource: { source: "jetstream", epoch: "persistent-test" },
+    });
     const events = Array.from({ length: 50 }, (_, i) => ({
       kind: "commit" as const,
       did: `did:plc:user${i}`,
@@ -65,7 +73,7 @@ describe("runPersistent", () => {
     const controller = new AbortController();
 
     // After yielding 50 events, the mock hangs. Give it time to flush, then abort.
-    const promise = runPersistent(db, TEST_CONFIG, {
+    const promise = runPersistent(db, config, {
       batchSize: 50,
       flushIntervalMs: 60_000, // high so only batch size triggers flush
       signal: controller.signal,
@@ -85,6 +93,13 @@ describe("runPersistent", () => {
 
     const cursor = await getLastCursor(db);
     expect(cursor).toBe(1049); // last event's time_us
+    expect(await getServingSourcePosition(db)).toMatchObject({
+      position: {
+        source: "jetstream",
+        epoch: "persistent-test",
+        cursor: "1049",
+      },
+    });
   });
 
   it("keeps dependent events discovered in the same flush batch", async () => {

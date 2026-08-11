@@ -881,7 +881,12 @@ describe("backfill status JSON", () => {
     const root = await app.fetch(new Request("http://localhost/"));
     expect(await root.json()).toEqual({ status: "ok" });
 
-    const xrpc = await app.fetch(new Request("http://localhost/xrpc/com.example.getOverview"));
-    expect(((await xrpc.json()) as any).backfill).toEqual(overview.backfill);
+    const status = await app.fetch(new Request("http://localhost/status"));
+    expect(((await status.json()) as any).backfill).toEqual(overview.backfill);
+
+    const removed = await app.fetch(
+      new Request("http://localhost/xrpc/com.example.getOverview"),
+    );
+    expect(removed.status).toBe(404);
   });
 });

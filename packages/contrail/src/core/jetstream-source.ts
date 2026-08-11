@@ -158,6 +158,16 @@ export class JetstreamChangeSource implements ChangeSource {
     private readonly options: JetstreamChangeSourceOptions,
   ) {
     if (!options.epoch) throw new TypeError("Jetstream source epoch is required");
+    if (
+      config.orderedSource &&
+      (config.orderedSource.source !== this.id ||
+        config.orderedSource.epoch !== options.epoch)
+    ) {
+      throw new TypeError(
+        `Jetstream source ${this.id}/${options.epoch} does not match ` +
+          `configured ordered source ${config.orderedSource.source}/${config.orderedSource.epoch}`,
+      );
+    }
     if (!Number.isSafeInteger(options.retentionUs) || options.retentionUs <= 0) {
       throw new TypeError("Jetstream retentionUs must be a positive safe integer");
     }

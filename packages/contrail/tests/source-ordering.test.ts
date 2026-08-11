@@ -3,9 +3,11 @@ import {
   createIngestEvent,
   ingestRecords,
   initSchema,
+  getServingSourcePosition,
   queryRecords,
   resolveConfig,
   saveCursorStatement,
+  saveOrderedSourcePositionStatement,
   type ContrailConfig,
   type Database,
   type IngestEvent,
@@ -427,6 +429,7 @@ describe("durable source ordering", () => {
     await db
       .prepare("INSERT INTO cursor_failure (value) VALUES ('duplicate')")
       .run();
+    const orderedSource = { source: "jetstream", epoch: "atomic-test" };
     const event = mutation({
       operation: "create",
       sourceTime: 500,
@@ -438,6 +441,7 @@ describe("durable source ordering", () => {
       ingestRecords(db, [event], resolved, {
         trailingStatements: [
           saveCursorStatement(db, 500),
+          saveOrderedSourcePositionStatement(db, orderedSource, 500),
           db.prepare("INSERT INTO cursor_failure (value) VALUES ('duplicate')"),
         ],
       }),
@@ -453,6 +457,7 @@ describe("durable source ordering", () => {
     expect(
       await db.prepare("SELECT time_us FROM cursor WHERE id = 1").first(),
     ).toBeNull();
+    expect(await getServingSourcePosition(db)).toBeNull();
   });
 
   it("stores record time separately from source and local times", async () => {

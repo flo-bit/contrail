@@ -2,10 +2,17 @@ import { describe, it, expect, vi } from "vitest";
 import { createWorker } from "../src/worker";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import type { ContrailConfig } from "../src/index";
+import {
+  contractFromManifest,
+  digestPublicContract,
+  saveCursor,
+  type ContrailConfig,
+} from "../src/index";
 
 const MINIMAL_CONFIG: ContrailConfig = {
   namespace: "com.example",
+  profiles: [],
+  orderedSource: { source: "jetstream", epoch: "worker-test" },
   collections: {
     event: {
       collection: "community.lexicon.calendar.event",
@@ -13,6 +20,20 @@ const MINIMAL_CONFIG: ContrailConfig = {
     },
   },
 };
+
+function queryLexicons(...ids: string[]) {
+  return ids.map((id) => ({
+    lexicon: 1,
+    id,
+    defs: { main: { type: "query" } },
+  }));
+}
+
+const MINIMAL_PUBLIC_LEXICONS = queryLexicons(
+  "com.example.getCursor",
+  "com.example.event.getRecord",
+  "com.example.event.listRecords",
+);
 
 describe("createWorker", () => {
   it("returns an object with fetch + scheduled handlers", () => {
@@ -28,7 +49,9 @@ describe("createWorker", () => {
 
     // Before first fetch: schema not present yet.
     const tables = await db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='cursor'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cursor'",
+      )
       .first<{ name: string }>();
     expect(tables).toBeNull();
 
@@ -36,7 +59,9 @@ describe("createWorker", () => {
 
     // After first fetch: schema present.
     const after = await db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='cursor'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cursor'",
+      )
       .first<{ name: string }>();
     expect(after?.name).toBe("cursor");
 
@@ -67,7 +92,7 @@ describe("createWorker", () => {
 
     const res = await worker.fetch(
       new Request("http://localhost/xrpc/com.example.lexicons"),
-      env
+      env,
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ lexicons });
@@ -80,9 +105,265 @@ describe("createWorker", () => {
 
     const res = await worker.fetch(
       new Request("http://localhost/xrpc/com.example.lexicons"),
-      env
+      env,
     );
     expect(res.status).toBe(404);
+  });
+
+  it("serves deterministic public discovery and stable Lexicons", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const lexicons = MINIMAL_PUBLIC_LEXICONS;
+    const worker = createWorker(MINIMAL_CONFIG, {
+      lexicons,
+      publicService: { endpoint: "https://api.example.com" },
+    });
+    const env = { DB: db };
+
+    const manifestResponse = await worker.fetch(
+      new Request("https://api.example.com/.well-known/contrail"),
+      env,
+    );
+    expect(manifestResponse.status).toBe(200);
+    expect(manifestResponse.headers.get("access-control-allow-origin")).toBe(
+      "*",
+    );
+    const manifest = await manifestResponse.json<any>();
+    expect(manifest).toMatchObject({
+      format: "contrail.service",
+      version: 1,
+      endpoint: "https://api.example.com",
+      namespace: "com.example",
+      contract: { digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+      lexicons: {
+        url: expect.stringMatching(
+          /^https:\/\/api\.example\.com\/lexicons\/sha256:[0-9a-f]{64}$/,
+        ),
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      },
+      methods: [
+        "com.example.event.getRecord",
+        "com.example.event.listRecords",
+        "com.example.getCursor",
+      ],
+      collections: expect.arrayContaining([
+        {
+          alias: "event",
+          nsid: "community.lexicon.calendar.event",
+          methods: [
+            "com.example.event.getRecord",
+            "com.example.event.listRecords",
+          ],
+          queryable: ["startsAt"],
+          searchable: [],
+          relations: [],
+          references: [],
+        },
+      ]),
+    });
+    expect(manifest.contract.digest).not.toBe(manifest.lexicons.digest);
+    expect(await digestPublicContract(contractFromManifest(manifest))).toBe(
+      manifest.contract.digest,
+    );
+    expect(manifest.lexicons.url).toBe(
+      `https://api.example.com/lexicons/${manifest.lexicons.digest}`,
+    );
+
+    const lexiconResponse = await worker.fetch(
+      new Request("https://api.example.com/lexicons"),
+      env,
+    );
+    expect(lexiconResponse.status).toBe(200);
+    expect(await lexiconResponse.json()).toEqual({
+      lexicons: [...lexicons].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+    });
+    expect(lexiconResponse.headers.get("etag")).toBe(
+      `"${manifest.lexicons.digest}"`,
+    );
+    const immutableLexicons = await worker.fetch(
+      new Request(manifest.lexicons.url),
+      env,
+    );
+    expect(immutableLexicons.status).toBe(200);
+    expect(immutableLexicons.headers.get("cache-control")).toContain(
+      "immutable",
+    );
+
+    const statusResponse = await worker.fetch(
+      new Request("https://api.example.com/status"),
+      env,
+    );
+    const status = await statusResponse.json<any>();
+    expect(status).toMatchObject({
+      serving: "ready",
+      freshness: { last_event_at: null, seconds_ago: null },
+    });
+    expect(status.ingestion).toBeUndefined();
+    expect(statusResponse.headers.get("cache-control")).toContain("max-age=15");
+    expect(JSON.stringify(status)).not.toContain("cursor");
+
+    const emptyCursor = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getCursor"),
+      env,
+    );
+    expect(await emptyCursor.json()).toEqual({});
+
+    await saveCursor(db, 1234, MINIMAL_CONFIG.orderedSource);
+    const cursorResponse = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getCursor"),
+      env,
+    );
+    expect(cursorResponse.status).toBe(200);
+    expect(await cursorResponse.json()).toMatchObject({
+      position: {
+        source: "jetstream",
+        epoch: "worker-test",
+        cursor: "1234",
+      },
+    });
+    expect(
+      (
+        await worker.fetch(
+          new Request("https://api.example.com/xrpc/com.example.getOverview"),
+          env,
+        )
+      ).status,
+    ).toBe(404);
+  });
+
+  it("preserves the legacy cursor response without an ordered source", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      orderedSource: undefined,
+    };
+    const db = createSqliteDatabase(":memory:");
+    const worker = createWorker(config);
+    const env = { DB: db };
+    await worker.fetch(new Request("https://api.example.com/health"), env);
+    await saveCursor(db, 1_234_000);
+
+    const response = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getCursor"),
+      env,
+    );
+    expect(await response.json()).toMatchObject({
+      time_us: 1_234_000,
+      date: new Date(1234).toISOString(),
+    });
+  });
+
+  it("keeps profiles, feeds, custom queries, and configured notify routes", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      profiles: [{ collection: "com.example.profile", shortName: "profile" }],
+      feeds: { network: { targets: ["event"] } },
+      notify: "secret",
+      collections: {
+        event: {
+          ...MINIMAL_CONFIG.collections.event,
+          queries: {
+            featured: async () => Response.json({ records: [] }),
+          },
+        },
+      },
+    };
+    const lexicons = queryLexicons(
+      "com.example.getCursor",
+      "com.example.getProfile",
+      "com.example.getFeed",
+      "com.example.event.getRecord",
+      "com.example.event.listRecords",
+      "com.example.event.featured",
+      "com.example.profile.getRecord",
+      "com.example.profile.listRecords",
+      "com.example.follow.getRecord",
+      "com.example.follow.listRecords",
+    );
+    const worker = createWorker(config, {
+      lexicons,
+      publicService: { endpoint: "https://api.example.com" },
+    });
+    const env = { DB: createSqliteDatabase(":memory:") };
+
+    const profile = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getProfile"),
+      env,
+    );
+    expect(profile.status).toBe(400);
+    const feed = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getFeed"),
+      env,
+    );
+    expect(feed.status).toBe(400);
+    const custom = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.event.featured"),
+      env,
+    );
+    expect(custom.status).toBe(200);
+    expect(await custom.json()).toEqual({ records: [] });
+    const manifest = await (
+      await worker.fetch(
+        new Request("https://api.example.com/.well-known/contrail"),
+        env,
+      )
+    ).json<any>();
+    expect(manifest.methods).toEqual(
+      expect.arrayContaining([
+        "com.example.getCursor",
+        "com.example.getProfile",
+        "com.example.getFeed",
+        "com.example.event.featured",
+      ]),
+    );
+    expect(manifest.methods).not.toContain("com.example.notifyOfUpdate");
+
+    const notify = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.notifyOfUpdate", {
+        method: "POST",
+        body: JSON.stringify({ uri: "at://did:plc:test/com.example.event/1" }),
+      }),
+      env,
+    );
+    expect(notify.status).toBe(401);
+  });
+
+  it("refuses public mode without an ordered source, HTTPS origin, and Lexicons", () => {
+    expect(() =>
+      createWorker(
+        { ...MINIMAL_CONFIG, orderedSource: undefined },
+        {
+          lexicons: MINIMAL_PUBLIC_LEXICONS,
+          publicService: { endpoint: "https://api.example.com" },
+        },
+      ),
+    ).toThrow("requires orderedSource");
+
+    expect(() =>
+      createWorker(MINIMAL_CONFIG, {
+        publicService: { endpoint: "https://api.example.com" },
+      }),
+    ).toThrow("non-empty Lexicon bundle");
+
+    expect(() =>
+      createWorker(MINIMAL_CONFIG, {
+        lexicons: [{ lexicon: 1, id: "com.example.foo" }],
+        publicService: { endpoint: "http://api.example.com" },
+      }),
+    ).toThrow("must use HTTPS");
+
+    expect(() =>
+      createWorker(MINIMAL_CONFIG, {
+        lexicons: [
+          {
+            lexicon: 1,
+            id: "com.example.event.listRecords",
+            defs: { main: { type: "query" } },
+          },
+        ],
+        publicService: { endpoint: "https://api.example.com" },
+      }),
+    ).toThrow("public method requires a matching query Lexicon");
   });
 
   it("scheduled handler runs live ingest then a bounded backfill retry slice", async () => {

@@ -6,15 +6,25 @@ import { backfillUser } from "../backfill";
 import { hydrateLabels } from "../labels/hydrate";
 import { selectAcceptedLabelers } from "../labels/select";
 import { resolveActor } from "../identity";
-import { getOverview, registerAdminRoutes } from "./admin";
+import { getStatusOverview, registerCursorRoute } from "./diagnostics";
 import { registerCollectionRoutes } from "./collection";
 import { registerFeedRoutes } from "./feed";
 import { registerNotifyRoute } from "./notify";
 import { resolveProfiles } from "./profiles";
+import { createServiceAuthGate } from "../service-auth";
+import {
+  describePublicService,
+  normalizeLexiconDocuments,
+  normalizePublicServiceEndpoint,
+  validatePublicServiceLexicons,
+  type PublicServiceOptions,
+} from "../../public-service";
 
 export interface CreateAppOptions {
   /** Lexicon JSON documents to expose from the deployment. */
   lexicons?: object[];
+  /** Enable stable discovery for anonymous read-through clients. */
+  publicService?: PublicServiceOptions;
 }
 
 export function createApp(
@@ -23,16 +33,97 @@ export function createApp(
   options: CreateAppOptions = {},
 ): Hono {
   const app = new Hono();
-  app.use("*", cors());
+  app.use(
+    "*",
+    cors({
+      allowHeaders: [
+        "Authorization",
+        "Content-Type",
+        "Atproto-Accept-Labelers",
+      ],
+      exposeHeaders: ["Atproto-Content-Labelers", "WWW-Authenticate"],
+    }),
+  );
+  const serviceAuth = createServiceAuthGate(config);
 
   app.get("/", (c) => c.json({ status: "ok" }));
-  app.get("/status", async (c) => c.json(await getOverview(db, config)));
+  app.get("/status", async (c) => {
+    const overview = await getStatusOverview(db, config);
+    if (!options.publicService) return c.json(overview);
+    c.header("cache-control", "public, max-age=15, stale-while-revalidate=45");
+    return c.json({
+      status: overview.status,
+      serving: "ready",
+      total_records: overview.total_records,
+      collections: overview.collections,
+      freshness: {
+        last_event_at: overview.ingestion.date,
+        seconds_ago: overview.ingestion.seconds_ago,
+      },
+      backfill: overview.backfill,
+    });
+  });
   app.get("/health", (c) => c.json({ status: "ok" }));
   app.get("/xrpc/_health", (c) => c.json({ status: "ok" }));
 
   const ns = config.namespace;
-  if (options.lexicons && options.lexicons.length > 0) {
-    const lexicons = options.lexicons;
+  const lexicons = options.publicService
+    ? normalizeLexiconDocuments(options.lexicons ?? [])
+    : (options.lexicons ?? []);
+  if (options.publicService) {
+    normalizePublicServiceEndpoint(options.publicService.endpoint);
+    validatePublicServiceLexicons(config, lexicons);
+    const description = describePublicService(
+      config,
+      options.publicService,
+      lexicons,
+    );
+    app.get("/.well-known/contrail", async (c) => {
+      const { manifest } = await description;
+      c.header("cache-control", "no-cache");
+      c.header("etag", `\"${manifest.contract.digest}\"`);
+      return c.json(manifest);
+    });
+    if (
+      serviceAuth &&
+      serviceAuth.audience ===
+        `did:web:${new URL(options.publicService.endpoint).hostname}`
+    ) {
+      app.get("/.well-known/did.json", (c) => {
+        c.header("content-type", "application/did+ld+json; charset=UTF-8");
+        c.header("cache-control", "public, max-age=300");
+        return c.json({
+          "@context": ["https://www.w3.org/ns/did/v1"],
+          id: serviceAuth.audience,
+          service: [
+            {
+              id: `${serviceAuth.audience}#contrail`,
+              type: "ContrailService",
+              serviceEndpoint: options.publicService!.endpoint,
+            },
+          ],
+        });
+      });
+    }
+    app.get("/lexicons", async (c) => {
+      const service = await description;
+      c.header("content-type", "application/json; charset=UTF-8");
+      c.header("cache-control", "no-cache");
+      c.header("etag", `\"${service.manifest.lexicons.digest}\"`);
+      return c.body(service.canonicalLexicons);
+    });
+    app.get("/lexicons/:digest", async (c) => {
+      const service = await description;
+      if (c.req.param("digest") !== service.manifest.lexicons.digest) {
+        return c.json({ error: "Lexicon bundle not found" }, 404);
+      }
+      c.header("content-type", "application/json; charset=UTF-8");
+      c.header("cache-control", "public, max-age=31536000, immutable");
+      c.header("etag", `\"${service.manifest.lexicons.digest}\"`);
+      return c.body(service.canonicalLexicons);
+    });
+  }
+  if (lexicons.length > 0) {
     app.get(`/xrpc/${ns}.lexicons`, (c) => c.json({ lexicons }));
   }
 
@@ -80,10 +171,10 @@ export function createApp(
     return c.json({ profiles });
   });
 
-  registerAdminRoutes(app, db, config);
+  registerCursorRoute(app, db, config);
   registerCollectionRoutes(app, db, config);
-  registerFeedRoutes(app, db, config);
-  registerNotifyRoute(app, db, config);
+  registerFeedRoutes(app, db, config, serviceAuth);
+  registerNotifyRoute(app, db, config, serviceAuth);
 
   return app;
 }

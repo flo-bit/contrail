@@ -1,3 +1,4 @@
+import type { Nsid } from "@atcute/lexicons/syntax";
 import type { Context, Hono } from "hono";
 import type {
   ContrailConfig,
@@ -16,6 +17,7 @@ import {
 import { resolveActor } from "../identity";
 import { backfillUser } from "../backfill";
 import { runPipeline } from "./collection";
+import type { ServiceAuthGate } from "../service-auth";
 
 const BACKFILL_TIMEOUT_MS = 30_000;
 const BACKFILL_REQUEST_TIMEOUT_MS = 10_000;
@@ -223,7 +225,8 @@ async function maybeBackfillFeed(
 export function registerFeedRoutes(
   app: Hono,
   db: Database,
-  config: ContrailConfig
+  config: ContrailConfig,
+  serviceAuth?: ServiceAuthGate | null
 ): void {
   if (!config.feeds) return;
 
@@ -243,8 +246,23 @@ export function registerFeedRoutes(
       return c.json({ error: "Unknown feed" }, 404);
     }
 
+    const method = `${ns}.getFeed` as Nsid;
+    const authorization = serviceAuth?.protects("getFeed")
+      ? await serviceAuth.authorize(c.req.raw, method)
+      : null;
+    if (authorization?.response) return authorization.response;
+
     const did = await resolveActor(db, actor, config);
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
+    if (
+      authorization?.principal?.issuer !== undefined &&
+      authorization.principal.issuer !== did
+    ) {
+      return c.json(
+        { error: "feed actor must match the service-auth issuer" },
+        403
+      );
+    }
 
     await maybeBackfillFeed(c, db, config, did, feedName, feedConfig);
 

@@ -79,13 +79,13 @@ describe("resolveHydrates", () => {
     expect(result).toEqual({});
   });
 
-  it("hydrates related records", async () => {
+  it("maps grouped Lexicon tokens to their configured short names", async () => {
     const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
 
     // Insert event
     await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1", time_us: 1000 })]);
 
-    // Insert RSVPs
+    // Insert RSVPs using the full token stored in real Lexicon records.
     for (let i = 0; i < 3; i++) {
       await ingestRecords(db, [
         makeEvent({
@@ -93,7 +93,10 @@ describe("resolveHydrates", () => {
           did: `did:plc:user${i}`,
           collection: "rsvp",
           rkey: `r${i}`,
-          record: { subject: { uri: eventUri }, status: "going" },
+          record: {
+            subject: { uri: eventUri },
+            status: "community.lexicon.calendar.rsvp#going",
+          },
           time_us: 2000 + i,
         }),
       ]);

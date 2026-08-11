@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import type { ContrailConfig, Database } from "../types";
 import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../types";
-import { getLastCursor } from "../db";
+import { getLastCursor, getServingSourcePosition } from "../db";
 import { getBackfillStatus } from "../status";
 
 export interface CursorStatus {
@@ -30,7 +30,7 @@ export async function getCursorStatus(db: Database): Promise<CursorStatus> {
   };
 }
 
-export async function getOverview(db: Database, config: ContrailConfig) {
+export async function getStatusOverview(db: Database, config: ContrailConfig) {
   const collections: CollectionOverview[] = [];
 
   for (const short of getCollectionShortNames(config)) {
@@ -62,7 +62,7 @@ export async function getOverview(db: Database, config: ContrailConfig) {
   };
 }
 
-export function registerAdminRoutes(
+export function registerCursorRoute(
   app: Hono,
   db: Database,
   config: ContrailConfig
@@ -70,16 +70,22 @@ export function registerAdminRoutes(
   const ns = config.namespace;
 
   app.get(`/xrpc/${ns}.getCursor`, async (c) => {
-    const cursor = await getCursorStatus(db);
-    if (cursor.cursor === null) return c.json({ cursor: null });
+    if (!config.orderedSource) {
+      const legacy = await getCursorStatus(db);
+      if (legacy.cursor === null) return c.json({});
+      return c.json({
+        time_us: legacy.cursor,
+        date: legacy.date,
+        seconds_ago: legacy.seconds_ago,
+      });
+    }
+
+    const current = await getServingSourcePosition(db);
+    if (!current) return c.json({});
     return c.json({
-      time_us: cursor.cursor,
-      date: cursor.date,
-      seconds_ago: cursor.seconds_ago,
+      position: current.position,
+      updatedAt: current.updatedAt,
+      updatedAtDate: new Date(current.updatedAt).toISOString(),
     });
   });
-
-  app.get(`/xrpc/${ns}.getOverview`, async (c) =>
-    c.json(await getOverview(db, config))
-  );
 }

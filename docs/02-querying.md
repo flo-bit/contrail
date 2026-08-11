@@ -7,7 +7,7 @@ Once [indexing](./01-indexing.md) is set up, every collection you declared gets 
 | `{namespace}.{short}.listRecords` | Paginated list with filters, sorts, hydration |
 | `{namespace}.{short}.getRecord?uri=…` | Single record by AT-URI |
 
-Plus a few top-level ones: `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.getOverview`, `{namespace}.notifyOfUpdate`, and optionally `{namespace}.lexicons`.
+Top-level methods include `{namespace}.getProfile`, `{namespace}.getCursor`, `{namespace}.notifyOfUpdate`, and optionally `{namespace}.getFeed` and `{namespace}.lexicons`.
 
 ## HTTP (what most callers use)
 
@@ -30,7 +30,7 @@ Dotted field names become camelCase params — `queryable: { "subject.uri": {} }
 
 ## Operational status
 
-`GET /status` and `GET /xrpc/{namespace}.getOverview` return the current JSON overview. It includes indexed record totals, the live-ingest cursor and lag, and durable backfill state:
+`GET /status` returns the current JSON overview. It includes indexed record totals, live-ingest freshness, and durable backfill state:
 
 - discovery source progress;
 - mutually exclusive account totals for `complete`, `pending`, `retrying`, and `failed`;
@@ -41,6 +41,8 @@ Dotted field names become camelCase params — `queryable: { "subject.uri": {} }
 `state` is `running` while a manual or scheduled slice holds the backfill lease. It becomes `complete` after discovery and the initial pass finish, even when account-level `retrying` or `failed` counts are non-zero. `pending` means no failure has occurred yet, `retrying` means at least one attempt failed but automatic attempts remain, and `failed` means the ten-attempt automatic budget is exhausted. An explicit backfill resets that budget. `incomplete` means discovery or an initial account attempt has not finished.
 
 "Known" is deliberate: while relay discovery is incomplete, Contrail cannot honestly claim how many accounts remain undiscovered. `/health` remains a lightweight liveness response and does not claim that historical backfill is complete.
+
+`GET /xrpc/{namespace}.getCursor` returns the committed primary ordered-source position when `orderedSource` is configured. The `{ source, epoch, cursor }` tuple is opaque: compare complete tuples for equality only, and treat a source or epoch change as a full reset. A consumer that needs a stable query snapshot can read the position before and after its query and retry when the two positions differ.
 
 ## Programmatic
 

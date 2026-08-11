@@ -80,6 +80,61 @@ Jetstream generation replay requires an operator-owned continuity epoch and rete
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 
+## Generate Lexicons
+
+Generate XRPC query Lexicons from the Contrail config and check them for drift:
+
+```bash
+pnpm contrail lexicons generate
+pnpm contrail lexicons check
+```
+
+`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only methods advertised by the remote service contract, including explicitly protected service-auth methods. Generated `lex.config.js` files carry an ownership marker; existing user-owned Atcute configuration is never replaced. Pass `--no-atcute-config` to manage that file yourself. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
+
+## Public read-through service
+
+```ts
+export default createWorker(config, {
+  lexicons,
+  publicService: { endpoint: "https://api.example.com" },
+});
+```
+
+Discovery at `/.well-known/contrail` advertises a canonical contract digest and a content-addressed Lexicon bundle. Anonymous collection reads, profiles, feeds, and authored custom queries may acquire public AT Protocol data and improve the cache behind the response.
+
+Personalized feeds and `notifyOfUpdate` can instead require method-bound AT Protocol service tokens:
+
+```ts
+const config = {
+  notify: true,
+  serviceAuth: {
+    audience: "did:web:api.example.com",
+    methods: ["getFeed", "notifyOfUpdate"],
+  },
+  // ...
+};
+```
+
+The protected contract advertises the audience and each query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; the module pins the discovered contract digest and verifies it once at runtime before sending provider requests. Its exported `contrail.scope` is the provider's verified OAuth permission, such as `rpc?lxm=*&aud=did:web:api.example.com`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the audience matches the public endpoint's `did:web`, the Worker publishes its service document at `/.well-known/did.json`.
+
+Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Existing non-public deployments without one retain the legacy ingestion-time cursor response:
+
+```ts
+const config = {
+  orderedSource: {
+    source: "jetstream",
+    epoch: "primary-2026", // change whenever cursor continuity changes
+  },
+  // ...
+};
+```
+
+The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
+
+Connect an independent consumer with `contrail connect <https-origin>`. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Switching providers or output roots requires removing the existing connection deliberately, so stale Lexicons cannot remain under a broad generator glob.
+
+See [Creating a public service](../../docs/public-services/creating.md), [Using a public service](../../docs/public-services/using.md), and [Example: api.atmo.rsvp](../../docs/public-services/api-atmo-rsvp.md) for complete provider and consumer walkthroughs.
+
 ## Runtime record validation
 
 Pass the record Lexicons for every configured collection and their transitive references to enable shared strict validation and CID verification:

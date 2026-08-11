@@ -17,7 +17,7 @@ import { getSearchableFields } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 9;
+export const CONTRAIL_SCHEMA_VERSION = 10;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS discovery (
 CREATE TABLE IF NOT EXISTS cursor (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   time_us ${dialect.bigintType} NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_position (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  source TEXT NOT NULL,
+  epoch TEXT NOT NULL,
+  cursor TEXT NOT NULL,
+  updated_at ${dialect.bigintType} NOT NULL
 );
 CREATE TABLE IF NOT EXISTS backfill_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),

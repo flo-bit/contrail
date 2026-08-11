@@ -1,0 +1,110 @@
+{
+  "lexicon": 1,
+  "id": "statusphere.app.profile.getRecord",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get a app.bsky.actor.profile record by AT URI",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT URI of the record"
+          },
+          "profiles": {
+            "type": "boolean",
+            "description": "Include indexed profile and identity information"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "uri",
+            "value",
+            "did",
+            "collection",
+            "rkey",
+            "time_us"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid"
+            },
+            "value": {
+              "type": "ref",
+              "ref": "app.bsky.actor.profile#main"
+            },
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "collection": {
+              "type": "string",
+              "format": "nsid"
+            },
+            "rkey": {
+              "type": "string"
+            },
+            "time_us": {
+              "type": "integer"
+            },
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#profileEntry"
+              }
+            }
+          }
+        }
+      }
+    },
+    "profileEntry": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        },
+        "value": {
+          "type": "ref",
+          "ref": "app.bsky.actor.profile#main"
+        },
+        "collection": {
+          "type": "string",
+          "format": "nsid"
+        },
+        "rkey": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

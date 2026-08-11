@@ -10,7 +10,7 @@ import {
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, saveCursorStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { initSchema, getLastCursor, saveCursor, saveCursorStatement, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
@@ -290,7 +290,10 @@ export async function ingestEvents(
           cid: commit.operation === "delete" ? null : commit.cid,
           value: commit.operation === "delete" ? undefined : commit.record,
           source: {
-            id: "jetstream",
+            id: config.orderedSource?.source ?? "jetstream",
+            ...(config.orderedSource
+              ? { epoch: config.orderedSource.epoch }
+              : {}),
             time_us: event.time_us,
             revision: commit.rev,
             cursor: String(event.time_us),
@@ -480,7 +483,18 @@ export async function runIngestCycle(
       // them safely; the final batch atomically commits the exact source cursor.
       trailingStatements:
         isFinalBatch && lastCursor !== null
-          ? [saveCursorStatement(db, lastCursor)]
+          ? [
+              saveCursorStatement(db, lastCursor),
+              ...(config.orderedSource
+                ? [
+                    saveOrderedSourcePositionStatement(
+                      db,
+                      config.orderedSource,
+                      lastCursor,
+                    ),
+                  ]
+                : []),
+            ]
           : undefined,
     });
     accepted.push(...result.accepted);
@@ -509,7 +523,7 @@ export async function runIngestCycle(
   // An identity-only or fully filtered stream has no canonical record batch, so
   // its cursor can advance independently after best-effort identity handling.
   if (lastCursor !== null && events.length === 0) {
-    await saveCursor(db, lastCursor);
+    await saveCursor(db, lastCursor, config.orderedSource);
   }
   if (lastCursor !== null) {
     log.log(
