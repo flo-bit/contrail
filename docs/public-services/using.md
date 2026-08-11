@@ -117,17 +117,17 @@ await client.post("com.atproto.repo.createRecord", {
 });
 ```
 
-Contrail returns the original PDS response. A notification failure is reported through `onNotificationError` but never turns a committed PDS write into a failed write. The login session remains application-owned.
+Contrail returns the original PDS response. A notification failure is reported through `onNotificationError` but never turns a committed PDS write into a failed write. Handle-form `deleteRecord` inputs are resolved through the PDS to construct the canonical DID record URI before notification. The login session remains application-owned.
 
 ## Update the connection
 
-Remote API changes are never accepted silently. Update deliberately:
+The generated client pins the lock's contract digest and verifies discovery before its first provider request. Transient discovery failures remain retryable; endpoint, service-DID, and contract mismatches fail closed. Update a changed contract deliberately at the same provider endpoint:
 
 ```bash
 pnpx @atmo-dev/contrail connect https://api.atmo.rsvp --update
 ```
 
-Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests.
+Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests. `--update` cannot repoint an existing lock or abandon its provider-owned Lexicon root; remove the existing connection deliberately before switching providers or output roots.
 
 ## Completeness
 

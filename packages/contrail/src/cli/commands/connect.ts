@@ -285,7 +285,7 @@ export async function ensureConsumerClientModule(options: {
   const notifyMethod = protectedMethods.find(
     (method) => method === `${options.lock.namespace}.notifyOfUpdate`,
   );
-  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedImport}\nexport const contrail = createPublicServiceClient({\n  endpoint: ${JSON.stringify(options.lock.endpoint)},${serviceDid ? `\n  serviceDid: ${JSON.stringify(serviceDid)},\n  scope: ${JSON.stringify(scope)},` : ""}\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.lock.collections, 2)},${notifyMethod ? `\n  notifyMethod: ${JSON.stringify(notifyMethod)},` : ""}\n});\n`;
+  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedImport}\nexport const contrail = createPublicServiceClient({\n  endpoint: ${JSON.stringify(options.lock.endpoint)},\n  contractDigest: ${JSON.stringify(options.lock.contractDigest)},${serviceDid ? `\n  serviceDid: ${JSON.stringify(serviceDid)},\n  scope: ${JSON.stringify(scope)},` : ""}\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.lock.collections, 2)},${notifyMethod ? `\n  notifyMethod: ${JSON.stringify(notifyMethod)},` : ""}\n});\n`;
   await mkdir(dirname(path), { recursive: true });
 
   if (await exists(path)) {

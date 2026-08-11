@@ -172,12 +172,17 @@ The service is intentionally a shared, possibly incomplete cache. Unavailable id
 
 This deployment publishes verified API and record Lexicons for discovery and TypeScript generation, but does not enable Contrail's optional runtime record/CID validation during ingestion.
 
-That distinction is deliberate:
+That distinction is deliberate. A matched benchmark using the current calendar Lexicons rejected 12,291 historical records, reducing indexed events from roughly 14,600 to 4,800 and RSVPs from roughly 6,300 to 3,800. Those records include historical shapes that predate the current published definitions, so enabling latest-schema validation would silently discard most of the useful archive.
+
+Under the compatibility policy:
 
 - provider and consumer contracts are still canonical and digest-verified;
-- generated Atcute types still describe response values;
-- startup still rejects an inconsistent advertised API; but
+- generated Atcute types describe the current expected response values, but are not a runtime guarantee for every historical record;
+- startup still rejects an inconsistent advertised API;
+- records and CIDs are fetched from authoritative sources rather than accepted from callers; but
 - ingestion does not reject records based on runtime Lexicon or canonical-CID checks.
+
+A future strict deployment needs version-aware historical schemas or an explicitly looser response value, rather than pretending the compatibility loss does not exist.
 
 ## Ordered source position
 

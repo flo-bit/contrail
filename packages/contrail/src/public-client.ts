@@ -4,7 +4,7 @@ import {
   simpleFetchHandler,
   type FetchHandler,
 } from "@atcute/client";
-import type { Did, Nsid } from "@atcute/lexicons/syntax";
+import { isDid, type Did, type Nsid } from "@atcute/lexicons/syntax";
 import {
   isPublicServiceManifest,
   normalizePublicServiceEndpoint,
@@ -18,6 +18,8 @@ interface CachedToken {
   value: string;
   expiresAt: number;
 }
+
+class PublicServiceContractError extends Error {}
 
 export interface PublicServiceClientOptions {
   /** Canonical public Contrail HTTPS origin. */
@@ -117,9 +119,10 @@ function withBearer(init: RequestInit, token: string): RequestInit {
   return { ...init, headers };
 }
 
-/** Fetch handler that keeps anonymous reads cheap while automatically minting,
- * caching, and attaching method-bound AT Protocol service tokens after a
- * protected route challenges the first request. */
+/** Fetch handler that verifies an optional pinned contract once, then keeps
+ * unpinned anonymous reads cheap while automatically minting, caching, and
+ * attaching method-bound AT Protocol service tokens after a protected route
+ * challenges the first request. */
 export function publicServiceFetchHandler(
   options: PublicServiceClientOptions,
 ): FetchHandler {
@@ -132,7 +135,7 @@ export function publicServiceFetchHandler(
 
   const discoverServiceAuth = () => {
     if (serviceAuthPromise) return serviceAuthPromise;
-    serviceAuthPromise = (async () => {
+    const pending = (async () => {
       const response = await fetcher(`${endpoint}/.well-known/contrail`, {
         signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
       });
@@ -140,20 +143,26 @@ export function publicServiceFetchHandler(
         throw new Error(`Contrail discovery failed: ${response.status}`);
       }
       if (response.url && new URL(response.url).origin !== endpoint) {
-        throw new Error("Contrail discovery redirected to a different origin");
+        throw new PublicServiceContractError(
+          "Contrail discovery redirected to a different origin",
+        );
       }
       const value: unknown = await response.json();
       if (!isPublicServiceManifest(value)) {
-        throw new Error("response is not a supported Contrail service manifest");
+        throw new PublicServiceContractError(
+          "response is not a supported Contrail service manifest",
+        );
       }
       if (normalizePublicServiceEndpoint(value.endpoint) !== endpoint) {
-        throw new Error("Contrail manifest endpoint mismatch");
+        throw new PublicServiceContractError(
+          "Contrail manifest endpoint mismatch",
+        );
       }
       if (
         options.contractDigest &&
         value.contract.digest !== options.contractDigest
       ) {
-        throw new Error(
+        throw new PublicServiceContractError(
           `Contrail contract digest mismatch: expected ${options.contractDigest}, received ${value.contract.digest}`,
         );
       }
@@ -162,13 +171,23 @@ export function publicServiceFetchHandler(
         options.serviceDid &&
         serviceAuth?.audience !== options.serviceDid
       ) {
-        throw new Error(
+        throw new PublicServiceContractError(
           `Contrail service DID mismatch: expected ${options.serviceDid}, received ${serviceAuth?.audience ?? "none"}`,
         );
       }
       return serviceAuth;
     })();
-    return serviceAuthPromise;
+    const cached = pending.catch((error: unknown) => {
+      if (
+        !(error instanceof PublicServiceContractError) &&
+        serviceAuthPromise === cached
+      ) {
+        serviceAuthPromise = null;
+      }
+      throw error;
+    });
+    serviceAuthPromise = cached;
+    return cached;
   };
 
   const protectedMethod = async (method: string) => {
@@ -226,10 +245,14 @@ export function publicServiceFetchHandler(
 
   return async (pathname, init) => {
     const method = xrpcMethod(pathname);
-    if (!method || !options.authenticatedClient) return base(pathname, init);
+    if (!method) return base(pathname, init);
+    // A generated lock pin is a runtime contract: verify it once even when the
+    // first operation is anonymous. Unpinned clients remain challenge-driven.
+    if (options.contractDigest) await discoverServiceAuth();
+    if (!options.authenticatedClient) return base(pathname, init);
 
     // Once discovery has been loaded, avoid the initial challenge on subsequent
-    // protected calls. Anonymous calls never wait for discovery.
+    // protected calls.
     if (serviceAuthPromise) {
       const auth = await protectedMethod(method);
       if (auth) {
@@ -286,12 +309,13 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function writtenRecordUri(
+async function writtenRecordUri(
   method: string,
   request: UntypedRequestOptions | undefined,
   response: UntypedClientResponse,
   collections: ReadonlySet<string>,
-): string | null {
+  resolveHandle: (handle: string) => Promise<Did>,
+): Promise<string | null> {
   if (!response.ok || !NOTIFIED_WRITE_METHODS.has(method)) return null;
   const input = objectValue(request?.input);
   const collection = input?.collection;
@@ -309,11 +333,9 @@ function writtenRecordUri(
 
   const repo = input?.repo;
   const rkey = input?.rkey;
-  return typeof repo === "string" &&
-    repo.startsWith("did:") &&
-    typeof rkey === "string"
-    ? `at://${repo}/${collection}/${rkey}`
-    : null;
+  if (typeof repo !== "string" || typeof rkey !== "string") return null;
+  const did = isDid(repo) ? repo : await resolveHandle(repo);
+  return `at://${did}/${collection}/${rkey}`;
 }
 
 function schemaNsid(schema: unknown): string | null {
@@ -406,6 +428,17 @@ function createClient(
       }
     };
 
+    const resolveHandle = async (handle: string): Promise<Did> => {
+      const response = await pdsGet("com.atproto.identity.resolveHandle", {
+        params: { handle },
+      });
+      const did = objectValue(response.data)?.did;
+      if (!response.ok || typeof did !== "string" || !isDid(did)) {
+        throw new Error(`Could not resolve deleted record repo ${handle}`);
+      }
+      return did;
+    };
+
     const notifyWrite = async (method: string, uri: string) => {
       if (!options.notifyMethod) return;
       try {
@@ -439,13 +472,20 @@ function createClient(
         value: (async (name: string, request?: UntypedRequestOptions) => {
           if (serviceMethods.has(name)) return servicePost(name, request);
           const response = await pdsPost(name, request);
-          const uri = writtenRecordUri(
-            name,
-            request,
-            response,
-            trackedCollections,
-          );
-          if (uri) await notifyWrite(name, uri);
+          if (options.notifyMethod) {
+            try {
+              const uri = await writtenRecordUri(
+                name,
+                request,
+                response,
+                trackedCollections,
+                resolveHandle,
+              );
+              if (uri) await notifyWrite(name, uri);
+            } catch (error) {
+              reportNotificationError(error, name, []);
+            }
+          }
           return response;
         }) as Client["post"],
       },

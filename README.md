@@ -111,6 +111,8 @@ Consumers connect and generate Atcute types with one command:
 pnpx @atmo-dev/contrail connect https://api.example.com
 ```
 
+The generated client pins and verifies the discovered contract digest before its first provider request; transient discovery failures can retry, while endpoint, service-DID, and contract mismatches fail closed.
+
 Public-service mode requires `orderedSource`; `getCursor` then returns the committed opaque `{ source, epoch, cursor }` position of that primary source. Compare complete positions for equality only; a source or epoch change requires a full client refetch. To avoid racing ingestion, read a position before and after a query and accept the query snapshot only when both positions match. Existing non-public deployments without `orderedSource` retain the legacy `time_us`, `date`, and `seconds_ago` response.
 
 ## Other databases

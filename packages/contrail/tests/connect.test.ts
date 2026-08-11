@@ -186,6 +186,9 @@ describe("contrail connect", () => {
     );
     expect(source).toContain(`endpoint: ${JSON.stringify(endpoint)}`);
     expect(source).toContain(
+      `contractDigest: ${JSON.stringify(lock.contractDigest)}`,
+    );
+    expect(source).toContain(
       'serviceDid: "did:web:api.atmo.rsvp"',
     );
     expect(source).toContain(
@@ -296,7 +299,7 @@ describe("contrail connect", () => {
       connectPublicService({
         endpoint,
         root,
-        out: "lexicons/pulled",
+        out: "src/contrail/lexicons",
         lock: "contrail.lock.json",
         fetcher,
         update: true,
@@ -309,7 +312,7 @@ describe("contrail connect", () => {
       connectPublicService({
         endpoint,
         root,
-        out: "different-lexicons",
+        out: "src/different-lexicons",
         lock: "contrail.lock.json",
         fetcher,
         update: true,

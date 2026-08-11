@@ -75,6 +75,57 @@ describe("public service client", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("verifies a pinned contract once before anonymous requests", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/.well-known/contrail")
+        ? Response.json(manifest())
+        : Response.json({ records: [] }),
+    );
+    const handler = publicServiceFetchHandler({
+      endpoint,
+      contractDigest: digest,
+      fetch: fetcher,
+    });
+
+    expect(
+      (await handler("/xrpc/com.example.getCursor", { method: "get" })).status,
+    ).toBe(200);
+    expect(
+      (await handler("/xrpc/com.example.getCursor", { method: "get" })).status,
+    ).toBe(200);
+    expect(
+      fetcher.mock.calls.filter(([input]) =>
+        String(input).endsWith("/.well-known/contrail"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("retries transient discovery failures", async () => {
+    let discoveries = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/.well-known/contrail")) {
+        discoveries++;
+        return discoveries === 1
+          ? new Response(null, { status: 503 })
+          : Response.json(manifest());
+      }
+      return Response.json({ records: [] });
+    });
+    const handler = publicServiceFetchHandler({
+      endpoint,
+      contractDigest: digest,
+      fetch: fetcher,
+    });
+
+    await expect(
+      handler("/xrpc/com.example.getCursor", { method: "get" }),
+    ).rejects.toThrow("discovery failed: 503");
+    expect(
+      (await handler("/xrpc/com.example.getCursor", { method: "get" })).status,
+    ).toBe(200);
+    expect(discoveries).toBe(2);
+  });
+
   it("discovers, mints, caches, and attaches method-bound tokens", async () => {
     const jwt = token();
     const pds = authenticatedClient(jwt);
@@ -122,7 +173,7 @@ describe("public service client", () => {
       requests.filter((request) =>
         request.url.includes(`/xrpc/${method}`),
       ).map((request) => request.authorization),
-    ).toEqual([null, `Bearer ${jwt}`, `Bearer ${jwt}`]);
+    ).toEqual([`Bearer ${jwt}`, `Bearer ${jwt}`]);
   });
 
   it("routes PDS writes and service methods through one authenticated client", async () => {
@@ -141,6 +192,9 @@ describe("public service client", () => {
       const url = new URL(pathname, "https://pds.example.com");
       if (url.pathname === "/xrpc/com.atproto.server.getServiceAuth") {
         return Response.json({ token: jwt });
+      }
+      if (url.pathname === "/xrpc/com.atproto.identity.resolveHandle") {
+        return Response.json({ did: "did:plc:test" });
       }
       if (url.pathname === "/xrpc/com.atproto.repo.getRecord") {
         return Response.json({
@@ -256,6 +310,30 @@ describe("public service client", () => {
       ).length,
     ).toBe(notificationsBeforeDelete + 1);
 
+    const notificationsBeforeHandleDelete = serviceRequests.filter(({ url }) =>
+      url.endsWith(`/xrpc/${notifyMethod}`),
+    ).length;
+    const deletedByHandle = await client.post("com.atproto.repo.deleteRecord", {
+      input: {
+        repo: "alice.example.com",
+        collection,
+        rkey: "3test",
+      },
+    });
+    expect(deletedByHandle.ok).toBe(true);
+    expect(
+      serviceRequests.filter(({ url }) =>
+        url.endsWith(`/xrpc/${notifyMethod}`),
+      ).length,
+    ).toBe(notificationsBeforeHandleDelete + 1);
+    expect(
+      serviceRequests.some(
+        ({ url, body }) =>
+          url.endsWith(`/xrpc/${notifyMethod}`) &&
+          body?.includes(`at://did:plc:test/${collection}/3test`),
+      ),
+    ).toBe(true);
+
     pdsWriteShouldFail = true;
     const notificationsBeforeFailedWrite = serviceRequests.filter(({ url }) =>
       url.endsWith(`/xrpc/${notifyMethod}`),
@@ -342,6 +420,10 @@ describe("public service client", () => {
     await expect(
       handler(`/xrpc/${method}`, { method: "get" }),
     ).rejects.toThrow("contract digest mismatch");
+    await expect(
+      handler(`/xrpc/${method}`, { method: "get" }),
+    ).rejects.toThrow("contract digest mismatch");
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(pds.handler).not.toHaveBeenCalled();
   });
 });

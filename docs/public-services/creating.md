@@ -150,6 +150,8 @@ The provider verifies:
 
 For protected feeds, the requested actor must resolve to the token issuer. For `notifyOfUpdate`, every submitted AT URI must belong to the token issuer. Notify still fetches the current authoritative record from that issuer's PDS; callers never submit a record body for Contrail to trust.
 
+The default PLC/`did:web` resolver keeps a bounded five-minute in-process cache and deduplicates concurrent lookups. Signature failure forces an uncached refresh so key rotation does not remain hidden behind a stale entry. Deployments can still provide their own resolver policy.
+
 The authenticated methods are listed separately from anonymous methods in discovery. Their query or procedure Lexicons remain in the provider bundle, so consumers still get generated types.
 
 ### OAuth permission versus token binding

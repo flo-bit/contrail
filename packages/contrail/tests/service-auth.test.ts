@@ -4,6 +4,7 @@ import { createServiceJwt } from "@atcute/xrpc-server/auth";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { createApp } from "../src/core/router";
+import { createCachedDidDocumentResolver } from "../src/core/service-auth";
 import {
   initSchema,
   resolveConfig,
@@ -144,6 +145,29 @@ describe("AT Protocol service auth", () => {
       ),
     );
     expect(forbidden.status).toBe(403);
+  });
+
+  it("caches DID documents and honors signing-key refreshes", async () => {
+    let calls = 0;
+    const resolver = createCachedDidDocumentResolver({
+      async resolve(did) {
+        calls++;
+        return {
+          "@context": [],
+          id: did,
+          verificationMethod: [],
+        };
+      },
+    });
+
+    await resolver.resolve(issuer);
+    await resolver.resolve(issuer);
+    expect(calls).toBe(1);
+
+    await resolver.resolve(issuer, { noCache: true });
+    expect(calls).toBe(2);
+    await resolver.resolve(issuer);
+    expect(calls).toBe(2);
   });
 
   it("only lets an issuer notify its own record URIs", async () => {
