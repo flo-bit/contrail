@@ -670,6 +670,60 @@ export function extractXrpcMethods(
     .sort();
 }
 
+function cursorLexicon(config: ContrailConfig): object {
+  const legacyProperties = {
+    time_us: { type: "integer" },
+    date: { type: "string" },
+    seconds_ago: { type: "integer" },
+  };
+  if (!config.orderedSource) {
+    return {
+      lexicon: 1,
+      id: `${config.namespace}.getCursor`,
+      defs: {
+        main: {
+          type: "query",
+          description: "Get the current ingestion observation time",
+          output: {
+            encoding: "application/json",
+            schema: { type: "object", properties: legacyProperties },
+          },
+        },
+      },
+    };
+  }
+  return {
+    lexicon: 1,
+    id: `${config.namespace}.getCursor`,
+    defs: {
+      main: {
+        type: "query",
+        description: "Get the committed primary ordered-source position",
+        output: {
+          encoding: "application/json",
+          schema: {
+            type: "object",
+            properties: {
+              position: { type: "ref", ref: "#sourcePosition" },
+              updatedAt: { type: "integer" },
+              updatedAtDate: { type: "string", format: "datetime" },
+            },
+          },
+        },
+      },
+      sourcePosition: {
+        type: "object",
+        required: ["source", "epoch", "cursor"],
+        properties: {
+          source: { type: "string" },
+          epoch: { type: "string" },
+          cursor: { type: "string" },
+        },
+      },
+    },
+  };
+}
+
 export function generateLexicons(
   options: GenerateLexiconsOptions,
 ): GenerateLexiconsResult {
@@ -718,36 +772,7 @@ export function generateLexicons(
     log(`  ${nsid}`);
   };
 
-  emit(`${config.namespace}.getCursor`, {
-    lexicon: 1,
-    id: `${config.namespace}.getCursor`,
-    defs: {
-      main: {
-        type: "query",
-        description: "Get the committed primary ordered-source position",
-        output: {
-          encoding: "application/json",
-          schema: {
-            type: "object",
-            properties: {
-              position: { type: "ref", ref: "#sourcePosition" },
-              updatedAt: { type: "integer" },
-              updatedAtDate: { type: "string", format: "datetime" },
-            },
-          },
-        },
-      },
-      sourcePosition: {
-        type: "object",
-        required: ["source", "epoch", "cursor"],
-        properties: {
-          source: { type: "string" },
-          epoch: { type: "string" },
-          cursor: { type: "string" },
-        },
-      },
-    },
-  });
+  emit(`${config.namespace}.getCursor`, cursorLexicon(config));
   if ((config.profiles?.length ?? 0) > 0) {
     emit(`${config.namespace}.getProfile`, {
       lexicon: 1,

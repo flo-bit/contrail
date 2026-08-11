@@ -565,17 +565,18 @@ export async function assertServingSourceCompatibility(
   orderedSource?: OrderedSourceConfig,
 ): Promise<void> {
   if (!orderedSource) return;
-  const existing = await getServingSourcePosition(db);
+  let existing = await getServingSourcePosition(db);
   if (!existing) {
-    const legacyCursor = await getLastCursor(db);
-    if (legacyCursor !== null) {
-      await saveOrderedSourcePositionStatement(
-        db,
-        orderedSource,
-        legacyCursor,
-      ).run();
-    }
-    return;
+    await db
+      .prepare(
+        `INSERT INTO source_position (id, source, epoch, cursor, updated_at)
+         SELECT 1, ?, ?, CAST(time_us AS TEXT), ? FROM cursor WHERE id = 1
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .bind(orderedSource.source, orderedSource.epoch, Date.now())
+      .run();
+    existing = await getServingSourcePosition(db);
+    if (!existing) return;
   }
   if (
     existing.position.source !== orderedSource.source ||

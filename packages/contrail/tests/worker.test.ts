@@ -232,6 +232,27 @@ describe("createWorker", () => {
     ).toBe(404);
   });
 
+  it("preserves the legacy cursor response without an ordered source", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      orderedSource: undefined,
+    };
+    const db = createSqliteDatabase(":memory:");
+    const worker = createWorker(config);
+    const env = { DB: db };
+    await worker.fetch(new Request("https://api.example.com/health"), env);
+    await saveCursor(db, 1_234_000);
+
+    const response = await worker.fetch(
+      new Request("https://api.example.com/xrpc/com.example.getCursor"),
+      env,
+    );
+    expect(await response.json()).toMatchObject({
+      time_us: 1_234_000,
+      date: new Date(1234).toISOString(),
+    });
+  });
+
   it("keeps profiles, feeds, custom queries, and configured notify routes", async () => {
     const config: ContrailConfig = {
       ...MINIMAL_CONFIG,
@@ -307,7 +328,17 @@ describe("createWorker", () => {
     expect(notify.status).toBe(401);
   });
 
-  it("refuses public mode without an HTTPS origin and Lexicons", () => {
+  it("refuses public mode without an ordered source, HTTPS origin, and Lexicons", () => {
+    expect(() =>
+      createWorker(
+        { ...MINIMAL_CONFIG, orderedSource: undefined },
+        {
+          lexicons: MINIMAL_PUBLIC_LEXICONS,
+          publicService: { endpoint: "https://api.example.com" },
+        },
+      ),
+    ).toThrow("requires orderedSource");
+
     expect(() =>
       createWorker(MINIMAL_CONFIG, {
         publicService: { endpoint: "https://api.example.com" },

@@ -4,43 +4,22 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get the committed primary ordered-source position",
+      "description": "Get the current ingestion observation time",
       "output": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
           "properties": {
-            "position": {
-              "type": "ref",
-              "ref": "#sourcePosition"
-            },
-            "updatedAt": {
+            "time_us": {
               "type": "integer"
             },
-            "updatedAtDate": {
-              "type": "string",
-              "format": "datetime"
+            "date": {
+              "type": "string"
+            },
+            "seconds_ago": {
+              "type": "integer"
             }
           }
-        }
-      }
-    },
-    "sourcePosition": {
-      "type": "object",
-      "required": [
-        "source",
-        "epoch",
-        "cursor"
-      ],
-      "properties": {
-        "source": {
-          "type": "string"
-        },
-        "epoch": {
-          "type": "string"
-        },
-        "cursor": {
-          "type": "string"
         }
       }
     }

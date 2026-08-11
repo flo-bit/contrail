@@ -198,10 +198,19 @@ export function validateContractLexicons(
   return lexicons;
 }
 
+function assertPublicServiceSource(config: ContrailConfig): void {
+  if (!config.orderedSource) {
+    throw new Error(
+      "public service mode requires orderedSource so getCursor has a durable continuity identity",
+    );
+  }
+}
+
 export function validatePublicServiceLexicons(
   config: ContrailConfig,
   values: readonly object[],
 ): LexiconDocument[] {
+  assertPublicServiceSource(config);
   const placeholderDigest = `sha256:${"0".repeat(64)}`;
   return validateContractLexicons(
     createPublicContract(config, placeholderDigest),
@@ -230,6 +239,7 @@ export async function describePublicService(
   options: PublicServiceOptions,
   values: readonly object[],
 ): Promise<PublicServiceDescription> {
+  assertPublicServiceSource(config);
   const endpoint = normalizePublicServiceEndpoint(options.endpoint);
   const {
     lexicons,

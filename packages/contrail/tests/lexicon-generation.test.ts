@@ -70,6 +70,7 @@ function fixture() {
   const config: ContrailConfig = {
     namespace: "example.public",
     profiles: [],
+    orderedSource: { source: "jetstream", epoch: "test-primary" },
     collections: {
       event: {
         collection: "community.example.event",
@@ -180,6 +181,24 @@ describe("Contrail Lexicon generation", () => {
       ref: "community.example.profile#main",
     });
     expect(profile.defs.communityExampleProfile).toBeUndefined();
+  });
+
+  it("keeps the legacy cursor contract without an ordered source", () => {
+    const { root, config } = fixture();
+    delete config.orderedSource;
+    const result = generateLexicons({
+      config,
+      rootDir: root,
+      surface: "public",
+      quiet: true,
+    });
+    const cursor = result.generated["example.public.getCursor"] as any;
+    expect(cursor.defs.sourcePosition).toBeUndefined();
+    expect(cursor.defs.main.output.schema.properties).toEqual({
+      time_us: { type: "integer" },
+      date: { type: "string" },
+      seconds_ago: { type: "integer" },
+    });
   });
 
   it("respects disabled standard methods", () => {

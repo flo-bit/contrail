@@ -70,6 +70,16 @@ export function registerCursorRoute(
   const ns = config.namespace;
 
   app.get(`/xrpc/${ns}.getCursor`, async (c) => {
+    if (!config.orderedSource) {
+      const legacy = await getCursorStatus(db);
+      if (legacy.cursor === null) return c.json({});
+      return c.json({
+        time_us: legacy.cursor,
+        date: legacy.date,
+        seconds_ago: legacy.seconds_ago,
+      });
+    }
+
     const current = await getServingSourcePosition(db);
     if (!current) return c.json({});
     return c.json({

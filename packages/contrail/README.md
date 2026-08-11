@@ -102,7 +102,7 @@ export default createWorker(config, {
 
 Discovery at `/.well-known/contrail` advertises a canonical contract digest and a content-addressed Lexicon bundle. Collection reads, profiles, feeds, and authored custom queries remain anonymous read-through operations: they may acquire public AT Protocol data and improve the cache behind the response. `notifyOfUpdate` remains separately controlled by `config.notify` and is not part of the anonymous contract.
 
-Configure the primary ordered source so `getCursor` can expose its committed position:
+Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Existing non-public deployments without one retain the legacy ingestion-time cursor response:
 
 ```ts
 const config = {

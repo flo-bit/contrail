@@ -15,6 +15,7 @@ import {
   describePublicService,
   normalizeLexiconDocuments,
   normalizePublicServiceEndpoint,
+  validatePublicServiceLexicons,
   type PublicServiceOptions,
 } from "../../public-service";
 
@@ -59,6 +60,7 @@ export function createApp(
     : (options.lexicons ?? []);
   if (options.publicService) {
     normalizePublicServiceEndpoint(options.publicService.endpoint);
+    validatePublicServiceLexicons(config, lexicons);
     const description = describePublicService(
       config,
       options.publicService,
