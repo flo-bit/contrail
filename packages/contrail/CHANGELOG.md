@@ -1,5 +1,13 @@
 # @atmo-dev/contrail
 
+## 0.16.0
+
+### Minor Changes
+
+- 9baa877: Add discoverable AT Protocol service authentication, unified authenticated clients for PDS and provider methods, and automatic authoritative update notifications after tracked record writes.
+- 6d6c750: Restore deterministic query-Lexicon generation from Contrail config, add drift checking, and orchestrate source pulling and TypeScript generation through Atcute.
+- aad30e2: Add self-describing anonymous read-through services with verified contracts, durable ordered-source positions, cacheable Lexicon discovery, and a safe `contrail connect` workflow for typed independent clients.
+
 ## 0.15.0
 
 ### Minor Changes
