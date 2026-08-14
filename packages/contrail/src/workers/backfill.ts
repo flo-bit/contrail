@@ -10,12 +10,27 @@
  * the user's D1 binding, then dispose the proxy on exit.
  */
 import { Contrail } from "../contrail.js";
-import type { ContrailConfig, Database } from "../core/types.js";
+import {
+  getDiscoverableNsids,
+  recordsTableName,
+  type ContrailConfig,
+  type Database,
+} from "../core/types.js";
 import type { BackfillAllOptions } from "../core/backfill.js";
 import type { BackfillStatus } from "../core/status.js";
+import { DatabaseBootstrapTarget } from "../core/bootstrap.js";
+import { bootstrapFreshProjection, type SourcePosition } from "../core/sources.js";
+import { getLastCursor } from "../core/db/records.js";
+import {
+  createAlluviumBootstrapSources,
+  createAlluviumLiveCursor,
+  type AlluviumTransportOptions,
+} from "../adapters/alluvium.js";
 
 interface WranglerCommon {
   config: ContrailConfig;
+  /** Exact generated/pinned bundle for collections with `validate: true`. */
+  lexicons?: object[];
   /** Use production D1 bindings. Equivalent to
    *  `getPlatformProxy({ environment: "production" })`. */
   remote?: boolean;
@@ -59,7 +74,10 @@ async function withWrangler<T>(
   }
 
   try {
-    const contrail = new Contrail(opts.config);
+    const contrail = new Contrail({
+      ...opts.config,
+      lexicons: opts.lexicons,
+    });
     await contrail.init(db);
     return await fn(contrail, db);
   } finally {
@@ -88,11 +106,168 @@ export async function backfillAll(
   );
 }
 
-export interface LabelsBackfillAllViaWranglerOptions extends WranglerCommon {
+export interface AlluviumBootstrapOptions {
+  /** Alluvium HTTP origin. */
+  endpoint: string | URL;
+  /** Logical source ID advertised by the selected manifests. */
+  sourceId: string;
+  /** Operator-owned continuity epoch. Alluvium protocol v1 does not publish it. */
+  sourceEpoch: string;
+  /** Explicitly accept manifests that report historical omissions. */
+  allowPartial?: boolean;
+  /** Direct-source retention asserted by the operator. Default: 72 hours. */
+  retentionUs?: number;
+  /** Busy collections used only to obtain the preliminary source mark. */
+  watermarkCollections?: string[];
+  transport?: AlluviumTransportOptions;
+}
+
+export interface AlluviumBootstrapViaWranglerOptions
+  extends WranglerCommon, AlluviumBootstrapOptions {}
+
+export interface AlluviumBootstrapDatabaseOptions extends AlluviumBootstrapOptions {
+  config: ContrailConfig;
+  db: Database;
+  /** Exact generated/pinned bundle for collections with `validate: true`. */
+  lexicons?: object[];
+}
+
+export interface AlluviumBootstrapResult {
+  elapsedMs: number;
+  archiveBoundary: SourcePosition;
+  liveCursor: number;
+  resumed: boolean;
+}
+
+/** @deprecated Use {@link AlluviumBootstrapResult}. */
+export type AlluviumBootstrapViaWranglerResult = AlluviumBootstrapResult;
+
+async function assertFreshBootstrapDatabase(
+  db: Database,
+  config: ContrailConfig,
+): Promise<void> {
+  const cursor = await getLastCursor(db);
+  const versionRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM record_versions")
+    .first<{ count: number | string }>();
+  let visibleRecords = 0;
+  for (const shortName of Object.keys(config.collections)) {
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS count FROM ${recordsTableName(shortName)}`)
+      .first<{ count: number | string }>();
+    visibleRecords += Number(row?.count ?? 0);
+  }
+  const versions = Number(versionRow?.count ?? 0);
+  if (cursor !== null || versions > 0 || visibleRecords > 0) {
+    throw new Error(
+      "Alluvium bootstrap requires a fresh unpublished database. " +
+        "Create or select a new database instead of resetting an active generation.",
+    );
+  }
+}
+
+async function runAlluviumBootstrap(
+  contrail: Contrail,
+  db: Database,
+  opts: AlluviumBootstrapOptions,
+): Promise<AlluviumBootstrapResult> {
+  const jetstreams = contrail.config.jetstreams ?? [];
+  if (
+    contrail.config.orderedSource &&
+    (contrail.config.orderedSource.source !== opts.sourceId ||
+      contrail.config.orderedSource.epoch !== opts.sourceEpoch)
+  ) {
+    throw new Error(
+      "Alluvium source ID/epoch must match the configured orderedSource",
+    );
+  }
+  if (jetstreams.length !== 1) {
+    throw new Error(
+      "Alluvium bootstrap requires exactly one configured Jetstream endpoint " +
+        "so scheduled ingestion resumes against the manifest's exact source.",
+    );
+  }
+  const source = {
+    id: opts.sourceId,
+    epoch: opts.sourceEpoch,
+    url: jetstreams[0]!,
+  };
+  const target = new DatabaseBootstrapTarget(db, contrail.config, {
+    deferDerivedProjections: true,
+    liveCursor: createAlluviumLiveCursor(source),
+  });
+  const prior = await target.load();
+  if (!prior) await assertFreshBootstrapDatabase(db, contrail.config);
+
+  const sources = createAlluviumBootstrapSources(contrail.config, {
+    endpoint: opts.endpoint,
+    source,
+    jetstream: {
+      retentionUs: opts.retentionUs ?? 72 * 60 * 60 * 1_000_000,
+      watermarkCollections: opts.watermarkCollections ?? ["app.bsky.feed.post"],
+    },
+    transport: opts.transport,
+  });
+  const started = performance.now();
+  const result = await bootstrapFreshProjection({
+    // Profiles, follows, and other dependent collections remain separately
+    // accounted PDS enrichment rather than being misrepresented as Alluvium
+    // historical coverage.
+    collections: getDiscoverableNsids(contrail.config),
+    ...sources,
+    target,
+    allowPartial: opts.allowPartial,
+  });
+  const liveCursor = await getLastCursor(db);
+  const archiveCursor = Number(result.through.cursor);
+  if (liveCursor === null || !Number.isSafeInteger(archiveCursor) || liveCursor < archiveCursor) {
+    throw new Error("Alluvium bootstrap did not persist its live archive cursor");
+  }
+  return {
+    elapsedMs: Math.round(performance.now() - started),
+    archiveBoundary: result.through,
+    liveCursor,
+    resumed: prior !== null,
+  };
+}
+
+/** Load a fresh database from Alluvium base/archive data and seed the ordinary
+ * scheduled-ingestion cursor at the exact archive boundary. */
+export async function bootstrapAlluviumDatabase(
+  opts: AlluviumBootstrapDatabaseOptions,
+): Promise<AlluviumBootstrapResult> {
+  const contrail = new Contrail({
+    ...opts.config,
+    lexicons: opts.lexicons,
+  });
+  await contrail.init(opts.db);
+  return runAlluviumBootstrap(contrail, opts.db, opts);
+}
+
+/** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. */
+export async function bootstrapAlluvium(
+  opts: AlluviumBootstrapViaWranglerOptions,
+): Promise<AlluviumBootstrapResult> {
+  return withWrangler(opts, (contrail, db) =>
+    runAlluviumBootstrap(contrail, db, opts),
+  );
+}
+
+export interface LabelsBackfillOptions {
   /** Per-cycle subscribe timeout passed to `contrail.ingestLabels()`. Default: 60s. */
   cycleTimeoutMs?: number;
   /** Called after each cycle with whether any cursor advanced. */
   onCycle?: (info: { cycle: number; advanced: boolean }) => void;
+}
+
+export interface LabelsBackfillAllViaWranglerOptions
+  extends WranglerCommon, LabelsBackfillOptions {}
+
+export interface LabelsBackfillDatabaseOptions extends LabelsBackfillOptions {
+  config: ContrailConfig;
+  db: Database;
+  /** Exact generated/pinned bundle for collections with `validate: true`. */
+  lexicons?: object[];
 }
 
 export interface LabelsBackfillAllResult {
@@ -102,50 +277,66 @@ export interface LabelsBackfillAllResult {
   ran: boolean;
 }
 
-/**
- * Drain pending events from each configured labeler. Runs `ingestLabels`
- * in a loop, checking the `labeler_cursors` table after each cycle, and
- * stops once two consecutive cycles fail to advance any cursor.
- */
-export async function labelsBackfillAll(
-  opts: LabelsBackfillAllViaWranglerOptions
+/** Drain pending events from each configured labeler until two consecutive
+ * cycles stop advancing any cursor. */
+async function runLabelsBackfill(
+  contrail: Contrail,
+  db: Database,
+  opts: LabelsBackfillOptions,
 ): Promise<LabelsBackfillAllResult> {
-  return withWrangler(opts, async (contrail, db) => {
-    if (!opts.config.labels || opts.config.labels.sources.length === 0) {
-      return { cycles: 0, ran: false };
-    }
-    const timeoutMs = opts.cycleTimeoutMs ?? 60_000;
-    let cycles = 0;
-    let stable = 0;
-    while (stable < 2) {
-      const before = new Map<string, number>();
-      const beforeRows =
-        (
-          await db
-            .prepare("SELECT did, cursor FROM labeler_cursors")
-            .all<{ did: string; cursor: number }>()
-        ).results ?? [];
-      for (const r of beforeRows) before.set(r.did, r.cursor);
+  if (!contrail.config.labels || contrail.config.labels.sources.length === 0) {
+    return { cycles: 0, ran: false };
+  }
+  const timeoutMs = opts.cycleTimeoutMs ?? 60_000;
+  let cycles = 0;
+  let stable = 0;
+  while (stable < 2) {
+    const before = new Map<string, number>();
+    const beforeRows =
+      (
+        await db
+          .prepare("SELECT did, cursor FROM labeler_cursors")
+          .all<{ did: string; cursor: number }>()
+      ).results ?? [];
+    for (const r of beforeRows) before.set(r.did, r.cursor);
 
-      await contrail.ingestLabels({ timeoutMs }, db);
-      cycles++;
+    await contrail.ingestLabels({ timeoutMs }, db);
+    cycles++;
 
-      const afterRows =
-        (
-          await db
-            .prepare("SELECT did, cursor FROM labeler_cursors")
-            .all<{ did: string; cursor: number }>()
-        ).results ?? [];
-      let advanced = false;
-      for (const r of afterRows) {
-        if ((before.get(r.did) ?? -1) !== r.cursor) {
-          advanced = true;
-          break;
-        }
+    const afterRows =
+      (
+        await db
+          .prepare("SELECT did, cursor FROM labeler_cursors")
+          .all<{ did: string; cursor: number }>()
+      ).results ?? [];
+    let advanced = false;
+    for (const r of afterRows) {
+      if ((before.get(r.did) ?? -1) !== r.cursor) {
+        advanced = true;
+        break;
       }
-      stable = advanced ? 0 : stable + 1;
-      opts.onCycle?.({ cycle: cycles, advanced });
     }
-    return { cycles, ran: true };
+    stable = advanced ? 0 : stable + 1;
+    opts.onCycle?.({ cycle: cycles, advanced });
+  }
+  return { cycles, ran: true };
+}
+
+export async function labelsBackfillDatabase(
+  opts: LabelsBackfillDatabaseOptions,
+): Promise<LabelsBackfillAllResult> {
+  const contrail = new Contrail({
+    ...opts.config,
+    lexicons: opts.lexicons,
   });
+  await contrail.init(opts.db);
+  return runLabelsBackfill(contrail, opts.db, opts);
+}
+
+export async function labelsBackfillAll(
+  opts: LabelsBackfillAllViaWranglerOptions,
+): Promise<LabelsBackfillAllResult> {
+  return withWrangler(opts, (contrail, db) =>
+    runLabelsBackfill(contrail, db, opts),
+  );
 }

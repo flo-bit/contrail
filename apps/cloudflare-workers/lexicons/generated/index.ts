@@ -11,7 +11,5 @@ import _6 from "./com/example/event/getRecord.json";
 import _7 from "./com/example/event/listRecords.json";
 import _8 from "./com/example/getCursor.json";
 import _9 from "./com/example/getProfile.json";
-import _10 from "./com/example/profile/getRecord.json";
-import _11 from "./com/example/profile/listRecords.json";
 
-export const lexicons: object[] = [_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11];
+export const lexicons: object[] = [_0, _1, _2, _3, _4, _5, _6, _7, _8, _9];

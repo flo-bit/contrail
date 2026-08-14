@@ -6,6 +6,7 @@ import {
   bootstrapFreshProjection,
   getBootstrapFailure,
   getBootstrapVerification,
+  getLastCursor,
   getServingSourcePosition,
   initSchema,
   queryRecords,
@@ -202,6 +203,7 @@ describe("database bootstrap target", () => {
     };
     const target = new DatabaseBootstrapTarget(db, resolved, {
       deferDerivedProjections: true,
+      liveCursor: (position) => Number(position.cursor),
     });
 
     await bootstrapFreshProjection({
@@ -240,6 +242,7 @@ describe("database bootstrap target", () => {
     expect(await getServingSourcePosition(db)).toMatchObject({
       position: sourcePosition(3),
     });
+    expect(await getLastCursor(db)).toBe(3);
   });
 
   it("blocks completion and persists aggregate verification failures", async () => {

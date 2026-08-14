@@ -17,6 +17,8 @@ It provides:
 
 Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite or PostgreSQL is also supported.
 
+For local development, a directory containing only `contrail.config.ts` can run `contrail dev`. It resolves source Lexicons, creates a resumable SQLite database, backfills it, follows Jetstream in bounded cycles, exposes the public XRPC service on `http://127.0.0.1:8787`, and generates the local consumer types/client automatically. Wrangler projects continue to use their local D1 automatically.
+
 ## Install
 
 ```bash
@@ -122,7 +124,7 @@ import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 ```
 
-See [Indexing](docs/01-indexing.md) for adapter setup and [Querying](docs/02-querying.md) for the query and hydration model.
+The runnable [`apps/sqlite`](apps/sqlite) example wires the standard backfill CLI to a local SQLite file, including the optional Alluvium base/archive path. See [Indexing](docs/01-indexing.md) for adapter setup and [Querying](docs/02-querying.md) for the query and hydration model.
 
 ## Documentation
 

@@ -9,6 +9,8 @@ import {
 export interface PublicServiceOptions {
   /** Canonical public HTTPS origin, for example `https://api.example.com`. */
   endpoint: string;
+  /** Permit plain HTTP only on a loopback host for local development. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface PublicServiceCollection {
@@ -68,10 +70,25 @@ export interface PublicServiceDescription {
   canonicalLexicons: string;
 }
 
-export function normalizePublicServiceEndpoint(value: string): string {
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+export function normalizePublicServiceEndpoint(
+  value: string,
+  options: { allowInsecureHttp?: boolean } = {},
+): string {
   const url = new URL(value);
-  if (url.protocol !== "https:") {
-    throw new Error("public service endpoint must use HTTPS");
+  const insecureLoopback =
+    options.allowInsecureHttp === true &&
+    url.protocol === "http:" &&
+    isLoopbackHostname(url.hostname);
+  if (url.protocol !== "https:" && !insecureLoopback) {
+    throw new Error(
+      options.allowInsecureHttp
+        ? "public service endpoint must use HTTPS or loopback HTTP"
+        : "public service endpoint must use HTTPS",
+    );
   }
   if (url.username || url.password) {
     throw new Error("public service endpoint must not contain credentials");
@@ -286,7 +303,7 @@ export async function describePublicService(
   values: readonly object[],
 ): Promise<PublicServiceDescription> {
   assertPublicServiceSource(config);
-  const endpoint = normalizePublicServiceEndpoint(options.endpoint);
+  const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
   const {
     lexicons,
     canonicalLexicons,

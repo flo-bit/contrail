@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -63,6 +69,7 @@ describe("public service consumer integration", () => {
     const config: ContrailConfig = {
       namespace: "com.example",
       profiles: [],
+      notify: true,
       orderedSource: { source: "jetstream", epoch: "e2e" },
       collections: {
         event: {
@@ -122,8 +129,14 @@ describe("public service consumer integration", () => {
     const generatedClient = await ensureConsumerClientModule({
       root: consumerRoot,
       lock: connection.lock,
+      notifyMethod: "com.example.notifyOfUpdate",
     });
     expect(generatedClient.created).toBe(true);
+    expect(connection.lock.serviceAuth).toBeNull();
+    expect(connection.lock.methods).not.toContain("com.example.notifyOfUpdate");
+    expect(readFileSync(generatedClient.path, "utf8")).toContain(
+      'notifyMethod: "com.example.notifyOfUpdate"',
+    );
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });
     writeFileSync(

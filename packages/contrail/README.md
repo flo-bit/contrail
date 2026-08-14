@@ -72,11 +72,80 @@ After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritativ
 
 Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact yielded cursor in the same transaction. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
 
+## Local development
+
+A project containing only `contrail.config.ts` can start a complete local service:
+
+```bash
+contrail dev
+```
+
+Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, generates the public method Lexicons, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, runs bounded Jetstream ingestion every minute, and connects the current project to that service. Svelte projects receive the lock, downloaded Lexicons, generated Atcute types, and client under `src/lib/contrail/`; other projects use `src/contrail/`. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically. Useful SQLite options include:
+
+```bash
+contrail dev --fresh                          # reset local SQLite first
+contrail dev --temporary                      # delete SQLite when stopped
+contrail dev --sqlite ./tmp/dev.sqlite        # explicit durable path
+contrail dev --alluvium --allow-partial       # fast base/archive bootstrap
+contrail dev --no-backfill                    # serve existing state only
+contrail dev --no-connect                     # skip local client/type generation
+```
+
+When `notify` is omitted, SQLite dev mode enables an open loopback-only `notifyOfUpdate` route in memory and includes it in the generated client. It does not invent a localhost service DID: `contrail.scope` remains `null`, so the application's OAuth scopes need only its normal repository permissions. Explicit `notify: false` disables this convenience; explicit production `serviceAuth` remains unchanged. The generated client sets `allowInsecureHttp: true`; plain HTTP remains rejected for every non-loopback hostname.
+
 ## Fresh generations (experimental)
 
 `PdsSnapshotSource`, `JetstreamChangeSource`, `DatabaseBootstrapTarget`, and `bootstrapFreshProjection()` build an unpublished database with capture-first replay. The capture mark is durable before relay discovery starts; PDS partition cursors and Jetstream checkpoints commit with their records. Completion rebuilds deferred projections, verifies aggregate record/version consistency, and stores only bounded failure categories.
 
 Jetstream generation replay requires an operator-owned continuity epoch and retention guarantee. It uses real stream events as marks, never wall clock or a quiet socket. Optional busy watermark collections can prove progress without being projected.
+
+An optional experimental Alluvium adapter consumes existing version-1 collection manifests, verifies immutable compressed objects, and ends offline bootstrap exactly at the archived source boundary. The CLI supports either Wrangler/D1 or an explicit SQLite file:
+
+```bash
+contrail backfill --sqlite ./data/contrail.sqlite --alluvium \
+  --alluvium-epoch my-source-continuity-epoch \
+  --allow-partial
+```
+
+The epoch is deliberately required because Alluvium protocol v1 does not publish one. `--allow-partial` is needed only when selected manifests explicitly report historical omissions. The command rejects a populated database unless it is resuming durable Alluvium bootstrap state. The equivalent programmatic API is:
+
+```ts
+import { DatabaseBootstrapTarget } from "@atmo-dev/contrail";
+import {
+  createAlluviumBootstrapSources,
+  createAlluviumLiveCursor,
+} from "@atmo-dev/contrail/alluvium";
+
+const sourceIdentity = {
+  id: "jetstream-us-east",
+  // Alluvium v1 does not publish an epoch yet; the operator owns this value.
+  epoch: "jetstream-us-east-2026-08",
+  url: "wss://jetstream1.us-east.bsky.network",
+};
+const source = createAlluviumBootstrapSources(config, {
+  endpoint: "https://alluvium-v0.atmo.tools",
+  source: sourceIdentity,
+  jetstream: {
+    retentionUs: 72 * 60 * 60 * 1_000_000,
+    watermarkCollections: ["app.bsky.feed.post"],
+  },
+});
+const target = new DatabaseBootstrapTarget(db, config, {
+  deferDerivedProjections: true,
+  // Commit the archived time_us as the ordinary cron ingestion cursor.
+  liveCursor: createAlluviumLiveCursor(sourceIdentity),
+});
+
+await bootstrapFreshProjection({
+  collections: ["community.lexicon.calendar.event"],
+  ...source,
+  target,
+});
+```
+
+The offline call loads only the base plus published archive tail. It does not replay direct Jetstream to a newly marked head. The target atomically persists Alluvium's final archived `time_us` as the normal live cursor, so subsequent bounded cron invocations resume there and catch up over as many scheduled windows as necessary.
+
+This first adapter is generation-only and deliberately strict: selected manifests must expose one shared base and archive boundary, source ID/URL must match configuration, known capture gaps fail, and partial historical coverage requires `allowPartial: true`. It buffers each bounded compressed object so checksum and byte length are verified before any rows are projected. Because version-1 manifests lack global multi-collection delivery steps, it also restores source order with a bounded 100,000-mutation tail buffer; larger tails require the planned bundle protocol. It does not silently fall back to PDS acquisition; omitted-account repair and dependent profile/follow enrichment remain separately accounted PDS work.
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 
@@ -137,24 +206,37 @@ See [Creating a public service](../../docs/public-services/creating.md), [Using 
 
 ## Runtime record validation
 
-Pass the record Lexicons for every configured collection and their transitive references to enable shared strict validation and CID verification:
+Opt collections into validation where their indexing policy is declared:
 
 ```ts
-const contrail = new Contrail({
-  db,
+const config: ContrailConfig = {
   namespace: "com.example",
-  collections,
+  collections: {
+    event: {
+      collection: "community.example.event",
+      validate: true,
+    },
+    legacy: {
+      collection: "community.example.legacy",
+      // Omitted or false: compatibility mode, no runtime validation.
+    },
+  },
   validation: {
-    lexicons: [eventLexicon, profileLexicon, strongRefLexicon],
     strict: true,      // default: enforce blob size/MIME constraints too
     verifyCid: true,   // default: canonical DAG-CBOR CID verification
   },
-});
+};
 ```
 
-Validation is opt-in for compatibility, but once configured it applies identically to Jetstream, PDS backfill, notify, on-demand profiles, Constellation enrichment, and direct `ingestRecords()` calls. Configuration fails early when a collection or referenced Lexicon is missing. Authoritative sources must provide matching CIDs; local and Constellation synthetic records may be CID-less by default. Override `allowCidlessSources` only for explicitly trusted synthetic adapters.
+`createWorker(config, { lexicons })` binds each opted-in collection to the exact generated/pinned bundle already shipped with the deployment. `contrail dev` resolves and binds its exact temporary bundle, while CLI backfill loads the standard checked-in generated bundle. There is no second validation-specific Lexicon array.
 
-`createWorker(config, { lexicons })` continues to expose method Lexicons over HTTP; it does not silently enable record validation. Put record schemas in `config.validation.lexicons` deliberately.
+Direct runtimes use the same explicit separation between policy and material:
+
+```ts
+const contrail = new Contrail({ ...config, db, lexicons });
+```
+
+Validation applies identically to Jetstream, PDS backfill, notify, on-demand enrichment, Alluvium, and direct `ingestRecords()` calls. Startup fails when an opted-in collection or transitive reference is absent from the bound bundle. Authoritative sources must provide matching CIDs; local and Constellation synthetic records may be CID-less by default. Override `allowCidlessSources` only for explicitly trusted synthetic adapters.
 
 Private aggregate-only rejection counters are available without exposing DIDs, URIs, errors, or record bodies. Concurrent bulk backfill accumulates these bounded counters in memory and flushes once per run, so diagnostics cannot turn into a hot D1 row on every source page:
 

@@ -181,6 +181,8 @@ describe("Contrail Lexicon generation", () => {
       ref: "community.example.profile#main",
     });
     expect(profile.defs.communityExampleProfile).toBeUndefined();
+    expect(result.generated["example.public.profile.getRecord"]).toBeUndefined();
+    expect(result.generated["example.public.profile.listRecords"]).toBeUndefined();
   });
 
   it("keeps the legacy cursor contract without an ordered source", () => {
@@ -238,14 +240,17 @@ describe("Contrail Lexicon generation", () => {
     });
   });
 
-  it("writes a deterministic bundle and current Atcute configuration", () => {
+  it("writes and returns a deterministic complete service bundle", () => {
     const { root, config } = fixture();
-    generateLexicons({
+    const result = generateLexicons({
       config,
       rootDir: root,
       surface: "public",
       quiet: true,
     });
+    expect(
+      result.lexicons.map((document) => (document as { id: string }).id),
+    ).toContain("community.example.event");
     const bundle = readFileSync(
       join(root, "lexicons", "generated", "index.ts"),
       "utf8",

@@ -43,6 +43,8 @@ export interface PublicServiceClientOptions {
   notifyMethod?: Nsid;
   /** Browser, test, or instrumented fetch implementation. */
   fetch?: typeof globalThis.fetch;
+  /** Permit plain HTTP only on a loopback host for local development. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface PublicServiceNotificationErrorContext {
@@ -126,7 +128,7 @@ function withBearer(init: RequestInit, token: string): RequestInit {
 export function publicServiceFetchHandler(
   options: PublicServiceClientOptions,
 ): FetchHandler {
-  const endpoint = normalizePublicServiceEndpoint(options.endpoint);
+  const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
   const fetcher = options.fetch ?? fetch;
   const base = simpleFetchHandler({ service: endpoint, fetch: fetcher });
   const tokens = new Map<string, CachedToken>();
@@ -153,7 +155,7 @@ export function publicServiceFetchHandler(
           "response is not a supported Contrail service manifest",
         );
       }
-      if (normalizePublicServiceEndpoint(value.endpoint) !== endpoint) {
+      if (normalizePublicServiceEndpoint(value.endpoint, options) !== endpoint) {
         throw new PublicServiceContractError(
           "Contrail manifest endpoint mismatch",
         );
@@ -348,7 +350,7 @@ function createClient(
   options: PublicServiceClientOptions,
   authenticatedOptions: PublicServiceAuthenticatedOptions = {},
 ): PublicServiceClient {
-  const endpoint = normalizePublicServiceEndpoint(options.endpoint);
+  const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
   const authenticatedClients = new WeakMap<Client, PublicServiceClient>();
   const client = new Client({
     handler: publicServiceFetchHandler({ ...options, endpoint }),

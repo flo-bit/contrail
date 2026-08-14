@@ -50,6 +50,10 @@ pnpx @atmo-dev/contrail connect https://api.atmo.rsvp \
 
 Commit `contrail.lock.json` and the generated files.
 
+For a local service, run `contrail dev` in the consumer project. It automatically follows the same discovery, digest verification, Lexicon download, Atcute type generation, contract lock, and generated-client path against `http://127.0.0.1:8787`. Svelte projects use `src/lib/contrail/`; pass `--no-connect` to disable generation. The generated client includes `allowInsecureHttp: true`, an exception accepted only for `localhost`, `127.0.0.1`, or `[::1]`.
+
+When local dev supplies the otherwise omitted notify configuration, notification is an open loopback operation rather than fictitious AT Protocol service auth. The generated client's `scope` is therefore `null`; keep only normal repository permissions in local OAuth configuration. A deployed service still requires HTTPS and a real service DID for protected operations.
+
 ## Query anonymous methods
 
 ```ts

@@ -5,9 +5,7 @@ import _0 from "../pulled/app/bsky/actor/profile.json";
 import _1 from "../pulled/xyz/statusphere/status.json";
 import _2 from "./statusphere/app/getCursor.json";
 import _3 from "./statusphere/app/getProfile.json";
-import _4 from "./statusphere/app/profile/getRecord.json";
-import _5 from "./statusphere/app/profile/listRecords.json";
-import _6 from "./statusphere/app/status/getRecord.json";
-import _7 from "./statusphere/app/status/listRecords.json";
+import _4 from "./statusphere/app/status/getRecord.json";
+import _5 from "./statusphere/app/status/listRecords.json";
 
-export const lexicons: object[] = [_0, _1, _2, _3, _4, _5, _6, _7];
+export const lexicons: object[] = [_0, _1, _2, _3, _4, _5];

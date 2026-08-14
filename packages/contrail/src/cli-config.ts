@@ -28,6 +28,14 @@ export const CONFIG_CANDIDATES: readonly string[] = [
 export const CONFIG_CANDIDATES_MESSAGE =
   "contrail.config.ts | src/contrail.config.ts | src/lib/contrail.config.ts | app/contrail.config.ts";
 
+/** Standard generated bundle locations used by runtime CLI commands. */
+export const LEXICON_BUNDLE_CANDIDATES: readonly string[] = [
+  "lexicons/generated/index.ts",
+  "lexicons/generated/index.js",
+  "src/lib/lexicons/index.ts",
+  "src/lib/lexicons/index.js",
+];
+
 /** Find a config file by walking the auto-detect list relative to `root`.
  *  When `explicit` is passed, resolves that (relative to `root`) and checks
  *  existence — no auto-detection. Returns `null` if nothing found. */
@@ -48,6 +56,29 @@ export function findConfigFile(root: string, explicit?: string): string | null {
  *  a default export. Validates the result has the minimum `ContrailConfig`
  *  shape (`namespace` + `collections`) so misnamed exports throw at load
  *  time rather than producing confusing "undefined.namespace" errors later. */
+export function findLexiconBundle(root: string): string | null {
+  for (const candidate of LEXICON_BUNDLE_CANDIDATES) {
+    const path = join(root, candidate);
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+export async function loadLexiconBundle(path: string): Promise<object[]> {
+  const jiti = createJiti(import.meta.url, { interopDefault: true });
+  const mod = (await jiti.import(path)) as {
+    lexicons?: unknown;
+    default?: unknown;
+  };
+  const value = mod.lexicons ??
+    (mod.default as { lexicons?: unknown } | undefined)?.lexicons ??
+    mod.default;
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object")) {
+    throw new Error(`Lexicon bundle at ${path} did not export a \`lexicons\` array`);
+  }
+  return value as object[];
+}
+
 export async function loadConfig<T = ContrailConfig>(path: string): Promise<T> {
   const jiti = createJiti(import.meta.url, { interopDefault: true });
   const mod = (await jiti.import(path)) as { config?: unknown; default?: unknown };

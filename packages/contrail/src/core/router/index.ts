@@ -71,7 +71,10 @@ export function createApp(
     ? normalizeLexiconDocuments(options.lexicons ?? [])
     : (options.lexicons ?? []);
   if (options.publicService) {
-    normalizePublicServiceEndpoint(options.publicService.endpoint);
+    normalizePublicServiceEndpoint(
+      options.publicService.endpoint,
+      options.publicService,
+    );
     validatePublicServiceLexicons(config, lexicons);
     const description = describePublicService(
       config,

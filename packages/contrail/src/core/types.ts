@@ -1,4 +1,3 @@
-import type { LexiconDoc } from "@atcute/lexicon-doc";
 import { isDid } from "@atcute/lexicons/syntax";
 import type { SqlDialect } from "./dialect";
 
@@ -135,6 +134,11 @@ export interface CollectionConfig {
   /** Include this collection in Jetstream ingest / discovery (default true).
    *  Set false for dependent collections (auto-fetched on demand). */
   discover?: boolean;
+  /** Validate creates/updates against this collection's pinned record Lexicon.
+   *  The runtime bundle is supplied by `createWorker({ lexicons })`,
+   *  `contrail dev`, or `new Contrail({ lexicons })`. Default: false unless
+   *  legacy top-level `validation` enables all collections. */
+  validate?: boolean;
   queryable?: Record<string, QueryableField>;
   relations?: Record<string, RelationConfig>;
   /** Forward references: fields on this collection's records that point at another collection. */
@@ -229,8 +233,6 @@ export interface Logger {
 }
 
 export interface IngestValidationConfig {
-  /** Lexicon documents for every configured record collection and its refs. */
-  lexicons: LexiconDoc[];
   /** Recompute authoritative record CIDs from canonical DAG-CBOR (default true). */
   verifyCid?: boolean;
   /** Enforce strict blob size/MIME constraints as well as normal Lexicon rules (default true). */
@@ -469,7 +471,13 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
   for (const p of profiles) {
     const short = p.shortName!;
     if (!collections[short]) {
-      collections[short] = { collection: p.collection, discover: false };
+      collections[short] = {
+        collection: p.collection,
+        discover: false,
+        // Hydration needs indexed records, not another generic public surface.
+        // Explicit collection declarations can opt these methods back in.
+        methods: [],
+      };
     }
   }
 
@@ -489,6 +497,9 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
           collection: DEFAULT_FOLLOW_NSID,
           discover: false,
           subjectField: "subject",
+          // Feed internals should not create public collection methods unless
+          // the collection was explicitly declared by the application.
+          methods: [],
         };
       }
     }

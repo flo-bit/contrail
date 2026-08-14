@@ -27,7 +27,8 @@ import {
 export interface CreateWorkerOptions {
   /** D1 binding name in wrangler env. Default: `"DB"`. */
   binding?: string;
-  /** Bundled Lexicon documents to expose for application type generation. */
+  /** Exact generated/pinned bundle exposed for type generation and used by
+   * collections with `validate: true`. */
   lexicons?: object[];
   /** Enable stable discovery and Lexicon routes for anonymous remote clients. */
   publicService?: PublicServiceOptions;
@@ -50,7 +51,7 @@ export function createWorker(
     normalizePublicServiceEndpoint(options.publicService.endpoint);
     validatePublicServiceLexicons(config, options.lexicons ?? []);
   }
-  const contrail = new Contrail(config);
+  const contrail = new Contrail({ ...config, lexicons: options.lexicons });
   const handle = createHandler(contrail, {
     lexicons: options.lexicons,
     publicService: options.publicService,

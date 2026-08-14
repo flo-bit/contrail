@@ -32,7 +32,10 @@ export interface GenerateLexiconsOptions {
 }
 
 export interface GenerateLexiconsResult {
+  /** Method Lexicons authored by Contrail for this config. */
   generated: Record<string, object>;
+  /** Complete service bundle: generated methods plus available source/ref docs. */
+  lexicons: object[];
   methods: string[];
   pullNsids: string[];
 }
@@ -493,6 +496,28 @@ function writeAtcuteConfiguration(rootDir: string, pullNsids: string[]): boolean
   return true;
 }
 
+function bundleDocuments(
+  generated: Record<string, object>,
+  sourceDirs: string[],
+): object[] {
+  const documents = new Map<string, object>();
+  for (const [id, document] of Object.entries(generated)) {
+    documents.set(id, document);
+  }
+  for (const directory of sourceDirs) {
+    for (const path of walkJson(directory)) {
+      const document = readLexicon(path);
+      const id = document?.id;
+      if (typeof id === "string" && !documents.has(id)) {
+        documents.set(id, document as object);
+      }
+    }
+  }
+  return [...documents.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, document]) => document);
+}
+
 function writeBundle(
   outputDir: string,
   generated: Record<string, object>,
@@ -810,6 +835,7 @@ export function generateLexicons(
   if (
     config.notify &&
     (surface === "full" ||
+      config.notify === true ||
       config.serviceAuth?.methods.includes("notifyOfUpdate") === true)
   ) {
     emit(`${config.namespace}.notifyOfUpdate`, {
@@ -970,12 +996,13 @@ export function generateLexicons(
     log("Preserved user-owned lex.config.js; update its pull sources manually.");
   }
   writeBundle(outputDir, generated, sourceDirs);
+  const lexicons = bundleDocuments(generated, sourceDirs);
   const methods = [
     ...extractXrpcMethods(generated),
     ...customMethodIds(config),
   ].sort();
   log(`Generated ${Object.keys(generated).length} Contrail Lexicons.`);
-  return { generated, methods, pullNsids };
+  return { generated, lexicons, methods, pullNsids };
 }
 
 function directoryContents(directory: string): Map<string, string> {

@@ -36,6 +36,42 @@ const MINIMAL_PUBLIC_LEXICONS = queryLexicons(
 );
 
 describe("createWorker", () => {
+  it("binds the deployment bundle only for opted-in collection validation", () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      collections: {
+        event: {
+          ...MINIMAL_CONFIG.collections.event!,
+          validate: true,
+        },
+      },
+    };
+    const recordLexicon = {
+      lexicon: 1,
+      id: "community.lexicon.calendar.event",
+      defs: {
+        main: {
+          type: "record",
+          key: "any",
+          record: { type: "object", properties: {} },
+        },
+      },
+    };
+
+    expect(() => createWorker(config, { lexicons: [recordLexicon] })).not.toThrow();
+    expect(() => createWorker(config, { lexicons: [] })).toThrow(
+      "missing validation Lexicon document",
+    );
+    expect(() =>
+      createWorker({
+        ...config,
+        collections: {
+          event: { ...config.collections.event!, validate: false },
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it("returns an object with fetch + scheduled handlers", () => {
     const worker = createWorker(MINIMAL_CONFIG);
     expect(typeof worker.fetch).toBe("function");

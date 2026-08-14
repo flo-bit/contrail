@@ -3,6 +3,7 @@ import { CODEC_DCBOR, create, toString } from "@atcute/cid";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   backfillUser,
+  bindRecordValidationLexicons,
   getIngestDiagnostics,
   initSchema,
   processNotifyUris,
@@ -27,30 +28,28 @@ const config = resolveConfig({
   namespace: "com.example",
   profiles: [],
   logger,
-  collections: { event: { collection: COLLECTION } },
-  validation: {
-    lexicons: [
-      {
-        lexicon: 1,
-        id: COLLECTION,
-        defs: {
-          main: {
-            type: "record",
-            key: "any",
-            record: {
-              type: "object",
-              required: ["name", "createdAt"],
-              properties: {
-                name: { type: "string" },
-                createdAt: { type: "string", format: "datetime" },
-              },
-            },
+  collections: { event: { collection: COLLECTION, validate: true } },
+});
+bindRecordValidationLexicons(config, [
+  {
+    lexicon: 1,
+    id: COLLECTION,
+    defs: {
+      main: {
+        type: "record",
+        key: "any",
+        record: {
+          type: "object",
+          required: ["name", "createdAt"],
+          properties: {
+            name: { type: "string" },
+            createdAt: { type: "string", format: "datetime" },
           },
         },
       },
-    ],
+    },
   },
-});
+]);
 
 async function setup() {
   const db = createSqliteDatabase(":memory:");

@@ -3,7 +3,12 @@ import {
   type JetstreamEvent,
   type JetstreamSubscriptionOptions,
 } from "@atcute/jetstream";
-import type { ChangeSource, MutationBatch, SourceMutation, SourcePosition } from "./sources";
+import type {
+  ChangeSource,
+  MutationBatch,
+  SourceMutation,
+  SourcePosition,
+} from "./sources";
 import type { ContrailConfig } from "./types";
 import { DEFAULT_JETSTREAMS, jetstreamUrlOption } from "./types";
 
@@ -19,6 +24,8 @@ type SubscriptionFactory = (
 ) => JetstreamReader;
 
 export interface JetstreamChangeSourceOptions {
+  /** Logical source ID used in durable positions. Default: `"jetstream"`. */
+  sourceId?: string;
   /** Operator-owned continuity epoch for this endpoint set. Change it whenever
    * history continuity or cursor meaning may have changed. */
   epoch: string;
@@ -142,7 +149,7 @@ function mutationFromEvent(
  * collection without projecting its records. This avoids claiming catch-up
  * from wall clock or a short idle period. */
 export class JetstreamChangeSource implements ChangeSource {
-  readonly id = "jetstream";
+  readonly id: string;
   readonly semantics = {
     ordinaryRecords: true,
     ordinaryDeletes: true,
@@ -157,6 +164,8 @@ export class JetstreamChangeSource implements ChangeSource {
     private readonly config: ContrailConfig,
     private readonly options: JetstreamChangeSourceOptions,
   ) {
+    this.id = options.sourceId ?? "jetstream";
+    if (!this.id) throw new TypeError("Jetstream source ID is required");
     if (!options.epoch) throw new TypeError("Jetstream source epoch is required");
     if (
       config.orderedSource &&

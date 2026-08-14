@@ -10,11 +10,7 @@ import { RecordValidator } from "@atcute/lexicon-doc/validations";
 import type { Nsid } from "@atcute/lexicons";
 import { isRecordKey } from "@atcute/lexicons/syntax";
 import { parse as parseValibot } from "valibot";
-import type {
-  ContrailConfig,
-  IngestEvent,
-  IngestValidationConfig,
-} from "./types";
+import type { ContrailConfig, IngestEvent } from "./types";
 
 export type RecordValidationFailure =
   | "lexicon_validation"
@@ -30,7 +26,18 @@ interface ValidationContext {
 }
 
 const DEFAULT_CIDLESS_SOURCES = ["local", "legacy-caller", "constellation"];
-const contexts = new WeakMap<IngestValidationConfig, ValidationContext>();
+const contexts = new WeakMap<ContrailConfig, ValidationContext>();
+const runtimeLexicons = new WeakMap<ContrailConfig, LexiconDoc[]>();
+
+/** Bind the exact build/runtime Lexicon bundle used by collection-level
+ * validation without making policy configuration import generated files. */
+export function bindRecordValidationLexicons(
+  config: ContrailConfig,
+  lexicons: readonly object[],
+): void {
+  runtimeLexicons.set(config, [...lexicons] as LexiconDoc[]);
+  contexts.delete(config);
+}
 
 function documentMap(lexicons: LexiconDoc[]): Record<string, LexiconDoc> {
   const documents: Record<string, LexiconDoc> = {};
@@ -39,7 +46,7 @@ function documentMap(lexicons: LexiconDoc[]): Record<string, LexiconDoc> {
     try {
       document = parseValibot(lexiconDoc, input);
     } catch {
-      throw new Error("validation.lexicons contains an invalid Lexicon document");
+      throw new Error("runtime validation bundle contains an invalid Lexicon document");
     }
     if (documents[document.id]) {
       throw new Error(`duplicate validation Lexicon document: ${document.id}`);
@@ -79,21 +86,29 @@ function requireReferencedDocuments(
   }
 }
 
-/** Build and cache one Atcute RecordValidator per configured collection. */
+/** Build and cache one Atcute RecordValidator for each collection that
+ * explicitly opts in with `validate: true`. */
 export function prepareRecordValidation(
   config: ContrailConfig,
 ): ValidationContext | null {
-  const validation = config.validation;
-  if (!validation) return null;
-  const cached = contexts.get(validation);
-  if (cached) return cached;
-
-  const documents = documentMap(validation.lexicons);
   const collections = new Set(
-    Object.entries(config.collections).map(
-      ([shortName, collection]) => collection.collection ?? shortName,
-    ),
+    Object.entries(config.collections)
+      .filter(([, collection]) => collection.validate === true)
+      .map(([shortName, collection]) => collection.collection ?? shortName),
   );
+  if (collections.size === 0) return null;
+
+  const cached = contexts.get(config);
+  if (cached) return cached;
+  const validation = config.validation;
+  const lexicons = runtimeLexicons.get(config);
+  if (!lexicons) {
+    throw new Error(
+      "validated collections require a runtime Lexicon bundle; pass generated `lexicons` to the runtime",
+    );
+  }
+
+  const documents = documentMap(lexicons);
   requireReferencedDocuments(documents, collections);
 
   const validators = new Map<string, RecordValidator>();
@@ -106,13 +121,13 @@ export function prepareRecordValidation(
 
   const context: ValidationContext = {
     validators,
-    strict: validation.strict !== false,
-    verifyCid: validation.verifyCid !== false,
+    strict: validation?.strict !== false,
+    verifyCid: validation?.verifyCid !== false,
     allowCidlessSources: new Set(
-      validation.allowCidlessSources ?? DEFAULT_CIDLESS_SOURCES,
+      validation?.allowCidlessSources ?? DEFAULT_CIDLESS_SOURCES,
     ),
   };
-  contexts.set(validation, context);
+  contexts.set(config, context);
   return context;
 }
 
@@ -126,7 +141,8 @@ export async function validateCanonicalRecord(
   if (!context) return null;
 
   const validator = context.validators.get(event.collection);
-  if (!validator || !isRecordKey(event.rkey)) return "lexicon_validation";
+  if (!validator) return null;
+  if (!isRecordKey(event.rkey)) return "lexicon_validation";
   try {
     const result = validator.try(
       { key: event.rkey, object: record },

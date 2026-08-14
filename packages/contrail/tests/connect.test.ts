@@ -60,16 +60,19 @@ function providerLock(): ProviderLock {
   };
 }
 
-async function serviceFixture(values = [methodLexicon, sourceLexicon]) {
+async function serviceFixture(
+  values = [methodLexicon, sourceLexicon],
+  serviceEndpoint = endpoint,
+) {
   const { digest } = await digestLexiconDocuments(values);
   const manifest: PublicServiceManifest = {
     format: "contrail.service",
     version: 1,
-    endpoint,
+    endpoint: serviceEndpoint,
     namespace: "atmo.rsvp",
     contract: { digest: "" },
-    lexicons: { url: `${endpoint}/lexicons/${digest}`, digest },
-    status: { url: `${endpoint}/status` },
+    lexicons: { url: `${serviceEndpoint}/lexicons/${digest}`, digest },
+    status: { url: `${serviceEndpoint}/status` },
     collections: [
       {
         alias: "event",
@@ -105,6 +108,41 @@ async function temporaryRoot() {
 }
 
 describe("contrail connect", () => {
+  it("connects to loopback HTTP only with an explicit development exception", async () => {
+    const root = await temporaryRoot();
+    const localEndpoint = "http://127.0.0.1:8787";
+    const fixture = await serviceFixture(
+      [methodLexicon, sourceLexicon],
+      localEndpoint,
+    );
+    await expect(
+      connectPublicService({
+        endpoint: localEndpoint,
+        root,
+        out: "src/contrail/lexicons",
+        lock: "contrail.lock.json",
+        fetcher: fixture.fetcher,
+      }),
+    ).rejects.toThrow("must use HTTPS");
+
+    const { lock } = await connectPublicService({
+      endpoint: localEndpoint,
+      root,
+      out: "src/contrail/lexicons",
+      lock: "contrail.lock.json",
+      fetcher: fixture.fetcher,
+      allowInsecureHttp: true,
+    });
+    expect(lock).toMatchObject({
+      endpoint: localEndpoint,
+      allowInsecureHttp: true,
+    });
+    const client = await ensureConsumerClientModule({ root, lock });
+    expect(await readFile(client.path, "utf8")).toContain(
+      "allowInsecureHttp: true",
+    );
+  });
+
   it("creates a default Atcute config without replacing consumer config", async () => {
     const root = await temporaryRoot();
     const generated = await ensureConsumerLexiconConfig({

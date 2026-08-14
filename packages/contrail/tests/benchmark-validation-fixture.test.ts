@@ -31,10 +31,20 @@ describe("calendar benchmark validation fixture", () => {
 
     const contrail = new Contrail({
       ...config,
-      validation: { lexicons, strict: true, verifyCid: true },
+      collections: Object.fromEntries(
+        Object.entries(config.collections).map(([name, collection]) => [
+          name,
+          { ...collection, validate: true },
+        ]),
+      ),
+      lexicons,
+      validation: { strict: true, verifyCid: true },
     });
 
     expect(lexicons).toHaveLength(10);
-    expect(contrail.config.validation?.lexicons).toHaveLength(10);
+    expect(contrail.config.validation).toMatchObject({
+      strict: true,
+      verifyCid: true,
+    });
   });
 });

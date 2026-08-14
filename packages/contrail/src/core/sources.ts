@@ -41,6 +41,9 @@ export interface PreparedSnapshot {
   semantics: SourceSemantics;
   /** Upstream position represented by a point-in-time snapshot, when known. */
   through?: SourcePosition;
+  /** Bounded plain-JSON provider descriptor needed to resume this exact pinned
+   * snapshot and its matching change stream after process restart. */
+  providerData?: unknown;
 }
 
 export interface SnapshotProgress {
@@ -112,10 +115,16 @@ export interface ChangeSource {
   /** Return a durable replay coordinate near the current source head. */
   mark(options: {
     collections: string[];
+    /** Exact prepared descriptor when selecting the post-snapshot catch-up
+     * boundary. The preliminary capture mark has no snapshot yet. */
+    snapshot?: PreparedSnapshot;
     signal?: AbortSignal;
   }): Promise<SourcePosition>;
   read(options: {
     collections: string[];
+    /** Exact prepared source descriptor paired with this replay. Sources that
+     * do not need provider context may ignore it. */
+    snapshot?: PreparedSnapshot;
     after: SourcePosition;
     through: SourcePosition;
     signal?: AbortSignal;
@@ -337,7 +346,7 @@ async function runBootstrapFreshProjection(options: {
   }
 
   if (!state.catchupThrough) {
-    const through = await changeSource.mark({ collections, signal });
+    const through = await changeSource.mark({ collections, snapshot, signal });
     assertCompatiblePosition(through, state.captureFrom, "Catch-up target");
     await target.beginCatchup(through);
     state.catchupThrough = through;
@@ -352,6 +361,7 @@ async function runBootstrapFreshProjection(options: {
     if (!caughtUp) {
       for await (const batch of changeSource.read({
         collections,
+        snapshot,
         after,
         through: state.catchupThrough,
         signal,

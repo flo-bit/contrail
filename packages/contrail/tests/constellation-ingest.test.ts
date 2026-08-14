@@ -4,6 +4,7 @@ import { create as createTid } from "@atcute/tid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   backfillFollowersFromConstellation,
+  bindRecordValidationLexicons,
   createIngestEvent,
   ingestRecords,
   initSchema,
@@ -65,22 +66,23 @@ async function setup() {
     profiles: [],
     logger,
     collections: {
-      event: { collection: EVENT },
+      event: { collection: EVENT, validate: true },
       follow: {
         collection: FOLLOW,
         discover: false,
         subjectField: "subject",
+        validate: true,
       },
     },
     feeds: {
       network: { follow: "follow", targets: ["event"] },
     },
-    validation: { lexicons: [eventLexicon, followLexicon] },
     constellation: {
       url: "https://constellation.example.com",
       userAgent: "contrail-test",
     },
   });
+  bindRecordValidationLexicons(config, [eventLexicon, followLexicon]);
   const db = createSqliteDatabase(":memory:");
   await initSchema(db, config);
   for (const did of [SUBJECT, FOLLOWER]) {

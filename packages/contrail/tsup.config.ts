@@ -7,6 +7,7 @@ export default defineConfig({
     "src/public-client.ts",
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
+    "src/adapters/alluvium.ts",
     "src/workers/backfill.ts",
     "src/worker/index.ts",
     "src/cli.ts",

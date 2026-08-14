@@ -9,7 +9,10 @@ import {
   validateConfig,
 } from "./core/types";
 import { initSchema } from "./core/db/schema";
-import { prepareRecordValidation } from "./core/validation";
+import {
+  bindRecordValidationLexicons,
+  prepareRecordValidation,
+} from "./core/validation";
 import { getIngestDiagnostics } from "./core/diagnostics";
 import { optimizeDatabase } from "./core/db/optimize";
 import {
@@ -50,6 +53,9 @@ import type { Hono } from "hono";
 
 export interface ContrailOptions extends ContrailConfig {
   db?: Database;
+  /** Exact generated/pinned runtime Lexicon bundle used by collections with
+   * `validate: true`. Method Lexicons in the same bundle are harmless. */
+  lexicons?: object[];
 }
 
 export class Contrail {
@@ -58,10 +64,13 @@ export class Contrail {
   private _ingestState: IngestState = createIngestState();
 
   constructor(options: ContrailOptions) {
-    const { db, ...configInput } = options;
+    const { db, lexicons, ...configInput } = options;
     this.config = resolveConfig(configInput);
     validateConfig(this.config);
-    prepareRecordValidation(this.config);
+    if (lexicons) bindRecordValidationLexicons(this.config, lexicons);
+    // Preserve early failure when a caller supplied a bundle directly.
+    // Otherwise init/app binds the runtime's generated bundle first.
+    if (lexicons) prepareRecordValidation(this.config);
     this._db = db;
   }
 
@@ -74,6 +83,7 @@ export class Contrail {
   /** Initialize the database schema. */
   async init(db?: Database): Promise<void> {
     const database = this.getDb(db);
+    prepareRecordValidation(this.config);
     await initSchema(database, this.config);
     await assertServingSourceCompatibility(
       database,
@@ -276,6 +286,10 @@ export class Contrail {
   /** Build the Hono app for this Contrail instance. */
   app(options: AppOptions = {}): Hono {
     const { db, ...appOptions } = options;
+    if (options.lexicons) {
+      bindRecordValidationLexicons(this.config, options.lexicons);
+    }
+    prepareRecordValidation(this.config);
     return createApp(this.getDb(db), this.config, appOptions);
   }
 

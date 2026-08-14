@@ -100,6 +100,22 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  apps/sqlite:
+    dependencies:
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../../packages/contrail
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
+      tsx:
+        specifier: ^4.23.6
+        version: 4.23.6
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   apps/sveltekit-cloudflare-workers:
     dependencies:
       '@atcute/jetstream':

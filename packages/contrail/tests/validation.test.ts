@@ -3,6 +3,7 @@ import { CODEC_DCBOR, create, toString } from "@atcute/cid";
 import { describe, expect, it } from "vitest";
 import {
   Contrail,
+  bindRecordValidationLexicons,
   createIngestEvent,
   getIngestDiagnostics,
   ingestRecords,
@@ -38,19 +39,18 @@ const LEXICON = {
 const logger = { log() {}, warn() {}, error() {} };
 
 function validatedConfig(overrides: Partial<ContrailConfig> = {}) {
-  return resolveConfig({
+  const config = resolveConfig({
     namespace: "com.example",
     profiles: [],
     logger,
     collections: {
-      event: { collection: COLLECTION },
+      event: { collection: COLLECTION, validate: true },
     },
-    validation: {
-      lexicons: [LEXICON],
-      ...overrides.validation,
-    },
+    validation: overrides.validation,
     ...overrides,
   });
+  bindRecordValidationLexicons(config, [LEXICON]);
+  return config;
 }
 
 async function setup(config = validatedConfig()): Promise<Database> {
@@ -95,6 +95,34 @@ async function event(options: {
 }
 
 describe("runtime record validation", () => {
+  it.each([undefined, false])(
+    "does not validate a collection when validate is %s",
+    async (validate) => {
+      const config = validatedConfig({
+        collections: {
+          event: { collection: COLLECTION, validate },
+        },
+      });
+      const db = await setup(config);
+      const result = await ingestRecords(
+        db,
+        [
+          await event({
+            record: {
+              $type: COLLECTION,
+              name: "far too long",
+              createdAt: "not-a-date",
+            },
+          }),
+        ],
+        config,
+      );
+
+      expect(result.accepted).toHaveLength(1);
+      expect(result.dropped.lexiconValidation).toBe(0);
+    },
+  );
+
   it("admits a valid Lexicon record with its canonical CID", async () => {
     const config = validatedConfig();
     const db = await setup(config);
@@ -213,8 +241,10 @@ describe("runtime record validation", () => {
         new Contrail({
           namespace: "com.example",
           profiles: [],
-          collections: { event: { collection: COLLECTION } },
-          validation: { lexicons: [] },
+          collections: {
+            event: { collection: COLLECTION, validate: true },
+          },
+          lexicons: [],
         }),
     ).toThrow(`missing validation Lexicon document: ${COLLECTION}`);
   });

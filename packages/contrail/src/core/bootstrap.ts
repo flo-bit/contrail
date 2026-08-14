@@ -3,6 +3,7 @@ import { recordTimeUs, createIngestEvent, ingestRecords } from "./ingest";
 import { getDependentNsids, recordsTableName } from "./types";
 import {
   rebuildDerivedProjections,
+  saveCursorStatement,
   saveServingSourcePositionStatement,
 } from "./db/records";
 import {
@@ -66,6 +67,10 @@ export interface DatabaseBootstrapTargetOptions {
   deferDerivedProjections?: boolean;
   /** Additional actors already known to be in acquisition scope. */
   knownDids?: ReadonlySet<string>;
+  /** Map an opaque bootstrap checkpoint to the numeric cursor consumed by the
+   * legacy cron Jetstream loop. The cursor commits atomically with each source
+   * batch so ordinary scheduled ingestion can resume after bootstrap. */
+  liveCursor?: (position: SourcePosition) => number;
 }
 
 function position(
@@ -406,11 +411,15 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
         Date.now(),
         BOOTSTRAP_STATE_ID,
       );
+    const liveCursor = this.options.liveCursor?.(batch.checkpoint);
     await this.apply(
       events,
       [
         checkpoint,
         saveServingSourcePositionStatement(this.db, batch.checkpoint),
+        ...(liveCursor === undefined
+          ? []
+          : [saveCursorStatement(this.db, sourceTimeUs(liveCursor, "Live cursor"))]),
       ],
       false,
     );

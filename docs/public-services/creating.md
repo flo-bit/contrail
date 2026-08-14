@@ -224,19 +224,28 @@ follow: {
 
 Profiles can then appear through `getProfile` and `profiles=true` hydration, while follows power `getFeed` without creating a public social-graph directory.
 
-## Runtime validation is independent
+## Runtime validation is explicit per collection
 
-Publishing Lexicons does not automatically enable record validation. Validation remains opt-in:
+The deployment already ships one reviewed generated Lexicon bundle. Select which collection policies use it directly:
 
 ```ts
+collections: {
+  event: {
+    collection: "community.lexicon.calendar.event",
+    validate: true,
+  },
+  legacy: {
+    collection: "community.example.legacy",
+    // Omitted or false means no runtime validation.
+  },
+},
 validation: {
-  lexicons,
   strict: true,
   verifyCid: true,
 }
 ```
 
-When configured, it applies to every acquisition source. When omitted, the provider still publishes and verifies its API contract and generates consumer types, but ingested record values and CIDs are not runtime-validated by Contrail.
+`createWorker(config, { lexicons })` binds the exact deployment bundle to opted-in collections; no second validation-specific array is needed. Validation applies across every acquisition source and startup fails if an opted-in record schema or transitive reference is absent. Collections without `validate: true` retain compatibility behavior.
 
 ## CORS
 

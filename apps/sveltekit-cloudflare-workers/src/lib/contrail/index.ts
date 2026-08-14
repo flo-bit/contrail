@@ -1,9 +1,10 @@
 import { Contrail } from '@atmo-dev/contrail';
 import { createHandler, createServerClient } from '@atmo-dev/contrail/server';
 import type { Client } from '@atcute/client';
+import { lexicons } from '../../../lexicons/generated';
 import { config } from '../contrail.config';
 
-export const contrail = new Contrail(config);
+export const contrail = new Contrail({ ...config, lexicons });
 
 let initialized = false;
 
@@ -14,7 +15,7 @@ export async function ensureInit(db: D1Database) {
 	}
 }
 
-const handle = createHandler(contrail);
+const handle = createHandler(contrail, { lexicons });
 
 /** Typed `@atcute/client` that calls Contrail in-process. */
 export function getServerClient(db: D1Database): Client {

@@ -5,7 +5,9 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
   findConfigFile,
+  findLexiconBundle,
   loadConfig,
+  loadLexiconBundle,
   CONFIG_CANDIDATES_MESSAGE,
 } from "../cli-config.js";
 import type { ContrailConfig } from "../core/types.js";
@@ -32,6 +34,25 @@ export async function resolveAndLoadConfig(
     process.exit(1);
   }
   return loadConfig(path);
+}
+
+/** Load the standard generated/pinned bundle only when collection policy needs
+ * runtime validation. */
+export async function resolveValidationLexicons(
+  opts: ConfigOpts,
+  config: ContrailConfig,
+): Promise<object[] | undefined> {
+  if (!Object.values(config.collections).some((collection) => collection.validate === true)) {
+    return undefined;
+  }
+  const root = opts.root ?? process.cwd();
+  const path = findLexiconBundle(root);
+  if (!path) {
+    throw new Error(
+      "validated collections require a generated Lexicon bundle; run `contrail lexicons all`",
+    );
+  }
+  return loadLexiconBundle(path);
 }
 
 /**

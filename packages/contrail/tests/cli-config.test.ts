@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   findConfigFile,
+  findLexiconBundle,
   loadConfig,
+  loadLexiconBundle,
   CONFIG_CANDIDATES,
 } from "../src/cli-config";
 
@@ -81,6 +83,32 @@ describe("findConfigFile", () => {
     expect(CONFIG_CANDIDATES).toContain("contrail.config.ts");
     expect(CONFIG_CANDIDATES).toContain("contrail.config.js");
     expect(CONFIG_CANDIDATES).toContain("src/contrail.config.ts");
+  });
+});
+
+describe("generated Lexicon bundles", () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "contrail-load-lexicons-"));
+  });
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("finds and loads the standard pinned bundle", async () => {
+    const directory = join(root, "lexicons", "generated");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "index.ts");
+    writeFileSync(
+      path,
+      `export const lexicons = [{ lexicon: 1, id: "com.example.record", defs: {} }];`,
+    );
+
+    expect(findLexiconBundle(root)).toBe(path);
+    expect(await loadLexiconBundle(path)).toMatchObject([
+      { id: "com.example.record" },
+    ]);
   });
 });
 

@@ -53,6 +53,24 @@ function authenticatedClient(jwt: string) {
 }
 
 describe("public service client", () => {
+  it("permits insecure endpoints only for explicit loopback development", () => {
+    expect(() =>
+      createPublicServiceClient({ endpoint: "http://localhost:8787" }),
+    ).toThrow("must use HTTPS");
+    expect(
+      createPublicServiceClient({
+        endpoint: "http://127.0.0.1:8787",
+        allowInsecureHttp: true,
+      }).endpoint,
+    ).toBe("http://127.0.0.1:8787");
+    expect(() =>
+      createPublicServiceClient({
+        endpoint: "http://api.example.com",
+        allowInsecureHttp: true,
+      }),
+    ).toThrow("loopback HTTP");
+  });
+
   it("rejects a configured OAuth scope for a different service DID", () => {
     expect(() =>
       createPublicServiceClient({
@@ -174,6 +192,51 @@ describe("public service client", () => {
         request.url.includes(`/xrpc/${method}`),
       ).map((request) => request.authorization),
     ).toEqual([`Bearer ${jwt}`, `Bearer ${jwt}`]);
+  });
+
+  it("notifies an open local service without minting service auth", async () => {
+    const pdsHandler = vi.fn(async (pathname: string) => {
+      const url = new URL(pathname, "https://pds.example.com");
+      if (url.pathname === "/xrpc/com.atproto.repo.createRecord") {
+        return Response.json({
+          uri: `at://did:plc:test/${collection}/3test`,
+          cid: "bafyreicid",
+        });
+      }
+      throw new Error(`unexpected PDS call: ${url.pathname}`);
+    });
+    const notifications: Array<{ authorization: string | null; body: string | null }> = [];
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      notifications.push({
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: typeof init?.body === "string" ? init.body : null,
+      });
+      return Response.json({ indexed: 1, deleted: 0 });
+    });
+    const client = createPublicServiceClient({
+      endpoint,
+      serviceMethods: [],
+      collections: [collection],
+      notifyMethod,
+      fetch: fetcher,
+    }).authenticated(new Client({ handler: pdsHandler }));
+
+    expect(client.scope).toBeNull();
+    const response = await client.post("com.atproto.repo.createRecord", {
+      input: {
+        repo: "did:plc:test",
+        collection,
+        record: { $type: collection, name: "Local event" },
+      },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.authorization).toBeNull();
+    expect(JSON.parse(notifications[0]!.body!)).toEqual({
+      uris: [`at://did:plc:test/${collection}/3test`],
+    });
+    expect(pdsHandler).toHaveBeenCalledTimes(1);
   });
 
   it("routes PDS writes and service methods through one authenticated client", async () => {

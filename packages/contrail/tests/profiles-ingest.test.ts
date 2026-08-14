@@ -2,6 +2,7 @@ import { encode } from "@atcute/cbor";
 import { CODEC_DCBOR, create, toString } from "@atcute/cid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bindRecordValidationLexicons,
   createIngestEvent,
   ingestRecords,
   initSchema,
@@ -62,19 +63,21 @@ async function setup(options?: { rejectB?: boolean }) {
       { collection: PROFILE_B, shortName: "profileB" },
     ],
     collections: {
-      profileA: { collection: PROFILE_A },
+      profileA: { collection: PROFILE_A, validate: true },
       profileB: {
         collection: PROFILE_B,
         searchable: hasFts ? ["displayName"] : false,
+        validate: true,
         recordFilter: options?.rejectB
           ? (record) => record.displayName !== "Rejected"
           : undefined,
       },
     },
-    validation: {
-      lexicons: [profileLexicon(PROFILE_A), profileLexicon(PROFILE_B)],
-    },
   });
+  bindRecordValidationLexicons(config, [
+    profileLexicon(PROFILE_A),
+    profileLexicon(PROFILE_B),
+  ]);
   const db = createSqliteDatabase(":memory:");
   await initSchema(db, config);
   await db

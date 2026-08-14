@@ -1,0 +1,21 @@
+{
+  "name": "contrail-sqlite-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "contrail": "node contrail.mjs",
+    "dev": "node contrail.mjs dev --alluvium --allow-partial --no-connect",
+    "ingest": "tsx ingest.ts",
+    "status": "tsx status.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.6",
+    "typescript": "^6.0.3"
+  }
+}

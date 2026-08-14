@@ -50,6 +50,7 @@ interface ConnectOptions {
   generate?: boolean;
   skipClient?: boolean;
   update?: boolean;
+  allowInsecureHttp?: boolean;
 }
 
 export interface ProviderLock {
@@ -63,6 +64,8 @@ export interface ProviderLock {
   collections: string[];
   serviceAuth: PublicServiceAuthContract | null;
   lexiconRoot: string;
+  /** Explicit loopback-only HTTP exception for a local development provider. */
+  allowInsecureHttp?: true;
 }
 
 async function readProviderLock(path: string): Promise<ProviderLock | null> {
@@ -86,7 +89,8 @@ async function readProviderLock(path: string): Promise<ProviderLock | null> {
     lock.format !== "contrail.provider-lock" ||
     lock.version !== 1 ||
     typeof lock.endpoint !== "string" ||
-    typeof lock.lexiconRoot !== "string"
+    typeof lock.lexiconRoot !== "string" ||
+    (lock.allowInsecureHttp !== undefined && lock.allowInsecureHttp !== true)
   ) {
     throw new Error("existing Contrail provider lock is malformed");
   }
@@ -245,6 +249,8 @@ export async function ensureConsumerClientModule(options: {
   file?: string;
   types?: string;
   lock: ProviderLock;
+  /** Local-development notification method not advertised as a public query. */
+  notifyMethod?: string;
 }): Promise<{ path: string; created: boolean; updated: boolean }> {
   const root = resolve(options.root);
   const requested = options.file ?? "src/contrail/index.ts";
@@ -282,10 +288,12 @@ export async function ensureConsumerClientModule(options: {
   const serviceMethods = [
     ...new Set([...options.lock.methods, ...protectedMethods]),
   ].sort();
-  const notifyMethod = protectedMethods.find(
-    (method) => method === `${options.lock.namespace}.notifyOfUpdate`,
-  );
-  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedImport}\nexport const contrail = createPublicServiceClient({\n  endpoint: ${JSON.stringify(options.lock.endpoint)},\n  contractDigest: ${JSON.stringify(options.lock.contractDigest)},${serviceDid ? `\n  serviceDid: ${JSON.stringify(serviceDid)},\n  scope: ${JSON.stringify(scope)},` : ""}\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.lock.collections, 2)},${notifyMethod ? `\n  notifyMethod: ${JSON.stringify(notifyMethod)},` : ""}\n});\n`;
+  const notifyMethod =
+    options.notifyMethod ??
+    serviceMethods.find(
+      (method) => method === `${options.lock.namespace}.notifyOfUpdate`,
+    );
+  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedImport}\nexport const contrail = createPublicServiceClient({\n  endpoint: ${JSON.stringify(options.lock.endpoint)},${options.lock.allowInsecureHttp ? "\n  allowInsecureHttp: true," : ""}\n  contractDigest: ${JSON.stringify(options.lock.contractDigest)},${serviceDid ? `\n  serviceDid: ${JSON.stringify(serviceDid)},\n  scope: ${JSON.stringify(scope)},` : ""}\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.lock.collections, 2)},${notifyMethod ? `\n  notifyMethod: ${JSON.stringify(notifyMethod)},` : ""}\n});\n`;
   await mkdir(dirname(path), { recursive: true });
 
   if (await exists(path)) {
@@ -322,6 +330,10 @@ export async function connectPublicService(options: {
   lock: string;
   fetcher?: typeof fetch;
   update?: boolean;
+  /** Permit plain HTTP only for an explicitly selected loopback provider. */
+  allowInsecureHttp?: boolean;
+  /** @internal Stable provider directory for an auto-managed local connection. */
+  providerKey?: string;
   /** @internal Shorter timeout for deterministic connection tests. */
   timeoutMs?: number;
 }): Promise<{
@@ -329,11 +341,16 @@ export async function connectPublicService(options: {
   lock: ProviderLock;
   written: number;
 }> {
-  const endpoint = normalizePublicServiceEndpoint(options.endpoint);
+  const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
   const projectRoot = resolve(options.root);
   const lockPath = resolveInsideRoot(projectRoot, options.lock);
   const outputRoot = resolveInsideRoot(projectRoot, options.out);
-  const providerKey = new URL(endpoint).host.replace(/[^a-zA-Z0-9.-]/g, "_");
+  const providerKey =
+    options.providerKey ??
+    new URL(endpoint).host.replace(/[^a-zA-Z0-9.-]/g, "_");
+  if (!/^[a-zA-Z0-9._-]+$/.test(providerKey)) {
+    throw new Error("provider key must be one safe path segment");
+  }
   const providerRoot = resolveInsideRoot(outputRoot, providerKey);
   const existingLock = await readProviderLock(lockPath);
   if (existingLock && !options.update) {
@@ -342,7 +359,11 @@ export async function connectPublicService(options: {
     );
   }
   if (existingLock) {
-    if (normalizePublicServiceEndpoint(existingLock.endpoint) !== endpoint) {
+    if (
+      normalizePublicServiceEndpoint(existingLock.endpoint, {
+        allowInsecureHttp: existingLock.allowInsecureHttp === true,
+      }) !== endpoint
+    ) {
       throw new Error(
         `provider lock targets ${existingLock.endpoint}; remove the existing connection before switching endpoints`,
       );
@@ -366,7 +387,7 @@ export async function connectPublicService(options: {
     throw new Error("response is not a supported Contrail service manifest");
   }
   const manifest = manifestValue;
-  if (normalizePublicServiceEndpoint(manifest.endpoint) !== endpoint) {
+  if (normalizePublicServiceEndpoint(manifest.endpoint, options) !== endpoint) {
     throw new Error(
       `manifest endpoint mismatch: expected ${endpoint}, received ${manifest.endpoint}`,
     );
@@ -430,6 +451,9 @@ export async function connectPublicService(options: {
     ].sort(),
     serviceAuth: manifest.serviceAuth ?? null,
     lexiconRoot: relative(projectRoot, providerRoot),
+    ...(new URL(endpoint).protocol === "http:"
+      ? { allowInsecureHttp: true as const }
+      : {}),
   };
   const lockDirectory = dirname(lockPath);
   await mkdir(lockDirectory, { recursive: true });
@@ -497,6 +521,10 @@ export function registerConnect(cli: CAC): void {
       default: "src/contrail/types/index.ts",
     })
     .option("--skip-client", "Do not create a provider client module")
+    .option(
+      "--allow-insecure-http",
+      "Permit HTTP only for a loopback development provider",
+    )
     .option("--update", "Replace an existing provider lock and owned Lexicons")
     .option("--no-generate", "Pull and lock without generating types or a client module")
     .action(async (endpoint: string, options: ConnectOptions) => {
@@ -506,6 +534,7 @@ export function registerConnect(cli: CAC): void {
         out: options.out,
         lock: options.lock,
         update: options.update,
+        allowInsecureHttp: options.allowInsecureHttp,
       });
       console.log(
         `connected ${result.lock.endpoint}: ${result.written} Lexicons, contract ${result.lock.contractDigest}`,
