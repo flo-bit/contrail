@@ -7,7 +7,6 @@ import {
   Contrail,
   type ContrailConfig,
   type Database,
-  type LexiconDoc,
 } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { getPlatformProxy } from "wrangler";
@@ -253,10 +252,12 @@ async function main(): Promise<void> {
     : null;
   if (validation) {
     config.validation = {
-      lexicons: validation.documents as LexiconDoc[],
       strict: true,
       verifyCid: true,
     };
+    for (const collection of Object.values(config.collections)) {
+      collection.validate = true;
+    }
   }
   const wranglerPackagePath =
     options.backend === "d1" ? require.resolve("wrangler/package.json") : null;
@@ -332,7 +333,11 @@ async function main(): Promise<void> {
     }
     bindingMs = elapsed(phaseStart);
     fetchInstrumentation = instrumentFetch();
-    const contrail = new Contrail({ ...config, db });
+    const contrail = new Contrail({
+      ...config,
+      db,
+      ...(validation ? { lexicons: validation.documents } : {}),
+    });
 
     phaseStart = performance.now();
     await contrail.init();
