@@ -23,8 +23,17 @@ import {
   feedTargetMaxItems,
   DEFAULT_FOLLOW_SHORT,
 } from "../types";
-import { getSearchableFields, ftsTableName, buildFtsContent } from "../search";
-import { ftsQueryClause, getDialect } from "../dialect";
+import {
+  getSearchableFields,
+  ftsRowTableName,
+  ftsTableName,
+  buildFtsContent,
+} from "../search";
+import {
+  ftsQueryClause,
+  getDialect,
+  sqliteFtsContentExpression,
+} from "../dialect";
 import type { SourcePosition } from "../sources";
 
 // --- Counts ---
@@ -215,32 +224,40 @@ function buildFtsStatements(
   if (!fields || fields.length === 0) return [];
 
   const table = ftsTableName(short);
-  const stmts: Statement[] = [];
+  const rowsTable = ftsRowTableName(short);
+  const deleteFtsRow = () =>
+    db
+      .prepare(
+        `DELETE FROM ${table} WHERE rowid = (SELECT id FROM ${rowsTable} WHERE uri = ?)`,
+      )
+      .bind(event.uri);
+  const deleteMapping = () =>
+    db.prepare(`DELETE FROM ${rowsTable} WHERE uri = ?`).bind(event.uri);
 
   if (event.operation === "delete") {
-    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
-  } else {
-    const record = event.record ? JSON.parse(event.record) : null;
-    if (!record) return [];
-
-    // Always delete first so FTS sync is idempotent. The FTS virtual table has no
-    // uniqueness constraint, so a bare insert appends a duplicate row when one
-    // already exists. existingMap is unreliable here: backfill runs with
-    // skipReplayDetection, leaving it empty, so a re-applied record would look new
-    // and accumulate duplicate rows that fan out the search JOIN. The delete is
-    // unconditional so it also evicts a stale row when an update clears all
-    // searchable fields (content is null); only the re-insert is gated on content.
-    stmts.push(db.prepare(`DELETE FROM ${table} WHERE uri = ?`).bind(event.uri));
-
-    const content = buildFtsContent(record, fields);
-    if (content) {
-      stmts.push(
-        db.prepare(`INSERT INTO ${table} (uri, content) VALUES (?, ?)`).bind(event.uri, content)
-      );
-    }
+    return [deleteFtsRow(), deleteMapping()];
   }
 
-  return stmts;
+  const record = event.record ? JSON.parse(event.record) : null;
+  if (!record) return [];
+  const content = buildFtsContent(record, fields);
+  if (!content) {
+    return [deleteFtsRow(), deleteMapping()];
+  }
+
+  return [
+    db
+      .prepare(
+        `INSERT INTO ${rowsTable} (uri) VALUES (?) ON CONFLICT(uri) DO NOTHING`,
+      )
+      .bind(event.uri),
+    deleteFtsRow(),
+    db
+      .prepare(
+        `INSERT INTO ${table} (rowid, content) SELECT id, ? FROM ${rowsTable} WHERE uri = ?`,
+      )
+      .bind(content, event.uri),
+  ];
 }
 
 // --- Feeds ---
@@ -1137,21 +1154,29 @@ export async function rebuildDerivedProjections(
       if (!fields || fields.length === 0) continue;
 
       const ftsTable = ftsTableName(short);
+      const rowsTable = ftsRowTableName(short);
       const recordsTable = recordsTableName(short);
-      const terms = fields.map((field) => {
-        const path = `$.${field}`;
-        return `CASE WHEN json_type(record, '${path}') = 'text' THEN json_extract(record, '${path}') ELSE '' END`;
-      });
-      const content = `trim(${terms.join(" || ' ' || ")})`;
+      const content = sqliteFtsContentExpression(fields);
       try {
         await db.batch([
           db.prepare(`DELETE FROM ${ftsTable}`),
+          db.prepare(`DELETE FROM ${rowsTable}`),
           db.prepare(
-            `INSERT INTO ${ftsTable} (uri, content)
-             SELECT uri, content FROM (
+            `INSERT INTO ${rowsTable} (uri)
+             SELECT uri FROM (
                SELECT uri, ${content} AS content FROM ${recordsTable}
              ) rebuilt
-             WHERE content <> ''`
+             WHERE content <> ''
+             ORDER BY uri`,
+          ),
+          db.prepare(
+            `INSERT INTO ${ftsTable} (rowid, content)
+             SELECT fts_rows.id, rebuilt.content
+             FROM (
+               SELECT uri, ${content} AS content FROM ${recordsTable}
+             ) rebuilt
+             JOIN ${rowsTable} fts_rows ON fts_rows.uri = rebuilt.uri
+             WHERE rebuilt.content <> ''`,
           ),
         ]);
       } catch {

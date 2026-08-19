@@ -140,11 +140,14 @@ describe("indexExpression", () => {
 });
 
 describe("FTS schema generation", () => {
-  it("sqlite generates virtual table", () => {
+  it("sqlite generates a unique URI map and content-only virtual table", () => {
     const stmts = buildFtsSchema(sqliteDialect, "records_community_lexicon_calendar_event", ["name", "description"]);
-    expect(stmts).toHaveLength(1);
-    expect(stmts[0]).toContain("CREATE VIRTUAL TABLE");
-    expect(stmts[0]).toContain("USING fts5");
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0]).toContain("fts_community_lexicon_calendar_event_rows");
+    expect(stmts[0]).toContain("uri TEXT NOT NULL UNIQUE");
+    expect(stmts[1]).toContain("CREATE VIRTUAL TABLE");
+    expect(stmts[1]).toContain("USING fts5(content)");
+    expect(stmts[1]).not.toContain("uri UNINDEXED");
   });
 
   it("postgres generates tsvector column + GIN index", () => {
@@ -158,7 +161,8 @@ describe("FTS schema generation", () => {
 describe("FTS query clause", () => {
   it("sqlite uses FTS5 join and MATCH", () => {
     const clause = ftsQueryClause(sqliteDialect, "records_community_lexicon_calendar_event");
-    expect(clause.join).toContain("JOIN fts_");
+    expect(clause.join).toContain("JOIN fts_community_lexicon_calendar_event_rows");
+    expect(clause.join).toContain("fts.rowid = fts_rows.id");
     expect(clause.condition).toContain("MATCH");
     expect(clause.orderExpr).toBe("fts.rank");
   });

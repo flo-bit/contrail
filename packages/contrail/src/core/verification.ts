@@ -1,5 +1,11 @@
 import type { ContrailConfig, Database } from "./types";
 import { recordsTableName } from "./types";
+import { getDialect, sqliteFtsContentExpression } from "./dialect";
+import {
+  ftsRowTableName,
+  ftsTableName,
+  getSearchableFields,
+} from "./search";
 
 export const BOOTSTRAP_VERIFICATION_META_KEY = "bootstrap_verification";
 
@@ -86,6 +92,49 @@ export async function verifyBootstrapCandidate(
         ),
       ),
     );
+
+    const fields = getSearchableFields(shortName, collectionConfig);
+    if (getDialect(db).ftsStrategy === "virtual-table" && fields) {
+      const ftsTable = ftsTableName(shortName);
+      const rowsTable = ftsRowTableName(shortName);
+      const tables = await count(
+        db,
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+        [ftsTable, rowsTable],
+      );
+      checks.push(check(`fts-tables:${shortName}`, Math.max(0, 2 - tables)));
+      if (tables === 2) {
+        const content = sqliteFtsContentExpression(fields);
+        const expected = await count(
+          db,
+          `SELECT COUNT(*) AS count FROM (
+             SELECT ${content} AS content FROM ${table}
+           ) searchable WHERE content <> ''`,
+        );
+        const mapping = await count(
+          db,
+          `SELECT COUNT(*) AS count FROM ${rowsTable}`,
+        );
+        const fts = await count(db, `SELECT COUNT(*) AS count FROM ${ftsTable}`);
+        const joined = await count(
+          db,
+          `SELECT COUNT(*) AS count
+           FROM ${rowsTable} mapped
+           JOIN ${ftsTable} fts ON fts.rowid = mapped.id
+           JOIN (
+             SELECT uri FROM (
+               SELECT uri, ${content} AS content FROM ${table}
+             ) searchable
+             WHERE content <> ''
+           ) expected ON expected.uri = mapped.uri`,
+        );
+        checks.push(
+          check(`fts-mapping:${shortName}`, Math.abs(expected - mapping)),
+          check(`fts-rows:${shortName}`, Math.abs(expected - fts)),
+          check(`fts-joined:${shortName}`, Math.abs(expected - joined)),
+        );
+      }
+    }
   }
 
   return {

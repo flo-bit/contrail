@@ -1,3 +1,5 @@
+import { FTS_TRIM_CODE_POINTS } from "./search";
+
 /** Get the dialect from a Database, defaulting to SQLite (for D1 compatibility) */
 export function getDialect(db: { dialect?: SqlDialect }): SqlDialect {
   return db.dialect ?? sqliteDialect;
@@ -9,6 +11,23 @@ function assertSafeField(field: string): void {
   if (!SAFE_FIELD.test(field)) {
     throw new Error(`Invalid field name: ${field}`);
   }
+}
+
+/** Build the SQLite expression used by both incremental and set-based FTS
+ * projection. Only JSON string values participate, matching buildFtsContent(). */
+export function sqliteFtsContentExpression(
+  fields: string[],
+  recordColumn = "record",
+): string {
+  assertSafeField(recordColumn);
+  if (fields.length === 0) throw new Error("FTS fields must not be empty");
+  const terms = fields.map((field) => {
+    assertSafeField(field);
+    const path = `$.${field}`;
+    return `CASE WHEN json_type(${recordColumn}, '${path}') = 'text' THEN json_extract(${recordColumn}, '${path}') ELSE '' END`;
+  });
+  const trimCharacters = `char(${FTS_TRIM_CODE_POINTS.join(", ")})`;
+  return `trim(${terms.join(" || ' ' || ")}, ${trimCharacters})`;
 }
 
 export interface SqlDialect {
@@ -91,8 +110,13 @@ export function buildFtsSchema(
 ): string[] {
   if (dialect.ftsStrategy === "virtual-table") {
     const ftsTable = recordsTable.replace("records_", "fts_");
+    const rowsTable = `${ftsTable}_rows`;
     return [
-      `CREATE VIRTUAL TABLE IF NOT EXISTS ${ftsTable} USING fts5(uri UNINDEXED, content)`
+      `CREATE TABLE IF NOT EXISTS ${rowsTable} (
+        id INTEGER PRIMARY KEY,
+        uri TEXT NOT NULL UNIQUE
+      )`,
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ${ftsTable} USING fts5(content)`,
     ];
   } else {
     const concatExpr = fields
@@ -117,8 +141,9 @@ export function ftsQueryClause(
 } {
   if (dialect.ftsStrategy === "virtual-table") {
     const ftsTable = recordsTable.replace("records_", "fts_");
+    const rowsTable = `${ftsTable}_rows`;
     return {
-      join: `JOIN ${ftsTable} fts ON fts.uri = r.uri`,
+      join: `JOIN ${rowsTable} fts_rows ON fts_rows.uri = r.uri JOIN ${ftsTable} fts ON fts.rowid = fts_rows.id`,
       condition: "fts.content MATCH ?",
       orderExpr: "fts.rank",
       orderDirection: "asc",

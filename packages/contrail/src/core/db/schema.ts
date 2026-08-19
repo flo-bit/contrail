@@ -2,10 +2,16 @@ import type {
   ContrailConfig,
   Database,
   ResolvedContrailConfig,
+  Statement,
   ResolvedMaps,
 } from "../types";
 import type { SqlDialect } from "../dialect";
-import { buildFtsSchema, getDialect, postgresDialect } from "../dialect";
+import {
+  buildFtsSchema,
+  getDialect,
+  postgresDialect,
+  sqliteFtsContentExpression,
+} from "../dialect";
 import {
   countColumnName,
   getRelationField,
@@ -13,11 +19,15 @@ import {
   recordsTableName,
   resolveConfig,
 } from "../types";
-import { getSearchableFields } from "../search";
+import {
+  ftsRowTableName,
+  ftsTableName,
+  getSearchableFields,
+} from "../search";
 import { buildLabelsSchema } from "../labels/schema";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 10;
+export const CONTRAIL_SCHEMA_VERSION = 11;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -360,6 +370,181 @@ export function buildFtsTables(
   return statements;
 }
 
+async function virtualFtsColumns(
+  db: Database,
+  table: string,
+): Promise<string[]> {
+  const rows = await db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all<{ name: string }>();
+  return (rows.results ?? []).map((row) => row.name);
+}
+
+function populateVirtualFtsStatements(
+  db: Database,
+  collection: string,
+  fields: string[],
+): Statement[] {
+  const recordsTable = recordsTableName(collection);
+  const ftsTable = ftsTableName(collection);
+  const rowsTable = ftsRowTableName(collection);
+  const content = sqliteFtsContentExpression(fields);
+  return [
+    db.prepare(
+      `INSERT INTO ${rowsTable} (uri)
+       SELECT uri FROM (
+         SELECT uri, ${content} AS content FROM ${recordsTable}
+       ) rebuilt
+       WHERE content <> ''
+       ORDER BY uri`,
+    ),
+    db.prepare(
+      `INSERT INTO ${ftsTable} (rowid, content)
+       SELECT fts_rows.id, rebuilt.content
+       FROM (
+         SELECT uri, ${content} AS content FROM ${recordsTable}
+       ) rebuilt
+       JOIN ${rowsTable} fts_rows ON fts_rows.uri = rebuilt.uri
+       WHERE rebuilt.content <> ''`,
+    ),
+  ];
+}
+
+async function verifyVirtualFtsProjection(
+  db: Database,
+  collection: string,
+  fields: string[],
+): Promise<void> {
+  const recordsTable = recordsTableName(collection);
+  const ftsTable = ftsTableName(collection);
+  const rowsTable = ftsRowTableName(collection);
+  const content = sqliteFtsContentExpression(fields);
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM (
+            SELECT uri, ${content} AS content FROM ${recordsTable}
+          ) expected WHERE content <> '') AS expected_rows,
+         (SELECT COUNT(*) FROM ${rowsTable}) AS mapping_rows,
+         (SELECT COUNT(*) FROM ${ftsTable}) AS fts_rows,
+         (SELECT COUNT(*)
+            FROM ${rowsTable} mapped
+            JOIN ${ftsTable} fts ON fts.rowid = mapped.id
+            JOIN (
+              SELECT uri FROM (
+                SELECT uri, ${content} AS content FROM ${recordsTable}
+              ) searchable
+              WHERE content <> ''
+            ) expected ON expected.uri = mapped.uri) AS joined_rows`,
+    )
+    .first<{
+      expected_rows: number | string;
+      mapping_rows: number | string;
+      fts_rows: number | string;
+      joined_rows: number | string;
+    }>();
+  const expected = Number(row?.expected_rows ?? 0);
+  const mapping = Number(row?.mapping_rows ?? 0);
+  const fts = Number(row?.fts_rows ?? 0);
+  const joined = Number(row?.joined_rows ?? 0);
+  if (mapping !== expected || fts !== expected || joined !== expected) {
+    throw new Error(
+      `FTS migration verification failed for ${collection}: ` +
+        `expected=${expected}, mapping=${mapping}, fts=${fts}, joined=${joined}`,
+    );
+  }
+}
+
+async function migrateLegacyVirtualFts(
+  db: Database,
+  config: ContrailConfig,
+  dialect: SqlDialect,
+  collection: string,
+  fields: string[],
+): Promise<void> {
+  const recordsTable = recordsTableName(collection);
+  const ftsTable = ftsTableName(collection);
+  const rowsTable = ftsRowTableName(collection);
+  const schema = buildFtsSchema(dialect, recordsTable, fields);
+  await db.batch([
+    db.prepare(`DROP TABLE IF EXISTS ${ftsTable}`),
+    db.prepare(`DROP TABLE IF EXISTS ${rowsTable}`),
+    ...schema.map((statement) => db.prepare(statement)),
+    ...populateVirtualFtsStatements(db, collection, fields),
+  ]);
+  await verifyVirtualFtsProjection(db, collection, fields);
+  (config.logger ?? console).log(
+    `[schema] migrated ${ftsTable} to indexed rowid maintenance`,
+  );
+}
+
+async function rebuildVirtualFtsProjection(
+  db: Database,
+  collection: string,
+  fields: string[],
+): Promise<void> {
+  const ftsTable = ftsTableName(collection);
+  const rowsTable = ftsRowTableName(collection);
+  await db.batch([
+    db.prepare(`DELETE FROM ${ftsTable}`),
+    db.prepare(`DELETE FROM ${rowsTable}`),
+    ...populateVirtualFtsStatements(db, collection, fields),
+  ]);
+  await verifyVirtualFtsProjection(db, collection, fields);
+}
+
+async function applyFtsTables(
+  db: Database,
+  config: ContrailConfig,
+  dialect: SqlDialect,
+): Promise<void> {
+  if (dialect.ftsStrategy === "generated-column") {
+    for (const statement of buildFtsTables(config, dialect)) {
+      await db.prepare(statement).run();
+    }
+    return;
+  }
+
+  for (const [collection, colConfig] of Object.entries(config.collections)) {
+    const fields = getSearchableFields(collection, colConfig);
+    if (!fields || fields.length === 0) continue;
+    const ftsTable = ftsTableName(collection);
+    const columns = await virtualFtsColumns(db, ftsTable);
+    if (columns.includes("uri")) {
+      await migrateLegacyVirtualFts(
+        db,
+        config,
+        dialect,
+        collection,
+        fields,
+      );
+      continue;
+    }
+
+    const schema = buildFtsSchema(
+      dialect,
+      recordsTableName(collection),
+      fields,
+    );
+    await db.prepare(schema[0]!).run();
+    try {
+      await db.prepare(schema[1]!).run();
+    } catch {
+      // FTS5 is optional in some SQLite builds. The ordinary mapping table is
+      // harmless when the virtual table cannot be created.
+    }
+    const currentColumns =
+      columns.length > 0 ? columns : await virtualFtsColumns(db, ftsTable);
+    if (currentColumns.length > 0) {
+      // applyFtsTables only runs while the global schema fingerprint is stale.
+      // Rebuild even an already content-only table before accepting the new
+      // fingerprint: a prior migration may have committed and then failed
+      // verification, or the configured searchable fields may have changed.
+      await rebuildVirtualFtsProjection(db, collection, fields);
+    }
+  }
+}
+
 interface MigrationOp {
   table: string;
   column: string;
@@ -540,13 +725,7 @@ export async function initSchema(
     }
   }
 
-  for (const statement of fts) {
-    try {
-      await db.prepare(statement).run();
-    } catch {
-      // FTS5 is not available in every SQLite build.
-    }
-  }
+  await applyFtsTables(db, config, dialect);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
   await runMigrations(db, hasFeeds);
