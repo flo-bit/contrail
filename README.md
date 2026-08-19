@@ -113,7 +113,7 @@ Consumers connect and generate Atcute types with one command:
 pnpx @atmo-dev/contrail connect https://api.example.com
 ```
 
-The generated client sends anonymous requests directly. Protected methods lazily discover service auth and still fail closed on endpoint or service-DID mismatches. The content-addressed Lexicon digest remains in the version-2 provider lock; the complete provider method set is not pinned at runtime, so additive deployments do not interrupt existing calls.
+The generated client sends anonymous requests directly. Protected methods use a least-privilege OAuth scope with the provider's exact fragmented service audience and one `lxm` per protected method. They lazily discover service auth and fail closed on endpoint, base-DID, audience, scope, or protected-method mismatches. The content-addressed Lexicon digest remains in the version-2 provider lock; the complete provider method set is not pinned at runtime, so additive anonymous deployments do not interrupt existing calls.
 
 An application that owns the provider source can generate the same typed surface before deployment without creating a provider lock:
 

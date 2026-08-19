@@ -70,6 +70,10 @@ describe("public service consumer integration", () => {
       namespace: "com.example",
       profiles: [],
       notify: true,
+      serviceAuth: {
+        audience: "did:web:api.example.com#contrail",
+        methods: ["notifyOfUpdate"],
+      },
       orderedSource: { source: "jetstream", epoch: "e2e" },
       collections: {
         event: {
@@ -132,10 +136,26 @@ describe("public service consumer integration", () => {
       notifyMethod: "com.example.notifyOfUpdate",
     });
     expect(generatedClient.created).toBe(true);
-    expect(connection.lock.serviceAuth).toBeNull();
+    expect(connection.lock.serviceAuth).toEqual({
+      type: "atproto-service-auth",
+      serviceDid: "did:web:api.example.com",
+      audience: "did:web:api.example.com#contrail",
+      scope:
+        "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate",
+      methods: [
+        { id: "com.example.notifyOfUpdate", type: "procedure" },
+      ],
+    });
     expect(connection.lock.methods).not.toContain("com.example.notifyOfUpdate");
-    expect(readFileSync(generatedClient.path, "utf8")).toContain(
+    const generatedClientSource = readFileSync(generatedClient.path, "utf8");
+    expect(generatedClientSource).toContain(
       'notifyMethod: "com.example.notifyOfUpdate"',
+    );
+    expect(generatedClientSource).toContain(
+      'serviceAudience: "did:web:api.example.com#contrail"',
+    );
+    expect(generatedClientSource).toContain(
+      'scope: "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate"',
     );
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });

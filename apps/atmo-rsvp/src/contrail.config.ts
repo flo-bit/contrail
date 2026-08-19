@@ -10,7 +10,7 @@ export const config: ContrailConfig = {
   },
   notify: true,
   serviceAuth: {
-    audience: "did:web:api.atmo.rsvp",
+    audience: "did:web:api.atmo.rsvp#contrail",
     methods: ["getFeed", "notifyOfUpdate"],
   },
   maintenance: { optimize: true },

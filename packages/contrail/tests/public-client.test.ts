@@ -8,6 +8,10 @@ import {
 import type { PublicServiceManifest } from "../src/public-service";
 
 const endpoint = "https://api.example.com";
+const serviceDid = "did:web:api.example.com";
+const serviceAudience = "did:web:api.example.com#contrail";
+const serviceScope =
+  "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.getFeed";
 const method = "com.example.getFeed";
 const notifyMethod = "com.example.notifyOfUpdate";
 const collection = "community.example.event";
@@ -34,7 +38,9 @@ function manifest(): PublicServiceManifest {
     methods: ["com.example.getCursor"],
     serviceAuth: {
       type: "atproto-service-auth",
-      audience: "did:web:api.example.com",
+      serviceDid,
+      audience: serviceAudience,
+      scope: serviceScope,
       methods: [{ id: method, type: "query" }],
     },
   };
@@ -44,7 +50,7 @@ function authenticatedClient(jwt: string) {
   const handler = vi.fn(async (pathname: string) => {
     const url = new URL(pathname, "https://pds.example.com");
     expect(url.pathname).toBe("/xrpc/com.atproto.server.getServiceAuth");
-    expect(url.searchParams.get("aud")).toBe("did:web:api.example.com");
+    expect(url.searchParams.get("aud")).toBe(serviceAudience);
     expect(url.searchParams.get("lxm")).toBe(method);
     return Response.json({ token: jwt });
   });
@@ -70,14 +76,78 @@ describe("public service client", () => {
     ).toThrow("loopback HTTP");
   });
 
-  it("rejects a configured OAuth scope for a different service DID", () => {
+  it("rejects a configured OAuth scope for a different service audience", () => {
     expect(() =>
       createPublicServiceClient({
         endpoint,
-        serviceDid: "did:web:api.example.com",
-        scope: "rpc?lxm=*&aud=did:web:other.example.com",
+        serviceDid,
+        serviceAudience,
+        scope:
+          "rpc?aud=did:web:other.example.com%23contrail&lxm=com.example.getFeed",
+        protectedMethods: [method],
       }),
-    ).toThrow("OAuth scope mismatch");
+    ).toThrow("different service audience");
+  });
+
+  it("accepts semantically equivalent scope parameter ordering", () => {
+    const client = createPublicServiceClient({
+      endpoint,
+      serviceDid,
+      serviceAudience,
+      scope:
+        "rpc?lxm=com.example.getFeed&aud=did:web:api.example.com%23contrail",
+      protectedMethods: [method],
+    });
+    expect(client.scope).toBe(serviceScope);
+  });
+
+  it("rejects legacy incomplete or wildcard service-auth configuration", () => {
+    expect(() =>
+      createPublicServiceClient({ endpoint, serviceDid }),
+    ).toThrow("connect --update");
+    expect(() =>
+      createPublicServiceClient({
+        endpoint,
+        serviceDid,
+        serviceAudience,
+        scope: "rpc?aud=did:web:api.example.com%23contrail&lxm=*",
+        protectedMethods: [method],
+      }),
+    ).toThrow("connect --update");
+    expect(() =>
+      createPublicServiceClient({
+        endpoint,
+        serviceDid,
+        serviceAudience,
+        scope: serviceScope,
+        protectedMethods: [method, notifyMethod],
+      }),
+    ).toThrow("exact protected methods");
+  });
+
+  it("reads nulls and an empty method list as an anonymous provider", () => {
+    // `lex.config.js` is reference material consumers paste from, and an
+    // untyped copy spells "no service auth" as nulls rather than absent keys.
+    const client = createPublicServiceClient({
+      endpoint,
+      serviceDid: null,
+      serviceAudience: null,
+      scope: null,
+      protectedMethods: [],
+    });
+    expect(client.scope).toBeNull();
+  });
+
+  it("still rejects a partially configured contract", () => {
+    expect(() =>
+      createPublicServiceClient({
+        endpoint,
+        serviceDid,
+        serviceAudience,
+        scope: serviceScope,
+        protectedMethods: [],
+      }),
+    ).toThrow("incomplete");
   });
 
   it("keeps anonymous requests anonymous", async () => {
@@ -128,6 +198,10 @@ describe("public service client", () => {
     const handler = publicServiceFetchHandler({
       endpoint,
       authenticatedClient: pds.client,
+      serviceDid,
+      serviceAudience,
+      scope: serviceScope,
+      protectedMethods: [method],
       fetch: fetcher,
     });
 
@@ -160,15 +234,15 @@ describe("public service client", () => {
     });
     const publicClient = createPublicServiceClient({
       endpoint,
-      serviceDid: "did:web:api.example.com",
-      scope: "rpc?lxm=*&aud=did:web:api.example.com",
+      serviceDid,
+      serviceAudience,
+      scope: serviceScope,
+      protectedMethods: [method],
       serviceMethods: [method],
       fetch: fetcher,
     });
     expect(publicClient.endpoint).toBe(endpoint);
-    expect(publicClient.scope).toBe(
-      "rpc?lxm=*&aud=did:web:api.example.com",
-    );
+    expect(publicClient.scope).toBe(serviceScope);
     const client = publicClient.authenticated(pds.client);
     expect(publicClient.authenticated(pds.client)).toBe(client);
 
@@ -239,7 +313,10 @@ describe("public service client", () => {
     const discovered = manifest();
     discovered.serviceAuth = {
       type: "atproto-service-auth",
-      audience: "did:web:api.example.com",
+      serviceDid,
+      audience: serviceAudience,
+      scope:
+        "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.getFeed&lxm=com.example.notifyOfUpdate",
       methods: [
         { id: method, type: "query" },
         { id: notifyMethod, type: "procedure" },
@@ -308,7 +385,11 @@ describe("public service client", () => {
     const notificationError = vi.fn();
     const client = createPublicServiceClient({
       endpoint,
-      serviceDid: "did:web:api.example.com",
+      serviceDid,
+      serviceAudience,
+      scope:
+        "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.getFeed&lxm=com.example.notifyOfUpdate",
+      protectedMethods: [method, notifyMethod],
       serviceMethods: [method, notifyMethod],
       collections: [collection],
       notifyMethod,
@@ -441,7 +522,39 @@ describe("public service client", () => {
     ).toBe(true);
   });
 
-  it("refuses a discovered service-auth audience that differs from its lock", async () => {
+  it("refuses a discovered service-auth audience fragment that differs from its lock", async () => {
+    const pds = authenticatedClient(token());
+    const discovered = manifest();
+    discovered.serviceAuth = {
+      type: "atproto-service-auth",
+      serviceDid,
+      audience: "did:web:api.example.com#other",
+      scope:
+        "rpc?aud=did:web:api.example.com%23other&lxm=com.example.getFeed",
+      methods: [{ id: method, type: "query" }],
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/.well-known/contrail")
+        ? Response.json(discovered)
+        : new Response(null, { status: 401 }),
+    );
+    const client = createPublicServiceClient({
+      endpoint,
+      authenticatedClient: pds.client,
+      serviceDid,
+      serviceAudience,
+      scope: serviceScope,
+      protectedMethods: [method],
+      fetch: fetcher,
+    });
+
+    await expect((client as any).get(method)).rejects.toThrow(
+      "service audience mismatch",
+    );
+    expect(pds.handler).not.toHaveBeenCalled();
+  });
+
+  it("refuses a discovered service DID that differs from its lock", async () => {
     const pds = authenticatedClient(token());
     const fetcher = vi.fn(async (input: RequestInfo | URL) =>
       String(input).endsWith("/.well-known/contrail")
@@ -452,6 +565,10 @@ describe("public service client", () => {
       endpoint,
       authenticatedClient: pds.client,
       serviceDid: "did:web:other.example.com",
+      serviceAudience: "did:web:other.example.com#contrail",
+      scope:
+        "rpc?aud=did:web:other.example.com%23contrail&lxm=com.example.getFeed",
+      protectedMethods: [method],
       fetch: fetcher,
     });
 

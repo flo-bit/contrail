@@ -1,4 +1,5 @@
-import { isDid } from "@atcute/lexicons/syntax";
+import type { AtprotoAudience } from "@atcute/lexicons/syntax";
+import { parseServiceAudience } from "../service-auth-contract.js";
 import type { SqlDialect } from "./dialect";
 
 // Database interface — D1 implements this natively
@@ -251,8 +252,8 @@ export interface OrderedSourceConfig {
 export type AtprotoServiceAuthMethod = "getFeed" | "notifyOfUpdate";
 
 export interface AtprotoServiceAuthConfig {
-  /** Plain service DID used as the exact JWT audience. */
-  audience: string;
+  /** Exact fragmented service reference used as the OAuth and JWT audience. */
+  audience: AtprotoAudience;
   /** Built-in methods that require a method-bound AT Protocol service token. */
   methods: AtprotoServiceAuthMethod[];
   /** Maximum accepted token lifetime and age. Default: 300 seconds. */
@@ -419,8 +420,12 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
     throw new TypeError("orderedSource requires non-empty source and epoch values");
   }
   if (config.serviceAuth) {
-    if (!isDid(config.serviceAuth.audience)) {
-      throw new TypeError("serviceAuth.audience must be a plain DID");
+    try {
+      parseServiceAudience(config.serviceAuth.audience);
+    } catch (error) {
+      throw new TypeError(
+        `serviceAuth.audience must be an absolute AT Protocol DID service reference: ${(error as Error).message}`,
+      );
     }
     if (
       !Array.isArray(config.serviceAuth.methods) ||

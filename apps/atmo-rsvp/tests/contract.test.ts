@@ -46,7 +46,10 @@ describe("api.atmo.rsvp public contract", () => {
     expect(service.manifest.methods).not.toContain("rsvp.atmo.getOverview");
     expect(service.manifest.serviceAuth).toEqual({
       type: "atproto-service-auth",
-      audience: "did:web:api.atmo.rsvp",
+      serviceDid: "did:web:api.atmo.rsvp",
+      audience: "did:web:api.atmo.rsvp#contrail",
+      scope:
+        "rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=rsvp.atmo.getFeed&lxm=rsvp.atmo.notifyOfUpdate",
       methods: EXPECTED_PROTECTED_METHODS,
     });
     expect(service.lexicons.map((document) => document.id)).toEqual(

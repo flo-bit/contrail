@@ -14,8 +14,10 @@ import { resolveProfiles } from "./profiles";
 import { createServiceAuthGate } from "../service-auth";
 import {
   describePublicService,
+  hostsServiceDidDocument,
   normalizeLexiconDocuments,
   normalizePublicServiceEndpoint,
+  validatePublicServiceAuthEndpoint,
   validatePublicServiceLexicons,
   type PublicServiceOptions,
 } from "../../public-service";
@@ -71,11 +73,12 @@ export function createApp(
     ? normalizeLexiconDocuments(options.lexicons ?? [])
     : (options.lexicons ?? []);
   if (options.publicService) {
-    normalizePublicServiceEndpoint(
+    const publicEndpoint = normalizePublicServiceEndpoint(
       options.publicService.endpoint,
       options.publicService,
     );
     validatePublicServiceLexicons(config, lexicons);
+    validatePublicServiceAuthEndpoint(config, options.publicService);
     const description = describePublicService(
       config,
       options.publicService,
@@ -88,23 +91,24 @@ export function createApp(
     });
     if (
       serviceAuth &&
-      serviceAuth.audience ===
-        `did:web:${new URL(options.publicService.endpoint).hostname}`
+      hostsServiceDidDocument(serviceAuth.serviceDid, publicEndpoint)
     ) {
       app.get("/.well-known/did.json", (c) => {
         c.header("content-type", "application/did+ld+json; charset=UTF-8");
         c.header("cache-control", "public, max-age=300");
-        return c.json({
-          "@context": ["https://www.w3.org/ns/did/v1"],
-          id: serviceAuth.audience,
-          service: [
-            {
-              id: `${serviceAuth.audience}#contrail`,
-              type: "ContrailService",
-              serviceEndpoint: options.publicService!.endpoint,
-            },
-          ],
-        });
+        return c.body(
+          JSON.stringify({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            id: serviceAuth.serviceDid,
+            service: [
+              {
+                id: serviceAuth.audience,
+                type: "ContrailService",
+                serviceEndpoint: publicEndpoint,
+              },
+            ],
+          }),
+        );
       });
     }
     app.get("/lexicons", async (c) => {

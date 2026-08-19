@@ -126,7 +126,7 @@ export const config: ContrailConfig = {
   namespace: "events.example",
   notify: true,
   serviceAuth: {
-    audience: "did:web:api.example.com",
+    audience: "did:web:api.example.com#contrail",
     methods: ["getFeed", "notifyOfUpdate"],
   },
   collections,
@@ -141,7 +141,7 @@ export const config: ContrailConfig = {
 The provider verifies:
 
 - the JWT signature against the issuer DID's `#atproto` key;
-- the exact audience DID;
+- the exact fragmented service audience;
 - the token's exact `lxm` method claim;
 - expiration and maximum token age; and
 - the route-specific ownership rule.
@@ -172,13 +172,15 @@ After deploying, `contrail connect https://api.example.com` creates the version-
 
 ### OAuth permission versus token binding
 
-A client can request one OAuth permission for all methods at this service:
+Contrail generates one least-privilege OAuth permission containing the exact fragmented audience and one sorted `lxm` parameter per protected method:
 
 ```text
-rpc?lxm=*&aud=did:web:api.example.com
+rpc?aud=did:web:api.example.com%23contrail&lxm=events.example.getFeed&lxm=events.example.notifyOfUpdate
 ```
 
-The wildcard belongs to the OAuth scope. It avoids asking the user for one scope per method. Each call to `com.atproto.server.getServiceAuth` should still pass the specific method NSID as `lxm`, producing a short-lived method-bound token.
+Current granular OAuth RPC syntax requires the absolute DID service reference; a plain DID may be silently removed from an authorization request. The `%23` is the encoded `#` delimiter. Wildcard `lxm=*` permissions are not generated because they are broader than necessary and can trigger misleading consent descriptions.
+
+Each call to `com.atproto.server.getServiceAuth` still passes the specific method NSID as `lxm` and the decoded `did:web:api.example.com#contrail` audience, producing a short-lived method-bound token.
 
 For example, a feed token uses:
 
@@ -192,22 +194,25 @@ and cannot be reused for:
 lxm=events.example.notifyOfUpdate
 ```
 
-### Service DID
+### Service DID and audience
 
-When the service-auth audience matches the public origin, such as:
+For this configuration, the identities are distinct:
 
 ```text
-did:web:api.example.com
-https://api.example.com
+base service DID:  did:web:api.example.com
+exact audience:    did:web:api.example.com#contrail
+public endpoint:   https://api.example.com
 ```
 
-Contrail publishes the service DID document at:
+Contrail publishes the base DID document at:
 
 ```text
 https://api.example.com/.well-known/did.json
 ```
 
-The service DID is the stable JWT audience. The AppView does not need a signing key merely to receive and verify user-issued service tokens.
+The document `id` is the base DID and its Contrail service entry `id` is the exact fragmented audience. Startup fails if an automatically hosted `did:web` audience resolves to a different DID-document URL. A `did:plc` audience remains externally managed and does not create a local DID route.
+
+The exact service reference—not the base DID—is the JWT audience passed to `getServiceAuth` and verified by Contrail. The AppView does not need a signing key merely to receive and verify user-issued service tokens.
 
 ## Profiles and internal follow projections
 

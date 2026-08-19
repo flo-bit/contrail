@@ -24,6 +24,10 @@ function queryLexicons(...ids: string[]) {
   }));
 }
 
+function procedureLexicon(id: string) {
+  return { lexicon: 1, id, defs: { main: { type: "procedure" } } };
+}
+
 const MINIMAL_PUBLIC_LEXICONS = queryLexicons(
   "com.example.getCursor",
   "com.example.event.getRecord",
@@ -258,6 +262,105 @@ describe("createWorker", () => {
         )
       ).status,
     ).toBe(404);
+  });
+
+  it("publishes a coherent fragmented service audience and DID document", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      notify: true,
+      serviceAuth: {
+        audience: "did:web:api.example.com#contrail",
+        methods: ["notifyOfUpdate"],
+      },
+    };
+    const worker = createWorker(config, {
+      lexicons: [
+        ...MINIMAL_PUBLIC_LEXICONS,
+        procedureLexicon("com.example.notifyOfUpdate"),
+      ],
+      publicService: { endpoint: "https://api.example.com" },
+    });
+    const env = { DB: createSqliteDatabase(":memory:") };
+
+    const manifest = await (
+      await worker.fetch(
+        new Request("https://api.example.com/.well-known/contrail"),
+        env,
+      )
+    ).json<any>();
+    expect(manifest.serviceAuth).toEqual({
+      type: "atproto-service-auth",
+      serviceDid: "did:web:api.example.com",
+      audience: "did:web:api.example.com#contrail",
+      scope:
+        "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate",
+      methods: [
+        { id: "com.example.notifyOfUpdate", type: "procedure" },
+      ],
+    });
+
+    const response = await worker.fetch(
+      new Request("https://api.example.com/.well-known/did.json"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain(
+      "application/did+ld+json",
+    );
+    expect(await response.json()).toEqual({
+      "@context": ["https://www.w3.org/ns/did/v1"],
+      id: "did:web:api.example.com",
+      service: [
+        {
+          id: "did:web:api.example.com#contrail",
+          type: "ContrailService",
+          serviceEndpoint: "https://api.example.com",
+        },
+      ],
+    });
+  });
+
+  it("rejects an automatically hosted did:web audience for another origin", () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      notify: true,
+      serviceAuth: {
+        audience: "did:web:other.example.com#contrail",
+        methods: ["notifyOfUpdate"],
+      },
+    };
+    expect(() =>
+      createWorker(config, {
+        lexicons: [
+          ...MINIMAL_PUBLIC_LEXICONS,
+          procedureLexicon("com.example.notifyOfUpdate"),
+        ],
+        publicService: { endpoint: "https://api.example.com" },
+      }),
+    ).toThrow("resolves its DID document");
+  });
+
+  it("leaves externally managed did:plc audiences without a local DID route", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      notify: true,
+      serviceAuth: {
+        audience: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#contrail",
+        methods: ["notifyOfUpdate"],
+      },
+    };
+    const worker = createWorker(config, {
+      lexicons: [
+        ...MINIMAL_PUBLIC_LEXICONS,
+        procedureLexicon("com.example.notifyOfUpdate"),
+      ],
+      publicService: { endpoint: "https://api.example.com" },
+    });
+    const response = await worker.fetch(
+      new Request("https://api.example.com/.well-known/did.json"),
+      { DB: createSqliteDatabase(":memory:") },
+    );
+    expect(response.status).toBe(404);
   });
 
   it("preserves the legacy cursor response without an ordered source", async () => {

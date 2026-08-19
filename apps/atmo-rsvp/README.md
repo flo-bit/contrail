@@ -29,10 +29,10 @@ rsvp.atmo.getFeed
 rsvp.atmo.notifyOfUpdate
 ```
 
-The service-auth audience is `did:web:api.atmo.rsvp`. A consumer can request one OAuth permission for both protected methods:
+The base service DID is `did:web:api.atmo.rsvp`; the exact service-auth audience is `did:web:api.atmo.rsvp#contrail`. A consumer requests one least-privilege OAuth permission for both protected methods:
 
 ```text
-rpc?lxm=*&aud=did:web:api.atmo.rsvp
+rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=rsvp.atmo.getFeed&lxm=rsvp.atmo.notifyOfUpdate
 ```
 
 Tokens remain method-bound. Call `com.atproto.server.getServiceAuth` with the specific `lxm` being invoked, then send its token as `Authorization: Bearer <token>`.
