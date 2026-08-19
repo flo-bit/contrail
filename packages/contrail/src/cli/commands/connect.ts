@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import {
@@ -18,15 +19,25 @@ import {
 import { isNsid } from "@atcute/lexicons/syntax";
 import type { CAC } from "cac";
 import {
-  contractFromManifest,
+  describePublicService,
   digestLexiconDocuments,
-  digestPublicContract,
   isPublicServiceManifest,
   normalizePublicServiceEndpoint,
-  validateManifestContract,
+  validateServiceManifest,
+  type LexiconDocument,
   type PublicServiceAuthContract,
   type PublicServiceManifest,
 } from "../../public-service.js";
+import {
+  configProjectRoot,
+  findConfigFile,
+  loadConfig,
+} from "../../cli-config.js";
+import type { ContrailConfig } from "../../core/types.js";
+import {
+  defaultConsumerLexiconRoot,
+  prepareDevLexicons,
+} from "../dev-lexicons.js";
 import { generateLexiconTypesWithAtcute } from "../atcute.js";
 
 const MAX_DISCOVERY_BYTES = 10 * 1024 * 1024;
@@ -53,12 +64,9 @@ interface ConnectOptions {
   allowInsecureHttp?: boolean;
 }
 
-export interface ProviderLock {
-  format: "contrail.provider-lock";
-  version: 1;
+export interface ProviderDefinition {
   endpoint: string;
   namespace: string;
-  contractDigest: string;
   lexiconDigest: string;
   methods: string[];
   collections: string[];
@@ -66,6 +74,11 @@ export interface ProviderLock {
   lexiconRoot: string;
   /** Explicit loopback-only HTTP exception for a local development provider. */
   allowInsecureHttp?: true;
+}
+
+export interface ProviderLock extends ProviderDefinition {
+  format: "contrail.provider-lock";
+  version: 2;
 }
 
 async function readProviderLock(path: string): Promise<ProviderLock | null> {
@@ -87,11 +100,17 @@ async function readProviderLock(path: string): Promise<ProviderLock | null> {
     !value ||
     typeof value !== "object" ||
     lock.format !== "contrail.provider-lock" ||
-    lock.version !== 1 ||
+    lock.version !== 2 ||
+    "contractDigest" in lock ||
     typeof lock.endpoint !== "string" ||
     typeof lock.lexiconRoot !== "string" ||
     (lock.allowInsecureHttp !== undefined && lock.allowInsecureHttp !== true)
   ) {
+    if ((value as { version?: unknown }).version === 1) {
+      throw new Error(
+        "existing Contrail provider lock uses unsupported version 1; remove it and reconnect",
+      );
+    }
     throw new Error("existing Contrail provider lock is malformed");
   }
   return lock as ProviderLock;
@@ -186,7 +205,10 @@ export async function ensureConsumerLexiconConfig(options: {
   root: string;
   out: string;
   types?: string;
-  lock: ProviderLock;
+  /** API definition whose Lexicons and collections are generated. */
+  api: ProviderDefinition;
+  /** Runtime deployment target. Defaults to the API source itself. */
+  target?: ProviderDefinition;
 }): Promise<{ path: string; created: boolean; updated: boolean }> {
   const root = resolve(options.root);
   let path = join(root, "lex.config.js");
@@ -205,9 +227,10 @@ export async function ensureConsumerLexiconConfig(options: {
     options.types ?? "src/contrail/types/index.ts",
   );
   const typesRoot = relative(root, dirname(typesIndex)).replaceAll("\\", "/");
-  const serviceDid = options.lock.serviceAuth?.audience ?? null;
+  const target = options.target ?? options.api;
+  const serviceDid = target.serviceAuth?.audience ?? null;
   const scope = serviceDid ? `rpc?lxm=*&aud=${serviceDid}` : null;
-  const source = `${GENERATED_LEXICON_CONFIG_HEADER}export default {\n  contrail: {\n    endpoint: ${JSON.stringify(options.lock.endpoint)},\n    serviceDid: ${JSON.stringify(serviceDid)},\n    scope: ${JSON.stringify(scope)},\n    collections: ${formatStringArray(options.lock.collections, 4)},\n  },\n  generate: {\n    files: [${JSON.stringify(`${patternRoot}/**/*.json`)}],\n    outdir: ${JSON.stringify(`${typesRoot}/`)},\n  },\n};\n`;
+  const source = `${GENERATED_LEXICON_CONFIG_HEADER}export default {\n  contrail: {\n    endpoint: ${JSON.stringify(target.endpoint)},\n    serviceDid: ${JSON.stringify(serviceDid)},\n    scope: ${JSON.stringify(scope)},\n    collections: ${formatStringArray(target.collections, 4)},\n  },\n  generate: {\n    files: [${JSON.stringify(`${patternRoot}/**/*.json`)}],\n    outdir: ${JSON.stringify(`${typesRoot}/`)},\n  },\n};\n`;
 
   if (await exists(path)) {
     const current = await readFile(path, "utf8");
@@ -217,7 +240,9 @@ export async function ensureConsumerLexiconConfig(options: {
     ) {
       return { path, created: false, updated: false };
     }
-    const stagedDirectory = await mkdtemp(join(dirname(path), ".contrail-lex-"));
+    const stagedDirectory = await mkdtemp(
+      join(dirname(path), ".contrail-lex-"),
+    );
     const staged = join(stagedDirectory, basename(path));
     try {
       await writeFile(staged, source);
@@ -248,7 +273,10 @@ export async function ensureConsumerClientModule(options: {
   root: string;
   file?: string;
   types?: string;
-  lock: ProviderLock;
+  /** API definition used for generated methods, collections, and types. */
+  api: ProviderDefinition;
+  /** Default runtime deployment. Defaults to the API source itself. */
+  target?: ProviderDefinition;
   /** Local-development notification method not advertised as a public query. */
   notifyMethod?: string;
 }): Promise<{ path: string; created: boolean; updated: boolean }> {
@@ -271,6 +299,7 @@ export async function ensureConsumerClientModule(options: {
   const path = resolveInsideRoot(root, selected);
   const isTypeScript = selected.endsWith(".ts");
   let generatedImport = "";
+  let generatedTypeImport = "";
   if (isTypeScript) {
     const types = resolveInsideRoot(
       root,
@@ -280,20 +309,43 @@ export async function ensureConsumerClientModule(options: {
     specifier = specifier.replace(/\.(?:ts|js)$/, ".js");
     if (!specifier.startsWith(".")) specifier = `./${specifier}`;
     generatedImport = `import type {} from ${JSON.stringify(specifier)};\n`;
+    generatedTypeImport =
+      'import type { PublicServiceClientOptions } from "@atmo-dev/contrail/client";\n';
   }
-  const serviceDid = options.lock.serviceAuth?.audience;
-  const scope = serviceDid ? `rpc?lxm=*&aud=${serviceDid}` : null;
-  const protectedMethods =
-    options.lock.serviceAuth?.methods.map(({ id }) => id) ?? [];
-  const serviceMethods = [
-    ...new Set([...options.lock.methods, ...protectedMethods]),
-  ].sort();
-  const notifyMethod =
+  const target = options.target ?? options.api;
+  const targetServiceDid = target.serviceAuth?.audience;
+  const targetScope = targetServiceDid
+    ? `rpc?lxm=*&aud=${targetServiceDid}`
+    : null;
+  const apiProtectedMethods =
+    options.api.serviceAuth?.methods.map(({ id }) => id) ?? [];
+  const configuredNotifyMethod =
     options.notifyMethod ??
-    serviceMethods.find(
-      (method) => method === `${options.lock.namespace}.notifyOfUpdate`,
+    [...options.api.methods, ...apiProtectedMethods].find(
+      (method) => method === `${options.api.namespace}.notifyOfUpdate`,
     );
-  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedImport}\nexport const contrail = createPublicServiceClient({\n  endpoint: ${JSON.stringify(options.lock.endpoint)},${options.lock.allowInsecureHttp ? "\n  allowInsecureHttp: true," : ""}\n  contractDigest: ${JSON.stringify(options.lock.contractDigest)},${serviceDid ? `\n  serviceDid: ${JSON.stringify(serviceDid)},\n  scope: ${JSON.stringify(scope)},` : ""}\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.lock.collections, 2)},${notifyMethod ? `\n  notifyMethod: ${JSON.stringify(notifyMethod)},` : ""}\n});\n`;
+  const serviceMethods = [
+    ...new Set([
+      ...options.api.methods,
+      ...apiProtectedMethods,
+      ...(configuredNotifyMethod ? [configuredNotifyMethod] : []),
+    ]),
+  ].sort();
+  const targetProtectedMethods =
+    target.serviceAuth?.methods.map(({ id }) => id) ?? [];
+  const targetMethods = [
+    ...new Set([...target.methods, ...targetProtectedMethods]),
+  ].sort();
+  const notifyMethod = configuredNotifyMethod;
+  const targetNotifyMethod = targetMethods.find(
+    (method) => method === `${target.namespace}.notifyOfUpdate`,
+  );
+  const constAssertion = isTypeScript ? " as const" : "";
+  const targetType = isTypeScript
+    ? `\nexport type ContrailTarget = Pick<\n  PublicServiceClientOptions,\n  "endpoint" | "allowInsecureHttp" | "serviceDid" | "scope" | "serviceMethods" | "collections"\n> & {\n  notifyMethod?: PublicServiceClientOptions["notifyMethod"] | null;\n};\n`
+    : "";
+  const targetAnnotation = isTypeScript ? ": ContrailTarget" : "";
+  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedTypeImport}${generatedImport}\nexport const contrailApi = {\n  namespace: ${JSON.stringify(options.api.namespace)},\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.api.collections, 2)},\n  notifyMethod: ${JSON.stringify(notifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailTarget = {\n  endpoint: ${JSON.stringify(target.endpoint)},${target.allowInsecureHttp ? "\n  allowInsecureHttp: true," : ""}${targetServiceDid ? `\n  serviceDid: ${JSON.stringify(targetServiceDid)},\n  scope: ${JSON.stringify(targetScope)},` : ""}\n  serviceMethods: ${formatStringArray(targetMethods, 2)},\n  collections: ${formatStringArray(target.collections, 2)},\n  notifyMethod: ${JSON.stringify(targetNotifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailMethods = contrailTarget.serviceMethods;\n${targetType}\nexport function createContrailClient(target${targetAnnotation} = contrailTarget) {\n  const { notifyMethod: targetNotifyMethod, ...runtimeTarget } = target;\n  const notifyMethod =\n    targetNotifyMethod === undefined\n      ? contrailApi.notifyMethod\n      : targetNotifyMethod;\n  return createPublicServiceClient({\n    ...runtimeTarget,\n    serviceMethods: target.serviceMethods ?? contrailApi.serviceMethods,\n    collections: target.collections ?? contrailApi.collections,\n    ...(notifyMethod ? { notifyMethod } : {}),\n  });\n}\n\nexport function createLocalContrailClient(\n  endpoint = "http://127.0.0.1:8787",\n) {\n  return createContrailClient({\n    endpoint,\n    allowInsecureHttp: true,\n    serviceMethods: contrailApi.serviceMethods,\n    collections: contrailApi.collections,\n    notifyMethod: contrailApi.notifyMethod,\n  });\n}\n\nexport const contrail = createContrailClient();\n`;
   await mkdir(dirname(path), { recursive: true });
 
   if (await exists(path)) {
@@ -301,7 +353,9 @@ export async function ensureConsumerClientModule(options: {
     if (!current.startsWith(GENERATED_CLIENT_HEADER) || current === source) {
       return { path, created: false, updated: false };
     }
-    const stagedDirectory = await mkdtemp(join(dirname(path), ".contrail-client-"));
+    const stagedDirectory = await mkdtemp(
+      join(dirname(path), ".contrail-client-"),
+    );
     const staged = join(stagedDirectory, basename(path));
     try {
       await writeFile(staged, source);
@@ -321,6 +375,177 @@ export async function ensureConsumerClientModule(options: {
     }
     throw error;
   }
+}
+
+function allServiceMethods(lock: ProviderDefinition): string[] {
+  return [
+    ...new Set([
+      ...lock.methods,
+      ...(lock.serviceAuth?.methods.map(({ id }) => id) ?? []),
+    ]),
+  ].sort();
+}
+
+async function resolveConfigSource(
+  source: string,
+  consumerRoot: string,
+): Promise<string> {
+  const path = resolve(consumerRoot, source);
+  let info;
+  try {
+    info = await stat(path);
+  } catch {
+    throw new Error(`Contrail source does not exist: ${source}`);
+  }
+  if (info.isDirectory()) {
+    const config = findConfigFile(path);
+    if (!config) {
+      throw new Error(`Could not find a Contrail config under ${source}`);
+    }
+    return config;
+  }
+  if (!info.isFile()) {
+    throw new Error(
+      `Contrail source must be a config file or directory: ${source}`,
+    );
+  }
+  return path;
+}
+
+export async function replaceSourceLexicons(
+  outputRoot: string,
+  providerKey: string,
+  lexicons: readonly LexiconDocument[],
+): Promise<string> {
+  await mkdir(outputRoot, { recursive: true });
+  const providerRoot = resolveInsideRoot(outputRoot, providerKey);
+  const stagedProvider = await mkdtemp(join(outputRoot, `.${providerKey}-`));
+  const backupRoot = join(
+    outputRoot,
+    `.${providerKey}.backup-${process.pid}-${Date.now()}`,
+  );
+  let backedUp = false;
+  let installed = false;
+  try {
+    for (const document of lexicons) {
+      const path = lexiconPath(stagedProvider, document.id);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, `${JSON.stringify(document, null, 2)}\n`);
+    }
+    if (await exists(providerRoot)) {
+      await rename(providerRoot, backupRoot);
+      backedUp = true;
+    }
+    await rename(stagedProvider, providerRoot);
+    installed = true;
+    await rm(backupRoot, { recursive: true, force: true });
+    backedUp = false;
+  } catch (error) {
+    if (installed) await rm(providerRoot, { recursive: true, force: true });
+    if (backedUp && (await exists(backupRoot))) {
+      await rename(backupRoot, providerRoot);
+    }
+    throw error;
+  } finally {
+    await rm(stagedProvider, { recursive: true, force: true });
+    await rm(backupRoot, { recursive: true, force: true });
+  }
+  return providerRoot;
+}
+
+/** Compile an owned config into the same API artifacts as remote discovery.
+ * This deliberately does not create or mutate the deployment provider lock. */
+export async function connectConfigSource(options: {
+  source: string;
+  root: string;
+  out: string;
+  lock?: string;
+  endpoint?: string;
+}): Promise<{
+  manifest: PublicServiceManifest;
+  definition: ProviderDefinition;
+  target: ProviderDefinition;
+  config: ContrailConfig;
+  configPath: string;
+  written: number;
+}> {
+  const projectRoot = resolve(options.root);
+  const configPath = await resolveConfigSource(options.source, projectRoot);
+  const config = await loadConfig<ContrailConfig>(configPath);
+  const sourceConfig: ContrailConfig = {
+    ...config,
+    notify: config.notify ?? true,
+    orderedSource: config.orderedSource ?? {
+      source: "jetstream",
+      epoch: "contrail-local-jetstream-v1",
+    },
+  };
+  const endpoint = normalizePublicServiceEndpoint(
+    options.endpoint ?? "http://127.0.0.1:8787",
+    { allowInsecureHttp: true },
+  );
+  const lockPath = resolveInsideRoot(
+    projectRoot,
+    options.lock ?? "contrail.lock.json",
+  );
+  const lockedTarget = await readProviderLock(lockPath);
+  if (lockedTarget && lockedTarget.namespace !== sourceConfig.namespace) {
+    throw new Error(
+      `provider lock namespace ${lockedTarget.namespace} does not match source namespace ${sourceConfig.namespace}`,
+    );
+  }
+  const workspaceRoot = join(projectRoot, ".contrail", "source");
+  await mkdir(workspaceRoot, { recursive: true });
+  const outputRoot = resolveInsideRoot(projectRoot, options.out);
+  const providerKey = "source";
+  const providerRoot = resolveInsideRoot(outputRoot, providerKey);
+  const lexicons = prepareDevLexicons(
+    sourceConfig,
+    projectRoot,
+    workspaceRoot,
+    providerRoot,
+    configProjectRoot(configPath),
+  );
+  const description = await describePublicService(
+    sourceConfig,
+    { endpoint, allowInsecureHttp: true },
+    lexicons,
+  );
+  await replaceSourceLexicons(outputRoot, providerKey, description.lexicons);
+
+  const definition: ProviderDefinition = {
+    endpoint,
+    namespace: description.manifest.namespace,
+    lexiconDigest: description.manifest.lexicons.digest,
+    methods: [...description.manifest.methods].sort(),
+    collections: [
+      ...new Set(description.manifest.collections.map(({ nsid }) => nsid)),
+    ].sort(),
+    serviceAuth: description.manifest.serviceAuth ?? null,
+    lexiconRoot: relative(projectRoot, providerRoot),
+    allowInsecureHttp: true,
+  };
+  const localTarget: ProviderDefinition = {
+    ...definition,
+    methods: [
+      ...new Set([
+        ...allServiceMethods(definition),
+        ...(sourceConfig.notify
+          ? [`${sourceConfig.namespace}.notifyOfUpdate`]
+          : []),
+      ]),
+    ].sort(),
+    serviceAuth: null,
+  };
+  const target = lockedTarget ?? localTarget;
+  return {
+    manifest: description.manifest,
+    definition,
+    target,
+    config: sourceConfig,
+    configPath,
+    written: description.lexicons.length,
+  };
 }
 
 export async function connectPublicService(options: {
@@ -420,15 +645,7 @@ export async function connectPublicService(options: {
       `Lexicon digest mismatch: manifest=${manifest.lexicons.digest}, fetched=${digest}`,
     );
   }
-  validateManifestContract(manifest, lexicons);
-  const contractDigest = await digestPublicContract(
-    contractFromManifest(manifest),
-  );
-  if (contractDigest !== manifest.contract.digest) {
-    throw new Error(
-      `Contract digest mismatch: manifest=${manifest.contract.digest}, computed=${contractDigest}`,
-    );
-  }
+  validateServiceManifest(manifest, lexicons);
 
   await mkdir(outputRoot, { recursive: true });
   const stagedProvider = await mkdtemp(join(outputRoot, `.${providerKey}-`));
@@ -440,10 +657,9 @@ export async function connectPublicService(options: {
 
   const lock: ProviderLock = {
     format: "contrail.provider-lock",
-    version: 1,
+    version: 2,
     endpoint,
     namespace: manifest.namespace,
-    contractDigest: manifest.contract.digest,
     lexiconDigest: manifest.lexicons.digest,
     methods: [...manifest.methods].sort(),
     collections: [
@@ -499,11 +715,22 @@ export async function connectPublicService(options: {
   return { manifest, lock, written: lexicons.length };
 }
 
+function endpointSource(source: string): string | null {
+  try {
+    const url = new URL(source);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? source
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerConnect(cli: CAC): void {
   cli
     .command(
-      "connect <endpoint>",
-      "Discover a public Contrail, lock its API, and generate a typed client",
+      "connect <source>",
+      "Generate a typed client from a Contrail config, directory, or deployment URL",
     )
     .option("--root <path>", "Consumer project root", {
       default: process.cwd(),
@@ -517,39 +744,86 @@ export function registerConnect(cli: CAC): void {
     .option("--client <path>", "Generated client module (.ts or .js)", {
       default: "src/contrail/index.ts",
     })
-    .option("--client-types <path>", "Generated Lexicon index imported by a TypeScript client", {
-      default: "src/contrail/types/index.ts",
-    })
+    .option(
+      "--client-types <path>",
+      "Generated Lexicon index imported by a TypeScript client",
+      {
+        default: "src/contrail/types/index.ts",
+      },
+    )
     .option("--skip-client", "Do not create a provider client module")
     .option(
       "--allow-insecure-http",
       "Permit HTTP only for a loopback development provider",
     )
-    .option("--update", "Replace an existing provider lock and owned Lexicons")
-    .option("--no-generate", "Pull and lock without generating types or a client module")
-    .action(async (endpoint: string, options: ConnectOptions) => {
-      const result = await connectPublicService({
-        endpoint,
-        root: options.root,
-        out: options.out,
-        lock: options.lock,
-        update: options.update,
-        allowInsecureHttp: options.allowInsecureHttp,
-      });
-      console.log(
-        `connected ${result.lock.endpoint}: ${result.written} Lexicons, contract ${result.lock.contractDigest}`,
-      );
+    .option(
+      "--update",
+      "Replace an existing deployment lock and owned Lexicons",
+    )
+    .option(
+      "--no-generate",
+      "Resolve the API without generating types or a client module",
+    )
+    .action(async (source: string, options: ConnectOptions) => {
+      const endpoint = endpointSource(source);
+      let api: ProviderDefinition;
+      let target: ProviderDefinition;
+      let written: number;
+      let notifyMethod: string | undefined;
+      let lexiconRoot: string;
+
+      if (endpoint) {
+        const result = await connectPublicService({
+          endpoint,
+          root: options.root,
+          out: options.out,
+          lock: options.lock,
+          update: options.update,
+          allowInsecureHttp: options.allowInsecureHttp,
+        });
+        api = result.lock;
+        target = result.lock;
+        written = result.written;
+        lexiconRoot = options.out;
+        console.log(
+          `connected ${result.lock.endpoint}: ${written} Lexicons, bundle ${result.lock.lexiconDigest}`,
+        );
+      } else {
+        const result = await connectConfigSource({
+          source,
+          root: options.root,
+          out: options.out,
+          lock: options.lock,
+        });
+        api = result.definition;
+        target = result.target;
+        written = result.written;
+        lexiconRoot = result.definition.lexiconRoot;
+        notifyMethod = result.config.notify
+          ? `${result.config.namespace}.notifyOfUpdate`
+          : undefined;
+        console.log(
+          `connected source ${relative(resolve(options.root), result.configPath)}: ` +
+            `${written} Lexicons, bundle ${api.lexiconDigest} (deployment lock unchanged)`,
+        );
+      }
+
       if (options.generate !== false) {
         const config = await ensureConsumerLexiconConfig({
           root: options.root,
-          out: options.out,
+          out: lexiconRoot,
           types: options.clientTypes,
-          lock: result.lock,
+          api,
+          target,
         });
         if (config.created) {
-          console.log(`created ${relative(resolve(options.root), config.path)}`);
+          console.log(
+            `created ${relative(resolve(options.root), config.path)}`,
+          );
         } else if (config.updated) {
-          console.log(`updated ${relative(resolve(options.root), config.path)}`);
+          console.log(
+            `updated ${relative(resolve(options.root), config.path)}`,
+          );
         }
         generateLexiconTypesWithAtcute(resolve(options.root));
         if (!options.skipClient) {
@@ -557,12 +831,18 @@ export function registerConnect(cli: CAC): void {
             root: options.root,
             file: options.client,
             types: options.clientTypes,
-            lock: result.lock,
+            api,
+            target,
+            notifyMethod,
           });
           if (client.created) {
-            console.log(`created ${relative(resolve(options.root), client.path)}`);
+            console.log(
+              `created ${relative(resolve(options.root), client.path)}`,
+            );
           } else if (client.updated) {
-            console.log(`updated ${relative(resolve(options.root), client.path)}`);
+            console.log(
+              `updated ${relative(resolve(options.root), client.path)}`,
+            );
           }
         }
       }

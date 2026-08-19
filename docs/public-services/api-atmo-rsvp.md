@@ -238,8 +238,7 @@ The provider lock records:
 - `rsvp.atmo` namespace;
 - anonymous methods;
 - protected methods and their audience;
-- the contract digest;
-- the Lexicon digest; and
+- the content-addressed Lexicon digest; and
 - the provider-owned Lexicon directory.
 
 See [Using a public Contrail service](./using.md) for a framework-neutral consumer walkthrough.

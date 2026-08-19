@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  contractFromManifest,
-  describePublicService,
-  digestPublicContract,
-} from "@atmo-dev/contrail";
+import { describePublicService } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createWorker } from "@atmo-dev/contrail/worker";
 import { lexicons } from "../lexicons/generated";
@@ -61,12 +57,8 @@ describe("api.atmo.rsvp public contract", () => {
         "rsvp.atmo.notifyOfUpdate",
       ]),
     );
-    expect(
-      await digestPublicContract(contractFromManifest(service.manifest)),
-    ).toBe(service.manifest.contract.digest);
-    expect(service.manifest.contract.digest).not.toBe(
-      service.manifest.lexicons.digest,
-    );
+    expect(service.manifest.version).toBe(2);
+    expect(service.manifest).not.toHaveProperty("contract");
   });
 
   it("passes synchronous Worker startup validation", () => {

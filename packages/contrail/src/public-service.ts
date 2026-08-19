@@ -34,22 +34,11 @@ export interface PublicServiceAuthContract {
   methods: PublicServiceProtectedMethod[];
 }
 
-export interface PublicContract {
-  format: "contrail.contract";
-  version: 1;
-  namespace: string;
-  collections: PublicServiceCollection[];
-  methods: string[];
-  serviceAuth?: PublicServiceAuthContract | null;
-  lexiconDigest: string;
-}
-
 export interface PublicServiceManifest {
   format: "contrail.service";
-  version: 1;
+  version: 2;
   endpoint: string;
   namespace: string;
-  contract: { digest: string };
   lexicons: { url: string; digest: string };
   status: { url: string };
   collections: PublicServiceCollection[];
@@ -71,7 +60,9 @@ export interface PublicServiceDescription {
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  return (
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"
+  );
 }
 
 export function normalizePublicServiceEndpoint(
@@ -200,10 +191,16 @@ function publicServiceAuth(
   };
 }
 
-export function createPublicContract(
+interface PublicServiceMetadata {
+  namespace: string;
+  collections: PublicServiceCollection[];
+  methods: string[];
+  serviceAuth: PublicServiceAuthContract | null;
+}
+
+function createPublicServiceMetadata(
   config: ContrailConfig,
-  lexiconDigest: string,
-): PublicContract {
+): PublicServiceMetadata {
   const resolved = resolveConfig(config);
   const collections = publicCollections(resolved);
   const serviceAuth = publicServiceAuth(resolved);
@@ -215,24 +212,15 @@ export function createPublicContract(
     ...collections.flatMap((collection) => collection.methods),
   ].filter((method) => !protectedMethods.has(method));
   return {
-    format: "contrail.contract",
-    version: 1,
     namespace: resolved.namespace,
     collections,
     methods: [...new Set(methods)].sort(),
     serviceAuth,
-    lexiconDigest,
   };
 }
 
-export async function digestPublicContract(
-  contract: PublicContract,
-): Promise<string> {
-  return sha256(canonicalJson(contract));
-}
-
-export function validateContractLexicons(
-  contract: PublicContract,
+function validateServiceLexicons(
+  service: Pick<PublicServiceMetadata, "methods" | "serviceAuth">,
   values: readonly object[],
 ): LexiconDocument[] {
   const lexicons = normalizeLexiconDocuments(values);
@@ -240,7 +228,7 @@ export function validateContractLexicons(
     throw new Error("public service requires a non-empty Lexicon bundle");
   }
   const byId = new Map(lexicons.map((document) => [document.id, document]));
-  for (const method of contract.methods) {
+  for (const method of service.methods) {
     const document = byId.get(method) as
       { defs?: { main?: { type?: unknown } } } | undefined;
     if (document?.defs?.main?.type !== "query") {
@@ -249,7 +237,7 @@ export function validateContractLexicons(
       );
     }
   }
-  for (const method of contract.serviceAuth?.methods ?? []) {
+  for (const method of service.serviceAuth?.methods ?? []) {
     const document = byId.get(method.id) as
       { defs?: { main?: { type?: unknown } } } | undefined;
     if (document?.defs?.main?.type !== method.type) {
@@ -274,11 +262,7 @@ export function validatePublicServiceLexicons(
   values: readonly object[],
 ): LexiconDocument[] {
   assertPublicServiceSource(config);
-  const placeholderDigest = `sha256:${"0".repeat(64)}`;
-  return validateContractLexicons(
-    createPublicContract(config, placeholderDigest),
-    values,
-  );
+  return validateServiceLexicons(createPublicServiceMetadata(config), values);
 }
 
 export async function digestLexiconDocuments(
@@ -309,22 +293,21 @@ export async function describePublicService(
     canonicalLexicons,
     digest: lexiconDigest,
   } = await digestLexiconDocuments(values);
-  const contract = createPublicContract(config, lexiconDigest);
-  validateContractLexicons(contract, lexicons);
+  const service = createPublicServiceMetadata(config);
+  validateServiceLexicons(service, lexicons);
   const manifest: PublicServiceManifest = {
     format: "contrail.service",
-    version: 1,
+    version: 2,
     endpoint,
-    namespace: contract.namespace,
-    contract: { digest: await digestPublicContract(contract) },
+    namespace: service.namespace,
     lexicons: {
       url: `${endpoint}/lexicons/${lexiconDigest}`,
       digest: lexiconDigest,
     },
     status: { url: `${endpoint}/status` },
-    collections: contract.collections,
-    methods: contract.methods,
-    serviceAuth: contract.serviceAuth,
+    collections: service.collections,
+    methods: service.methods,
+    serviceAuth: service.serviceAuth,
   };
   return { endpoint, lexicons, manifest, canonicalLexicons };
 }
@@ -333,21 +316,7 @@ function uniqueStrings(values: string[]): boolean {
   return new Set(values).size === values.length;
 }
 
-export function contractFromManifest(
-  manifest: PublicServiceManifest,
-): PublicContract {
-  return {
-    format: "contrail.contract",
-    version: 1,
-    namespace: manifest.namespace,
-    collections: manifest.collections,
-    methods: manifest.methods,
-    serviceAuth: manifest.serviceAuth,
-    lexiconDigest: manifest.lexicons.digest,
-  };
-}
-
-export function validateManifestContract(
+export function validateServiceManifest(
   manifest: PublicServiceManifest,
   values: readonly object[],
 ): LexiconDocument[] {
@@ -395,7 +364,10 @@ export function validateManifestContract(
       }
     }
   }
-  return validateContractLexicons(contractFromManifest(manifest), values);
+  return validateServiceLexicons(
+    { methods: manifest.methods, serviceAuth: manifest.serviceAuth ?? null },
+    values,
+  );
 }
 
 function isPublicServiceAuthContract(
@@ -428,12 +400,11 @@ export function isPublicServiceManifest(
   const digest = /^sha256:[0-9a-f]{64}$/;
   if (
     manifest.format !== "contrail.service" ||
-    manifest.version !== 1 ||
+    manifest.version !== 2 ||
+    "contract" in manifest ||
     typeof manifest.endpoint !== "string" ||
     typeof manifest.namespace !== "string" ||
     !isNsid(`${manifest.namespace}.method`) ||
-    typeof manifest.contract?.digest !== "string" ||
-    !digest.test(manifest.contract.digest) ||
     typeof manifest.lexicons?.url !== "string" ||
     typeof manifest.lexicons?.digest !== "string" ||
     !digest.test(manifest.lexicons.digest) ||

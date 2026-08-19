@@ -9,7 +9,7 @@ pnpm add @atcute/client @atcute/lexicons @atmo-dev/contrail
 pnpx @atmo-dev/contrail connect https://api.atmo.rsvp
 ```
 
-`connect` verifies the provider's contract and Lexicons, writes `contrail.lock.json`, and generates:
+`connect` validates the provider description and content-addressed Lexicon bundle, writes a version-2 `contrail.lock.json`, and generates:
 
 ```text
 lex.config.js
@@ -50,9 +50,27 @@ pnpx @atmo-dev/contrail connect https://api.atmo.rsvp \
 
 Commit `contrail.lock.json` and the generated files.
 
-For a local service, run `contrail dev` in the consumer project. It automatically follows the same discovery, digest verification, Lexicon download, Atcute type generation, contract lock, and generated-client path against `http://127.0.0.1:8787`. Svelte projects use `src/lib/contrail/`; pass `--no-connect` to disable generation. The generated client includes `allowInsecureHttp: true`, an exception accepted only for `localhost`, `127.0.0.1`, or `[::1]`.
+When the application owns or can read the provider config, connect directly to that source before a deployment exists:
 
-When local dev supplies the otherwise omitted notify configuration, notification is an open loopback operation rather than fictitious AT Protocol service auth. The generated client's `scope` is therefore `null`; keep only normal repository permissions in local OAuth configuration. A deployed service still requires HTTPS and a real service DID for protected operations.
+```bash
+pnpx @atmo-dev/contrail connect ../api/src/contrail.config.ts
+pnpx @atmo-dev/contrail dev --config ../api/src/contrail.config.ts
+```
+
+The config connection compiles Lexicons and types without creating or modifying `contrail.lock.json`. `contrail dev` only runs the loopback service. The generated module exports `createLocalContrailClient()`:
+
+```ts
+import {
+  contrail as productionContrail,
+  createLocalContrailClient,
+} from "./contrail/index.js";
+
+export const contrail = process.env.CONTRAIL_URL
+  ? createLocalContrailClient(process.env.CONTRAIL_URL)
+  : productionContrail;
+```
+
+The helper permits HTTP only for `localhost`, `127.0.0.1`, or `[::1]` and does not inherit a production service-auth audience. Local notification and configured protected methods are loopback-only operations with a null OAuth scope. A deployed service still requires HTTPS and its real service auth.
 
 ## Query anonymous methods
 
@@ -125,13 +143,13 @@ Contrail returns the original PDS response. A notification failure is reported t
 
 ## Update the connection
 
-The generated client pins the lock's contract digest and verifies discovery before its first provider request. Transient discovery failures remain retryable; endpoint, service-DID, and contract mismatches fail closed. Update a changed contract deliberately at the same provider endpoint:
+Anonymous generated clients call the endpoint directly without fetching discovery first. Protected calls lazily discover service auth; transient discovery failures remain retryable and endpoint or service-DID mismatches fail closed. Adding provider methods does not interrupt methods already known by a generated client. Regenerate when application code wants the new API surface:
 
 ```bash
 pnpx @atmo-dev/contrail connect https://api.atmo.rsvp --update
 ```
 
-Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests. `--update` cannot repoint an existing lock or abandon its provider-owned Lexicon root; remove the existing connection deliberately before switching providers or output roots.
+Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests. `--update` cannot repoint an existing lock or abandon its provider-owned Lexicon root; remove the existing connection deliberately before switching providers or output roots. Version-1 provider locks are intentionally unsupported after the clean manifest-v2 cut and must be removed before reconnecting.
 
 ## Completeness
 

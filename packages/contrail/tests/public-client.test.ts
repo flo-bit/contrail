@@ -25,10 +25,9 @@ function token() {
 function manifest(): PublicServiceManifest {
   return {
     format: "contrail.service",
-    version: 1,
+    version: 2,
     endpoint,
     namespace: "com.example",
-    contract: { digest },
     lexicons: { url: `${endpoint}/lexicons/${digest}`, digest },
     status: { url: `${endpoint}/status` },
     collections: [],
@@ -93,17 +92,13 @@ describe("public service client", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("verifies a pinned contract once before anonymous requests", async () => {
+  it("does not fetch discovery before anonymous requests", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) =>
       String(input).endsWith("/.well-known/contrail")
         ? Response.json(manifest())
         : Response.json({ records: [] }),
     );
-    const handler = publicServiceFetchHandler({
-      endpoint,
-      contractDigest: digest,
-      fetch: fetcher,
-    });
+    const handler = publicServiceFetchHandler({ endpoint, fetch: fetcher });
 
     expect(
       (await handler("/xrpc/com.example.getCursor", { method: "get" })).status,
@@ -115,11 +110,12 @@ describe("public service client", () => {
       fetcher.mock.calls.filter(([input]) =>
         String(input).endsWith("/.well-known/contrail"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
-  it("retries transient discovery failures", async () => {
+  it("retries transient discovery failures for protected calls", async () => {
     let discoveries = 0;
+    const pds = authenticatedClient(token());
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/.well-known/contrail")) {
         discoveries++;
@@ -127,20 +123,20 @@ describe("public service client", () => {
           ? new Response(null, { status: 503 })
           : Response.json(manifest());
       }
-      return Response.json({ records: [] });
+      return new Response(null, { status: 401 });
     });
     const handler = publicServiceFetchHandler({
       endpoint,
-      contractDigest: digest,
+      authenticatedClient: pds.client,
       fetch: fetcher,
     });
 
-    await expect(
-      handler("/xrpc/com.example.getCursor", { method: "get" }),
-    ).rejects.toThrow("discovery failed: 503");
-    expect(
-      (await handler("/xrpc/com.example.getCursor", { method: "get" })).status,
-    ).toBe(200);
+    await expect(handler(`/xrpc/${method}`, { method: "get" })).rejects.toThrow(
+      "discovery failed: 503",
+    );
+    expect((await handler(`/xrpc/${method}`, { method: "get" })).status).toBe(
+      401,
+    );
     expect(discoveries).toBe(2);
   });
 
@@ -164,7 +160,6 @@ describe("public service client", () => {
     });
     const publicClient = createPublicServiceClient({
       endpoint,
-      contractDigest: digest,
       serviceDid: "did:web:api.example.com",
       scope: "rpc?lxm=*&aud=did:web:api.example.com",
       serviceMethods: [method],
@@ -191,7 +186,7 @@ describe("public service client", () => {
       requests.filter((request) =>
         request.url.includes(`/xrpc/${method}`),
       ).map((request) => request.authorization),
-    ).toEqual([`Bearer ${jwt}`, `Bearer ${jwt}`]);
+    ).toEqual([null, `Bearer ${jwt}`, `Bearer ${jwt}`]);
   });
 
   it("notifies an open local service without minting service auth", async () => {
@@ -466,27 +461,4 @@ describe("public service client", () => {
     expect(pds.handler).not.toHaveBeenCalled();
   });
 
-  it("refuses runtime discovery that differs from an optional lock pin", async () => {
-    const pds = authenticatedClient(token());
-    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
-      String(input).endsWith("/.well-known/contrail")
-        ? Response.json(manifest())
-        : new Response(null, { status: 401 }),
-    );
-    const handler = publicServiceFetchHandler({
-      endpoint,
-      authenticatedClient: pds.client,
-      contractDigest: `sha256:${"b".repeat(64)}`,
-      fetch: fetcher,
-    });
-
-    await expect(
-      handler(`/xrpc/${method}`, { method: "get" }),
-    ).rejects.toThrow("contract digest mismatch");
-    await expect(
-      handler(`/xrpc/${method}`, { method: "get" }),
-    ).rejects.toThrow("contract digest mismatch");
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(pds.handler).not.toHaveBeenCalled();
-  });
 });
