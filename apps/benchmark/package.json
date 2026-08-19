@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "bench": "node --no-warnings --experimental-strip-types src/bench.ts",
+    "bench:source": "node --no-warnings --experimental-strip-types src/source-bench.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@atmo-dev/contrail": "workspace:*"
+    "@atcute/cbor": "2.3.6",
+    "@atmo-dev/contrail": "workspace:*",
+    "@atproto/lex": "0.3.6",
+    "@bsky/jetstream": "1.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260424.1",

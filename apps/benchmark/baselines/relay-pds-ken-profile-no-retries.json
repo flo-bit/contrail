@@ -1,0 +1,164 @@
+{
+  "format": "contrail.source-benchmark",
+  "version": 1,
+  "source": {
+    "id": "relay-pds",
+    "service": "https://relay1.us-east.bsky.network",
+    "protocols": [
+      "com.atproto.sync.listReposByCollection",
+      "com.atproto.repo.listRecords"
+    ]
+  },
+  "collection": "tech.waow.ken.profile",
+  "options": {
+    "resolution_concurrency": 100,
+    "pds_concurrency": 20,
+    "dids_per_pds": 3,
+    "request_timeout_ms": 10000,
+    "retries": 0
+  },
+  "runtime": {
+    "node": "v26.5.0"
+  },
+  "started_at": "2026-08-17T18:10:34.619Z",
+  "completed_at": "2026-08-17T18:10:38.581Z",
+  "timings_ms": {
+    "load": 3960.4
+  },
+  "events": {
+    "batches": 42,
+    "empty_batches": 21,
+    "total": 21,
+    "commits": 21,
+    "creates": 21,
+    "updates": 0,
+    "deletes": 0,
+    "accounts": 0,
+    "deleted_accounts": 0,
+    "syncs": 0,
+    "records_removed_by_account": 0,
+    "records_removed_by_sync": 0
+  },
+  "last_checkpoint": "did:plc:ad4m72ykh2evfdqen3qowxmg:complete",
+  "current_state": {
+    "records": 21,
+    "actors": 21
+  },
+  "data": {
+    "downloaded_bytes": 10249,
+    "response_content_length_bytes": 9462,
+    "measurement": "response body bytes consumed after HTTP content decoding",
+    "put_record_payload_bytes": 1365,
+    "current_record_payload_bytes": 1365,
+    "record_payload_encoding": "dag-cbor"
+  },
+  "throughput": {
+    "downloaded_mib_per_second": 0,
+    "source_events_per_second": 5.3,
+    "commits_per_second": 5.3,
+    "put_record_payload_mib_per_second": 0,
+    "put_record_payload_kib_per_second": 0.34
+  },
+  "efficiency": {
+    "downloaded_bytes_per_commit": 488.05,
+    "put_payload_bytes_per_commit": 65,
+    "put_payload_to_download_percent": 13.32
+  },
+  "source_diagnostics": {
+    "timings_ms": {
+      "discovery": 528.99,
+      "resolution": 752.54,
+      "list_records": 2678.18
+    },
+    "discovery": {
+      "pages": 1,
+      "repos": 21,
+      "unique_dids": 21,
+      "duplicate_dids": 0
+    },
+    "resolution": {
+      "attempted": 21,
+      "resolved": 21,
+      "unresolved": 0,
+      "fallback_attempted": 0,
+      "fallback_resolved": 0,
+      "pds_hosts": 18
+    },
+    "list_records": {
+      "attempted_accounts": 21,
+      "complete_accounts": 21,
+      "failed_accounts": 0,
+      "partial_accounts": 0,
+      "pages": 42,
+      "records": 21,
+      "retries": 0,
+      "failure_statuses": {},
+      "failure_errors": {},
+      "transport_failures": 0,
+      "timeout_failures": 0,
+      "malformed_failures": 0
+    },
+    "configuration": {
+      "collection": "tech.waow.ken.profile",
+      "relay": "https://relay1.us-east.bsky.network",
+      "slingshot": "https://slingshot.microcosm.blue",
+      "resolution_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "request_timeout_ms": 10000,
+      "retries": 0
+    }
+  },
+  "transport": {
+    "requests": 64,
+    "errors": 0,
+    "response_bytes": 10249,
+    "content_length_bytes": 9462,
+    "by_operation": {
+      "com.atproto.repo.listRecords": {
+        "requests": 42,
+        "errors": 0,
+        "response_bytes": 5607,
+        "content_length_bytes": 4820,
+        "header_ms": 18759.69,
+        "max_header_ms": 1869.91,
+        "statuses": {
+          "200": 42
+        },
+        "content_encodings": {
+          "zstd": 5,
+          "identity": 37
+        }
+      },
+      "com.atproto.sync.listReposByCollection": {
+        "requests": 1,
+        "errors": 0,
+        "response_bytes": 915,
+        "content_length_bytes": 915,
+        "header_ms": 509.69,
+        "max_header_ms": 509.69,
+        "statuses": {
+          "200": 1
+        },
+        "content_encodings": {
+          "identity": 1
+        }
+      },
+      "com.bad-example.identity.resolveMiniDoc": {
+        "requests": 21,
+        "errors": 0,
+        "response_bytes": 3727,
+        "content_length_bytes": 3727,
+        "header_ms": 13683.06,
+        "max_header_ms": 740.28,
+        "statuses": {
+          "200": 21
+        },
+        "content_encodings": {
+          "identity": 21
+        }
+      }
+    }
+  },
+  "peak_rss_kib": 120640
+}

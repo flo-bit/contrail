@@ -9,6 +9,7 @@
     "test": "turbo run test",
     "test:built": "pnpm --filter @atmo-dev/contrail test:built",
     "bench": "node --no-warnings --experimental-strip-types apps/benchmark/src/bench.ts",
+    "bench:source": "node --no-warnings --experimental-strip-types apps/benchmark/src/source-bench.ts",
     "typecheck": "turbo run typecheck",
     "dev": "turbo run dev",
     "clean": "turbo run clean",

@@ -1,0 +1,193 @@
+{
+  "format": "contrail.source-benchmark",
+  "version": 1,
+  "source": {
+    "id": "relay-pds",
+    "service": "https://relay1.us-east.bsky.network",
+    "protocols": [
+      "com.atproto.sync.listReposByCollection",
+      "com.atproto.repo.listRecords"
+    ]
+  },
+  "collection": "community.lexicon.calendar.rsvp",
+  "options": {
+    "resolution_concurrency": 100,
+    "pds_concurrency": 20,
+    "dids_per_pds": 3,
+    "request_timeout_ms": 10000,
+    "retries": 0
+  },
+  "runtime": {
+    "node": "v26.5.0"
+  },
+  "started_at": "2026-08-17T07:35:56.407Z",
+  "completed_at": "2026-08-17T07:36:29.264Z",
+  "timings_ms": {
+    "load": 32855.87
+  },
+  "events": {
+    "batches": 2959,
+    "empty_batches": 1490,
+    "total": 6318,
+    "commits": 6318,
+    "creates": 6318,
+    "updates": 0,
+    "deletes": 0,
+    "accounts": 0,
+    "deleted_accounts": 0,
+    "syncs": 0,
+    "records_removed_by_account": 0,
+    "records_removed_by_sync": 0
+  },
+  "last_checkpoint": "did:plc:vl3mnpoc4qepv4tu5ctrfmxo:complete",
+  "current_state": {
+    "records": 6318,
+    "actors": 1467
+  },
+  "data": {
+    "downloaded_bytes": 3554524,
+    "response_content_length_bytes": 943858,
+    "measurement": "response body bytes consumed after HTTP content decoding",
+    "put_record_payload_bytes": 1901410,
+    "current_record_payload_bytes": 1901410,
+    "record_payload_encoding": "dag-cbor"
+  },
+  "throughput": {
+    "downloaded_mib_per_second": 0.1,
+    "source_events_per_second": 192.29,
+    "commits_per_second": 192.29,
+    "put_record_payload_mib_per_second": 0.06,
+    "put_record_payload_kib_per_second": 56.51
+  },
+  "efficiency": {
+    "downloaded_bytes_per_commit": 562.6,
+    "put_payload_bytes_per_commit": 300.95,
+    "put_payload_to_download_percent": 53.49
+  },
+  "source_diagnostics": {
+    "timings_ms": {
+      "discovery": 956.56,
+      "resolution": 12324.71,
+      "list_records": 19567.05
+    },
+    "discovery": {
+      "pages": 2,
+      "repos": 1536,
+      "unique_dids": 1536,
+      "duplicate_dids": 0
+    },
+    "resolution": {
+      "attempted": 1536,
+      "resolved": 1535,
+      "unresolved": 1,
+      "fallback_attempted": 25,
+      "fallback_resolved": 24,
+      "pds_hosts": 231
+    },
+    "list_records": {
+      "attempted_accounts": 1535,
+      "complete_accounts": 1498,
+      "failed_accounts": 37,
+      "partial_accounts": 2,
+      "pages": 2959,
+      "records": 6318,
+      "retries": 0,
+      "failure_statuses": {
+        "400": 26,
+        "502": 1,
+        "530": 1
+      },
+      "failure_errors": {
+        "InvalidRequest": 26,
+        "unknown": 2
+      },
+      "transport_failures": 4,
+      "timeout_failures": 5,
+      "malformed_failures": 0
+    },
+    "configuration": {
+      "collection": "community.lexicon.calendar.rsvp",
+      "relay": "https://relay1.us-east.bsky.network",
+      "slingshot": "https://slingshot.microcosm.blue",
+      "resolution_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "request_timeout_ms": 10000,
+      "retries": 0
+    }
+  },
+  "transport": {
+    "requests": 4559,
+    "errors": 10,
+    "response_bytes": 3554524,
+    "content_length_bytes": 943858,
+    "by_operation": {
+      "com.atproto.repo.listRecords": {
+        "requests": 2996,
+        "errors": 9,
+        "response_bytes": 3196337,
+        "content_length_bytes": 655145,
+        "header_ms": 656793.76,
+        "max_header_ms": 9978.2,
+        "statuses": {
+          "200": 2959,
+          "400": 26,
+          "502": 1,
+          "530": 1
+        },
+        "content_encodings": {
+          "gzip": 328,
+          "identity": 2488,
+          "br": 145,
+          "zstd": 26
+        }
+      },
+      "com.atproto.sync.listReposByCollection": {
+        "requests": 2,
+        "errors": 0,
+        "response_bytes": 66025,
+        "content_length_bytes": 0,
+        "header_ms": 650.2,
+        "max_header_ms": 534.64,
+        "statuses": {
+          "200": 2
+        },
+        "content_encodings": {
+          "identity": 2
+        }
+      },
+      "com.bad-example.identity.resolveMiniDoc": {
+        "requests": 1536,
+        "errors": 1,
+        "response_bytes": 275504,
+        "content_length_bytes": 275504,
+        "header_ms": 302788.98,
+        "max_header_ms": 1651.3,
+        "statuses": {
+          "200": 1511,
+          "400": 24
+        },
+        "content_encodings": {
+          "identity": 1535
+        }
+      },
+      "did-document": {
+        "requests": 25,
+        "errors": 0,
+        "response_bytes": 16658,
+        "content_length_bytes": 13209,
+        "header_ms": 7295.09,
+        "max_header_ms": 3252.77,
+        "statuses": {
+          "200": 24,
+          "404": 1
+        },
+        "content_encodings": {
+          "identity": 24,
+          "zstd": 1
+        }
+      }
+    }
+  },
+  "peak_rss_kib": 220288
+}

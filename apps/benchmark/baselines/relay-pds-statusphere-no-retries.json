@@ -1,0 +1,191 @@
+{
+  "format": "contrail.source-benchmark",
+  "version": 1,
+  "source": {
+    "id": "relay-pds",
+    "service": "https://relay1.us-east.bsky.network",
+    "protocols": [
+      "com.atproto.sync.listReposByCollection",
+      "com.atproto.repo.listRecords"
+    ]
+  },
+  "collection": "xyz.statusphere.status",
+  "options": {
+    "resolution_concurrency": 100,
+    "pds_concurrency": 20,
+    "dids_per_pds": 3,
+    "request_timeout_ms": 10000,
+    "retries": 0
+  },
+  "runtime": {
+    "node": "v26.5.0"
+  },
+  "started_at": "2026-08-17T07:25:13.392Z",
+  "completed_at": "2026-08-17T07:25:46.368Z",
+  "timings_ms": {
+    "load": 32974.91
+  },
+  "events": {
+    "batches": 1875,
+    "empty_batches": 924,
+    "total": 9021,
+    "commits": 9021,
+    "creates": 9021,
+    "updates": 0,
+    "deletes": 0,
+    "accounts": 0,
+    "deleted_accounts": 0,
+    "syncs": 0,
+    "records_removed_by_account": 0,
+    "records_removed_by_sync": 0
+  },
+  "last_checkpoint": "did:plc:uthj3j4zosuor6szsydytfba:complete",
+  "current_state": {
+    "records": 9021,
+    "actors": 910
+  },
+  "data": {
+    "downloaded_bytes": 2683466,
+    "response_content_length_bytes": 592775,
+    "measurement": "response body bytes consumed after HTTP content decoding",
+    "put_record_payload_bytes": 704757,
+    "current_record_payload_bytes": 704757,
+    "record_payload_encoding": "dag-cbor"
+  },
+  "throughput": {
+    "downloaded_mib_per_second": 0.08,
+    "source_events_per_second": 273.57,
+    "commits_per_second": 273.57,
+    "put_record_payload_mib_per_second": 0.02,
+    "put_record_payload_kib_per_second": 20.87
+  },
+  "efficiency": {
+    "downloaded_bytes_per_commit": 297.47,
+    "put_payload_bytes_per_commit": 78.12,
+    "put_payload_to_download_percent": 26.26
+  },
+  "source_diagnostics": {
+    "timings_ms": {
+      "discovery": 785.4,
+      "resolution": 11285.69,
+      "list_records": 20900.12
+    },
+    "discovery": {
+      "pages": 2,
+      "repos": 1341,
+      "unique_dids": 1341,
+      "duplicate_dids": 0
+    },
+    "resolution": {
+      "attempted": 1341,
+      "resolved": 1340,
+      "unresolved": 1,
+      "fallback_attempted": 44,
+      "fallback_resolved": 43,
+      "pds_hosts": 169
+    },
+    "list_records": {
+      "attempted_accounts": 1340,
+      "complete_accounts": 928,
+      "failed_accounts": 412,
+      "partial_accounts": 5,
+      "pages": 1875,
+      "records": 9021,
+      "retries": 0,
+      "failure_statuses": {
+        "400": 388,
+        "502": 1,
+        "503": 1
+      },
+      "failure_errors": {
+        "InvalidRequest": 388,
+        "unknown": 2
+      },
+      "transport_failures": 13,
+      "timeout_failures": 4,
+      "malformed_failures": 5
+    },
+    "configuration": {
+      "collection": "xyz.statusphere.status",
+      "relay": "https://relay1.us-east.bsky.network",
+      "slingshot": "https://slingshot.microcosm.blue",
+      "resolution_concurrency": 100,
+      "pds_concurrency": 20,
+      "dids_per_pds": 3,
+      "request_timeout_ms": 10000,
+      "retries": 0
+    }
+  },
+  "transport": {
+    "requests": 3674,
+    "errors": 20,
+    "response_bytes": 2683466,
+    "content_length_bytes": 592775,
+    "by_operation": {
+      "com.atproto.repo.listRecords": {
+        "requests": 2287,
+        "errors": 17,
+        "response_bytes": 2353712,
+        "content_length_bytes": 320761,
+        "header_ms": 517162.97,
+        "max_header_ms": 2434.42,
+        "statuses": {
+          "200": 1880,
+          "400": 388,
+          "502": 1,
+          "503": 1
+        },
+        "content_encodings": {
+          "identity": 1947,
+          "gzip": 258,
+          "br": 50,
+          "zstd": 15
+        }
+      },
+      "com.atproto.sync.listReposByCollection": {
+        "requests": 2,
+        "errors": 0,
+        "response_bytes": 57740,
+        "content_length_bytes": 0,
+        "header_ms": 656.79,
+        "max_header_ms": 539.59,
+        "statuses": {
+          "200": 2
+        },
+        "content_encodings": {
+          "identity": 2
+        }
+      },
+      "com.bad-example.identity.resolveMiniDoc": {
+        "requests": 1341,
+        "errors": 2,
+        "response_bytes": 248072,
+        "content_length_bytes": 248072,
+        "header_ms": 275346.88,
+        "max_header_ms": 2122.82,
+        "statuses": {
+          "200": 1297,
+          "400": 42
+        },
+        "content_encodings": {
+          "identity": 1339
+        }
+      },
+      "did-document": {
+        "requests": 44,
+        "errors": 1,
+        "response_bytes": 23942,
+        "content_length_bytes": 23942,
+        "header_ms": 10277.99,
+        "max_header_ms": 535.33,
+        "statuses": {
+          "200": 43
+        },
+        "content_encodings": {
+          "identity": 43
+        }
+      }
+    }
+  },
+  "peak_rss_kib": 232256
+}

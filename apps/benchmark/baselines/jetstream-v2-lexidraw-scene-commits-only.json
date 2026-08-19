@@ -1,0 +1,102 @@
+{
+  "format": "contrail.source-benchmark",
+  "version": 1,
+  "source": {
+    "id": "jetstream-v2",
+    "service": "https://jetstream.us-east.bsky.network",
+    "sdk": "@bsky/jetstream@1.0.0"
+  },
+  "collection": "app.lexidraw.scene",
+  "options": {
+    "after_seq": 0,
+    "before_seq": null,
+    "block_concurrency": 4,
+    "snapshot_buffer_mib": 64,
+    "lifecycle_markers": false
+  },
+  "runtime": {
+    "node": "v26.5.0"
+  },
+  "started_at": "2026-08-17T18:10:44.681Z",
+  "completed_at": "2026-08-17T18:10:57.299Z",
+  "timings_ms": {
+    "load": 12617.38
+  },
+  "events": {
+    "batches": 67,
+    "empty_batches": 0,
+    "total": 74,
+    "commits": 74,
+    "creates": 50,
+    "updates": 20,
+    "deletes": 4,
+    "accounts": 0,
+    "deleted_accounts": 0,
+    "syncs": 0,
+    "records_removed_by_account": 0,
+    "records_removed_by_sync": 0
+  },
+  "last_checkpoint": 24827517570,
+  "current_state": {
+    "records": 68,
+    "actors": 53
+  },
+  "data": {
+    "downloaded_bytes": 23955009,
+    "response_content_length_bytes": 23945064,
+    "measurement": "response body bytes consumed after HTTP content decoding",
+    "put_record_payload_bytes": 20216,
+    "current_record_payload_bytes": 19624,
+    "record_payload_encoding": "dag-cbor"
+  },
+  "throughput": {
+    "downloaded_mib_per_second": 1.81,
+    "source_events_per_second": 5.86,
+    "commits_per_second": 5.86,
+    "put_record_payload_mib_per_second": 0,
+    "put_record_payload_kib_per_second": 1.56
+  },
+  "efficiency": {
+    "downloaded_bytes_per_commit": 323716.34,
+    "put_payload_bytes_per_commit": 273.19,
+    "put_payload_to_download_percent": 0.08
+  },
+  "source_diagnostics": null,
+  "transport": {
+    "requests": 68,
+    "errors": 0,
+    "response_bytes": 23955009,
+    "content_length_bytes": 23945064,
+    "by_operation": {
+      "jetstream.us-east.bsky.network/network.bsky.jetstream.getBlock": {
+        "requests": 67,
+        "errors": 0,
+        "response_bytes": 23945064,
+        "content_length_bytes": 23945064,
+        "header_ms": 15123.95,
+        "max_header_ms": 355.95,
+        "statuses": {
+          "200": 67
+        },
+        "content_encodings": {
+          "identity": 67
+        }
+      },
+      "jetstream.us-east.bsky.network/network.bsky.jetstream.planSnapshot": {
+        "requests": 1,
+        "errors": 0,
+        "response_bytes": 9945,
+        "content_length_bytes": 0,
+        "header_ms": 528.23,
+        "max_header_ms": 528.23,
+        "statuses": {
+          "200": 1
+        },
+        "content_encodings": {
+          "identity": 1
+        }
+      }
+    }
+  },
+  "peak_rss_kib": 174304
+}
