@@ -60,9 +60,9 @@ Add a D1 binding and one-minute cron to `wrangler.jsonc`:
 {
   "main": "src/worker.ts",
   "d1_databases": [
-    { "binding": "DB", "database_name": "contrail", "database_id": "..." }
+    { "binding": "DB", "database_name": "contrail", "database_id": "..." },
   ],
-  "triggers": { "crons": ["*/1 * * * *"] }
+  "triggers": { "crons": ["*/1 * * * *"] },
 }
 ```
 
@@ -96,7 +96,7 @@ Use `contrail lexicons all` to generate Contrail methods, pull referenced source
 
 ## Public read-through services
 
-A deployment can publish a verified contract and Lexicon bundle for independent typed clients:
+A deployment can publish a validated API description and Lexicon bundle for independent typed clients:
 
 ```ts
 export default createWorker(config, {
@@ -113,7 +113,16 @@ Consumers connect and generate Atcute types with one command:
 pnpx @atmo-dev/contrail connect https://api.example.com
 ```
 
-The generated client pins and verifies the discovered contract digest before its first provider request; transient discovery failures can retry, while endpoint, service-DID, and contract mismatches fail closed.
+The generated client sends anonymous requests directly. Protected methods lazily discover service auth and still fail closed on endpoint or service-DID mismatches. The content-addressed Lexicon digest remains in the version-2 provider lock; the complete provider method set is not pinned at runtime, so additive deployments do not interrupt existing calls.
+
+An application that owns the provider source can generate the same typed surface before deployment without creating a provider lock:
+
+```bash
+pnpx @atmo-dev/contrail connect ../api/src/contrail.config.ts
+pnpx @atmo-dev/contrail dev --config ../api/src/contrail.config.ts
+```
+
+The generated module exports `createLocalContrailClient()` for selecting the loopback service while retaining any existing production lock and default target.
 
 Public-service mode requires `orderedSource`; `getCursor` then returns the committed opaque `{ source, epoch, cursor }` position of that primary source. Compare complete positions for equality only; a source or epoch change requires a full client refetch. To avoid racing ingestion, read a position before and after a query and accept the query snapshot only when both positions match. Existing non-public deployments without `orderedSource` retain the legacy `time_us`, `date`, and `seconds_ago` response.
 

@@ -1,6 +1,6 @@
 # Creating a public Contrail service
 
-A public Contrail service lets independent applications query one Contrail AppView from a stable HTTPS origin. The provider chooses the indexed collections, projections, query methods, and authentication policy. Consumers discover that contract, verify its Lexicons, generate local TypeScript types, and make ordinary XRPC requests.
+A public Contrail service lets independent applications query one Contrail AppView from a stable HTTPS origin. The provider chooses the indexed collections, projections, query methods, and authentication policy. Consumers discover that API surface, verify its Lexicons, generate local TypeScript types, and make ordinary XRPC requests.
 
 Public service mode does not turn Contrail into a PDS. Records remain in their authors' repositories, and applications still authenticate users and publish writes through those users' PDSes.
 
@@ -61,7 +61,7 @@ export default defineLexiconConfig({
 });
 ```
 
-Generate the provider contract, pull referenced record Lexicons, and generate TypeScript types:
+Generate the provider API, pull referenced record Lexicons, and generate TypeScript types:
 
 ```bash
 pnpm contrail lexicons all --public
@@ -102,7 +102,7 @@ GET /lexicons/<sha256-digest>
 GET /status
 ```
 
-The discovery manifest contains separate contract and Lexicon digests. The immutable Lexicon URL is content-addressed. Startup fails when advertised methods, capabilities, and bundled Lexicons disagree.
+The version-2 discovery manifest contains the endpoint, namespace, methods, collections, service-auth declaration, and a content-addressed Lexicon bundle. It does not hash the complete method set. Startup still fails when advertised methods, capabilities, and bundled Lexicons disagree, and the immutable Lexicon URL retains its digest.
 
 The public `/status` response contains aggregate readiness and freshness information. It omits DIDs, record bodies, source cursors, raw upstream errors, and other private operational details.
 
@@ -132,9 +132,7 @@ export const config: ContrailConfig = {
   collections,
   feeds: {
     network: {
-      targets: [
-        { collection: "event", maxItems: 100 },
-      ],
+      targets: [{ collection: "event", maxItems: 100 }],
     },
   },
 };
@@ -153,6 +151,24 @@ For protected feeds, the requested actor must resolve to the token issuer. For `
 The default PLC/`did:web` resolver keeps a bounded five-minute in-process cache and deduplicates concurrent lookups. Signature failure forces an uncached refresh so key rotation does not remain hidden behind a stale entry. Deployments can still provide their own resolver policy.
 
 The authenticated methods are listed separately from anonymous methods in discovery. Their query or procedure Lexicons remain in the provider bundle, so consumers still get generated types.
+
+## Start from owned source
+
+A consumer developed alongside the provider can generate its initial API surface before any deployment exists:
+
+```bash
+pnpx @atmo-dev/contrail connect ./src/contrail.config.ts
+# or discover the standard config beneath another project directory
+pnpx @atmo-dev/contrail connect ../api
+```
+
+This compiles the config directly, writes generated Lexicons and types, and exports local/target client factories. It does not create or modify `contrail.lock.json`. Run the service separately:
+
+```bash
+pnpx @atmo-dev/contrail dev --config ../api/src/contrail.config.ts
+```
+
+After deploying, `contrail connect https://api.example.com` creates the version-2 provider lock and makes that deployment the generated default target. Future config-source connections can refresh local API types without changing the production lock.
 
 ### OAuth permission versus token binding
 

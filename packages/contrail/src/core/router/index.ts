@@ -83,8 +83,7 @@ export function createApp(
     );
     app.get("/.well-known/contrail", async (c) => {
       const { manifest } = await description;
-      c.header("cache-control", "no-cache");
-      c.header("etag", `\"${manifest.contract.digest}\"`);
+      c.header("cache-control", "public, max-age=60");
       return c.json(manifest);
     });
     if (

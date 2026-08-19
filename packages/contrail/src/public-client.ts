@@ -27,8 +27,6 @@ export interface PublicServiceClientOptions {
   /** Existing authenticated AT Protocol client used to mint service tokens.
    *  Omit when the consumer only needs anonymous methods. */
   authenticatedClient?: Client;
-  /** Optional contract pin from `contrail.lock.json`. */
-  contractDigest?: string;
   /** Optional receiving-service DID from `lex.config.js`. Supplying it also
    *  makes the required OAuth permission available as `client.scope`. */
   serviceDid?: Did;
@@ -121,10 +119,9 @@ function withBearer(init: RequestInit, token: string): RequestInit {
   return { ...init, headers };
 }
 
-/** Fetch handler that verifies an optional pinned contract once, then keeps
- * unpinned anonymous reads cheap while automatically minting, caching, and
- * attaching method-bound AT Protocol service tokens after a protected route
- * challenges the first request. */
+/** Fetch handler that keeps anonymous reads direct while automatically
+ * discovering service auth and minting, caching, and attaching method-bound AT
+ * Protocol service tokens after a protected route challenges the first request. */
 export function publicServiceFetchHandler(
   options: PublicServiceClientOptions,
 ): FetchHandler {
@@ -158,14 +155,6 @@ export function publicServiceFetchHandler(
       if (normalizePublicServiceEndpoint(value.endpoint, options) !== endpoint) {
         throw new PublicServiceContractError(
           "Contrail manifest endpoint mismatch",
-        );
-      }
-      if (
-        options.contractDigest &&
-        value.contract.digest !== options.contractDigest
-      ) {
-        throw new PublicServiceContractError(
-          `Contrail contract digest mismatch: expected ${options.contractDigest}, received ${value.contract.digest}`,
         );
       }
       const serviceAuth = value.serviceAuth ?? null;
@@ -248,9 +237,6 @@ export function publicServiceFetchHandler(
   return async (pathname, init) => {
     const method = xrpcMethod(pathname);
     if (!method) return base(pathname, init);
-    // A generated lock pin is a runtime contract: verify it once even when the
-    // first operation is anonymous. Unpinned clients remain challenge-driven.
-    if (options.contractDigest) await discoverServiceAuth();
     if (!options.authenticatedClient) return base(pathname, init);
 
     // Once discovery has been loaded, avoid the initial challenge on subsequent

@@ -21,19 +21,24 @@ export interface ConfigOpts {
  * Resolve and load a ContrailConfig from CLI options. Exits with code 1 if no
  * config file is found, since every command except `append-scheduled` needs one.
  */
-export async function resolveAndLoadConfig(
-  opts: ConfigOpts
-): Promise<ContrailConfig> {
+export async function resolveConfig(
+  opts: ConfigOpts,
+): Promise<{ config: ContrailConfig; path: string }> {
   const root = opts.root ?? process.cwd();
   const path = findConfigFile(root, opts.config);
   if (!path) {
-    console.error(
+    throw new Error(
       "Could not find a Contrail config. Pass --config <path> or place one at\n" +
-        `  ${CONFIG_CANDIDATES_MESSAGE}`
+        `  ${CONFIG_CANDIDATES_MESSAGE}`,
     );
-    process.exit(1);
   }
-  return loadConfig(path);
+  return { config: await loadConfig(path), path };
+}
+
+export async function resolveAndLoadConfig(
+  opts: ConfigOpts,
+): Promise<ContrailConfig> {
+  return (await resolveConfig(opts)).config;
 }
 
 /** Load the standard generated/pinned bundle only when collection policy needs

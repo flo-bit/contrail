@@ -80,7 +80,7 @@ A project containing only `contrail.config.ts` can start a complete local servic
 contrail dev
 ```
 
-Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, generates the public method Lexicons, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, runs bounded Jetstream ingestion every minute, and connects the current project to that service. Svelte projects receive the lock, downloaded Lexicons, generated Atcute types, and client under `src/lib/contrail/`; other projects use `src/contrail/`. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically. Useful SQLite options include:
+Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically. Useful SQLite options include:
 
 ```bash
 contrail dev --fresh                          # reset local SQLite first
@@ -88,10 +88,18 @@ contrail dev --temporary                      # delete SQLite when stopped
 contrail dev --sqlite ./tmp/dev.sqlite        # explicit durable path
 contrail dev --alluvium --allow-partial       # fast base/archive bootstrap
 contrail dev --no-backfill                    # serve existing state only
-contrail dev --no-connect                     # skip local client/type generation
 ```
 
-When `notify` is omitted, SQLite dev mode enables an open loopback-only `notifyOfUpdate` route in memory and includes it in the generated client. It does not invent a localhost service DID: `contrail.scope` remains `null`, so the application's OAuth scopes need only its normal repository permissions. Explicit `notify: false` disables this convenience; explicit production `serviceAuth` remains unchanged. The generated client sets `allowInsecureHttp: true`; plain HTTP remains rejected for every non-loopback hostname.
+Generate the typed consumer API directly from an owned config or its containing directory:
+
+```bash
+contrail connect ./contrail.config.ts
+contrail connect ../api
+```
+
+A config source generates Lexicons, Atcute types, `contrailApi`, `createContrailClient()`, and `createLocalContrailClient()` without creating or changing `contrail.lock.json`. If a production lock already exists, the generated default client keeps that deployment target while the local factory uses the current source API. `contrail dev --config ../api/src/contrail.config.ts` can then run the same config locally.
+
+SQLite dev mode exposes configured protected methods only on loopback without inheriting a production service-auth audience. When `notify` is omitted, it also enables open loopback-only `notifyOfUpdate`. `createLocalContrailClient()` has no OAuth scope and permits plain HTTP only for a validated loopback endpoint.
 
 ## Fresh generations (experimental)
 
@@ -169,7 +177,7 @@ export default createWorker(config, {
 });
 ```
 
-Discovery at `/.well-known/contrail` advertises a canonical contract digest and a content-addressed Lexicon bundle. Anonymous collection reads, profiles, feeds, and authored custom queries may acquire public AT Protocol data and improve the cache behind the response.
+Discovery at `/.well-known/contrail` advertises a validated API description and content-addressed Lexicon bundle. Anonymous collection reads, profiles, feeds, and authored custom queries may acquire public AT Protocol data and improve the cache behind the response.
 
 Personalized feeds and `notifyOfUpdate` can instead require method-bound AT Protocol service tokens:
 
@@ -184,7 +192,7 @@ const config = {
 };
 ```
 
-The protected contract advertises the audience and each query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; the module pins the discovered contract digest and verifies it once at runtime before sending provider requests. Its exported `contrail.scope` is the provider's verified OAuth permission, such as `rpc?lxm=*&aud=did:web:api.example.com`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the audience matches the public endpoint's `did:web`, the Worker publishes its service document at `/.well-known/did.json`.
+The service description advertises the audience and each protected query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; anonymous calls go directly to the configured endpoint, while protected calls lazily discover and validate service auth. Its exported `contrail.scope` is the provider's verified OAuth permission, such as `rpc?lxm=*&aud=did:web:api.example.com`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the audience matches the public endpoint's `did:web`, the Worker publishes its service document at `/.well-known/did.json`.
 
 Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Existing non-public deployments without one retain the legacy ingestion-time cursor response:
 
@@ -200,7 +208,7 @@ const config = {
 
 The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
 
-Connect an independent consumer with `contrail connect <https-origin>`. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Switching providers or output roots requires removing the existing connection deliberately, so stale Lexicons cannot remain under a broad generator glob.
+Connect an independent consumer with `contrail connect <https-origin>`. The version-2 provider lock records the deployment and exact Lexicon bundle, but generated clients do not pin the provider's complete method set at runtime. Existing anonymous methods therefore continue working when a provider adds methods. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Version-1 locks must be removed and reconnected.
 
 See [Creating a public service](../../docs/public-services/creating.md), [Using a public service](../../docs/public-services/using.md), and [Example: api.atmo.rsvp](../../docs/public-services/api-atmo-rsvp.md) for complete provider and consumer walkthroughs.
 
@@ -222,8 +230,8 @@ const config: ContrailConfig = {
     },
   },
   validation: {
-    strict: true,      // default: enforce blob size/MIME constraints too
-    verifyCid: true,   // default: canonical DAG-CBOR CID verification
+    strict: true, // default: enforce blob size/MIME constraints too
+    verifyCid: true, // default: canonical DAG-CBOR CID verification
   },
 };
 ```

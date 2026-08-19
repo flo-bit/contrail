@@ -7,7 +7,7 @@
  * CLI tooling that has to discover + load a TS/JS config file off disk.
  */
 import { existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { createJiti } from "jiti";
 import type { ContrailConfig } from "./core/types.js";
 
@@ -49,6 +49,21 @@ export function findConfigFile(root: string, explicit?: string): string | null {
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+/** Infer the project root represented by a discovered config path. Exact
+ * standard candidate locations win; an arbitrary explicitly named config falls
+ * back to its containing directory. */
+export function configProjectRoot(path: string): string {
+  const target = resolve(path);
+  const matches = CONFIG_CANDIDATES.flatMap((candidate) => {
+    const depth = candidate.split("/").length;
+    let root = target;
+    for (let index = 0; index < depth; index++) root = dirname(root);
+    return resolve(root, candidate) === target ? [{ root, depth }] : [];
+  });
+  matches.sort((left, right) => right.depth - left.depth);
+  return matches[0]?.root ?? dirname(target);
 }
 
 /** Load a config file via jiti — handles TS + ESM + CJS transparently,

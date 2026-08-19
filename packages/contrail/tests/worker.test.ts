@@ -2,12 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createWorker } from "../src/worker";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import {
-  contractFromManifest,
-  digestPublicContract,
-  saveCursor,
-  type ContrailConfig,
-} from "../src/index";
+import { saveCursor, type ContrailConfig } from "../src/index";
 
 const MINIMAL_CONFIG: ContrailConfig = {
   namespace: "com.example",
@@ -166,10 +161,9 @@ describe("createWorker", () => {
     const manifest = await manifestResponse.json<any>();
     expect(manifest).toMatchObject({
       format: "contrail.service",
-      version: 1,
+      version: 2,
       endpoint: "https://api.example.com",
       namespace: "com.example",
-      contract: { digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
       lexicons: {
         url: expect.stringMatching(
           /^https:\/\/api\.example\.com\/lexicons\/sha256:[0-9a-f]{64}$/,
@@ -196,10 +190,8 @@ describe("createWorker", () => {
         },
       ]),
     });
-    expect(manifest.contract.digest).not.toBe(manifest.lexicons.digest);
-    expect(await digestPublicContract(contractFromManifest(manifest))).toBe(
-      manifest.contract.digest,
-    );
+    expect(manifest.contract).toBeUndefined();
+    expect(manifestResponse.headers.get("etag")).toBeNull();
     expect(manifest.lexicons.url).toBe(
       `https://api.example.com/lexicons/${manifest.lexicons.digest}`,
     );

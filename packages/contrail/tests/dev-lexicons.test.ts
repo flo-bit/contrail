@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ContrailConfig } from "../src/core/types";
-import { prepareDevLexicons } from "../src/cli/commands/dev";
+import { prepareDevLexicons } from "../src/cli/dev-lexicons";
 
 const roots: string[] = [];
 

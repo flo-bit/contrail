@@ -122,13 +122,13 @@ describe("public service consumer integration", () => {
     const generatedConfig = await ensureConsumerLexiconConfig({
       root: consumerRoot,
       out: "src/contrail/lexicons",
-      lock: connection.lock,
+      api: connection.lock,
     });
     expect(generatedConfig.created).toBe(true);
     generateLexiconTypesWithAtcute(consumerRoot);
     const generatedClient = await ensureConsumerClientModule({
       root: consumerRoot,
-      lock: connection.lock,
+      api: connection.lock,
       notifyMethod: "com.example.notifyOfUpdate",
     });
     expect(generatedClient.created).toBe(true);
