@@ -16,6 +16,21 @@ const BIGINT_COLUMNS = new Set([
   "last_seen_at",
   "resolved_at",
   "total",
+  "revision",
+  "head_position",
+  "retained_floor_position",
+  "position",
+  "acknowledged_position",
+  "bootstrap_anchor_position",
+  "bootstrap_target_position",
+  "from_position",
+  "through_position",
+  "lease_expires_at",
+  "next_attempt_at",
+  "last_success_at",
+  "last_error_at",
+  "created_at",
+  "updated_at",
 ]);
 
 function normalizeRow(row: any): any {

@@ -9,6 +9,7 @@ interface SqliteStatement extends Statement {
 export function createSqliteDatabase(path: string): Database {
   const raw = new DatabaseSync(path);
   raw.exec("PRAGMA journal_mode = WAL");
+  raw.exec("PRAGMA busy_timeout = 5000");
 
   function wrapStatement(
     sql: string,

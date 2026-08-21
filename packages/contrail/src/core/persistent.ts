@@ -161,6 +161,7 @@ async function streamAndFlush(
         let ingestResult: Awaited<ReturnType<typeof ingestRecords>>;
         try {
           ingestResult = await ingestRecords(db, batch, config, {
+            phase: "live",
             knownDids,
             trailingStatements: [
               saveCursorStatement(db, lastTimeUs),
