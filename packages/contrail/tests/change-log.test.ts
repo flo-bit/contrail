@@ -142,6 +142,21 @@ describe("transactional projection change log", () => {
           },
         }),
     ).toThrow("unique historical/live phases");
+    expect(
+      () =>
+        new Contrail({
+          ...base,
+          changes: {
+            consumers: {
+              search: {
+                collections: [EVENT],
+                phases: ["live"],
+                initial: "current",
+              },
+            },
+          },
+        }),
+    ).toThrow("must observe both historical and live phases");
   });
 
   it("has no change-log schema or writes when disabled", async () => {
@@ -410,6 +425,25 @@ describe("transactional projection change log", () => {
     expect((await getChangeLogState(first))?.generation).not.toBe(
       (await getChangeLogState(second))?.generation,
     );
+  });
+
+  it("matches durable consumer IDs independently of locale sort order", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const resolved = config({
+      changes: {
+        consumers: {
+          a_: { collections: [EVENT], initial: "future" },
+          "a-": { collections: [EVENT], initial: "future" },
+        },
+      },
+    });
+
+    await initSchema(db, resolved);
+    await expect(initSchema(db, resolved)).resolves.toBeUndefined();
+    const rows = await db
+      .prepare("SELECT consumer_id FROM change_consumers ORDER BY consumer_id")
+      .all<{ consumer_id: string }>();
+    expect(rows.results.map((row) => row.consumer_id)).toEqual(["a-", "a_"]);
   });
 
   it("fails closed for unsafe enable, disable, and definition changes", async () => {

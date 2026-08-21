@@ -363,7 +363,7 @@ export async function initializeChangeLog(
   const statements: Statement[] = [];
   for (const [consumerId, consumer] of Object.entries(
     config.changes?.consumers ?? {},
-  ).sort(([left], [right]) => left.localeCompare(right))) {
+  ).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
     const initialReady = consumer.initial === "current" ? "pending" : "ready";
     statements.push(
       db
@@ -444,17 +444,17 @@ async function assertChangeLogDefinition(
        FROM change_consumers ORDER BY consumer_id`,
     )
     .all<ChangeConsumerRow>();
-  const expectedConsumers = Object.entries(config.changes?.consumers ?? {}).sort(
-    ([left], [right]) => left.localeCompare(right),
-  );
+  const expectedConsumers = Object.entries(config.changes?.consumers ?? {});
   if (consumers.results.length !== expectedConsumers.length) {
     throw new Error("Durable change consumer registration is incomplete");
   }
-  for (let index = 0; index < expectedConsumers.length; index++) {
-    const [id, expected] = expectedConsumers[index]!;
-    const actual = consumers.results[index]!;
+  const consumersById = new Map(
+    consumers.results.map((consumer) => [consumer.consumer_id, consumer]),
+  );
+  for (const [id, expected] of expectedConsumers) {
+    const actual = consumersById.get(id);
     if (
-      actual.consumer_id !== id ||
+      !actual ||
       actual.generation_id !== state.generation_id ||
       actual.configured_collections_json !== canonicalCollections(expected.collections) ||
       actual.configured_phases_json !== canonicalPhases(changeConsumerPhases(expected)) ||
@@ -477,13 +477,14 @@ async function assertChangeLogDefinition(
   if (coverage.results.length !== expectedCoverage.length) {
     throw new Error("Durable change-log coverage is incomplete");
   }
-  for (let index = 0; index < expectedCoverage.length; index++) {
-    const actual = coverage.results[index]!;
-    const expected = expectedCoverage[index]!;
+  const coverageByPair = new Map(
+    coverage.results.map((item) => [`${item.collection}\0${item.phase}`, item]),
+  );
+  for (const expected of expectedCoverage) {
+    const actual = coverageByPair.get(`${expected.collection}\0${expected.phase}`);
     if (
+      !actual ||
       actual.generation_id !== state.generation_id ||
-      actual.collection !== expected.collection ||
-      actual.phase !== expected.phase ||
       Number(actual.from_position) !== 0 ||
       actual.through_position !== null
     ) {

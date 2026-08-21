@@ -631,9 +631,9 @@ async function claimChangeRange(
       changes: [...coalesced.values()],
       attempt: Number(leased.attempts) + 1,
       leaseExpiresAt,
-      ...(leased.bootstrap_token === null
-        ? {}
-        : { bootstrapToken: leased.bootstrap_token }),
+      ...(bootstrap && leased.bootstrap_token !== null
+        ? { bootstrapToken: leased.bootstrap_token }
+        : {}),
       ...(bootstrapTarget === null ? {} : { bootstrapTarget }),
       leaseOwner: owner,
     };

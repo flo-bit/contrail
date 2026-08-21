@@ -206,6 +206,9 @@ describe("current-state change consumer bootstrap", () => {
     await apply(db, withSearch, event({ rkey: "d", time: 6 }));
     const ordinary = await claimChanges(db, "search", { now: 400 });
     expect(ordinary).toMatchObject({ from: "2", through: "3" });
+    expect(ordinary).not.toHaveProperty("bootstrapToken");
+    const ordinaryDelivery = await hydrateChanges(db, withSearch, ordinary!);
+    expect(ordinaryDelivery).not.toHaveProperty("destinationToken");
   });
 
   it("persists snapshot failure backoff and resumes the same page", async () => {
@@ -243,7 +246,7 @@ describe("current-state change consumer bootstrap", () => {
     await initSchema(db, eventOnly);
     const expanded = config({
       keeper: { collections: [EVENT], phases: ["live"], initial: "history" },
-      notes: { collections: [NOTE], phases: ["live"], initial: "current" },
+      notes: { collections: [NOTE], initial: "current" },
     });
     await expect(initSchema(db, expanded)).rejects.toThrow(
       "expands collection/phase coverage",

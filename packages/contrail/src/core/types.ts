@@ -258,7 +258,7 @@ export type ChangeConsumerInitialMode = "current" | "future" | "history";
 export interface ChangeConsumerConfig {
   /** Exact configured collection NSIDs. Short aliases are deliberately rejected. */
   collections: string[];
-  /** Projection phases to observe. Defaults to both historical and live. */
+  /** Projection phases to observe. Defaults to both; `initial: "current"` requires both. */
   phases?: ProjectionPhase[];
   /** How the consumer establishes its first durable position. */
   initial: ChangeConsumerInitialMode;
@@ -686,6 +686,11 @@ const MAX_CHANGE_CONSUMER_COLLECTIONS = 64;
 const MAX_CHANGE_COVERAGE_PAIRS = 256;
 const MAX_CHANGE_DEFINITIONS_BYTES = 64 * 1_024;
 
+/** Locale-independent order for durable definitions compared across runtimes. */
+function compareCanonicalText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 /** Whether this configuration requires the optional transactional change log. */
 export function changesEnabled(config: ContrailConfig): boolean {
   return Object.keys(config.changes?.consumers ?? {}).length > 0;
@@ -712,8 +717,8 @@ export function changeLogCoverage(
   }
   return [...pairs.values()].sort(
     (left, right) =>
-      left.collection.localeCompare(right.collection) ||
-      left.phase.localeCompare(right.phase),
+      compareCanonicalText(left.collection, right.collection) ||
+      compareCanonicalText(left.phase, right.phase),
   );
 }
 
@@ -721,7 +726,7 @@ export function changeLogCoverage(
 export function canonicalChangeDefinitions(config: ContrailConfig): string {
   return JSON.stringify(
     Object.entries(config.changes?.consumers ?? {})
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCanonicalText(left, right))
       .map(([id, consumer]) => ({
         id,
         collections: [...consumer.collections].sort(),
@@ -829,6 +834,14 @@ export function validateConfig(config: ContrailConfig): void {
     ) {
       throw new Error(
         `Change consumer "${id}" requires unique historical/live phases`,
+      );
+    }
+    if (
+      consumer.initial === "current" &&
+      !(phases.includes("historical") && phases.includes("live"))
+    ) {
+      throw new Error(
+        `Current-state change consumer "${id}" must observe both historical and live phases`,
       );
     }
     if (!(["current", "future", "history"] as string[]).includes(consumer.initial)) {
