@@ -1,13 +1,16 @@
 import { fail, redirect } from "@sveltejs/kit";
 import {
   SpacesProviderClient,
+  addSimpleSpaceMember,
   createSpace,
   createSpaceRecord,
-  deleteSpaceRecord,
   formatSpaceUri,
+  getSimpleSpace,
+  listSimpleSpaceMembers,
+  removeSimpleSpaceMember,
+  updateSimpleSpacePolicy,
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
 import {
-  MEMBER_COLLECTION,
   NOTE_COLLECTION,
   PROVIDER_AUDIENCE,
   PROVIDER_ENDPOINT,
@@ -29,16 +32,9 @@ interface NoteRecord {
   };
 }
 
-interface MemberRecord {
-  uri: string;
-  rkey: string;
+interface CircleMember {
   did: string;
-  cid: string;
-  value: {
-    subject: string;
-    handle?: string;
-    createdAt: string;
-  };
+  handle?: string;
 }
 
 function circleUri(ownerDid: string): string {
@@ -68,15 +64,6 @@ function ownerFrom(form: FormData, fallback: string): string {
   return validDid(owner) ? owner : fallback;
 }
 
-async function memberRkey(did: string): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(did)),
-  );
-  let binary = "";
-  for (const byte of digest) binary += String.fromCharCode(byte);
-  return `m-${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
-}
-
 async function resolveMember(value: unknown): Promise<{ did: string; handle?: string }> {
   if (validDid(value)) return { did: value };
   const handle = typeof value === "string"
@@ -99,6 +86,45 @@ async function resolveMember(value: unknown): Promise<{ did: string; handle?: st
   return { did: result.did, handle };
 }
 
+async function profileHandle(did: string): Promise<string | undefined> {
+  const url = new URL("/xrpc/app.bsky.actor.getProfile", "https://public.api.bsky.app");
+  url.searchParams.set("actor", did);
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return undefined;
+    const profile = await response.json() as { handle?: unknown };
+    return typeof profile.handle === "string" ? profile.handle : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function nativeMembership(
+  session: NonNullable<App.Locals["session"]>,
+  space: string,
+): Promise<{ enabled: boolean; members: CircleMember[] }> {
+  const description = await getSimpleSpace(session, space);
+  const enabled = description.policy?.$type ===
+    "com.atproto.simplespace.defs#memberListPolicy";
+  if (!enabled) return { enabled, members: [] };
+  const dids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await listSimpleSpaceMembers(session, { space, cursor, limit: 100 });
+    dids.push(...page.members.map((member) => member.did));
+    cursor = page.cursor;
+  } while (cursor && dids.length < 1_000);
+  const members = await Promise.all(dids.map(async (did) => ({
+    did,
+    handle: await profileHandle(did),
+  })));
+  return { enabled, members };
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.session || !locals.did) {
     return {
@@ -107,6 +133,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       space: null,
       notes: [],
       members: [],
+      nativeMemberPolicy: false,
       circles: [],
     };
   }
@@ -118,27 +145,35 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     spaces: [] as Array<{ uri: string; authorityDid: string; type: string }>,
     truncated: false,
   }));
+  const membership = owner === locals.did
+    ? await nativeMembership(locals.session, space).catch(() => ({
+        enabled: false,
+        members: [] as CircleMember[],
+      }))
+    : { enabled: true, members: [] as CircleMember[] };
+  const queryNotes = () => client.listSpaceRecords<NoteRecord>({
+    space,
+    collection: NOTE_COLLECTION,
+    limit: 100,
+    search: url.searchParams.get("search") ?? undefined,
+  });
   try {
-    const [notes, members] = await Promise.all([
-      client.listSpaceRecords<NoteRecord>({
-        space,
-        collection: NOTE_COLLECTION,
-        limit: 100,
-        search: url.searchParams.get("search") ?? undefined,
-      }),
-      client.listSpaceRecords<MemberRecord>({
-        space,
-        collection: MEMBER_COLLECTION,
-        did: owner,
-        limit: 200,
-      }),
-    ]);
+    let notes;
+    try {
+      notes = await queryNotes();
+    } catch {
+      // Native PDS policy remains authoritative. Renew the short provider
+      // lease only when cached access expires; removed members fail here.
+      await client.authorizeSpace(space);
+      notes = await queryNotes();
+    }
     return {
       signedIn: true as const,
       owner,
       space,
       notes: notes.records,
-      members: members.records,
+      members: membership.members,
+      nativeMemberPolicy: membership.enabled,
       circles: available.spaces,
       circlesTruncated: available.truncated,
       viewer: locals.did,
@@ -150,7 +185,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       owner,
       space,
       notes: [] as NoteRecord[],
-      members: [] as MemberRecord[],
+      members: membership.members,
+      nativeMemberPolicy: membership.enabled,
       circles: available.spaces,
       circlesTruncated: available.truncated,
       viewer: locals.did,
@@ -167,13 +203,28 @@ export const actions: Actions = {
       const created = await createSpace(session, {
         type: SPACE_TYPE,
         skey: SPACE_SKEY,
-        managingApp: PROVIDER_AUDIENCE,
+        policy: { kind: "member-list" },
       });
       await provider(session).authorizeSpace(created.uri);
     } catch (error) {
       return fail(400, {
         action: "create",
         message: error instanceof Error ? error.message : "Could not create circle",
+      });
+    }
+    throw redirect(303, `/?owner=${encodeURIComponent(did)}`);
+  },
+
+  async enableNativeMembers({ locals }) {
+    const { session, did } = signedIn(locals);
+    const space = circleUri(did);
+    try {
+      await updateSimpleSpacePolicy(session, space, { kind: "member-list" });
+      await provider(session).authorizeSpace(space);
+    } catch (error) {
+      return fail(400, {
+        action: "enableNativeMembers",
+        message: error instanceof Error ? error.message : "Could not update circle policy",
       });
     }
     throw redirect(303, `/?owner=${encodeURIComponent(did)}`);
@@ -205,28 +256,12 @@ export const actions: Actions = {
       const member = await resolveMember(form.get("member"));
       if (member.did === owner) throw new Error("The owner already has access");
       const space = circleUri(owner);
-      const client = provider(session);
-      const existing = await client.listSpaceRecords<MemberRecord>({
-        space,
-        collection: MEMBER_COLLECTION,
-        did: owner,
-        filters: { subject: member.did },
-        limit: 1,
-      });
-      if (existing.records.length === 0) {
-        await createSpaceRecord(session, {
-          space,
-          collection: MEMBER_COLLECTION,
-          rkey: await memberRkey(member.did),
-          record: {
-            $type: MEMBER_COLLECTION,
-            subject: member.did,
-            ...(member.handle ? { handle: member.handle } : {}),
-            createdAt: new Date().toISOString(),
-          },
-        });
-        await client.syncSpace(space, did);
+      const description = await getSimpleSpace(session, space);
+      if (description.policy?.$type !==
+        "com.atproto.simplespace.defs#memberListPolicy") {
+        throw new Error("Enable the native member-list policy first");
       }
+      await addSimpleSpaceMember(session, space, member.did);
     } catch (error) {
       return fail(400, {
         action: "addMember",
@@ -240,24 +275,19 @@ export const actions: Actions = {
     const { session, did } = signedIn(locals);
     const form = await request.formData();
     const owner = ownerFrom(form, did);
-    const rkey = form.get("rkey");
+    const memberDid = form.get("memberDid");
     if (owner !== did) {
       return fail(403, {
         action: "removeMember",
         message: "Only the circle owner can remove members",
       });
     }
-    if (typeof rkey !== "string" || !/^m-[A-Za-z0-9_-]{43}$/.test(rkey)) {
-      return fail(400, { action: "removeMember", message: "Invalid member record" });
+    if (!validDid(memberDid)) {
+      return fail(400, { action: "removeMember", message: "Invalid member DID" });
     }
     try {
       const space = circleUri(owner);
-      await deleteSpaceRecord(session, {
-        space,
-        collection: MEMBER_COLLECTION,
-        rkey,
-      });
-      await provider(session).syncSpace(space, did);
+      await removeSimpleSpaceMember(session, space, memberDid);
     } catch (error) {
       return fail(400, {
         action: "removeMember",

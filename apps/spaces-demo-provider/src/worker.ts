@@ -1,9 +1,7 @@
 import type { ContrailConfig } from "@atmo-dev/contrail";
 import { createSpacesWorker } from "@atmo-dev/contrail-spaces-alpha/worker";
 export { SpaceSubscriptionHub } from "@atmo-dev/contrail-spaces-alpha/worker";
-import { authorityRecordMembership } from "@atmo-dev/contrail-spaces-alpha";
 import {
-  MEMBER_COLLECTION,
   NOTE_COLLECTION,
   PROVIDER_AUDIENCE,
   PROVIDER_ENDPOINT,
@@ -38,11 +36,6 @@ const projection: ContrailConfig = {
         reply: { collection: "note", field: "reply.uri" },
       },
     },
-    member: {
-      collection: MEMBER_COLLECTION,
-      validate: true,
-      queryable: { subject: {} },
-    },
     reaction: {
       collection: REACTION_COLLECTION,
       validate: true,
@@ -64,15 +57,12 @@ export default createSpacesWorker<Env>({
   },
   spaceTypes: {
     [SPACE_TYPE]: {
-      collections: [NOTE_COLLECTION, MEMBER_COLLECTION, REACTION_COLLECTION],
-      access: authorityRecordMembership({
-        collection: MEMBER_COLLECTION,
-        principalField: "subject",
-      }),
+      collections: [NOTE_COLLECTION, REACTION_COLLECTION],
+      policy: "member-list",
       skey: SPACE_SKEY,
     },
   },
   subscriptions: { binding: "SPACE_SUBSCRIPTIONS" },
-  accessLeaseMs: 15 * 60_000,
+  accessLeaseMs: 2 * 60_000,
   reconcileIntervalMs: 5 * 60_000,
 });

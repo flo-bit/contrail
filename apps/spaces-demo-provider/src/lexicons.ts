@@ -1,5 +1,4 @@
 import {
-  MEMBER_COLLECTION,
   NOTE_COLLECTION,
   REACTION_COLLECTION,
   SPACE_SKEY,
@@ -14,8 +13,8 @@ export const circleLexicon = {
       type: "space",
       key: `literal:${SPACE_SKEY}`,
       name: "Atmo Circle",
-      description: "A private multi-writer circle with an owner-managed member list.",
-      collections: [NOTE_COLLECTION, MEMBER_COLLECTION, REACTION_COLLECTION],
+      description: "A private multi-writer circle using native PDS membership.",
+      collections: [NOTE_COLLECTION, REACTION_COLLECTION],
     },
   },
 } as const;
@@ -48,26 +47,6 @@ export const noteLexicon = {
   },
 } as const;
 
-export const memberLexicon = {
-  lexicon: 1,
-  id: MEMBER_COLLECTION,
-  defs: {
-    main: {
-      type: "record",
-      key: "any",
-      record: {
-        type: "object",
-        required: ["subject", "createdAt"],
-        properties: {
-          subject: { type: "string", format: "did" },
-          handle: { type: "string", format: "handle" },
-          createdAt: { type: "string", format: "datetime" },
-        },
-      },
-    },
-  },
-} as const;
-
 export const reactionLexicon = {
   lexicon: 1,
   id: REACTION_COLLECTION,
@@ -95,5 +74,5 @@ export const reactionLexicon = {
   },
 } as const;
 
-export const recordLexicons = [noteLexicon, memberLexicon, reactionLexicon] as const;
+export const recordLexicons = [noteLexicon, reactionLexicon] as const;
 export const networkLexicons = [circleLexicon, ...recordLexicons] as const;

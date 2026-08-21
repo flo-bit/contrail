@@ -21,14 +21,14 @@ A Space incarnation maps to one opaque projection scope. Each writer repo is sta
 
 - authenticated delegation authorization;
 - exact-Space private collection routes;
-- managing-app access checks;
+- native public/member-list policy validation and optional managing-app access checks;
 - signed write/deletion notifications;
 - Queue consumption;
 - scheduled bounded reconciliation;
 - renewable, owner-fenced per-repo leases; and
 - optional hibernating Durable Object WebSocket invalidations.
 
-Consumer-triggered synchronization always reconciles the authority's complete `listRepos` result; only service-authenticated authority notifications use the targeted writer path. Space types may declare an `authority-record-membership` policy. Its collection is automatically authority-only, and verified membership mutations maintain a generation-scoped entitlement index atomically with projection changes. Access checks and `listSpaces` use this index; full recovery switches records and entitlements through the same visible writer-generation pointer. Custom policy callbacks remain available and may provide an inverse `listSpaces` lookup. Rediscovery is accepted only for a watch already hidden by a verified deletion, so an ordinary read-authorized caller cannot rotate an active generation.
+Consumer-triggered synchronization always reconciles the authority's complete `listRepos` result; only service-authenticated authority notifications use the targeted writer path. Public and member-list policies remain PDS-owned: successful delegation exchange creates a short-lived provider access lease, while managing-app policies use the configured application callback. `listSpaces` reports owned or currently connected provider watches; the alpha protocol has no inverse global Space-membership query. Rediscovery is accepted only for a watch already hidden by a verified deletion, so an ordinary read-authorized caller cannot rotate an active generation.
 
 PDS notifications only enqueue a target revision/hash. Record bodies always come from authenticated writer hosts and are accepted only after commit/LtHash or full-CAR verification. After the verified projection commit, an optional per-Space Durable Object broadcasts an invalidation—not record contents—to browsers holding a short-lived, one-time ticket issued through an authorized exact-method XRPC call. CAR bodies are size-limited while streaming, including responses without `Content-Length`. Relation-count columns use additive initialization migrations when projection configuration evolves.
 

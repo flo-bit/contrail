@@ -107,22 +107,91 @@ async function pdsProcedure<T>(
   return readJson<T>(response);
 }
 
+export type SimpleSpacePolicyInput =
+  | { kind: "public" }
+  | { kind: "member-list" }
+  | { kind: "managing-app"; managingApp: string };
+
+function simpleSpacePolicy(input: SimpleSpacePolicyInput): Record<string, string> {
+  if (input.kind === "public") {
+    return { $type: "com.atproto.simplespace.defs#publicPolicy" };
+  }
+  if (input.kind === "member-list") {
+    return { $type: "com.atproto.simplespace.defs#memberListPolicy" };
+  }
+  return {
+    $type: "com.atproto.simplespace.defs#managingAppPolicy",
+    managingApp: input.managingApp,
+  };
+}
+
 export function createSpace(
   session: AuthenticatedPdsSession,
   input: {
     type: string;
     skey?: string;
-    managingApp: string;
+    policy: SimpleSpacePolicyInput;
   },
 ): Promise<{ uri: string }> {
   return pdsProcedure(session, "com.atproto.simplespace.createSpace", {
     type: input.type,
     ...(input.skey ? { skey: input.skey } : {}),
-    policy: {
-      $type: "com.atproto.simplespace.defs#managingAppPolicy",
-      managingApp: input.managingApp,
-    },
+    policy: simpleSpacePolicy(input.policy),
     appAccess: { $type: "com.atproto.simplespace.defs#open" },
+  });
+}
+
+export function getSimpleSpace(
+  session: AuthenticatedPdsSession,
+  space: string,
+): Promise<{
+  uri: string;
+  policy?: { $type?: string; managingApp?: string };
+  appAccess?: { $type?: string };
+}> {
+  parseSpaceUri(space);
+  return pdsQuery(session, "com.atproto.simplespace.getSpace", { space });
+}
+
+export function updateSimpleSpacePolicy(
+  session: AuthenticatedPdsSession,
+  space: string,
+  policy: SimpleSpacePolicyInput,
+): Promise<Record<string, never>> {
+  parseSpaceUri(space);
+  return pdsProcedure(session, "com.atproto.simplespace.updateSpace", {
+    space,
+    policy: simpleSpacePolicy(policy),
+  });
+}
+
+export function addSimpleSpaceMember(
+  session: AuthenticatedPdsSession,
+  space: string,
+  did: string,
+): Promise<Record<string, never>> {
+  parseSpaceUri(space);
+  return pdsProcedure(session, "com.atproto.simplespace.addMember", { space, did });
+}
+
+export function removeSimpleSpaceMember(
+  session: AuthenticatedPdsSession,
+  space: string,
+  did: string,
+): Promise<Record<string, never>> {
+  parseSpaceUri(space);
+  return pdsProcedure(session, "com.atproto.simplespace.removeMember", { space, did });
+}
+
+export function listSimpleSpaceMembers(
+  session: AuthenticatedPdsSession,
+  input: { space: string; cursor?: string; limit?: number },
+): Promise<{ members: Array<{ did: string }>; cursor?: string }> {
+  parseSpaceUri(input.space);
+  return pdsQuery(session, "com.atproto.simplespace.listMembers", {
+    space: input.space,
+    ...(input.cursor ? { cursor: input.cursor } : {}),
+    ...(input.limit ? { limit: String(input.limit) } : {}),
   });
 }
 

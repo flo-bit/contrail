@@ -184,21 +184,29 @@ describe("Spaces Worker private query boundary", () => {
     }]);
   });
 
-  it("rejects authority-only collections outside the Space allow-list", () => {
-    expect(() => createSpacesWorker({
+  it("requires an application authorizer only for managing-app policies", () => {
+    const base = {
       projection,
       lexicons,
       service: {
         endpoint: "https://spaces.atmo.garden",
         audience,
       },
+    };
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": { collections: [collection] },
+      },
+    })).toThrow(/Managing-app/);
+    expect(() => createSpacesWorker({
+      ...base,
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
-          authorityOnlyCollections: ["garden.atmo.circle.member"],
+          policy: "member-list",
         },
       },
-      authorization: { authorize: () => true },
-    })).toThrow(/Authority-only collection/);
+    })).not.toThrow();
   });
 });

@@ -1,12 +1,13 @@
 # Atmo Circle demo
 
-Small SvelteKit Cloudflare Worker demonstrating a separately deployed Contrail Spaces provider with an owner-managed member list.
+Small SvelteKit Cloudflare Worker demonstrating a separately deployed Contrail Spaces provider with PDS-native membership.
 
 - OAuth sessions stay in this consumer's KV namespaces through `@svelte-atproto/oauth`.
 - one-time delegation tokens are forwarded in authenticated request bodies;
 - service-auth JWTs are minted per exact provider method;
-- owners add or remove members by handle using authority-signed membership records;
-- an authenticated provider query lists the active circles the viewer owns or can access;
+- owners add or remove members by handle through `com.atproto.simplespace`;
+- short provider query leases are renewed on demand against the native PDS policy;
+- an authenticated provider query lists circles the viewer owns or has connected through unexpired delegation evidence;
 - writes go directly to each user's permissioned PDS repo;
 - reads come from `https://spaces.atmo.garden`; and
 - a short-lived provider ticket opens a WebSocket for projection invalidations, with a 30-second foreground refresh fallback.

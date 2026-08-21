@@ -12,13 +12,11 @@ import {
   deleteIsolatedPartitionGeneration,
   hideIsolatedPartitionStatement,
   ingestRecords,
-  queryIsolatedRecords,
   rebuildIsolatedCountsStatements,
   recordTimeUs,
   type ContrailConfig,
   type Database,
   type IngestEvent,
-  type Statement,
 } from "@atmo-dev/contrail";
 import {
   getRepoCar,
@@ -35,13 +33,9 @@ import {
 import {
   acquireSyncLease,
   deleteRepoState,
-  deleteSpaceAccessEntryStatement,
-  deleteSpaceAccessPartitionGeneration,
   getRepoState,
   getSpaceWatch,
-  getVisibleSpaceWriterGeneration,
   hideDeletedSpace,
-  listActiveSpaceWatches,
   listDueWatches,
   listRepoStates,
   loadCredential,
@@ -49,39 +43,21 @@ import {
   purgeSpaceGeneration,
   releaseSyncLease,
   renewSyncLease,
-  replaceSpaceAccessIndex,
   saveRepoStateStatement,
-  spaceAccessIndexPolicyKey,
   updateWatch,
-  upsertSpaceAccessEntryStatement,
-  type SpaceAccessEntryInput,
   type SpaceRepoState,
   type SpaceWatch,
 } from "./storage";
 import { formatSpaceRecordUri, parseSpaceUri, spaceProjectionKey } from "./uri";
 
-export interface AuthorityRecordMembershipPolicy {
-  kind: "authority-record-membership";
-  collection: string;
-  principalField: string;
-}
-
-export function authorityRecordMembership(
-  input: Omit<AuthorityRecordMembershipPolicy, "kind">,
-): AuthorityRecordMembershipPolicy {
-  return { kind: "authority-record-membership", ...input };
-}
+export type SpaceUserPolicy = "public" | "member-list" | "managing-app";
 
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
-  /** Built-in, materialized access policy for owner-controlled membership. */
-  access?: AuthorityRecordMembershipPolicy;
-  /** Additional collections projected only from the Space authority's repo. */
-  authorityOnlyCollections?: readonly string[];
-  /** Require this provider to be the managing app. Defaults to true. Set false
-   * only for a deliberately supported upstream-owned policy. */
-  requireManagingApp?: boolean;
+  /** User policy asserted against the authority PDS description. Defaults to
+   * `managing-app` for backwards compatibility. */
+  policy?: SpaceUserPolicy;
 }
 
 export interface SpacesSyncConfig {
@@ -131,137 +107,9 @@ function asSignedCommit(input: SignedCommitInput): SignedCommit {
 function collectionAllowed(
   config: SpacesSyncConfig,
   watch: SpaceWatch,
-  repoDid: string,
   collection: string,
 ): boolean {
-  const type = config.spaceTypes[watch.spaceType];
-  if (!type?.collections.includes(collection)) return false;
-  const authorityOnly = type.authorityOnlyCollections?.includes(collection) ||
-    type.access?.collection === collection;
-  return !authorityOnly || repoDid === watch.authorityDid;
-}
-
-const VALID_DID = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/;
-
-function recordField(record: string | null, field: string): unknown {
-  if (record === null) return undefined;
-  let value: unknown = JSON.parse(record);
-  for (const segment of field.split(".")) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-    value = (value as Record<string, unknown>)[segment];
-  }
-  return value;
-}
-
-function accessProjectionStatements(
-  db: Database,
-  config: SpacesSyncConfig,
-  watch: SpaceWatch,
-  partition: string,
-  partitionGeneration: number,
-  events: readonly IngestEvent[],
-): Statement[] {
-  const policy = config.spaceTypes[watch.spaceType]?.access;
-  if (!policy || partition !== watch.authorityDid) return [];
-  const scopeKey = spaceProjectionKey(watch.spaceUri, watch.generation);
-  return events
-    .filter((event) => event.collection === policy.collection)
-    .map((event) => {
-      const identity = {
-        scopeKey,
-        partitionKey: partition,
-        partitionGeneration,
-        sourceUri: event.uri,
-      };
-      if (event.operation === "delete") {
-        return deleteSpaceAccessEntryStatement(db, identity);
-      }
-      const principalDid = recordField(event.record, policy.principalField);
-      if (typeof principalDid !== "string" || !VALID_DID.test(principalDid)) {
-        throw new Error(
-          `Membership record ${event.uri} has an invalid ${policy.principalField}`,
-        );
-      }
-      return upsertSpaceAccessEntryStatement(db, {
-        ...identity,
-        spaceUri: watch.spaceUri,
-        spaceGeneration: watch.generation,
-        principalDid,
-        sourceCid: event.cid,
-      });
-    });
-}
-
-/** Additive migration for policies enabled after records were already
- * projected. New incremental/full syncs maintain the index transactionally. */
-export async function initializeSpaceAccessPolicies(
-  db: Database,
-  config: Pick<SpacesSyncConfig, "projection" | "spaceTypes">,
-): Promise<void> {
-  let watchCursor: string | undefined;
-  while (true) {
-    const watches = await listActiveSpaceWatches(db, 200, watchCursor);
-    for (const watch of watches) {
-      const policy = config.spaceTypes[watch.spaceType]?.access;
-      if (!policy) continue;
-      const policyKey = JSON.stringify([policy.kind, policy.collection, policy.principalField]);
-      const existingKey = await spaceAccessIndexPolicyKey(db, {
-        spaceUri: watch.spaceUri,
-        spaceGeneration: watch.generation,
-      });
-      if (existingKey === policyKey) continue;
-      const short = Object.entries(config.projection.collections).find(
-        ([, collection]) => collection.collection === policy.collection,
-      )?.[0];
-      if (!short) throw new Error(`Unknown membership collection ${policy.collection}`);
-      const scopeKey = spaceProjectionKey(watch.spaceUri, watch.generation);
-      const partitionGeneration = await getVisibleSpaceWriterGeneration(db, {
-        scopeKey,
-        partitionKey: watch.authorityDid,
-      });
-      const entries: SpaceAccessEntryInput[] = [];
-      if (partitionGeneration !== null) {
-        let cursor: string | undefined;
-        do {
-          const page = await queryIsolatedRecords(db, config.projection, {
-            scope: { kind: "isolated", key: scopeKey },
-            collection: short,
-            did: watch.authorityDid,
-            limit: 200,
-            cursor,
-          });
-          for (const row of page.records) {
-            const principalDid = recordField(
-              typeof row.record === "string" ? row.record : JSON.stringify(row.record),
-              policy.principalField,
-            );
-            if (typeof principalDid !== "string" || !VALID_DID.test(principalDid)) {
-              throw new Error(`Membership record ${row.uri} has an invalid principal`);
-            }
-            entries.push({
-              spaceUri: watch.spaceUri,
-              spaceGeneration: watch.generation,
-              scopeKey,
-              partitionKey: watch.authorityDid,
-              partitionGeneration,
-              principalDid,
-              sourceUri: String(row.uri),
-              sourceCid: row.cid === null ? null : String(row.cid),
-            });
-          }
-          cursor = page.cursor;
-        } while (cursor);
-      }
-      await replaceSpaceAccessIndex(db, {
-        spaceUri: watch.spaceUri,
-        spaceGeneration: watch.generation,
-        policyKey,
-        entries,
-      });
-    }
-    if (watches.length < 200) break;
-    watchCursor = watches.at(-1)!.spaceUri;
-  }
+  return config.spaceTypes[watch.spaceType]?.collections.includes(collection) ?? false;
 }
 
 export class SpacesSyncEngine {
@@ -319,12 +167,16 @@ export class SpacesSyncEngine {
     if (description.uri !== watch.spaceUri) {
       throw new Error("Space authority returned a different URI");
     }
-    const managingPolicy = description.policy?.$type ===
-      "com.atproto.simplespace.defs#managingAppPolicy";
-    if (type.requireManagingApp !== false && !managingPolicy) {
-      throw new Error("Space does not use the configured managing-app policy");
+    const expectedPolicy = type.policy ?? "managing-app";
+    const expectedPolicyType = {
+      public: "com.atproto.simplespace.defs#publicPolicy",
+      "member-list": "com.atproto.simplespace.defs#memberListPolicy",
+      "managing-app": "com.atproto.simplespace.defs#managingAppPolicy",
+    }[expectedPolicy];
+    if (description.policy?.$type !== expectedPolicyType) {
+      throw new Error(`Space does not use the configured ${expectedPolicy} policy`);
     }
-    if (managingPolicy &&
+    if (expectedPolicy === "managing-app" &&
       description.policy.managingApp !== this.config.serviceAudience) {
       throw new Error("Space is managed by a different application");
     }
@@ -546,12 +398,7 @@ export class SpacesSyncEngine {
           cid: operation.cid ? parseCid(operation.cid) : null,
           prev: operation.prev ? parseCid(operation.prev) : null,
         });
-        if (!collectionAllowed(
-          this.config,
-          watch,
-          local.repoDid,
-          operation.collection,
-        )) continue;
+        if (!collectionAllowed(this.config, watch, operation.collection)) continue;
         if (operation.cid && operation.value === undefined) {
           throw new Error("Incremental operation omitted its record value");
         }
@@ -631,17 +478,7 @@ export class SpacesSyncEngine {
           partition: local.repoDid,
           generation: local.visibleWriterGeneration,
         }),
-        trailingStatements: [
-          ...accessProjectionStatements(
-            this.db,
-            this.config,
-            watch,
-            local.repoDid,
-            local.visibleWriterGeneration,
-            events,
-          ),
-          checkpoint,
-        ],
+        trailingStatements: [checkpoint],
         skipDiagnostics: true,
       });
     } else {
@@ -680,7 +517,7 @@ export class SpacesSyncEngine {
     const events: IngestEvent[] = [];
     const observedAt = Date.now() * 1000;
     for (const record of recovered.records) {
-      if (!collectionAllowed(this.config, watch, repoDid, record.collection)) continue;
+      if (!collectionAllowed(this.config, watch, record.collection)) continue;
       events.push(createIngestEvent({
         uri: formatSpaceRecordUri({
           spaceUri: watch.spaceUri,
@@ -716,11 +553,6 @@ export class SpacesSyncEngine {
     };
     await assertLease();
     await deleteIsolatedPartitionGeneration(this.db, this.config.projection, target);
-    await deleteSpaceAccessPartitionGeneration(this.db, {
-      scopeKey: target.scope.key,
-      partitionKey: target.partition,
-      partitionGeneration: target.generation,
-    });
     const chunkSize = this.config.maxAtomicMutations ?? 10;
     for (let offset = 0; offset < events.length; offset += chunkSize) {
       await assertLease();
@@ -732,14 +564,6 @@ export class SpacesSyncEngine {
         {
           projection: createIsolatedProjection(target),
           authoritativeSourceObservation: true,
-          trailingStatements: accessProjectionStatements(
-            this.db,
-            this.config,
-            watch,
-            repoDid,
-            writerGeneration,
-            chunk,
-          ),
           skipDiagnostics: true,
         },
       );
@@ -773,11 +597,6 @@ export class SpacesSyncEngine {
         partition: repoDid,
         generation: prior.visibleWriterGeneration,
       });
-      await deleteSpaceAccessPartitionGeneration(this.db, {
-        scopeKey: this.scope(watch).key,
-        partitionKey: repoDid,
-        partitionGeneration: prior.visibleWriterGeneration,
-      });
     }
   }
 
@@ -804,11 +623,6 @@ export class SpacesSyncEngine {
       scope: this.scope(watch),
       partition: state.repoDid,
       generation: state.visibleWriterGeneration,
-    });
-    await deleteSpaceAccessPartitionGeneration(this.db, {
-      scopeKey: this.scope(watch).key,
-      partitionKey: state.repoDid,
-      partitionGeneration: state.visibleWriterGeneration,
     });
     await this.config.onInvalidate?.(watch.spaceUri);
   }

@@ -2,7 +2,7 @@
 
 Standalone Contrail Spaces-alpha provider at `https://spaces.atmo.garden` (`did:web:spaces.atmo.garden#spaces`).
 
-It indexes `garden.atmo.circle.note`, `garden.atmo.circle.member`, and `garden.atmo.circle.reaction` from one deterministic `garden.atmo.circle/self` Space per owner. The managing-app policy allows the owner and DIDs in the Space's member collection. Only membership records signed in the authority's repo are projected, so members cannot grant access to others. Policy failures deny access.
+It indexes `garden.atmo.circle.note` and `garden.atmo.circle.reaction` from one deterministic `garden.atmo.circle/self` Space per owner. Circles use the protocol's native `memberListPolicy`; the authority PDS owns membership and decides whether it will issue delegation and Space credentials. Contrail does not project or author a parallel member list. Successful PDS authorization creates a two-minute query lease, which the consumer renews on demand so removals take effect without a provider-owned entitlement source.
 
 A hibernating Durable Object per Space fans out projection invalidations over one-time-ticket WebSockets. Events contain only the Space URI and timestamp; authorized clients refetch records through the private query API.
 

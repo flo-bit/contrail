@@ -20,8 +20,8 @@ Pinned compatibility tuple:
 - signed notification routes, Queue jobs, leases, and scheduled reconciliation;
 - exact method-bound service authentication;
 - delegation access leases or an authoritative application callback;
-- declarative authority-record membership with a materialized, generation-scoped entitlement index;
-- paginated discovery of active Spaces authorized for the calling principal;
+- explicit support for public, native member-list, and managing-app user policies;
+- paginated discovery of owned or currently connected Spaces;
 - exact-Space list/get/search/reference/relation-count queries over Contrail's isolated projection seam; and
 - optional one-time-ticket, hibernating Durable Object WebSocket invalidations.
 
@@ -31,7 +31,6 @@ Public Contrail tables and anonymous methods are unchanged. Installing the packa
 
 ```ts
 import { createSpacesWorker } from "@atmo-dev/contrail-spaces-alpha/worker";
-import { authorityRecordMembership } from "@atmo-dev/contrail-spaces-alpha";
 import {
   SpacesProviderClient,
   createSpace,

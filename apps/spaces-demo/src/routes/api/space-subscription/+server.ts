@@ -29,12 +29,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
     skey: SPACE_SKEY,
   });
   try {
-    const subscription = await new SpacesProviderClient({
+    const client = new SpacesProviderClient({
       endpoint: PROVIDER_ENDPOINT,
       audience: PROVIDER_AUDIENCE,
       namespace: SPACE_TYPE,
       session: locals.session,
-    }).subscribeSpace(space);
+    });
+    let subscription;
+    try {
+      subscription = await client.subscribeSpace(space);
+    } catch {
+      await client.authorizeSpace(space);
+      subscription = await client.subscribeSpace(space);
+    }
     return json(subscription, {
       headers: { "cache-control": "private, no-store" },
     });

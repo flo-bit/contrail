@@ -177,7 +177,7 @@
       {#if data.circles.length}
         <div class="stack">
           <div class="row">
-            <h2>Your circles</h2>
+            <h2>Connected circles</h2>
             {#if data.circlesTruncated}<span class="badge">first 200</span>{/if}
           </div>
           {#each data.circles as circle (circle.uri)}
@@ -200,61 +200,70 @@
           <form method="POST" action="?/create" use:enhance>
             <button>Create and connect</button>
           </form>
-          <form method="POST" action="?/authorize" use:enhance>
-            <input type="hidden" name="owner" value={data.owner} />
-            <button class="secondary">Connect an existing circle</button>
-          </form>
+          {#if !data.nativeMemberPolicy}
+            <form method="POST" action="?/enableNativeMembers" use:enhance>
+              <button class="secondary">Use native member list</button>
+            </form>
+          {:else}
+            <form method="POST" action="?/authorize" use:enhance>
+              <input type="hidden" name="owner" value={data.owner} />
+              <button class="secondary">Connect an existing circle</button>
+            </form>
+          {/if}
         </div>
       </section>
     {:else if data.needsAuthorization}
       <form method="POST" action="?/authorize" class="card stack" use:enhance>
         <input type="hidden" name="owner" value={data.owner} />
         <h2>Connect this circle</h2>
-        <p class="subtle">Ask the circle owner to add your handle to the member list. After that, the provider uses a one-time delegation to verify the Space.</p>
+        <p class="subtle">Ask the circle owner to add your handle to the PDS-native member list. The PDS must authorize your delegation before the provider will serve this circle.</p>
         {#if data.error}<div class="error">{data.error}</div>{/if}
         <button>Authorize private reads</button>
       </form>
     {:else}
-      <section class="card stack" aria-label="Circle members">
-        <div class="row">
-          <h2>Members</h2>
-          <span class="badge">{data.members.length + 1}</span>
-        </div>
-        <div class="row">
-          <span class="badge">owner</span>
-          <span class="meta">{data.owner}</span>
-        </div>
-        {#each data.members as member (member.uri)}
+      {#if data.owner === data.viewer}
+        <section class="card stack" aria-label="Circle members">
           <div class="row">
-            <span class="meta">
-              {member.value.handle ? `@${member.value.handle}` : member.value.subject}
-            </span>
-            {#if member.value.handle}
-              <span class="subtle">{member.value.subject}</span>
-            {/if}
-            {#if data.owner === data.viewer}
-              <form method="POST" action="?/removeMember" use:enhance>
-                <input type="hidden" name="owner" value={data.owner} />
-                <input type="hidden" name="rkey" value={member.rkey} />
-                <button class="secondary">Remove</button>
-              </form>
+            <h2>Native PDS members</h2>
+            {#if data.nativeMemberPolicy}
+              <span class="badge">{data.members.length + 1}</span>
             {/if}
           </div>
-        {/each}
-        {#if data.owner === data.viewer}
-          <form method="POST" action="?/addMember" class="row" use:enhance>
-            <input type="hidden" name="owner" value={data.owner} />
-            <input
-              name="member"
-              required
-              placeholder="handle.example.com or did:plc:…"
-              aria-label="New member handle or DID"
-              style="flex:1;min-width:18rem"
-            />
-            <button>Add member</button>
-          </form>
-        {/if}
-      </section>
+          {#if !data.nativeMemberPolicy}
+            <p class="subtle">This existing circle still uses the managing-app policy. Switch it to the protocol's native member-list policy before adding people.</p>
+            <form method="POST" action="?/enableNativeMembers" use:enhance>
+              <button>Use native member list</button>
+            </form>
+          {:else}
+            <div class="row">
+              <span class="badge">owner</span>
+              <span class="meta">{data.owner}</span>
+            </div>
+            {#each data.members as member (member.did)}
+              <div class="row">
+                <span class="meta">{member.handle ? `@${member.handle}` : member.did}</span>
+                {#if member.handle}<span class="subtle">{member.did}</span>{/if}
+                <form method="POST" action="?/removeMember" use:enhance>
+                  <input type="hidden" name="owner" value={data.owner} />
+                  <input type="hidden" name="memberDid" value={member.did} />
+                  <button class="secondary">Remove</button>
+                </form>
+              </div>
+            {/each}
+            <form method="POST" action="?/addMember" class="row" use:enhance>
+              <input type="hidden" name="owner" value={data.owner} />
+              <input
+                name="member"
+                required
+                placeholder="handle.example.com or did:plc:…"
+                aria-label="New member handle or DID"
+                style="flex:1;min-width:18rem"
+              />
+              <button>Add member</button>
+            </form>
+          {/if}
+        </section>
+      {/if}
 
       <form method="POST" action="?/post" class="card stack" use:enhance>
         <input type="hidden" name="owner" value={data.owner} />

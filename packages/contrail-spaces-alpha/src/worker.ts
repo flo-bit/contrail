@@ -17,10 +17,9 @@ import {
   ensureSpaceWatch,
   getSpaceWatch,
   hasAccessLease,
-  hasProjectedSpaceAccess,
   hideDeletedSpace,
   initSpacesStorage,
-  listProjectedAccessibleSpaceWatches,
+  listConnectedSpaceWatches,
   purgeSpaceGeneration,
   rediscoverSpace,
   saveAccessLease,
@@ -29,7 +28,6 @@ import {
   type SpaceWatch,
 } from "./storage";
 import {
-  initializeSpaceAccessPolicies,
   SpacesSyncEngine,
   type SpaceTypeConfig,
 } from "./sync";
@@ -73,8 +71,8 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
       input: SpaceAuthorizationInput,
       context: { env: Env; db: Database },
     ): boolean | Promise<boolean>;
-    /** Optional inverse lookup for custom policies. Built-in membership
-     * policies are enumerated from the materialized access index. */
+    /** Optional inverse lookup for custom managing-app policies. Native PDS
+     * policies are listed from successful provider authorization leases. */
     listSpaces?(
       userDid: string,
       context: { env: Env; db: Database },
@@ -416,6 +414,7 @@ function buildProviderLexicons(config: ContrailConfig, subscriptions: boolean): 
       id: `${namespace}.${LIST_SPACES_METHOD}`,
       defs: { main: {
         type: "query",
+        description: "Lists active Spaces this provider has connected for the caller; this is not global protocol membership discovery.",
         parameters: { type: "params", properties: {
           cursor: { type: "string" },
           limit: { type: "integer", minimum: 1, maximum: 200 },
@@ -529,29 +528,13 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   }
   bindRecordValidationLexicons(projection, options.lexicons);
   prepareRecordValidation(projection);
+  const managingAppEnabled = Object.values(options.spaceTypes).some(
+    (type) => (type.policy ?? "managing-app") === "managing-app",
+  );
+  if (managingAppEnabled && !options.authorization) {
+    throw new TypeError("Managing-app Space types require an authoritative authorizer");
+  }
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
-    if (type.requireManagingApp !== false && !type.access && !options.authorization) {
-      throw new TypeError(
-        `Space type ${spaceType} requires an authoritative managing-app access policy`,
-      );
-    }
-    if (type.access) {
-      if (!type.collections.includes(type.access.collection)) {
-        throw new TypeError(
-          `Membership collection ${type.access.collection} is not allowed by Space type ${spaceType}`,
-        );
-      }
-      if (!/^[a-zA-Z0-9_.]+$/.test(type.access.principalField)) {
-        throw new TypeError(`Invalid membership principal field ${type.access.principalField}`);
-      }
-    }
-    for (const nsid of type.authorityOnlyCollections ?? []) {
-      if (!type.collections.includes(nsid)) {
-        throw new TypeError(
-          `Authority-only collection ${nsid} is not allowed by Space type ${spaceType}`,
-        );
-      }
-    }
     for (const nsid of type.collections) {
       const collection = Object.values(projection.collections).find(
         (candidate) => candidate.collection === nsid,
@@ -582,7 +565,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     ...(subscriptionsEnabled ? [`${namespace}.${SUBSCRIBE_SPACE_METHOD}`] : []),
     "com.atproto.space.notifyWrite",
     "com.atproto.space.notifySpaceDeleted",
-    "com.atproto.simplespace.checkUserAccess",
+    ...(managingAppEnabled ? ["com.atproto.simplespace.checkUserAccess"] : []),
     ...Object.keys(projection.collections).flatMap((short) => [
       collectionMethod(namespace, short, LIST_SPACE_RECORDS_METHOD),
       collectionMethod(namespace, short, GET_SPACE_RECORD_METHOD),
@@ -634,13 +617,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     const db = databaseFrom(env, dbBinding);
     let init = initialized.get(db as object);
     if (!init) {
-      init = (async () => {
-        await initSpacesStorage(db, projection);
-        await initializeSpaceAccessPolicies(db, {
-          projection,
-          spaceTypes: options.spaceTypes,
-        });
-      })();
+      init = initSpacesStorage(db, projection);
       initialized.set(db as object, init);
     }
     const engine = new SpacesSyncEngine(db, {
@@ -683,16 +660,9 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     input: SpaceAuthorizationInput,
   ): Promise<boolean> => {
     if (input.userDid === watch.authorityDid) return true;
-    const policy = options.spaceTypes[watch.spaceType]?.access;
-    if (policy?.kind === "authority-record-membership") {
-      return hasProjectedSpaceAccess(db, {
-        principalDid: input.userDid,
-        spaceUri: input.spaceUri,
-        spaceGeneration: watch.generation,
-      });
-    }
-    if (options.authorization) {
-      return options.authorization.authorize(input, { env, db });
+    const policy = options.spaceTypes[watch.spaceType]?.policy ?? "managing-app";
+    if (policy === "managing-app") {
+      return options.authorization!.authorize(input, { env, db });
     }
     return hasAccessLease(db, {
       userDid: input.userDid,
@@ -889,8 +859,8 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         requestedLimit > 200 || (cursor?.length ?? 0) > 2_048) {
         return privateJson({ error: "InvalidRequest" }, 400);
       }
-      const indexed = await listProjectedAccessibleSpaceWatches(db, {
-        principalDid: verified.did!,
+      const indexed = await listConnectedSpaceWatches(db, {
+        userDid: verified.did!,
         cursor,
         limit: requestedLimit + 1,
       });
@@ -1024,6 +994,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     }
 
     if (
+      managingAppEnabled &&
       method === "com.atproto.simplespace.checkUserAccess" &&
       request.method === "GET"
     ) {

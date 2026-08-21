@@ -79,30 +79,6 @@ export async function initSpacesStorage(
     )`,
     `CREATE INDEX IF NOT EXISTS idx_spaces_access_expiry
       ON spaces_access_leases(expires_at)`,
-    `CREATE TABLE IF NOT EXISTS spaces_access_entries (
-      space_uri TEXT NOT NULL,
-      space_generation INTEGER NOT NULL,
-      scope_key TEXT NOT NULL,
-      partition_key TEXT NOT NULL,
-      partition_generation INTEGER NOT NULL,
-      principal_did TEXT NOT NULL,
-      role TEXT NOT NULL,
-      source_uri TEXT NOT NULL,
-      source_cid TEXT,
-      created_at ${bigint} NOT NULL,
-      PRIMARY KEY (scope_key, partition_key, partition_generation, source_uri)
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_spaces_access_principal
-      ON spaces_access_entries(principal_did, space_uri, space_generation)`,
-    `CREATE INDEX IF NOT EXISTS idx_spaces_access_partition
-      ON spaces_access_entries(scope_key, partition_key, partition_generation)`,
-    `CREATE TABLE IF NOT EXISTS spaces_access_index_state (
-      space_uri TEXT NOT NULL,
-      space_generation INTEGER NOT NULL,
-      policy_key TEXT NOT NULL,
-      indexed_at ${bigint} NOT NULL,
-      PRIMARY KEY (space_uri, space_generation)
-    )`,
     `CREATE TABLE IF NOT EXISTS spaces_credentials (
       space_uri TEXT NOT NULL,
       space_generation INTEGER NOT NULL,
@@ -222,165 +198,9 @@ export async function rediscoverSpace(
   return watch;
 }
 
-export async function listActiveSpaceWatches(
+export async function listConnectedSpaceWatches(
   db: Database,
-  limit: number,
-  cursor?: string,
-): Promise<SpaceWatch[]> {
-  const boundedLimit = Math.max(1, Math.min(1_001, Math.trunc(limit)));
-  const rows = await db.prepare(
-    `SELECT space_uri, authority_did, space_type, generation, status,
-            registration_expires_at, next_reconcile_at, last_reconciled_at, last_error
-     FROM spaces_watches
-     WHERE status = 'active' AND space_uri > ?
-     ORDER BY space_uri LIMIT ?`,
-  ).bind(cursor ?? "", boundedLimit).all<Record<string, unknown>>();
-  return (rows.results ?? []).map(rowToWatch);
-}
-
-export interface SpaceAccessEntryInput {
-  spaceUri: string;
-  spaceGeneration: number;
-  scopeKey: string;
-  partitionKey: string;
-  partitionGeneration: number;
-  principalDid: string;
-  role?: string;
-  sourceUri: string;
-  sourceCid?: string | null;
-}
-
-export function upsertSpaceAccessEntryStatement(
-  db: Database,
-  input: SpaceAccessEntryInput,
-): Statement {
-  return db.prepare(
-    `INSERT INTO spaces_access_entries
-       (space_uri, space_generation, scope_key, partition_key,
-        partition_generation, principal_did, role, source_uri, source_cid, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(scope_key, partition_key, partition_generation, source_uri)
-     DO UPDATE SET principal_did = excluded.principal_did,
-       role = excluded.role, source_cid = excluded.source_cid,
-       created_at = excluded.created_at`,
-  ).bind(
-    input.spaceUri,
-    input.spaceGeneration,
-    input.scopeKey,
-    input.partitionKey,
-    input.partitionGeneration,
-    input.principalDid,
-    input.role ?? "member",
-    input.sourceUri,
-    input.sourceCid ?? null,
-    Date.now(),
-  );
-}
-
-export function deleteSpaceAccessEntryStatement(
-  db: Database,
-  input: Pick<SpaceAccessEntryInput,
-    "scopeKey" | "partitionKey" | "partitionGeneration" | "sourceUri">,
-): Statement {
-  return db.prepare(
-    `DELETE FROM spaces_access_entries
-     WHERE scope_key = ? AND partition_key = ?
-       AND partition_generation = ? AND source_uri = ?`,
-  ).bind(
-    input.scopeKey,
-    input.partitionKey,
-    input.partitionGeneration,
-    input.sourceUri,
-  );
-}
-
-export async function deleteSpaceAccessPartitionGeneration(
-  db: Database,
-  input: { scopeKey: string; partitionKey: string; partitionGeneration: number },
-): Promise<void> {
-  await db.prepare(
-    `DELETE FROM spaces_access_entries
-     WHERE scope_key = ? AND partition_key = ? AND partition_generation = ?`,
-  ).bind(input.scopeKey, input.partitionKey, input.partitionGeneration).run();
-}
-
-export async function getVisibleSpaceWriterGeneration(
-  db: Database,
-  input: { scopeKey: string; partitionKey: string },
-): Promise<number | null> {
-  const row = await db.prepare(
-    `SELECT visible_generation
-     FROM isolated_projection_partitions
-     WHERE scope_key = ? AND partition_key = ?`,
-  ).bind(input.scopeKey, input.partitionKey).first<{ visible_generation: unknown }>();
-  return row ? Number(row.visible_generation) : null;
-}
-
-export async function spaceAccessIndexPolicyKey(
-  db: Database,
-  input: { spaceUri: string; spaceGeneration: number },
-): Promise<string | null> {
-  const row = await db.prepare(
-    `SELECT policy_key FROM spaces_access_index_state
-     WHERE space_uri = ? AND space_generation = ?`,
-  ).bind(input.spaceUri, input.spaceGeneration).first<{ policy_key: unknown }>();
-  return row ? String(row.policy_key) : null;
-}
-
-export async function replaceSpaceAccessIndex(
-  db: Database,
-  input: {
-    spaceUri: string;
-    spaceGeneration: number;
-    policyKey: string;
-    entries: readonly SpaceAccessEntryInput[];
-  },
-): Promise<void> {
-  await db.prepare(
-    `DELETE FROM spaces_access_entries
-     WHERE space_uri = ? AND space_generation = ?`,
-  ).bind(input.spaceUri, input.spaceGeneration).run();
-  const chunkSize = 90;
-  for (let offset = 0; offset < input.entries.length; offset += chunkSize) {
-    await db.batch(input.entries.slice(offset, offset + chunkSize).map((entry) =>
-      upsertSpaceAccessEntryStatement(db, entry)
-    ));
-  }
-  await db.prepare(
-    `INSERT INTO spaces_access_index_state
-       (space_uri, space_generation, policy_key, indexed_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(space_uri, space_generation) DO UPDATE SET
-       policy_key = excluded.policy_key, indexed_at = excluded.indexed_at`,
-  ).bind(
-    input.spaceUri,
-    input.spaceGeneration,
-    input.policyKey,
-    Date.now(),
-  ).run();
-}
-
-export async function hasProjectedSpaceAccess(
-  db: Database,
-  input: { spaceUri: string; spaceGeneration: number; principalDid: string },
-): Promise<boolean> {
-  const row = await db.prepare(
-    `SELECT 1 AS allowed
-     FROM spaces_access_entries access
-     JOIN isolated_projection_partitions visible
-       ON visible.scope_key = access.scope_key
-      AND visible.partition_key = access.partition_key
-      AND visible.visible_generation = access.partition_generation
-     WHERE access.space_uri = ? AND access.space_generation = ?
-       AND access.principal_did = ?
-     LIMIT 1`,
-  ).bind(input.spaceUri, input.spaceGeneration, input.principalDid).first();
-  return row !== null;
-}
-
-export async function listProjectedAccessibleSpaceWatches(
-  db: Database,
-  input: { principalDid: string; cursor?: string; limit: number },
+  input: { userDid: string; cursor?: string; limit: number; now?: number },
 ): Promise<SpaceWatch[]> {
   const limit = Math.max(1, Math.min(201, Math.trunc(input.limit)));
   const rows = await db.prepare(
@@ -391,23 +211,19 @@ export async function listProjectedAccessibleSpaceWatches(
        AND (
          watch.authority_did = ?
          OR EXISTS (
-           SELECT 1
-           FROM spaces_access_entries access
-           JOIN isolated_projection_partitions visible
-             ON visible.scope_key = access.scope_key
-            AND visible.partition_key = access.partition_key
-            AND visible.visible_generation = access.partition_generation
+           SELECT 1 FROM spaces_access_leases access
            WHERE access.space_uri = watch.space_uri
              AND access.space_generation = watch.generation
-             AND access.principal_did = ?
+             AND access.user_did = ? AND access.expires_at > ?
          )
        )
      ORDER BY watch.space_uri
      LIMIT ?`,
   ).bind(
     input.cursor ?? "",
-    input.principalDid,
-    input.principalDid,
+    input.userDid,
+    input.userDid,
+    input.now ?? Date.now(),
     limit,
   ).all<Record<string, unknown>>();
   return (rows.results ?? []).map(rowToWatch);
@@ -812,18 +628,8 @@ export async function purgeSpaceGeneration(
     kind: "isolated",
     key: spaceProjectionKey(watch.spaceUri, watch.generation),
   });
-  await db.batch([
-    db.prepare(
-      `DELETE FROM spaces_repo_state
-       WHERE space_uri = ? AND space_generation = ?`,
-    ).bind(watch.spaceUri, watch.generation),
-    db.prepare(
-      `DELETE FROM spaces_access_entries
-       WHERE space_uri = ? AND space_generation = ?`,
-    ).bind(watch.spaceUri, watch.generation),
-    db.prepare(
-      `DELETE FROM spaces_access_index_state
-       WHERE space_uri = ? AND space_generation = ?`,
-    ).bind(watch.spaceUri, watch.generation),
-  ]);
+  await db.prepare(
+    `DELETE FROM spaces_repo_state
+     WHERE space_uri = ? AND space_generation = ?`,
+  ).bind(watch.spaceUri, watch.generation).run();
 }
