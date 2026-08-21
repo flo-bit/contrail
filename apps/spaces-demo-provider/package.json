@@ -1,0 +1,20 @@
+{
+  "name": "contrail-spaces-demo-provider",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*",
+    "@atmo-dev/contrail-spaces-alpha": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.118.0"
+  }
+}

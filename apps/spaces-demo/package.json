@@ -1,0 +1,29 @@
+{
+  "name": "contrail-spaces-demo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail-spaces-alpha": "workspace:*",
+    "@svelte-atproto/oauth": "^0.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@sveltejs/adapter-cloudflare": "^7.2.9",
+    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.7.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.0",
+    "wrangler": "^4.118.0"
+  }
+}

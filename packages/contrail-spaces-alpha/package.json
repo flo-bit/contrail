@@ -1,0 +1,47 @@
+{
+  "name": "@atmo-dev/contrail-spaces-alpha",
+  "version": "0.1.0-alpha.0",
+  "description": "Experimental AT Protocol Spaces synchronization and private projections for Contrail",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./consumer": {
+      "types": "./dist/consumer.d.ts",
+      "import": "./dist/consumer.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*",
+    "@atproto/common-web": "0.0.0-spaces-alpha-20260818163953",
+    "@atproto/identity": "0.0.0-spaces-alpha-20260818163953",
+    "@atproto/jwk-jose": "0.2.4",
+    "@atproto/lex-data": "0.1.7",
+    "@atproto/space": "0.0.0-spaces-alpha-20260818163953"
+  },
+  "devDependencies": {
+    "@atcute/crypto": "2.4.4",
+    "@atcute/xrpc-server": "^2.0.2",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@types/node": "^26.1.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "contrail-spaces-demo-provider",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "spaces.atmo.garden", "custom_domain": true }
+  ],
+  "vars": {
+    "BSKY_APPVIEW_URL": "https://public.api.bsky.app"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "contrail-spaces-demo",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "SPACES_QUEUE", "queue": "contrail-spaces-demo" }
+    ],
+    "consumers": [
+      { "queue": "contrail-spaces-demo", "max_batch_size": 10, "max_batch_timeout": 5 }
+    ]
+  },
+  "triggers": { "crons": ["*/5 * * * *"] }
+}

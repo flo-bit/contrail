@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "contrail-spaces-demo",
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "circle.atmo.garden", "custom_domain": true }
+  ],
+  "vars": {
+    "OAUTH_PUBLIC_URL": "https://circle.atmo.garden"
+  },
+  "kv_namespaces": [
+    { "binding": "OAUTH_SESSIONS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" },
+    { "binding": "OAUTH_STATES", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ]
+}
