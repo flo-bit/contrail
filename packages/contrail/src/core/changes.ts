@@ -13,6 +13,20 @@ import {
   type ChangeLogState,
   type RecordChange,
 } from "./change-log";
+import {
+  acknowledgeCurrentSnapshotPage,
+  claimCurrentActivation,
+  claimCurrentSnapshotPage,
+  completeCurrentActivation,
+  failCurrentActivation,
+  failCurrentSnapshotPage,
+  getCurrentBootstrapStatus,
+  renewCurrentBootstrapClaim,
+  type CurrentActivationClaim,
+  type CurrentBootstrapClaimOptions,
+  type CurrentBootstrapStatus,
+  type CurrentSnapshotClaim,
+} from "./change-bootstrap";
 
 const DEFAULT_MAX_BATCHES = 20;
 const DEFAULT_MAX_CHANGES = 500;
@@ -51,6 +65,10 @@ export interface ChangeClaim {
   changes: RecordChange[];
   attempt: number;
   leaseExpiresAt: number;
+  /** Generation-scoped destination token during current-state catch-up. */
+  readonly bootstrapToken?: string;
+  /** Fixed catch-up target for a current-state bootstrap claim. */
+  readonly bootstrapTarget?: string;
   /** Opaque CAS capability. Do not pass this field to delivery handlers. */
   readonly leaseOwner: string;
 }
@@ -125,6 +143,8 @@ interface DurableConsumerRow {
   initial_mode: string;
   required_for_activation: number | string;
   bootstrap_state: string;
+  bootstrap_target_position: number | string | null;
+  bootstrap_token: string | null;
   lease_owner: string | null;
   lease_expires_at: number | string | null;
   attempts: number | string;
@@ -264,6 +284,7 @@ async function durableConsumer(
       `SELECT consumer_id, generation_id, acknowledged_position,
               configured_collections_json, configured_phases_json,
               initial_mode, required_for_activation, bootstrap_state,
+              bootstrap_target_position, bootstrap_token,
               lease_owner, lease_expires_at, attempts, next_attempt_at,
               last_success_at, last_error_code, last_error_at
        FROM change_consumers WHERE consumer_id = ?`,
@@ -380,12 +401,14 @@ export async function registerChangeConsumer(
 
 /** Claim one bounded contiguous position range. Irrelevant ranges advance by
  * CAS without invoking application code. */
-export async function claimChanges(
+async function claimChangeRange(
   db: Database,
   consumerId: string,
   options: ChangeClaimOptions = {},
+  bootstrap = false,
 ): Promise<ChangeClaim | null> {
   const limits = normalizedClaimOptions(options);
+  const requiredState = bootstrap ? "catching-up" : "ready";
   if (!(await getChangeLogState(db))) {
     throw new ChangeConsumerNotFoundError(
       `Change consumer ${consumerId} is not initialized`,
@@ -404,7 +427,7 @@ export async function claimChanges(
         `UPDATE change_consumers
          SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
          WHERE consumer_id = ?
-           AND bootstrap_state = 'ready'
+           AND bootstrap_state = '${requiredState}'
            AND generation_id = (SELECT generation_id FROM change_log_state WHERE id = 1)
            AND acknowledged_position >= (SELECT retained_floor_position FROM change_log_state WHERE id = 1)
            AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
@@ -412,6 +435,7 @@ export async function claimChanges(
          RETURNING consumer_id, generation_id, acknowledged_position,
                    configured_collections_json, configured_phases_json,
                    initial_mode, required_for_activation, bootstrap_state,
+                   bootstrap_target_position, bootstrap_token,
                    lease_owner, lease_expires_at, attempts, next_attempt_at,
                    last_success_at, last_error_code, last_error_at`,
       )
@@ -451,23 +475,57 @@ export async function claimChanges(
 
     const generation = leased.generation_id;
     const from = String(leased.acknowledged_position);
+    const bootstrapTarget = bootstrap
+      ? String(leased.bootstrap_target_position)
+      : null;
+    if (bootstrap && leased.bootstrap_target_position === null) {
+      await releaseLease(db, consumerId, generation, from, owner, limits.now);
+      throw new Error(`Change consumer ${consumerId} has no bootstrap target`);
+    }
     const metadata = await db
       .prepare(
         `SELECT position, phase, change_count, encoded_bytes
          FROM change_batches
          WHERE generation_id = ? AND position > ?
+           AND (? IS NULL OR position <= ?)
          ORDER BY position
          LIMIT ?`,
       )
-      .bind(generation, from, limits.maxBatches)
+      .bind(
+        generation,
+        from,
+        bootstrapTarget,
+        bootstrapTarget,
+        limits.maxBatches,
+      )
       .all<BatchMetadataRow>();
 
     if (metadata.results.length === 0) {
+      if (bootstrap && from === bootstrapTarget) {
+        await db
+          .prepare(
+            `UPDATE change_consumers
+             SET bootstrap_state = 'activating', lease_owner = NULL,
+                 lease_expires_at = NULL, updated_at = ?
+             WHERE consumer_id = ? AND generation_id = ?
+               AND bootstrap_state = 'catching-up'
+               AND acknowledged_position = bootstrap_target_position
+               AND acknowledged_position = ? AND lease_owner = ?`,
+          )
+          .bind(limits.now, consumerId, generation, from, owner)
+          .run();
+        return null;
+      }
       const state = await getChangeLogState(db);
       await releaseLease(db, consumerId, generation, from, owner, limits.now);
-      if (state && state.generation === generation && state.head !== from) {
+      const expectedHead = bootstrap ? bootstrapTarget : state?.head;
+      if (
+        expectedHead !== null &&
+        expectedHead !== undefined &&
+        expectedHead !== from
+      ) {
         throw new ChangeHistoryGapError(
-          `Change consumer ${consumerId} cannot resume from ${from}; log head is ${state.head}`,
+          `Change consumer ${consumerId} cannot resume from ${from}; target is ${expectedHead}`,
         );
       }
       return null;
@@ -571,6 +629,10 @@ export async function claimChanges(
       changes: [...coalesced.values()],
       attempt: Number(leased.attempts) + 1,
       leaseExpiresAt,
+      ...(leased.bootstrap_token === null
+        ? {}
+        : { bootstrapToken: leased.bootstrap_token }),
+      ...(bootstrapTarget === null ? {} : { bootstrapTarget }),
       leaseOwner: owner,
     };
     if (claim.changes.length > 0) return claim;
@@ -579,6 +641,23 @@ export async function claimChanges(
     if (autoAdvanced === limits.maxAutoAdvanceRanges) return null;
   }
   return null;
+}
+
+export function claimChanges(
+  db: Database,
+  consumerId: string,
+  options: ChangeClaimOptions = {},
+): Promise<ChangeClaim | null> {
+  return claimChangeRange(db, consumerId, options, false);
+}
+
+/** Claim changes only through the fixed target of a current-state bootstrap. */
+export function claimCurrentBootstrapChanges(
+  db: Database,
+  consumerId: string,
+  options: ChangeClaimOptions = {},
+): Promise<ChangeClaim | null> {
+  return claimChangeRange(db, consumerId, options, true);
 }
 
 /** Hydrate the newest canonical state for each coalesced claimed URI. */
@@ -669,8 +748,13 @@ export async function acknowledgeChanges(
   const acknowledged = await db
     .prepare(
       `UPDATE change_consumers
-       SET acknowledged_position = ?, lease_owner = NULL,
-           lease_expires_at = NULL, attempts = 0, next_attempt_at = NULL,
+       SET acknowledged_position = ?,
+           bootstrap_state = CASE
+             WHEN bootstrap_state = 'catching-up'
+              AND ? = bootstrap_target_position THEN 'activating'
+             ELSE bootstrap_state END,
+           lease_owner = NULL, lease_expires_at = NULL,
+           attempts = 0, next_attempt_at = NULL,
            last_success_at = ?, last_error_code = NULL, last_error_at = NULL,
            updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
@@ -684,6 +768,7 @@ export async function acknowledgeChanges(
        RETURNING consumer_id`,
     )
     .bind(
+      claim.through,
       claim.through,
       now,
       now,
@@ -866,6 +951,7 @@ export async function getChangesStatus(db: Database): Promise<ChangeLogStatus> {
       `SELECT consumer_id, generation_id, acknowledged_position,
               configured_collections_json, configured_phases_json,
               initial_mode, required_for_activation, bootstrap_state,
+              bootstrap_target_position, bootstrap_token,
               lease_owner, lease_expires_at, attempts, next_attempt_at,
               last_success_at, last_error_code, last_error_at
        FROM change_consumers ORDER BY consumer_id`,
@@ -917,6 +1003,280 @@ export async function getChangesStatus(db: Database): Promise<ChangeLogStatus> {
   };
 }
 
+export interface RequiredChangeConsumerReadiness {
+  ready: boolean;
+  through: string;
+  pending: Array<{
+    id: string;
+    state: string;
+    position: string;
+  }>;
+}
+
+/** Check activation-gating consumers against one fixed log target. */
+export async function getRequiredChangeConsumerReadiness(
+  db: Database,
+  through?: string,
+): Promise<RequiredChangeConsumerReadiness> {
+  const state = await getChangeLogState(db);
+  if (!state) return { ready: true, through: "0", pending: [] };
+  const target = through ?? state.head;
+  if (!/^\d+$/.test(target) || BigInt(target) > BigInt(state.head)) {
+    throw new TypeError("Required-consumer target must be a retained log position at or below head");
+  }
+  const rows = await db
+    .prepare(
+      `SELECT consumer_id, bootstrap_state, acknowledged_position
+       FROM change_consumers
+       WHERE generation_id = ? AND required_for_activation = 1
+       ORDER BY consumer_id`,
+    )
+    .bind(state.generation)
+    .all<{
+      consumer_id: string;
+      bootstrap_state: string;
+      acknowledged_position: number | string;
+    }>();
+  const pending = rows.results
+    .filter(
+      (row) =>
+        row.bootstrap_state !== "ready" ||
+        BigInt(String(row.acknowledged_position)) < BigInt(target),
+    )
+    .map((row) => ({
+      id: row.consumer_id,
+      state: row.bootstrap_state,
+      position: String(row.acknowledged_position),
+    }));
+  return { ready: pending.length === 0, through: target, pending };
+}
+
+export async function assertRequiredChangeConsumersReady(
+  db: Database,
+  through?: string,
+): Promise<void> {
+  const readiness = await getRequiredChangeConsumerReadiness(db, through);
+  if (!readiness.ready) {
+    throw new Error(
+      `Required change consumers are not ready through ${readiness.through}: ` +
+        readiness.pending.map((item) => item.id).join(", "),
+    );
+  }
+}
+
+export interface SkipChangeConsumerOptions {
+  through: string;
+  reason: string;
+  confirm: boolean;
+  /** @internal Deterministic clock seam for conformance tests. */
+  now?: number;
+}
+
+/** Explicit audited data-loss operation for one ready consumer. */
+export async function skipChangeConsumer(
+  db: Database,
+  consumerId: string,
+  options: SkipChangeConsumerOptions,
+): Promise<void> {
+  if (options.confirm !== true) {
+    throw new Error("Skipping change delivery requires confirm: true");
+  }
+  const reason = options.reason.trim();
+  if (reason.length === 0 || reason.length > 256) {
+    throw new TypeError("Skip reason must contain 1-256 characters");
+  }
+  if (!/^\d+$/.test(options.through)) {
+    throw new TypeError("Skip position must be an opaque decimal string");
+  }
+  const timestampValue = timestamp(options.now);
+  const state = await getChangeLogState(db);
+  const consumer = state ? await durableConsumer(db, consumerId) : null;
+  if (!state || !consumer) {
+    throw new ChangeConsumerNotFoundError(
+      `Change consumer ${consumerId} is not initialized`,
+    );
+  }
+  const from = String(consumer.acknowledged_position);
+  if (
+    consumer.generation_id !== state.generation ||
+    consumer.bootstrap_state !== "ready" ||
+    BigInt(options.through) <= BigInt(from) ||
+    BigInt(options.through) > BigInt(state.head)
+  ) {
+    throw new Error("Skip position is outside this ready consumer's pending range");
+  }
+  const actionId = crypto.randomUUID();
+  const actionMarker = `operator_skip:${actionId}`;
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE change_consumers
+         SET acknowledged_position = ?, lease_owner = NULL,
+             lease_expires_at = NULL, attempts = 0, next_attempt_at = NULL,
+             last_error_code = ?, last_error_at = ?, updated_at = ?
+         WHERE consumer_id = ? AND generation_id = ?
+           AND acknowledged_position = ?
+           AND (lease_owner IS NULL OR lease_expires_at <= ?)`,
+      )
+      .bind(
+        options.through,
+        actionMarker,
+        timestampValue,
+        timestampValue,
+        consumerId,
+        state.generation,
+        from,
+        timestampValue,
+      ),
+    db
+      .prepare(
+        `INSERT INTO change_consumer_actions
+         (action_id, generation_id, consumer_id, action, from_position,
+          through_position, reason, created_at)
+         SELECT ?, generation_id, consumer_id, 'skip', ?,
+                acknowledged_position, ?, ?
+         FROM change_consumers
+         WHERE consumer_id = ? AND generation_id = ?
+           AND acknowledged_position = ? AND last_error_code = ?`,
+      )
+      .bind(
+        actionId,
+        from,
+        reason,
+        timestampValue,
+        consumerId,
+        state.generation,
+        options.through,
+        actionMarker,
+      ),
+  ]);
+  if (affectedRows(results[0]) !== 1 || affectedRows(results[1]) !== 1) {
+    throw new ChangeLeaseLostError(
+      `Change consumer ${consumerId} changed during skip`,
+    );
+  }
+}
+
+export interface PruneChangesOptions {
+  maxBatches?: number;
+  /** Delete only batches older than this timestamp. */
+  olderThan?: number;
+}
+
+export interface PruneChangesResult {
+  pruned: number;
+  retainedFloor: string;
+  safeThrough: string;
+  done: boolean;
+}
+
+function affectedRows(result: unknown): number {
+  if (!result || typeof result !== "object") return 0;
+  const value = result as {
+    changes?: unknown;
+    rowsAffected?: unknown;
+    meta?: { changes?: unknown };
+  };
+  return Number(value.changes ?? value.rowsAffected ?? value.meta?.changes ?? 0);
+}
+
+/** Consumer-aware bounded pruning. The slowest durable position, including a
+ * current bootstrap anchor, is the hard safety boundary. */
+export async function pruneChanges(
+  db: Database,
+  options: PruneChangesOptions = {},
+): Promise<PruneChangesResult> {
+  const maxBatches = integer(
+    options.maxBatches,
+    500,
+    1,
+    5_000,
+    "maxBatches",
+  );
+  if (
+    options.olderThan !== undefined &&
+    (!Number.isSafeInteger(options.olderThan) || options.olderThan < 0)
+  ) {
+    throw new TypeError("olderThan must be a non-negative safe timestamp");
+  }
+  const state = await getChangeLogState(db);
+  if (!state) {
+    return {
+      pruned: 0,
+      retainedFloor: "0",
+      safeThrough: "0",
+      done: true,
+    };
+  }
+  const slowest = await db
+    .prepare(
+      `SELECT MIN(acknowledged_position) AS safe_through
+       FROM change_consumers WHERE generation_id = ?`,
+    )
+    .bind(state.generation)
+    .first<{ safe_through: number | string | null }>();
+  const safeThrough = String(slowest?.safe_through ?? state.retainedFloor);
+  if (BigInt(safeThrough) <= BigInt(state.retainedFloor)) {
+    return {
+      pruned: 0,
+      retainedFloor: state.retainedFloor,
+      safeThrough,
+      done: true,
+    };
+  }
+
+  const results = await db.batch([
+    db
+      .prepare(
+        `DELETE FROM change_batches
+         WHERE generation_id = ? AND position IN (
+           SELECT position FROM change_batches
+           WHERE generation_id = ? AND position > ? AND position <= ?
+             AND (? IS NULL OR created_at < ?)
+           ORDER BY position LIMIT ?
+         )`,
+      )
+      .bind(
+        state.generation,
+        state.generation,
+        state.retainedFloor,
+        safeThrough,
+        options.olderThan ?? null,
+        options.olderThan ?? null,
+        maxBatches,
+      ),
+    db
+      .prepare(
+        `UPDATE change_log_state
+         SET retained_floor_position = CASE
+           WHEN EXISTS (
+             SELECT 1 FROM change_batches WHERE generation_id = ?
+           ) THEN (
+             SELECT MIN(position) - 1 FROM change_batches
+             WHERE generation_id = ?
+           )
+           ELSE head_position END
+         WHERE id = 1 AND generation_id = ?`,
+      )
+      .bind(state.generation, state.generation, state.generation),
+  ]);
+  const updated = await getChangeLogState(db);
+  if (!updated || updated.generation !== state.generation) {
+    throw new ChangeGenerationMismatchError(
+      "Change-log generation changed during pruning",
+    );
+  }
+  const pruned = affectedRows(results[0]);
+  return {
+    pruned,
+    retainedFloor: updated.retainedFloor,
+    safeThrough,
+    done:
+      pruned < maxBatches ||
+      BigInt(updated.retainedFloor) >= BigInt(safeThrough),
+  };
+}
+
 type DatabaseResolver = (db?: Database) => Database;
 
 /** Bound low-level API exposed as `contrail.changes`. */
@@ -936,6 +1296,98 @@ export class ChangeConsumers {
     db?: Database,
   ): Promise<ChangeClaim | null> {
     return claimChanges(this.database(db), consumerId, options);
+  }
+
+  claimBootstrapChanges(
+    consumerId: string,
+    options?: ChangeClaimOptions,
+    db?: Database,
+  ): Promise<ChangeClaim | null> {
+    return claimCurrentBootstrapChanges(
+      this.database(db),
+      consumerId,
+      options,
+    );
+  }
+
+  claimSnapshotPage(
+    consumerId: string,
+    options?: CurrentBootstrapClaimOptions,
+    db?: Database,
+  ): Promise<CurrentSnapshotClaim | null> {
+    return claimCurrentSnapshotPage(
+      this.database(db),
+      this.config,
+      consumerId,
+      options,
+    );
+  }
+
+  ackSnapshotPage(
+    claim: CurrentSnapshotClaim,
+    options?: { now?: number },
+    db?: Database,
+  ): Promise<void> {
+    return acknowledgeCurrentSnapshotPage(this.database(db), claim, options);
+  }
+
+  failSnapshotPage(
+    claim: CurrentSnapshotClaim,
+    failure: ChangeFailure,
+    options?: { now?: number },
+    db?: Database,
+  ): Promise<void> {
+    return failCurrentSnapshotPage(
+      this.database(db),
+      claim,
+      failure,
+      options,
+    );
+  }
+
+  claimActivation(
+    consumerId: string,
+    options?: { leaseMs?: number; now?: number },
+    db?: Database,
+  ): Promise<CurrentActivationClaim | null> {
+    return claimCurrentActivation(this.database(db), consumerId, options);
+  }
+
+  completeActivation(
+    claim: CurrentActivationClaim,
+    options?: { now?: number },
+    db?: Database,
+  ): Promise<void> {
+    return completeCurrentActivation(this.database(db), claim, options);
+  }
+
+  renewBootstrap<T extends CurrentSnapshotClaim | CurrentActivationClaim>(
+    claim: T,
+    options?: { leaseMs?: number; now?: number },
+    db?: Database,
+  ): Promise<T> {
+    return renewCurrentBootstrapClaim(this.database(db), claim, options);
+  }
+
+  failActivation(
+    claim: CurrentActivationClaim,
+    failure: ChangeFailure,
+    options?: { now?: number },
+    db?: Database,
+  ): Promise<void> {
+    return failCurrentActivation(
+      this.database(db),
+      claim,
+      failure,
+      options,
+    );
+  }
+
+  bootstrapStatus(
+    consumerId: string,
+    db?: Database,
+  ): Promise<CurrentBootstrapStatus> {
+    return getCurrentBootstrapStatus(this.database(db), consumerId);
   }
 
   hydrate(claim: ChangeClaim, db?: Database): Promise<DeliveryBatch> {
@@ -977,5 +1429,27 @@ export class ChangeConsumers {
 
   status(db?: Database): Promise<ChangeLogStatus> {
     return getChangesStatus(this.database(db));
+  }
+
+  readiness(
+    through?: string,
+    db?: Database,
+  ): Promise<RequiredChangeConsumerReadiness> {
+    return getRequiredChangeConsumerReadiness(this.database(db), through);
+  }
+
+  skip(
+    consumerId: string,
+    options: SkipChangeConsumerOptions,
+    db?: Database,
+  ): Promise<void> {
+    return skipChangeConsumer(this.database(db), consumerId, options);
+  }
+
+  prune(
+    options?: PruneChangesOptions,
+    db?: Database,
+  ): Promise<PruneChangesResult> {
+    return pruneChanges(this.database(db), options);
   }
 }

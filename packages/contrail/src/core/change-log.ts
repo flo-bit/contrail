@@ -139,6 +139,17 @@ export function buildChangeLogSchema(
       through_position ${bigint},
       PRIMARY KEY (generation_id, collection, phase, from_position)
     )`,
+    `CREATE TABLE IF NOT EXISTS change_consumer_actions (
+      action_id TEXT PRIMARY KEY,
+      generation_id TEXT NOT NULL,
+      consumer_id TEXT NOT NULL,
+      action TEXT NOT NULL CHECK (action IN ('skip', 'remove')),
+      from_position ${bigint} NOT NULL,
+      through_position ${bigint} NOT NULL,
+      reason TEXT NOT NULL,
+      created_at ${bigint} NOT NULL
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_change_consumer_actions_consumer ON change_consumer_actions(generation_id, consumer_id, created_at)",
   ];
 }
 
@@ -201,8 +212,88 @@ function canonicalPhases(phases: ProjectionPhase[]): string {
   return JSON.stringify([...phases].sort());
 }
 
-/** Initialize one immutable milestone-1 logging definition. Later milestones
- * add explicit quiet-boundary operations for changing this durable definition. */
+function sameStaticConsumer(
+  actual: ChangeConsumerRow,
+  expected: NonNullable<ContrailConfig["changes"]>["consumers"][string],
+): boolean {
+  return (
+    actual.configured_collections_json ===
+      canonicalCollections(expected.collections) &&
+    actual.configured_phases_json ===
+      canonicalPhases(changeConsumerPhases(expected)) &&
+    actual.initial_mode === expected.initial &&
+    Number(actual.required_for_activation) ===
+      (expected.requiredForActivation === true ? 1 : 0)
+  );
+}
+
+/** Reconcile only additive consumers whose collection/phase coverage is already
+ * durable. Expanding coverage still requires a fresh generation or an explicit
+ * old-writer quiet boundary. */
+async function reconcileAdditiveDefinitions(
+  db: Database,
+  config: ContrailConfig,
+  state: ChangeLogStateRow,
+  definitions: string,
+): Promise<void> {
+  const durableConsumers = await db
+    .prepare(
+      `SELECT consumer_id, generation_id, acknowledged_position,
+              configured_collections_json, configured_phases_json, initial_mode,
+              required_for_activation, bootstrap_state,
+              bootstrap_anchor_position
+       FROM change_consumers ORDER BY consumer_id`,
+    )
+    .all<ChangeConsumerRow>();
+  const configured = config.changes?.consumers ?? {};
+  for (const durable of durableConsumers.results) {
+    const expected = configured[durable.consumer_id];
+    if (!expected || !sameStaticConsumer(durable, expected)) {
+      throw new Error(
+        "Durable change consumers cannot be removed or modified during ordinary initialization",
+      );
+    }
+  }
+
+  const coverage = await db
+    .prepare(
+      `SELECT generation_id, collection, phase, from_position, through_position
+       FROM change_log_coverage
+       WHERE generation_id = ? AND through_position IS NULL
+       ORDER BY collection, phase, from_position`,
+    )
+    .bind(state.generation_id)
+    .all<ChangeCoverageRow>();
+  const durablePairs = new Set(
+    coverage.results.map((item) => `${item.collection}\0${item.phase}`),
+  );
+  const expectedPairs = changeLogCoverage(config);
+  if (
+    durablePairs.size !== expectedPairs.length ||
+    expectedPairs.some(
+      (item) => !durablePairs.has(`${item.collection}\0${item.phase}`),
+    )
+  ) {
+    throw new Error(
+      "Adding this change consumer expands collection/phase coverage; use a fresh generation or an explicit quiet-boundary migration",
+    );
+  }
+
+  await db
+    .prepare(
+      `UPDATE change_log_state SET definitions_json = ?
+       WHERE id = 1 AND generation_id = ? AND definitions_json = ?`,
+    )
+    .bind(definitions, state.generation_id, state.definitions_json)
+    .run();
+  const updated = (await probeChangeLogSchema(db)).state;
+  if (!updated || updated.definitions_json !== definitions) {
+    throw new Error("Change consumer definitions changed concurrently");
+  }
+}
+
+/** Initialize the fresh log or safely add consumers over already-logged
+ * collection/phase coverage. */
 export async function initializeChangeLog(
   db: Database,
   config: ContrailConfig,
@@ -211,19 +302,26 @@ export async function initializeChangeLog(
 
   const definitions = canonicalChangeDefinitions(config);
   const now = Date.now();
-  const candidateGeneration = crypto.randomUUID();
-  const statements: Statement[] = [
-    db
-      .prepare(
-        `INSERT INTO change_log_state
-         (id, generation_id, head_position, retained_floor_position,
-          definitions_json, created_at)
-         VALUES (1, ?, 0, 0, ?, ?)
-         ON CONFLICT(id) DO NOTHING`,
-      )
-      .bind(candidateGeneration, definitions, now),
-  ];
+  await db
+    .prepare(
+      `INSERT INTO change_log_state
+       (id, generation_id, head_position, retained_floor_position,
+        definitions_json, created_at)
+       VALUES (1, ?, 0, 0, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(crypto.randomUUID(), definitions, now)
+    .run();
 
+  let state = (await probeChangeLogSchema(db)).state;
+  if (!state) throw new Error("Could not initialize change-log state");
+  if (state.definitions_json !== definitions) {
+    await reconcileAdditiveDefinitions(db, config, state, definitions);
+    state = (await probeChangeLogSchema(db)).state;
+    if (!state) throw new Error("Could not reload change-log state");
+  }
+
+  const statements: Statement[] = [];
   for (const [consumerId, consumer] of Object.entries(
     config.changes?.consumers ?? {},
   ).sort(([left], [right]) => left.localeCompare(right))) {
@@ -235,9 +333,13 @@ export async function initializeChangeLog(
            (consumer_id, generation_id, acknowledged_position,
             configured_collections_json, configured_phases_json, initial_mode,
             required_for_activation, bootstrap_state,
-            bootstrap_anchor_position, attempts, updated_at)
-           SELECT ?, generation_id, 0, ?, ?, ?, ?, ?,
-                  CASE WHEN ? = 'current' THEN 0 ELSE NULL END,
+            bootstrap_anchor_position, bootstrap_token, attempts, updated_at)
+           SELECT ?, generation_id,
+                  CASE WHEN ? = 'history' THEN retained_floor_position
+                       ELSE head_position END,
+                  ?, ?, ?, ?, ?,
+                  CASE WHEN ? = 'current' THEN head_position ELSE NULL END,
+                  CASE WHEN ? = 'current' THEN ? ELSE NULL END,
                   0, ?
            FROM change_log_state
            WHERE id = 1 AND definitions_json = ?
@@ -245,12 +347,15 @@ export async function initializeChangeLog(
         )
         .bind(
           consumerId,
+          consumer.initial,
           canonicalCollections(consumer.collections),
           canonicalPhases(changeConsumerPhases(consumer)),
           consumer.initial,
           consumer.requiredForActivation === true ? 1 : 0,
           initialReady,
           consumer.initial,
+          consumer.initial,
+          crypto.randomUUID(),
           now,
           definitions,
         ),
@@ -273,11 +378,7 @@ export async function initializeChangeLog(
     );
   }
 
-  // Keep initialization under conservative D1 statement limits. The durable
-  // definitions_json winner makes these resumable chunks safe under concurrent
-  // initialization; init does not return until the complete set verifies.
-  await db.batch(statements.slice(0, 1));
-  for (let index = 1; index < statements.length; index += 50) {
+  for (let index = 0; index < statements.length; index += 50) {
     await db.batch(statements.slice(index, index + 50));
   }
   await assertChangeLogDefinition(db, config);

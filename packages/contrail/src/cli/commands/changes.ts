@@ -13,6 +13,11 @@ interface ChangeCommandOptions {
   binding: string;
   sqlite?: string;
   json?: boolean;
+  through?: string;
+  reason?: string;
+  yes?: boolean;
+  maxBatches?: number;
+  olderThan?: number;
 }
 
 async function withChangesDatabase<T>(
@@ -68,30 +73,72 @@ export function registerChanges(cli: CAC): void {
   options(
     cli.command(
       "changes <action> [consumer]",
-      "Private change-log operations: status, retry <consumer>",
+      "Private change-log operations: status, retry, prune, skip",
     ),
   )
     .option("--json", "Print machine-readable status JSON")
+    .option("--through <position>", "Required position for changes skip")
+    .option("--reason <text>", "Required operator reason for changes skip")
+    .option("--yes", "Confirm the data loss caused by changes skip")
+    .option("--max-batches <n>", "Maximum rows for one prune slice", {
+      default: 500,
+    })
+    .option("--older-than <timestamp>", "Prune only rows older than milliseconds")
     .action(
       async (
         action: string,
         consumer: string | undefined,
         commandOptions: ChangeCommandOptions,
       ) => {
-        if (action !== "status" && action !== "retry") {
-          throw new Error("changes action must be 'status' or 'retry'");
+        const actions = ["status", "retry", "prune", "skip"];
+        if (!actions.includes(action)) {
+          throw new Error(`changes action must be one of: ${actions.join(", ")}`);
         }
-        if (action === "retry" && !consumer) {
-          throw new Error("changes retry requires a consumer ID");
+        if ((action === "retry" || action === "skip") && !consumer) {
+          throw new Error(`changes ${action} requires a consumer ID`);
         }
-        if (action === "status" && consumer) {
-          throw new Error("changes status does not accept a consumer ID");
+        if ((action === "status" || action === "prune") && consumer) {
+          throw new Error(`changes ${action} does not accept a consumer ID`);
         }
 
         await withChangesDatabase(commandOptions, async (contrail, db) => {
           if (action === "retry") {
             await contrail.changes.retry(consumer!, undefined, db);
             console.log(`change consumer ${consumer}: retry is now due`);
+            return;
+          }
+          if (action === "skip") {
+            if (!commandOptions.through || !commandOptions.reason) {
+              throw new Error("changes skip requires --through and --reason");
+            }
+            await contrail.changes.skip(
+              consumer!,
+              {
+                through: commandOptions.through,
+                reason: commandOptions.reason,
+                confirm: commandOptions.yes === true,
+              },
+              db,
+            );
+            console.log(
+              `change consumer ${consumer}: explicitly skipped through ${commandOptions.through}`,
+            );
+            return;
+          }
+          if (action === "prune") {
+            const result = await contrail.changes.prune(
+              {
+                maxBatches: Number(commandOptions.maxBatches),
+                ...(commandOptions.olderThan === undefined
+                  ? {}
+                  : { olderThan: Number(commandOptions.olderThan) }),
+              },
+              db,
+            );
+            console.log(
+              `change log: pruned=${result.pruned} floor=${result.retainedFloor} ` +
+                `safeThrough=${result.safeThrough} done=${result.done}`,
+            );
             return;
           }
 

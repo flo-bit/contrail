@@ -37,7 +37,7 @@ import {
 } from "../types";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 13;
+export const CONTRAIL_SCHEMA_VERSION = 14;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {

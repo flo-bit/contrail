@@ -13,7 +13,12 @@ import { createPostgresDatabase } from "../src/adapters/postgres";
 import { initSchema } from "../src/index";
 import {
   acknowledgeChanges,
+  acknowledgeCurrentSnapshotPage,
   claimChanges,
+  claimCurrentActivation,
+  claimCurrentBootstrapChanges,
+  claimCurrentSnapshotPage,
+  completeCurrentActivation,
   getChangesStatus,
   hydrateChanges,
   ingestRecords,
@@ -75,6 +80,10 @@ const CHANGE_CONFIG = resolveConfig({
         collections: ["community.lexicon.calendar.event"],
         initial: "history",
       },
+      cache: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "current",
+      },
     },
   },
 });
@@ -102,7 +111,7 @@ if (!PG_URL) {
     const tables = await pool.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public'
        AND (tablename LIKE 'records_%' OR tablename LIKE 'fts_%'
-            OR tablename IN ('_contrail_meta', '_contrail_projection_state', 'backfills', 'backfill_state', 'discovery', 'cursor', 'source_position', 'bootstrap_state', 'bootstrap_snapshot_progress', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills', 'change_log_state', 'change_batches', 'change_consumers', 'change_log_coverage'))`
+            OR tablename IN ('_contrail_meta', '_contrail_projection_state', 'backfills', 'backfill_state', 'discovery', 'cursor', 'source_position', 'bootstrap_state', 'bootstrap_snapshot_progress', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills', 'change_log_state', 'change_batches', 'change_consumers', 'change_log_coverage', 'change_consumer_actions'))`
     );
     for (const { tablename } of tables.rows) {
       await pool.query(`DROP TABLE IF EXISTS ${tablename} CASCADE`);
@@ -618,6 +627,34 @@ if (!PG_URL) {
         ]),
       );
       await acknowledgeChanges(db, analytics!, { now: 1_001 });
+
+      const snapshot = await claimCurrentSnapshotPage(
+        db,
+        CHANGE_CONFIG,
+        "cache",
+        { now: 2_000 },
+      );
+      expect(snapshot?.records).toHaveLength(1);
+      await acknowledgeCurrentSnapshotPage(db, snapshot!, { now: 2_001 });
+      expect(
+        await claimCurrentSnapshotPage(db, CHANGE_CONFIG, "cache", {
+          now: 2_002,
+        }),
+      ).toBeNull();
+      const tail = await claimCurrentBootstrapChanges(db, "cache", {
+        now: 2_003,
+      });
+      expect(tail).toMatchObject({ from: "0", through: "1" });
+      await acknowledgeChanges(db, tail!, { now: 2_004 });
+      const activation = await claimCurrentActivation(db, "cache", {
+        now: 2_005,
+      });
+      await completeCurrentActivation(db, activation!, { now: 2_006 });
+      expect(
+        (await getChangesStatus(db)).consumers.find(
+          (consumer) => consumer.id === "cache",
+        ),
+      ).toMatchObject({ bootstrapState: "ready", position: "1" });
     });
   });
 

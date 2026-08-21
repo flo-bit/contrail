@@ -420,7 +420,7 @@ describe("transactional projection change log", () => {
       },
     });
     await expect(initSchema(initialized, changed)).rejects.toThrow(
-      "definitions differ",
+      "cannot be removed or modified",
     );
   });
 

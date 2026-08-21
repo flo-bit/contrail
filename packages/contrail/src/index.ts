@@ -36,6 +36,7 @@ export {
 } from "./core/change-log";
 export type { ChangeLogState, RecordChange } from "./core/change-log";
 export * from "./core/changes";
+export * from "./core/change-bootstrap";
 export * from "./core/validation";
 export * from "./core/search";
 export * from "./core/constellation";

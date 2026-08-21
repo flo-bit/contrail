@@ -36,6 +36,14 @@ try {
   );
   assert.equal(retry.status, 0, retry.stderr);
   assert.match(retry.stdout, /retry is now due/);
+
+  const prune = spawnSync(
+    process.execPath,
+    [cli, "changes", "prune", "--root", root, "--sqlite", database],
+    { cwd: resolve("."), encoding: "utf8" },
+  );
+  assert.equal(prune.status, 0, prune.stderr);
+  assert.match(prune.stdout, /pruned=0/);
   console.log("built change consumer CLI passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
