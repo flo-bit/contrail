@@ -27,7 +27,7 @@ const projection = resolveConfig({
   namespace: "garden.atmo.circle",
   profiles: [],
   collections: {
-    note: { collection, validate: true, searchable: ["text"] },
+    note: { collection, validate: true },
   },
   validation: { verifyCid: false },
 });

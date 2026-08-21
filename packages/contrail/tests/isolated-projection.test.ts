@@ -13,13 +13,20 @@ import {
 } from "../src/index";
 import { createTestDb } from "./helpers";
 
+let hasFts5 = false;
+try {
+  const testDb = createTestDb();
+  await testDb.prepare("CREATE VIRTUAL TABLE __isolated_fts_test USING fts5(content)").run();
+  hasFts5 = true;
+} catch {}
+
 const config = resolveConfig({
   namespace: "garden.atmo.circle",
   profiles: [],
   collections: {
     note: {
       collection: "garden.atmo.circle.note",
-      searchable: ["text"],
+      searchable: hasFts5 ? ["text"] : false,
       queryable: { createdAt: { type: "range" } },
       relations: {
         reactions: { collection: "reaction", field: "subject.uri" },
@@ -109,7 +116,7 @@ describe("isolated projection", () => {
     expect((await queryRecords(db, config, { collection: "note" })).records).toEqual([]);
   });
 
-  it("searches, resolves references, and counts only visible writers in one Space", async () => {
+  it("searches when available, resolves references, and counts visible writers", async () => {
     const db = createTestDb();
     await initIsolatedProjection(db, config);
     const space = "at://did:plc:alice/space/garden.atmo.circle/self";
@@ -127,7 +134,9 @@ describe("isolated projection", () => {
     })]);
 
     const notes = await queryIsolatedRecords(db, config, {
-      scope: scope(space), collection: "note", search: "hello",
+      scope: scope(space),
+      collection: "note",
+      ...(hasFts5 ? { search: "hello" } : {}),
     });
     expect(notes.records[0].counts).toEqual({ reaction: 1 });
 
