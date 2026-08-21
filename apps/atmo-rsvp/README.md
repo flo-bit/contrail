@@ -45,6 +45,22 @@ Event, RSVP, and feed reads can hydrate indexed actor profiles. Follows are an i
 
 The service has no user sessions and never signs or publishes records. Applications authenticate users and write through their PDSes.
 
+## Meilisearch candidate generation
+
+`src/meilisearch.ts` is the application-owned reference consumer for the transactional Contrail change log. It normalizes event documents, excludes cancelled events, restores direct geo/FSQ coordinates (with an injection seam for geocode-cache/H3 lookup), performs idempotent upsert/delete batches, and acknowledges only after every Meilisearch task reports `succeeded`.
+
+`searchGenerationConfig` and `src/search-worker.ts` are intentionally separate from the active Worker configuration. Use them only with a fresh D1 generation and these runtime secrets:
+
+```text
+MEILI_URL
+MEILI_KEY
+MEILI_EVENTS_INDEX   # optional; defaults to atmo_events
+```
+
+Current-state bootstrap writes a token-scoped candidate index, catches up a fixed retained tail, then swaps it into the stable UID. A reserved generation marker makes activation idempotent even if the Worker dies after Meilisearch succeeds but before Contrail acknowledges activation. Search clients must filter `kind = event`, which excludes that control marker. The previous stable contents remain under the candidate UID for rollback handling.
+
+Do not point the candidate config at the active populated D1 database: first-time logging fails closed there by design. Build/import a fresh candidate database, drain and verify the required `search` consumer, then switch the Worker/D1/index tuple together.
+
 ## Development
 
 Build the workspace package before running the app directly:

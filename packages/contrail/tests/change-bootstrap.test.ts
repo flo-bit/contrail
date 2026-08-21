@@ -168,6 +168,7 @@ describe("current-state change consumer bootstrap", () => {
       bootstrapToken: status.token,
     });
     const delivery = await hydrateChanges(db, withSearch, tail!);
+    expect(delivery.destinationToken).toBe(status.token);
     expect(delivery.currentRecords.map((record) => record.rkey).sort()).toEqual([
       "a",
       "c",

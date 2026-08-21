@@ -94,6 +94,8 @@ export interface DeliveryBatch {
   changes: RecordChange[];
   currentRecords: CurrentRecord[];
   absentUris: string[];
+  /** Generation-scoped destination token during current bootstrap catch-up. */
+  destinationToken?: string;
 }
 
 export interface ChangeFailure {
@@ -736,6 +738,9 @@ export async function hydrateChanges(
     changes: claim.changes,
     currentRecords,
     absentUris,
+    ...(claim.bootstrapToken
+      ? { destinationToken: claim.bootstrapToken }
+      : {}),
   };
 }
 
