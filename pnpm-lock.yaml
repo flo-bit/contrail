@@ -251,6 +251,9 @@ importers:
       '@atcute/client':
         specifier: ^5.1.1
         version: 5.1.1(@atcute/lexicons@2.0.3)(typescript@6.0.3)
+      '@atcute/identity':
+        specifier: ^2.0.2
+        version: 2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/identity-resolver':
         specifier: ^2.0.1
         version: 2.0.1(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@atcute/lexicons@2.0.3)(typescript@6.0.3)
@@ -266,6 +269,9 @@ importers:
       '@atcute/lexicons':
         specifier: ^2.0.3
         version: 2.0.3
+      '@atcute/oauth-types':
+        specifier: ^1.0.1
+        version: 1.0.1(typescript@6.0.3)
       '@atcute/tid':
         specifier: 1.1.4
         version: 1.1.4

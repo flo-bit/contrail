@@ -26,7 +26,13 @@ export default {
   contrail: {
     endpoint: "https://api.atmo.rsvp",
     serviceDid: "did:web:api.atmo.rsvp",
-    scope: "rpc?lxm=*&aud=did:web:api.atmo.rsvp",
+    serviceAudience: "did:web:api.atmo.rsvp#contrail",
+    scope:
+      "rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=rsvp.atmo.getFeed&lxm=rsvp.atmo.notifyOfUpdate",
+    protectedMethods: [
+      "rsvp.atmo.getFeed",
+      "rsvp.atmo.notifyOfUpdate",
+    ],
     collections: [
       "app.bsky.actor.profile",
       "app.bsky.graph.follow",
@@ -99,7 +105,7 @@ The generated Lexicons provide typed method names, parameters, and responses.
 
 ## Use one authenticated client
 
-Add the provider's generated scope to the application's OAuth scopes:
+Add the provider's generated least-privilege scope to the application's OAuth scopes. It contains the encoded fragmented audience and only the protected methods advertised by this provider:
 
 ```ts
 import { contrail } from "./contrail/index.js";
@@ -143,13 +149,13 @@ Contrail returns the original PDS response. A notification failure is reported t
 
 ## Update the connection
 
-Anonymous generated clients call the endpoint directly without fetching discovery first. Protected calls lazily discover service auth; transient discovery failures remain retryable and endpoint or service-DID mismatches fail closed. Adding provider methods does not interrupt methods already known by a generated client. Regenerate when application code wants the new API surface:
+Anonymous generated clients call the endpoint directly without fetching discovery first. Protected calls lazily discover service auth; transient discovery failures remain retryable, while endpoint, base-DID, exact-audience, scope, or protected-method mismatches fail closed. Adding anonymous provider methods does not interrupt methods already known by a generated client. Regenerate when application code wants new API surface or the protected contract changes:
 
 ```bash
 pnpx @atmo-dev/contrail connect https://api.atmo.rsvp --update
 ```
 
-Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests. `--update` cannot repoint an existing lock or abandon its provider-owned Lexicon root; remove the existing connection deliberately before switching providers or output roots. Version-1 provider locks are intentionally unsupported after the clean manifest-v2 cut and must be removed before reconnecting.
+Review changes to `contrail.lock.json`, `lex.config.js`, and `src/contrail/`, then run the application's typecheck and tests. A change from the old plain-DID/wildcard permission requires OAuth reauthorization; an existing grant cannot mint tokens for the corrected fragmented audience. `--update` cannot repoint an existing lock or abandon its provider-owned Lexicon root; remove the existing connection deliberately before switching providers or output roots. Version-1 provider locks are intentionally unsupported after the clean manifest-v2 cut and must be removed before reconnecting. A version-2 lock written before exact audiences existed is reported separately and needs the same removal, reconnection, and OAuth reauthorization.
 
 ## Completeness
 

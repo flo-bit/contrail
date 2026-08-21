@@ -21,6 +21,7 @@ import type { CAC } from "cac";
 import {
   describePublicService,
   digestLexiconDocuments,
+  isPublicServiceAuthContract,
   isPublicServiceManifest,
   normalizePublicServiceEndpoint,
   validateServiceManifest,
@@ -104,11 +105,23 @@ async function readProviderLock(path: string): Promise<ProviderLock | null> {
     "contractDigest" in lock ||
     typeof lock.endpoint !== "string" ||
     typeof lock.lexiconRoot !== "string" ||
+    !("serviceAuth" in lock) ||
+    !isPublicServiceAuthContract(lock.serviceAuth) ||
     (lock.allowInsecureHttp !== undefined && lock.allowInsecureHttp !== true)
   ) {
     if ((value as { version?: unknown }).version === 1) {
       throw new Error(
         "existing Contrail provider lock uses unsupported version 1; remove it and reconnect",
+      );
+    }
+    if (
+      lock.format === "contrail.provider-lock" &&
+      lock.version === 2 &&
+      "serviceAuth" in lock &&
+      !isPublicServiceAuthContract(lock.serviceAuth)
+    ) {
+      throw new Error(
+        "existing Contrail provider lock predates exact service-auth audiences; remove it, reconnect, and reauthorize OAuth",
       );
     }
     throw new Error("existing Contrail provider lock is malformed");
@@ -185,6 +198,10 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+function protectedMethodIds(provider: ProviderDefinition): string[] {
+  return (provider.serviceAuth?.methods ?? []).map(({ id }) => id).sort();
+}
+
 function formatStringArray(
   values: readonly string[],
   indentation: number,
@@ -228,9 +245,16 @@ export async function ensureConsumerLexiconConfig(options: {
   );
   const typesRoot = relative(root, dirname(typesIndex)).replaceAll("\\", "/");
   const target = options.target ?? options.api;
-  const serviceDid = target.serviceAuth?.audience ?? null;
-  const scope = serviceDid ? `rpc?lxm=*&aud=${serviceDid}` : null;
-  const source = `${GENERATED_LEXICON_CONFIG_HEADER}export default {\n  contrail: {\n    endpoint: ${JSON.stringify(target.endpoint)},\n    serviceDid: ${JSON.stringify(serviceDid)},\n    scope: ${JSON.stringify(scope)},\n    collections: ${formatStringArray(target.collections, 4)},\n  },\n  generate: {\n    files: [${JSON.stringify(`${patternRoot}/**/*.json`)}],\n    outdir: ${JSON.stringify(`${typesRoot}/`)},\n  },\n};\n`;
+  // Omit the service-auth keys entirely when the provider has none. This block
+  // is reference material consumers paste into `createPublicServiceClient`, and
+  // a wall of nulls reads like a broken contract rather than an anonymous one.
+  const serviceAuthFields = target.serviceAuth
+    ? `\n    serviceDid: ${JSON.stringify(target.serviceAuth.serviceDid)},` +
+      `\n    serviceAudience: ${JSON.stringify(target.serviceAuth.audience)},` +
+      `\n    scope: ${JSON.stringify(target.serviceAuth.scope)},` +
+      `\n    protectedMethods: ${formatStringArray(protectedMethodIds(target), 4)},`
+    : "";
+  const source = `${GENERATED_LEXICON_CONFIG_HEADER}export default {\n  contrail: {\n    endpoint: ${JSON.stringify(target.endpoint)},${serviceAuthFields}\n    collections: ${formatStringArray(target.collections, 4)},\n  },\n  generate: {\n    files: [${JSON.stringify(`${patternRoot}/**/*.json`)}],\n    outdir: ${JSON.stringify(`${typesRoot}/`)},\n  },\n};\n`;
 
   if (await exists(path)) {
     const current = await readFile(path, "utf8");
@@ -313,12 +337,10 @@ export async function ensureConsumerClientModule(options: {
       'import type { PublicServiceClientOptions } from "@atmo-dev/contrail/client";\n';
   }
   const target = options.target ?? options.api;
-  const targetServiceDid = target.serviceAuth?.audience;
-  const targetScope = targetServiceDid
-    ? `rpc?lxm=*&aud=${targetServiceDid}`
-    : null;
-  const apiProtectedMethods =
-    options.api.serviceAuth?.methods.map(({ id }) => id) ?? [];
+  const targetServiceDid = target.serviceAuth?.serviceDid;
+  const targetServiceAudience = target.serviceAuth?.audience;
+  const targetScope = target.serviceAuth?.scope;
+  const apiProtectedMethods = protectedMethodIds(options.api);
   const configuredNotifyMethod =
     options.notifyMethod ??
     [...options.api.methods, ...apiProtectedMethods].find(
@@ -331,8 +353,7 @@ export async function ensureConsumerClientModule(options: {
       ...(configuredNotifyMethod ? [configuredNotifyMethod] : []),
     ]),
   ].sort();
-  const targetProtectedMethods =
-    target.serviceAuth?.methods.map(({ id }) => id) ?? [];
+  const targetProtectedMethods = protectedMethodIds(target);
   const targetMethods = [
     ...new Set([...target.methods, ...targetProtectedMethods]),
   ].sort();
@@ -342,10 +363,10 @@ export async function ensureConsumerClientModule(options: {
   );
   const constAssertion = isTypeScript ? " as const" : "";
   const targetType = isTypeScript
-    ? `\nexport type ContrailTarget = Pick<\n  PublicServiceClientOptions,\n  "endpoint" | "allowInsecureHttp" | "serviceDid" | "scope" | "serviceMethods" | "collections"\n> & {\n  notifyMethod?: PublicServiceClientOptions["notifyMethod"] | null;\n};\n`
+    ? `\nexport type ContrailTarget = Pick<\n  PublicServiceClientOptions,\n  "endpoint" | "allowInsecureHttp" | "serviceDid" | "serviceAudience" | "scope" | "protectedMethods" | "serviceMethods" | "collections"\n> & {\n  notifyMethod?: PublicServiceClientOptions["notifyMethod"] | null;\n};\n`
     : "";
   const targetAnnotation = isTypeScript ? ": ContrailTarget" : "";
-  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedTypeImport}${generatedImport}\nexport const contrailApi = {\n  namespace: ${JSON.stringify(options.api.namespace)},\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  collections: ${formatStringArray(options.api.collections, 2)},\n  notifyMethod: ${JSON.stringify(notifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailTarget = {\n  endpoint: ${JSON.stringify(target.endpoint)},${target.allowInsecureHttp ? "\n  allowInsecureHttp: true," : ""}${targetServiceDid ? `\n  serviceDid: ${JSON.stringify(targetServiceDid)},\n  scope: ${JSON.stringify(targetScope)},` : ""}\n  serviceMethods: ${formatStringArray(targetMethods, 2)},\n  collections: ${formatStringArray(target.collections, 2)},\n  notifyMethod: ${JSON.stringify(targetNotifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailMethods = contrailTarget.serviceMethods;\n${targetType}\nexport function createContrailClient(target${targetAnnotation} = contrailTarget) {\n  const { notifyMethod: targetNotifyMethod, ...runtimeTarget } = target;\n  const notifyMethod =\n    targetNotifyMethod === undefined\n      ? contrailApi.notifyMethod\n      : targetNotifyMethod;\n  return createPublicServiceClient({\n    ...runtimeTarget,\n    serviceMethods: target.serviceMethods ?? contrailApi.serviceMethods,\n    collections: target.collections ?? contrailApi.collections,\n    ...(notifyMethod ? { notifyMethod } : {}),\n  });\n}\n\nexport function createLocalContrailClient(\n  endpoint = "http://127.0.0.1:8787",\n) {\n  return createContrailClient({\n    endpoint,\n    allowInsecureHttp: true,\n    serviceMethods: contrailApi.serviceMethods,\n    collections: contrailApi.collections,\n    notifyMethod: contrailApi.notifyMethod,\n  });\n}\n\nexport const contrail = createContrailClient();\n`;
+  const source = `${GENERATED_CLIENT_HEADER}import { createPublicServiceClient } from "@atmo-dev/contrail/client";\n${generatedTypeImport}${generatedImport}\nexport const contrailApi = {\n  namespace: ${JSON.stringify(options.api.namespace)},\n  serviceMethods: ${formatStringArray(serviceMethods, 2)},\n  protectedMethods: ${formatStringArray(apiProtectedMethods, 2)},\n  collections: ${formatStringArray(options.api.collections, 2)},\n  notifyMethod: ${JSON.stringify(notifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailTarget = {\n  endpoint: ${JSON.stringify(target.endpoint)},${target.allowInsecureHttp ? "\n  allowInsecureHttp: true," : ""}${targetServiceDid && targetServiceAudience && targetScope ? `\n  serviceDid: ${JSON.stringify(targetServiceDid)},\n  serviceAudience: ${JSON.stringify(targetServiceAudience)},\n  scope: ${JSON.stringify(targetScope)},\n  protectedMethods: ${formatStringArray(targetProtectedMethods, 2)},` : ""}\n  serviceMethods: ${formatStringArray(targetMethods, 2)},\n  collections: ${formatStringArray(target.collections, 2)},\n  notifyMethod: ${JSON.stringify(targetNotifyMethod ?? null)},\n}${constAssertion};\n\nexport const contrailMethods = contrailTarget.serviceMethods;\n${targetType}\nexport function createContrailClient(target${targetAnnotation} = contrailTarget) {\n  const { notifyMethod: targetNotifyMethod, ...runtimeTarget } = target;\n  const notifyMethod =\n    targetNotifyMethod === undefined\n      ? contrailApi.notifyMethod\n      : targetNotifyMethod;\n  return createPublicServiceClient({\n    ...runtimeTarget,\n    serviceMethods: target.serviceMethods ?? contrailApi.serviceMethods,\n    collections: target.collections ?? contrailApi.collections,\n    ...(notifyMethod ? { notifyMethod } : {}),\n  });\n}\n\nexport function createLocalContrailClient(\n  endpoint = "http://127.0.0.1:8787",\n) {\n  return createContrailClient({\n    endpoint,\n    allowInsecureHttp: true,\n    serviceMethods: contrailApi.serviceMethods,\n    collections: contrailApi.collections,\n    notifyMethod: contrailApi.notifyMethod,\n  });\n}\n\nexport const contrail = createContrailClient();\n`;
   await mkdir(dirname(path), { recursive: true });
 
   if (await exists(path)) {

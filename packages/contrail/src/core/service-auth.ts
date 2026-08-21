@@ -4,9 +4,14 @@ import {
   WebDidDocumentResolver,
   type DidDocumentResolver,
 } from "@atcute/identity-resolver";
-import type { Did, Nsid } from "@atcute/lexicons/syntax";
+import type {
+  AtprotoAudience,
+  AtprotoDid,
+  Nsid,
+} from "@atcute/lexicons/syntax";
 import { ServiceJwtVerifier, type VerifiedJwt } from "@atcute/xrpc-server/auth";
 import { XRPCError } from "@atcute/xrpc-server";
+import { parseServiceAudience } from "../service-auth-contract.js";
 import type { AtprotoServiceAuthMethod, ContrailConfig } from "./types.js";
 
 const AUTH_TIMEOUT_MS = 5_000;
@@ -70,7 +75,8 @@ export interface ServiceAuthResult {
 }
 
 export interface ServiceAuthGate {
-  readonly audience: Did;
+  readonly serviceDid: AtprotoDid;
+  readonly audience: AtprotoAudience;
   protects(method: AtprotoServiceAuthMethod): boolean;
   authorize(request: Request, method: Nsid): Promise<ServiceAuthResult>;
 }
@@ -89,15 +95,14 @@ function defaultResolver(): DidDocumentResolver {
 }
 
 /** Create the shared verifier used by protected built-in routes. Tokens remain
- * method-bound even when a client obtained permission through one wildcard
- * OAuth scope (`rpc?lxm=*&aud=<service-did>`). */
+ * bound to the exact service audience and XRPC method. */
 export function createServiceAuthGate(
   config: ContrailConfig,
 ): ServiceAuthGate | null {
   if (!config.serviceAuth) return null;
   const serviceAuth = config.serviceAuth;
   const protectedMethods = new Set(serviceAuth.methods);
-  const audience = serviceAuth.audience as Did;
+  const { serviceDid, audience } = parseServiceAudience(serviceAuth.audience);
   const verifier = new ServiceJwtVerifier({
     acceptAudiences: [audience],
     resolver: serviceAuth.resolver ?? defaultResolver(),
@@ -105,6 +110,7 @@ export function createServiceAuthGate(
   });
 
   return {
+    serviceDid,
     audience,
     protects(method) {
       return protectedMethods.has(method);

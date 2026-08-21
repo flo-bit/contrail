@@ -4,12 +4,25 @@ import {
   simpleFetchHandler,
   type FetchHandler,
 } from "@atcute/client";
-import { isDid, type Did, type Nsid } from "@atcute/lexicons/syntax";
+import {
+  isDid,
+  type AtprotoAudience,
+  type AtprotoDid,
+  type Did,
+  type Nsid,
+} from "@atcute/lexicons/syntax";
 import {
   isPublicServiceManifest,
   normalizePublicServiceEndpoint,
   type PublicServiceAuthContract,
 } from "./public-service.js";
+import {
+  compareCanonical,
+  formatServiceOAuthScope,
+  parseServiceAudience,
+  parseServiceOAuthScope,
+  type ServiceOAuthScope,
+} from "./service-auth-contract.js";
 
 const DISCOVERY_TIMEOUT_MS = 15_000;
 const TOKEN_EXPIRY_SKEW_MS = 5_000;
@@ -27,11 +40,15 @@ export interface PublicServiceClientOptions {
   /** Existing authenticated AT Protocol client used to mint service tokens.
    *  Omit when the consumer only needs anonymous methods. */
   authenticatedClient?: Client;
-  /** Optional receiving-service DID from `lex.config.js`. Supplying it also
-   *  makes the required OAuth permission available as `client.scope`. */
-  serviceDid?: Did;
-  /** Optional precomputed OAuth permission. Must match `serviceDid`. */
-  scope?: `rpc?lxm=*&aud=${string}`;
+  /** Base receiving-service DID from the verified provider contract. Null and
+   *  an omitted value both mean the provider serves no protected methods. */
+  serviceDid?: AtprotoDid | null;
+  /** Exact fragmented OAuth and JWT audience from the provider contract. */
+  serviceAudience?: AtprotoAudience | null;
+  /** Exact least-privilege OAuth permission from the provider contract. */
+  scope?: ServiceOAuthScope | null;
+  /** XRPC methods granted by the exact OAuth permission. */
+  protectedMethods?: readonly Nsid[] | null;
   /** Exact XRPC methods served by this provider. Supplying the verified list
    *  lets authenticated clients route all other methods to the user's PDS. */
   serviceMethods?: readonly Nsid[];
@@ -61,7 +78,7 @@ export type PublicServiceClient = Client & {
   /** Canonical public Contrail origin. */
   readonly endpoint: string;
   /** OAuth permission required by protected methods, or null when unconfigured. */
-  readonly scope: `rpc?lxm=*&aud=${string}` | null;
+  readonly scope: ServiceOAuthScope | null;
   /** Record collections whose successful writes trigger notification. */
   readonly collections: readonly Nsid[];
   /** Combine this provider with an authenticated PDS client. Provider methods
@@ -74,9 +91,81 @@ export type PublicServiceClient = Client & {
 };
 
 export function publicServiceOAuthScope(
-  audience: Did,
-): `rpc?lxm=*&aud=${string}` {
-  return `rpc?lxm=*&aud=${audience}`;
+  audience: AtprotoAudience,
+  protectedMethods: readonly Nsid[],
+): ServiceOAuthScope {
+  return formatServiceOAuthScope(audience, protectedMethods);
+}
+
+interface ConfiguredServiceAuth {
+  serviceDid: AtprotoDid;
+  audience: AtprotoAudience;
+  scope: ServiceOAuthScope;
+  protectedMethods: Nsid[];
+}
+
+function sameMethods(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((method, index) => method === right[index])
+  );
+}
+
+function configuredServiceAuth(
+  options: PublicServiceClientOptions,
+): ConfiguredServiceAuth | null {
+  // A provider without protected methods is generated as absent keys, but the
+  // untyped `lex.config.js` block spells the same thing as nulls and an empty
+  // method list. Both mean anonymous-only, never a half-configured contract.
+  const absent = (value: unknown) =>
+    value === undefined ||
+    value === null ||
+    (Array.isArray(value) && value.length === 0);
+  const supplied = [
+    options.serviceDid,
+    options.serviceAudience,
+    options.scope,
+    options.protectedMethods,
+  ];
+  if (supplied.every(absent)) return null;
+  if (supplied.some(absent)) {
+    throw new Error(
+      "Contrail service auth configuration is incomplete; run `contrail connect --update` and reauthorize",
+    );
+  }
+
+  try {
+    const audience = parseServiceAudience(options.serviceAudience);
+    const parsedScope = parseServiceOAuthScope(options.scope);
+    const canonicalScope = formatServiceOAuthScope(
+      audience.audience,
+      options.protectedMethods!,
+    );
+    if (options.serviceDid !== audience.serviceDid) {
+      throw new Error(
+        `service DID ${options.serviceDid} does not match audience ${audience.audience}`,
+      );
+    }
+    if (parsedScope.audience !== audience.audience) {
+      throw new Error("OAuth scope targets a different service audience");
+    }
+    if (parsedScope.canonicalScope !== canonicalScope) {
+      throw new Error("OAuth scope does not grant the exact protected methods");
+    }
+    return {
+      serviceDid: audience.serviceDid,
+      audience: audience.audience,
+      scope: canonicalScope,
+      protectedMethods: parsedScope.methods,
+    };
+  } catch (error) {
+    throw new Error(
+      `Contrail service auth configuration is invalid; run \`contrail connect --update\` and reauthorize: ${(error as Error).message}`,
+    );
+  }
 }
 
 function xrpcMethod(pathname: string): Nsid | null {
@@ -126,6 +215,7 @@ export function publicServiceFetchHandler(
   options: PublicServiceClientOptions,
 ): FetchHandler {
   const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
+  const configuredAuth = configuredServiceAuth(options);
   const fetcher = options.fetch ?? fetch;
   const base = simpleFetchHandler({ service: endpoint, fetch: fetcher });
   const tokens = new Map<string, CachedToken>();
@@ -158,12 +248,40 @@ export function publicServiceFetchHandler(
         );
       }
       const serviceAuth = value.serviceAuth ?? null;
-      if (
-        options.serviceDid &&
-        serviceAuth?.audience !== options.serviceDid
-      ) {
+      if (!serviceAuth) {
+        if (configuredAuth) {
+          throw new PublicServiceContractError(
+            `Contrail service DID mismatch: expected ${configuredAuth.serviceDid}, received none`,
+          );
+        }
+        return null;
+      }
+      if (!configuredAuth) {
         throw new PublicServiceContractError(
-          `Contrail service DID mismatch: expected ${options.serviceDid}, received ${serviceAuth?.audience ?? "none"}`,
+          "Contrail protected methods are not configured; run `contrail connect --update` and reauthorize",
+        );
+      }
+      if (serviceAuth.serviceDid !== configuredAuth.serviceDid) {
+        throw new PublicServiceContractError(
+          `Contrail service DID mismatch: expected ${configuredAuth.serviceDid}, received ${serviceAuth.serviceDid}`,
+        );
+      }
+      if (serviceAuth.audience !== configuredAuth.audience) {
+        throw new PublicServiceContractError(
+          `Contrail service audience mismatch: expected ${configuredAuth.audience}, received ${serviceAuth.audience}`,
+        );
+      }
+      if (serviceAuth.scope !== configuredAuth.scope) {
+        throw new PublicServiceContractError(
+          `Contrail OAuth scope mismatch: expected ${configuredAuth.scope}, received ${serviceAuth.scope}`,
+        );
+      }
+      const discoveredMethods = serviceAuth.methods
+        .map((method) => method.id)
+        .sort(compareCanonical);
+      if (!sameMethods(discoveredMethods, configuredAuth.protectedMethods)) {
+        throw new PublicServiceContractError(
+          "Contrail protected-method mismatch; run `contrail connect --update` and reauthorize",
         );
       }
       return serviceAuth;
@@ -212,7 +330,7 @@ export function publicServiceFetchHandler(
         "com.atproto.server.getServiceAuth",
         {
           params: {
-            aud: auth.audience as Did,
+            aud: auth.audience,
             lxm: method,
           },
         },
@@ -337,19 +455,12 @@ function createClient(
   authenticatedOptions: PublicServiceAuthenticatedOptions = {},
 ): PublicServiceClient {
   const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
+  const serviceAuth = configuredServiceAuth(options);
   const authenticatedClients = new WeakMap<Client, PublicServiceClient>();
   const client = new Client({
     handler: publicServiceFetchHandler({ ...options, endpoint }),
   }) as PublicServiceClient;
-  const expectedScope = options.serviceDid
-    ? publicServiceOAuthScope(options.serviceDid)
-    : null;
-  if (options.scope && options.scope !== expectedScope) {
-    throw new Error(
-      `Contrail OAuth scope mismatch: expected ${expectedScope ?? "none"}, received ${options.scope}`,
-    );
-  }
-  const scope = options.scope ?? expectedScope;
+  const scope = serviceAuth?.scope ?? null;
   const collections = Object.freeze([...(options.collections ?? [])]);
 
   Object.defineProperties(client, {
@@ -494,8 +605,13 @@ function createClient(
 /** Create a typed Atcute client for anonymous and service-auth Contrail methods.
  *  Generated Lexicon imports still supply the method-specific TypeScript API. */
 export function createPublicServiceClient(
-  options: PublicServiceClientOptions & { serviceDid: Did },
-): PublicServiceClient & { readonly scope: `rpc?lxm=*&aud=${string}` };
+  options: PublicServiceClientOptions & {
+    serviceDid: AtprotoDid;
+    serviceAudience: AtprotoAudience;
+    scope: ServiceOAuthScope;
+    protectedMethods: readonly Nsid[];
+  },
+): PublicServiceClient & { readonly scope: ServiceOAuthScope };
 export function createPublicServiceClient(
   options: PublicServiceClientOptions,
 ): PublicServiceClient;

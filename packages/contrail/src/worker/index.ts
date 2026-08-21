@@ -20,6 +20,7 @@ import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillRetryOptions } from "../core/backfill.js";
 import {
   normalizePublicServiceEndpoint,
+  validatePublicServiceAuthEndpoint,
   validatePublicServiceLexicons,
   type PublicServiceOptions,
 } from "../public-service.js";
@@ -50,6 +51,7 @@ export function createWorker(
   if (options.publicService) {
     normalizePublicServiceEndpoint(options.publicService.endpoint);
     validatePublicServiceLexicons(config, options.lexicons ?? []);
+    validatePublicServiceAuthEndpoint(config, options.publicService);
   }
   const contrail = new Contrail({ ...config, lexicons: options.lexicons });
   const handle = createHandler(contrail, {

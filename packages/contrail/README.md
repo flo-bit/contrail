@@ -185,14 +185,14 @@ Personalized feeds and `notifyOfUpdate` can instead require method-bound AT Prot
 const config = {
   notify: true,
   serviceAuth: {
-    audience: "did:web:api.example.com",
+    audience: "did:web:api.example.com#contrail",
     methods: ["getFeed", "notifyOfUpdate"],
   },
   // ...
 };
 ```
 
-The service description advertises the audience and each protected query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; anonymous calls go directly to the configured endpoint, while protected calls lazily discover and validate service auth. Its exported `contrail.scope` is the provider's verified OAuth permission, such as `rpc?lxm=*&aud=did:web:api.example.com`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the audience matches the public endpoint's `did:web`, the Worker publishes its service document at `/.well-known/did.json`.
+The service description advertises the base service DID, exact fragmented audience, canonical OAuth scope, and each protected query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; anonymous calls go directly to the configured endpoint, while protected calls lazily discover and validate all service-auth fields. Its exported `contrail.scope` contains one sorted `lxm` parameter per protected method, such as `rpc?aud=did:web:api.example.com%23contrail&lxm=<namespace>.getFeed&lxm=<namespace>.notifyOfUpdate`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the base DID resolves to the public endpoint's `/.well-known/did.json`, the Worker publishes a DID document whose service entry ID is the exact audience.
 
 Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Existing non-public deployments without one retain the legacy ingestion-time cursor response:
 

@@ -1,5 +1,17 @@
-import { isDid, isNsid } from "@atcute/lexicons/syntax";
+import { isAtprotoWebDid, webDidToDocumentUrl } from "@atcute/identity";
+import {
+  isNsid,
+  type AtprotoAudience,
+  type AtprotoDid,
+} from "@atcute/lexicons/syntax";
 import type { ContrailConfig } from "./core/types.js";
+import {
+  compareCanonical,
+  formatServiceOAuthScope,
+  parseServiceAudience,
+  parseServiceOAuthScope,
+  type ServiceOAuthScope,
+} from "./service-auth-contract.js";
 import {
   getCollectionMethods,
   nsidForShortName,
@@ -30,7 +42,9 @@ export interface PublicServiceProtectedMethod {
 
 export interface PublicServiceAuthContract {
   type: "atproto-service-auth";
-  audience: string;
+  serviceDid: AtprotoDid;
+  audience: AtprotoAudience;
+  scope: ServiceOAuthScope;
   methods: PublicServiceProtectedMethod[];
 }
 
@@ -92,6 +106,37 @@ export function normalizePublicServiceEndpoint(
   return url.origin;
 }
 
+/** Whether this endpoint is the origin that hosts the base DID's document, and
+ * therefore whether Contrail should publish one at `/.well-known/did.json`. */
+export function hostsServiceDidDocument(
+  serviceDid: AtprotoDid,
+  endpoint: string,
+): boolean {
+  if (!isAtprotoWebDid(serviceDid)) return false;
+  return (
+    webDidToDocumentUrl(serviceDid).href ===
+    new URL("/.well-known/did.json", endpoint).href
+  );
+}
+
+export function validatePublicServiceAuthEndpoint(
+  config: ContrailConfig,
+  options: PublicServiceOptions,
+): void {
+  if (!config.serviceAuth) return;
+  const endpoint = normalizePublicServiceEndpoint(options.endpoint, options);
+  const { serviceDid, audience } = parseServiceAudience(
+    config.serviceAuth.audience,
+  );
+  if (!isAtprotoWebDid(serviceDid)) return;
+
+  if (!hostsServiceDidDocument(serviceDid, endpoint)) {
+    throw new Error(
+      `serviceAuth audience ${audience} resolves its DID document to ${webDidToDocumentUrl(serviceDid).href}, not ${new URL("/.well-known/did.json", endpoint).href}`,
+    );
+  }
+}
+
 function normalizeJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeJson);
   if (value && typeof value === "object") {
@@ -131,7 +176,7 @@ export function normalizeLexiconDocuments(
     }
     byId.set(id, value as LexiconDocument);
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId.values()].sort((a, b) => compareCanonical(a.id, b.id));
 }
 
 function publicCollections(config: ContrailConfig): PublicServiceCollection[] {
@@ -183,10 +228,18 @@ function publicServiceAuth(
         ? { id: `${config.namespace}.getFeed`, type: "query" }
         : { id: `${config.namespace}.notifyOfUpdate`, type: "procedure" },
     )
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareCanonical(left.id, right.id));
+  const { serviceDid, audience } = parseServiceAudience(
+    config.serviceAuth.audience,
+  );
   return {
     type: "atproto-service-auth",
-    audience: config.serviceAuth.audience,
+    serviceDid,
+    audience,
+    scope: formatServiceOAuthScope(
+      audience,
+      methods.map((method) => method.id),
+    ),
     methods,
   };
 }
@@ -370,18 +423,19 @@ export function validateServiceManifest(
   );
 }
 
-function isPublicServiceAuthContract(
+export function isPublicServiceAuthContract(
   value: unknown,
 ): value is PublicServiceAuthContract | null | undefined {
   if (value === null || value === undefined) return true;
   if (!value || typeof value !== "object") return false;
   const auth = value as Partial<PublicServiceAuthContract>;
-  return (
-    auth.type === "atproto-service-auth" &&
-    typeof auth.audience === "string" &&
-    isDid(auth.audience) &&
-    Array.isArray(auth.methods) &&
-    auth.methods.every(
+  if (
+    auth.type !== "atproto-service-auth" ||
+    typeof auth.serviceDid !== "string" ||
+    typeof auth.audience !== "string" ||
+    typeof auth.scope !== "string" ||
+    !Array.isArray(auth.methods) ||
+    !auth.methods.every(
       (method) =>
         !!method &&
         typeof method === "object" &&
@@ -389,7 +443,26 @@ function isPublicServiceAuthContract(
         isNsid(method.id) &&
         (method.type === "query" || method.type === "procedure"),
     )
-  );
+  ) {
+    return false;
+  }
+
+  try {
+    const audience = parseServiceAudience(auth.audience);
+    const parsedScope = parseServiceOAuthScope(auth.scope);
+    const methodIds = auth.methods.map((method) => method.id);
+    const sortedMethodIds = [...methodIds].sort(compareCanonical);
+    return (
+      new Set(methodIds).size === methodIds.length &&
+      methodIds.every((method, index) => method === sortedMethodIds[index]) &&
+      auth.serviceDid === audience.serviceDid &&
+      parsedScope.audience === audience.audience &&
+      parsedScope.canonicalScope === auth.scope &&
+      formatServiceOAuthScope(audience.audience, methodIds) === auth.scope
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function isPublicServiceManifest(

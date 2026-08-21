@@ -153,6 +153,36 @@ describe("getRelationField", () => {
 });
 
 describe("resolveConfig", () => {
+  it.each([
+    "did:web:api.example.com#contrail",
+    "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#contrail",
+  ])("accepts an exact AT Protocol service audience: %s", (audience) => {
+    expect(() =>
+      resolveConfig({
+        namespace: "test",
+        profiles: [],
+        collections: {},
+        serviceAuth: { audience: audience as never, methods: [] },
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "did:web:api.example.com",
+    "did:web:api.example.com#",
+    "did:web:api.example.com#contrail#other",
+    "did:key:zExample#contrail",
+  ])("rejects an invalid AT Protocol service audience: %s", (audience) => {
+    expect(() =>
+      resolveConfig({
+        namespace: "test",
+        profiles: [],
+        collections: {},
+        serviceAuth: { audience: audience as never, methods: [] },
+      }),
+    ).toThrow("serviceAuth.audience");
+  });
+
   it("adds default profile collection (keyed by short name `profile`)", () => {
     const resolved = resolveConfig({
       namespace: "test",

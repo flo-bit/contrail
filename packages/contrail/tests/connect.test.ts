@@ -12,6 +12,7 @@ import {
 } from "../src/cli/commands/connect";
 import {
   digestLexiconDocuments,
+  type PublicServiceAuthContract,
   type PublicServiceManifest,
 } from "../src/public-service";
 
@@ -41,6 +42,17 @@ const notifyLexicon = {
   defs: { main: { type: "procedure" } },
 };
 
+function serviceAuthContract(): PublicServiceAuthContract {
+  return {
+    type: "atproto-service-auth",
+    serviceDid: "did:web:api.atmo.rsvp",
+    audience: "did:web:api.atmo.rsvp#contrail",
+    scope:
+      "rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=atmo.rsvp.notifyOfUpdate",
+    methods: [{ id: notifyMethod, type: "procedure" }],
+  };
+}
+
 function providerLock(): ProviderLock {
   return {
     format: "contrail.provider-lock",
@@ -50,11 +62,7 @@ function providerLock(): ProviderLock {
     lexiconDigest: `sha256:${"b".repeat(64)}`,
     methods: [method],
     collections: ["community.lexicon.calendar.event"],
-    serviceAuth: {
-      type: "atproto-service-auth",
-      audience: "did:web:api.atmo.rsvp",
-      methods: [{ id: notifyMethod, type: "procedure" }],
-    },
+    serviceAuth: serviceAuthContract(),
     lexiconRoot: "src/contrail/lexicons/api.atmo.rsvp",
   };
 }
@@ -120,6 +128,10 @@ describe("contrail connect", () => {
   namespace: "atmo.rsvp",
   profiles: [],
   notify: true,
+  serviceAuth: {
+    audience: "did:web:api.atmo.rsvp#contrail",
+    methods: ["notifyOfUpdate"],
+  },
   collections: {
     event: { collection: "community.lexicon.calendar.event" },
   },
@@ -164,6 +176,7 @@ describe("contrail connect", () => {
         ),
       ),
     ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.definition.serviceAuth).toEqual(serviceAuthContract());
     expect(result.target.serviceAuth).toBeNull();
     expect(result.target.methods).toContain("atmo.rsvp.notifyOfUpdate");
     await expect(
@@ -182,6 +195,13 @@ describe("contrail connect", () => {
     expect(source).toContain("export function createLocalContrailClient");
     expect(source).toContain('endpoint: "http://127.0.0.1:8787"');
     expect(source).not.toContain("contractDigest");
+
+    // SQLite dev mode strips `serviceAuth`, so the local factory stays
+    // anonymous rather than asking a real PDS to authorize a localhost service.
+    expect(source).not.toContain("serviceDid: contrailApi.serviceDid");
+    expect(
+      source.slice(source.indexOf("export function createLocalContrailClient")),
+    ).not.toContain("scope");
 
     await rm(join(root, "lexicons/custom"), { recursive: true });
     const deploymentLock = providerLock();
@@ -336,15 +356,42 @@ describe("contrail connect", () => {
     expect(await readFile(generated.path, "utf8")).toContain(
       'endpoint: "https://api.atmo.rsvp"',
     );
-    expect(await readFile(generated.path, "utf8")).toContain(
+    const generatedSource = await readFile(generated.path, "utf8");
+    expect(generatedSource).toContain(
       'serviceDid: "did:web:api.atmo.rsvp"',
     );
-    expect(await readFile(generated.path, "utf8")).toContain(
-      'scope: "rpc?lxm=*&aud=did:web:api.atmo.rsvp"',
+    expect(generatedSource).toContain(
+      'serviceAudience: "did:web:api.atmo.rsvp#contrail"',
+    );
+    expect(generatedSource).toContain(
+      'scope: "rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=atmo.rsvp.notifyOfUpdate"',
+    );
+    expect(generatedSource).toContain(
+      'protectedMethods: [\n      "atmo.rsvp.notifyOfUpdate",',
     );
     expect(await readFile(generated.path, "utf8")).toContain(
       '"community.lexicon.calendar.event",',
     );
+
+    // An anonymous provider omits the keys rather than spelling them as nulls;
+    // this block is reference material consumers paste into their own client.
+    const anonymousRoot = await temporaryRoot();
+    const anonymous = await ensureConsumerLexiconConfig({
+      root: anonymousRoot,
+      out: "src/contrail/lexicons",
+      api: { ...providerLock(), serviceAuth: null },
+    });
+    const anonymousSource = await readFile(anonymous.path, "utf8");
+    expect(anonymousSource).not.toContain("null");
+    for (const key of [
+      "serviceDid",
+      "serviceAudience",
+      "scope",
+      "protectedMethods",
+    ]) {
+      expect(anonymousSource).not.toContain(key);
+    }
+
     const updated = await ensureConsumerLexiconConfig({
       root,
       out: "src/contrail/lexicons",
@@ -390,11 +437,7 @@ describe("contrail connect", () => {
       sourceLexicon,
       notifyLexicon,
     ]);
-    fixture.manifest.serviceAuth = {
-      type: "atproto-service-auth",
-      audience: "did:web:api.atmo.rsvp",
-      methods: [{ id: notifyMethod, type: "procedure" }],
-    };
+    fixture.manifest.serviceAuth = serviceAuthContract();
     const { lock } = await connectPublicService({
       endpoint,
       root,
@@ -411,7 +454,15 @@ describe("contrail connect", () => {
     expect(source).not.toContain("contractDigest");
     expect(source).toContain("export function createLocalContrailClient");
     expect(source).toContain('serviceDid: "did:web:api.atmo.rsvp"');
-    expect(source).toContain('scope: "rpc?lxm=*&aud=did:web:api.atmo.rsvp"');
+    expect(source).toContain(
+      'serviceAudience: "did:web:api.atmo.rsvp#contrail"',
+    );
+    expect(source).toContain(
+      'scope: "rpc?aud=did:web:api.atmo.rsvp%23contrail&lxm=atmo.rsvp.notifyOfUpdate"',
+    );
+    expect(source).toContain(
+      'protectedMethods: [\n    "atmo.rsvp.notifyOfUpdate",',
+    );
     expect(source).toContain('"community.lexicon.calendar.event",');
     expect(source).toContain(`notifyMethod: ${JSON.stringify(notifyMethod)}`);
 
@@ -577,6 +628,30 @@ describe("contrail connect", () => {
       }),
     ).rejects.toThrow("unsupported version 1");
 
+    // A v2 lock written before exact audiences existed needs the same remedy
+    // as a v1 lock, so it must not fall through to the generic message.
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        ...providerLock(),
+        serviceAuth: {
+          type: "atproto-service-auth",
+          audience: "did:web:api.atmo.rsvp",
+          methods: [{ id: notifyMethod, type: "procedure" }],
+        },
+      })}\n`,
+    );
+    await expect(
+      connectPublicService({
+        endpoint,
+        root,
+        out: "src/contrail/lexicons",
+        lock: "contrail.lock.json",
+        fetcher,
+        update: true,
+      }),
+    ).rejects.toThrow("predates exact service-auth audiences");
+
     await writeFile(
       lockPath,
       `${JSON.stringify({
@@ -620,11 +695,7 @@ describe("contrail connect", () => {
       sourceLexicon,
       notifyLexicon,
     ]);
-    fixture.manifest.serviceAuth = {
-      type: "atproto-service-auth",
-      audience: "did:web:api.atmo.rsvp",
-      methods: [{ id: notifyMethod, type: "procedure" }],
-    };
+    fixture.manifest.serviceAuth = serviceAuthContract();
 
     const result = await connectPublicService({
       endpoint,
@@ -710,11 +781,7 @@ describe("contrail connect", () => {
       sourceLexicon,
       { ...notifyLexicon, defs: { main: { type: "query" } } },
     ]);
-    fixture.manifest.serviceAuth = {
-      type: "atproto-service-auth",
-      audience: "did:web:api.atmo.rsvp",
-      methods: [{ id: notifyMethod, type: "procedure" }],
-    };
+    fixture.manifest.serviceAuth = serviceAuthContract();
 
     await expect(
       connectPublicService({

@@ -1,5 +1,9 @@
 import { Secp256k1PrivateKeyExportable } from "@atcute/crypto";
-import type { Did, Nsid } from "@atcute/lexicons/syntax";
+import type {
+  AtprotoAudience,
+  Did,
+  Nsid,
+} from "@atcute/lexicons/syntax";
 import { createServiceJwt } from "@atcute/xrpc-server/auth";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
@@ -14,7 +18,8 @@ import {
 
 const issuer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa" as Did;
 const other = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb" as Did;
-const audience = "did:web:api.example.com" as Did;
+const audience =
+  "did:web:api.example.com#contrail" as AtprotoAudience;
 let keypair: Secp256k1PrivateKeyExportable;
 
 beforeAll(async () => {
@@ -83,7 +88,10 @@ async function setup(): Promise<{
   return { db, app: createApp(db, resolved) };
 }
 
-async function token(lxm: string, options: { aud?: Did; iss?: Did } = {}) {
+async function token(
+  lxm: string,
+  options: { aud?: Did | AtprotoAudience; iss?: Did } = {},
+) {
   return createServiceJwt({
     keypair,
     issuer: options.iss ?? issuer,
@@ -119,11 +127,21 @@ describe("AT Protocol service auth", () => {
       authorized(
         url,
         await token("com.example.getFeed", {
-          aud: "did:web:other.example.com" as Did,
+          aud: "did:web:other.example.com#contrail" as AtprotoAudience,
         }),
       ),
     );
     expect(wrongAudience.status).toBe(401);
+
+    const wrongFragment = await app.fetch(
+      authorized(
+        url,
+        await token("com.example.getFeed", {
+          aud: "did:web:api.example.com#other" as AtprotoAudience,
+        }),
+      ),
+    );
+    expect(wrongFragment.status).toBe(401);
   });
 
   it("binds a personalized feed to the token issuer", async () => {
