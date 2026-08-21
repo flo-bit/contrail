@@ -7,13 +7,16 @@ import {
   ensureSpaceWatch,
   getSpaceWatch,
   hasAccessLease,
+  hasProjectedSpaceAccess,
   hideDeletedSpace,
   initSpacesStorage,
+  listProjectedAccessibleSpaceWatches,
   loadCredential,
   rediscoverSpace,
   renewSyncLease,
   saveAccessLease,
   saveCredential,
+  upsertSpaceAccessEntryStatement,
 } from "../src/storage";
 
 const projection = resolveConfig({
@@ -77,6 +80,66 @@ describe("Spaces storage boundaries", () => {
       spaceUri: space,
       generation: watch.generation,
     })).toBe(false);
+  });
+
+  it("cuts membership discovery over with the visible writer generation", async () => {
+    const db = createSqliteDatabase(":memory:");
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: space });
+    const scopeKey = `${space}\u00001`;
+    const entry = (principalDid: string, generation: number, sourceUri: string) =>
+      upsertSpaceAccessEntryStatement(db, {
+        spaceUri: space,
+        spaceGeneration: 1,
+        scopeKey,
+        partitionKey: "did:plc:alice",
+        partitionGeneration: generation,
+        principalDid,
+        sourceUri,
+      });
+
+    await entry("did:plc:bob", 2, `${space}/did:plc:alice/member/bob`).run();
+    expect(await hasProjectedSpaceAccess(db, {
+      spaceUri: space,
+      spaceGeneration: 1,
+      principalDid: "did:plc:bob",
+    })).toBe(false);
+
+    await db.prepare(
+      `INSERT INTO isolated_projection_partitions
+         (scope_key, partition_key, visible_generation, updated_at)
+       VALUES (?, ?, 2, 1)`,
+    ).bind(scopeKey, "did:plc:alice").run();
+    expect(await hasProjectedSpaceAccess(db, {
+      spaceUri: space,
+      spaceGeneration: 1,
+      principalDid: "did:plc:bob",
+    })).toBe(true);
+    expect((await listProjectedAccessibleSpaceWatches(db, {
+      principalDid: "did:plc:bob",
+      limit: 10,
+    })).map((watch) => watch.spaceUri)).toEqual([space]);
+
+    await entry("did:plc:carol", 3, `${space}/did:plc:alice/member/carol`).run();
+    expect(await hasProjectedSpaceAccess(db, {
+      spaceUri: space,
+      spaceGeneration: 1,
+      principalDid: "did:plc:carol",
+    })).toBe(false);
+    await db.prepare(
+      `UPDATE isolated_projection_partitions SET visible_generation = 3
+       WHERE scope_key = ? AND partition_key = ?`,
+    ).bind(scopeKey, "did:plc:alice").run();
+    expect(await hasProjectedSpaceAccess(db, {
+      spaceUri: space,
+      spaceGeneration: 1,
+      principalDid: "did:plc:bob",
+    })).toBe(false);
+    expect(await hasProjectedSpaceAccess(db, {
+      spaceUri: space,
+      spaceGeneration: 1,
+      principalDid: "did:plc:carol",
+    })).toBe(true);
   });
 
   it("allows only one unexpired sync-lease owner and fences stale owners", async () => {

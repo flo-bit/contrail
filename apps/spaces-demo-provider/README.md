@@ -2,7 +2,9 @@
 
 Standalone Contrail Spaces-alpha provider at `https://spaces.atmo.garden` (`did:web:spaces.atmo.garden#spaces`).
 
-It indexes `garden.atmo.circle.note` and `garden.atmo.circle.reaction` from one deterministic `garden.atmo.circle/self` Space per owner. The managing-app policy allows the owner and reciprocal Bluesky followers. Policy failures deny access.
+It indexes `garden.atmo.circle.note`, `garden.atmo.circle.member`, and `garden.atmo.circle.reaction` from one deterministic `garden.atmo.circle/self` Space per owner. The managing-app policy allows the owner and DIDs in the Space's member collection. Only membership records signed in the authority's repo are projected, so members cannot grant access to others. Policy failures deny access.
+
+A hibernating Durable Object per Space fans out projection invalidations over one-time-ticket WebSockets. Events contain only the Space URI and timestamp; authorized clients refetch records through the private query API.
 
 ## Provision and deploy
 
@@ -33,4 +35,4 @@ curl https://spaces.atmo.garden/.well-known/did.json
 curl https://spaces.atmo.garden/.well-known/contrail-spaces-alpha
 ```
 
-The Worker initializes its extension-owned D1 schema idempotently. No separate migration command is needed for this first alpha schema.
+The Worker initializes its extension-owned D1 schema idempotently. No separate D1 migration command is needed for this first alpha schema. Wrangler applies the `SpaceSubscriptionHub` Durable Object migration declared in `wrangler.jsonc`.

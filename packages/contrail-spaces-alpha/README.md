@@ -19,8 +19,11 @@ Pinned compatibility tuple:
 - incremental repo operation synchronization;
 - signed notification routes, Queue jobs, leases, and scheduled reconciliation;
 - exact method-bound service authentication;
-- delegation access leases or an authoritative application callback; and
-- exact-Space list/get/search/reference/relation-count queries over Contrail's isolated projection seam.
+- delegation access leases or an authoritative application callback;
+- declarative authority-record membership with a materialized, generation-scoped entitlement index;
+- paginated discovery of active Spaces authorized for the calling principal;
+- exact-Space list/get/search/reference/relation-count queries over Contrail's isolated projection seam; and
+- optional one-time-ticket, hibernating Durable Object WebSocket invalidations.
 
 Public Contrail tables and anonymous methods are unchanged. Installing the package does not create isolated tables; `createSpacesWorker` initializes them only in a provider deployment.
 
@@ -28,6 +31,7 @@ Public Contrail tables and anonymous methods are unchanged. Installing the packa
 
 ```ts
 import { createSpacesWorker } from "@atmo-dev/contrail-spaces-alpha/worker";
+import { authorityRecordMembership } from "@atmo-dev/contrail-spaces-alpha";
 import {
   SpacesProviderClient,
   createSpace,
@@ -45,6 +49,7 @@ A Cloudflare deployment needs:
 - one D1 database;
 - a Queue producer/consumer (with `waitUntil` fallback for development);
 - a scheduled trigger;
+- a Durable Object binding when `subscriptions` is enabled;
 - the `nodejs_compat` compatibility flag; and
 - a 32-byte base64 `SPACES_CREDENTIAL_ENCRYPTION_KEY` secret.
 

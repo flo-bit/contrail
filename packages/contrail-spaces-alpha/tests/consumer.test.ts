@@ -22,6 +22,8 @@ describe("consumer scopes", () => {
     });
     expect(scopes[2]).toContain("aud=did:web:spaces.atmo.garden%23spaces");
     expect(scopes[2]).toContain("garden.atmo.circle.note.listSpaceRecords");
+    expect(scopes[2]).toContain("garden.atmo.circle.listSpaces");
+    expect(scopes[2]).toContain("garden.atmo.circle.subscribeSpace");
     expect(scopes[2]).not.toContain("notifyWrite");
   });
 });

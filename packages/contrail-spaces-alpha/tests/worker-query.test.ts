@@ -15,7 +15,7 @@ import { spaceProjectionKey } from "../src/uri";
 
 const issuer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
 const audience = "did:web:spaces.atmo.garden#spaces";
-const space = `${"at://did:plc:alice"}/space/garden.atmo.circle/self`;
+const space = `at://${issuer}/space/garden.atmo.circle/self`;
 const collection = "garden.atmo.circle.note";
 let keypair: Secp256k1PrivateKeyExportable;
 
@@ -145,6 +145,21 @@ describe("Spaces Worker private query boundary", () => {
     const body = await response.json() as { records: Array<{ value: { text: string } }> };
     expect(body.records.map((record) => record.value.text)).toEqual(["private hello"]);
 
+    const listSpacesMethod = "garden.atmo.circle.listSpaces";
+    const listSpaces = await worker.fetch!(new Request(
+      `https://spaces.atmo.garden/xrpc/${listSpacesMethod}`,
+      { headers: { authorization: `Bearer ${await token(listSpacesMethod)}` } },
+    ) as never, env, context());
+    expect(listSpaces.status).toBe(200);
+    expect(await listSpaces.json()).toEqual({
+      spaces: [{
+        uri: space,
+        authorityDid: issuer,
+        type: "garden.atmo.circle",
+      }],
+      truncated: false,
+    });
+
     const wrongMethod = new Request(url, {
       headers: {
         authorization: `Bearer ${await token("garden.atmo.circle.syncSpace")}`,
@@ -167,5 +182,23 @@ describe("Spaces Worker private query boundary", () => {
       space,
       preferredRepo: "did:plc:unadvertised",
     }]);
+  });
+
+  it("rejects authority-only collections outside the Space allow-list", () => {
+    expect(() => createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          authorityOnlyCollections: ["garden.atmo.circle.member"],
+        },
+      },
+      authorization: { authorize: () => true },
+    })).toThrow(/Authority-only collection/);
   });
 });

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "publish-lexicons": "tsx scripts/publish-lexicons.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260804.1",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "wrangler": "^4.118.0"
   }

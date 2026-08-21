@@ -45,6 +45,8 @@ export function spacesConsumerOAuthScopes(input: {
   const methods = [
     `${input.namespace}.authorizeSpace`,
     `${input.namespace}.syncSpace`,
+    `${input.namespace}.listSpaces`,
+    `${input.namespace}.subscribeSpace`,
     ...input.collections.flatMap((collection) => {
       const short = collection.split(".").at(-1)!;
       return [
@@ -183,6 +185,9 @@ export async function getServiceAuthToken(
   return result.token;
 }
 
+const runtimeFetch: typeof globalThis.fetch = (input, init) =>
+  globalThis.fetch(input, init);
+
 export interface SpacesProviderClientOptions {
   endpoint: string;
   audience: string;
@@ -195,7 +200,7 @@ export class SpacesProviderClient {
   private readonly fetchImpl: typeof globalThis.fetch;
 
   constructor(readonly options: SpacesProviderClientOptions) {
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.fetchImpl = options.fetch ?? runtimeFetch;
   }
 
   private async call<T>(
@@ -232,6 +237,28 @@ export class SpacesProviderClient {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ space, repo }),
+    });
+  }
+
+  subscribeSpace(space: string): Promise<{ url: string; expiresAt: string }> {
+    return this.call(`${this.options.namespace}.subscribeSpace`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ space }),
+    });
+  }
+
+  listSpaces(options: { cursor?: string; limit?: number } = {}): Promise<{
+    spaces: Array<{ uri: string; authorityDid: string; type: string }>;
+    cursor?: string;
+    truncated: boolean;
+  }> {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit) params.set("limit", String(options.limit));
+    return this.call(`${this.options.namespace}.listSpaces`, {
+      method: "GET",
+      params,
     });
   }
 

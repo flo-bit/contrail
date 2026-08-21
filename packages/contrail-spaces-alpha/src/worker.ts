@@ -17,8 +17,10 @@ import {
   ensureSpaceWatch,
   getSpaceWatch,
   hasAccessLease,
+  hasProjectedSpaceAccess,
   hideDeletedSpace,
   initSpacesStorage,
+  listProjectedAccessibleSpaceWatches,
   purgeSpaceGeneration,
   rediscoverSpace,
   saveAccessLease,
@@ -27,6 +29,7 @@ import {
   type SpaceWatch,
 } from "./storage";
 import {
+  initializeSpaceAccessPolicies,
   SpacesSyncEngine,
   type SpaceTypeConfig,
 } from "./sync";
@@ -34,6 +37,8 @@ import { parseSpaceUri, spaceProjectionKey } from "./uri";
 
 export const AUTHORIZE_SPACE_METHOD = "authorizeSpace";
 export const SYNC_SPACE_METHOD = "syncSpace";
+export const SUBSCRIBE_SPACE_METHOD = "subscribeSpace";
+export const LIST_SPACES_METHOD = "listSpaces";
 export const LIST_SPACE_RECORDS_METHOD = "listSpaceRecords";
 export const GET_SPACE_RECORD_METHOD = "getSpaceRecord";
 
@@ -68,6 +73,12 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
       input: SpaceAuthorizationInput,
       context: { env: Env; db: Database },
     ): boolean | Promise<boolean>;
+    /** Optional inverse lookup for custom policies. Built-in membership
+     * policies are enumerated from the materialized access index. */
+    listSpaces?(
+      userDid: string,
+      context: { env: Env; db: Database },
+    ): readonly string[] | Promise<readonly string[]>;
   };
   accessLeaseMs?: number;
   reconcileIntervalMs?: number;
@@ -77,6 +88,11 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
     plcUrl?: string;
     additionalAllowedHosts?: string[];
     fetch?: typeof globalThis.fetch;
+  };
+  /** Optional Cloudflare Durable Object fan-out for browser invalidations. */
+  subscriptions?: {
+    binding?: string;
+    ticketTtlMs?: number;
   };
   onInvalidate?: (spaceUri: string, env: Env) => void | Promise<void>;
 }
@@ -101,6 +117,107 @@ function json(
 
 function privateJson(value: unknown, status = 200): Response {
   return json(value, status, { "cache-control": "private, no-store" });
+}
+
+interface SubscriptionTicket {
+  expiresAt: number;
+}
+
+/** Hibernating Cloudflare WebSocket fan-out, keyed by Space URI through its
+ * Durable Object ID. Tickets are issued only by the authenticated Worker XRPC
+ * route and consumed once during the browser upgrade. */
+export class SpaceSubscriptionHub {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/issue") {
+      const body = await request.json() as { ticket?: unknown; expiresAt?: unknown };
+      if (typeof body.ticket !== "string" || body.ticket.length < 16 ||
+        typeof body.expiresAt !== "number" || body.expiresAt <= Date.now()) {
+        return json({ error: "InvalidTicket" }, 400);
+      }
+      await this.state.storage.put<SubscriptionTicket>(`ticket:${body.ticket}`, {
+        expiresAt: body.expiresAt,
+      });
+      const alarm = await this.state.storage.getAlarm();
+      if (alarm === null || alarm > body.expiresAt) {
+        await this.state.storage.setAlarm(body.expiresAt);
+      }
+      return json({ issued: true });
+    }
+    if (request.method === "POST" && url.pathname === "/broadcast") {
+      const payload = await request.text();
+      if (payload.length > 8 * 1024) return json({ error: "MessageTooLarge" }, 413);
+      for (const socket of this.state.getWebSockets()) {
+        try {
+          socket.send(payload);
+        } catch {
+          try {
+            socket.close(1011, "Delivery failed");
+          } catch {
+            // The socket is already gone.
+          }
+        }
+      }
+      return json({ delivered: this.state.getWebSockets().length });
+    }
+    if (request.method === "GET" && url.pathname === "/connect") {
+      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return json({ error: "UpgradeRequired" }, 426);
+      }
+      const ticket = url.searchParams.get("ticket");
+      if (!ticket) return json({ error: "InvalidTicket" }, 401);
+      const key = `ticket:${ticket}`;
+      const grant = await this.state.storage.get<SubscriptionTicket>(key);
+      await this.state.storage.delete(key);
+      if (!grant || grant.expiresAt <= Date.now()) {
+        return json({ error: "InvalidTicket" }, 401);
+      }
+      const pair = new WebSocketPair();
+      const client = pair[0];
+      const server = pair[1];
+      this.state.acceptWebSocket(server);
+      server.send(JSON.stringify({ type: "ready" }));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    return json({ error: "NotFound" }, 404);
+  }
+
+  webSocketMessage(socket: WebSocket, message: ArrayBuffer | string): void {
+    if (message === "ping") socket.send("pong");
+  }
+
+  webSocketClose(socket: WebSocket, code: number, reason: string): void {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Workerd may already have completed the close handshake.
+    }
+  }
+
+  webSocketError(socket: WebSocket): void {
+    try {
+      socket.close(1011, "WebSocket error");
+    } catch {
+      // The socket is already gone.
+    }
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    const tickets = await this.state.storage.list<SubscriptionTicket>({
+      prefix: "ticket:",
+    });
+    const expired: string[] = [];
+    let next: number | undefined;
+    for (const [key, ticket] of tickets) {
+      if (ticket.expiresAt <= now) expired.push(key);
+      else next = Math.min(next ?? ticket.expiresAt, ticket.expiresAt);
+    }
+    if (expired.length) await this.state.storage.delete(expired);
+    if (next !== undefined) await this.state.storage.setAlarm(next);
+  }
 }
 
 async function boundedJsonBody<T>(request: Request, maximum = 64 * 1024): Promise<T> {
@@ -233,7 +350,7 @@ function parsedRecord(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-function buildProviderLexicons(config: ContrailConfig): object[] {
+function buildProviderLexicons(config: ContrailConfig, subscriptions: boolean): object[] {
   const namespace = config.namespace;
   const recordOutput = {
     type: "object",
@@ -278,6 +395,44 @@ function buildProviderLexicons(config: ContrailConfig): object[] {
         output: { encoding: "application/json", schema: { type: "object", required: ["queued"], properties: {
           queued: { type: "boolean" },
         } } },
+      } },
+    },
+    ...(subscriptions ? [{
+      lexicon: 1,
+      id: `${namespace}.${SUBSCRIBE_SPACE_METHOD}`,
+      defs: { main: {
+        type: "procedure",
+        input: { encoding: "application/json", schema: { type: "object", required: ["space"], properties: {
+          space: { type: "string", format: "uri" },
+        } } },
+        output: { encoding: "application/json", schema: { type: "object", required: ["url", "expiresAt"], properties: {
+          url: { type: "string", format: "uri" },
+          expiresAt: { type: "string", format: "datetime" },
+        } } },
+      } },
+    }] : []),
+    {
+      lexicon: 1,
+      id: `${namespace}.${LIST_SPACES_METHOD}`,
+      defs: { main: {
+        type: "query",
+        parameters: { type: "params", properties: {
+          cursor: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: 200 },
+        } },
+        output: { encoding: "application/json", schema: {
+          type: "object",
+          required: ["spaces", "truncated"],
+          properties: {
+            spaces: { type: "array", items: { type: "object", required: ["uri", "authorityDid", "type"], properties: {
+              uri: { type: "string", format: "uri" },
+              authorityDid: { type: "string", format: "did" },
+              type: { type: "string", format: "nsid" },
+            } } },
+            cursor: { type: "string" },
+            truncated: { type: "boolean" },
+          },
+        } },
       } },
     },
     ...Object.entries(config.collections).flatMap(([short, collection]) => {
@@ -363,16 +518,39 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     (!Number.isSafeInteger(options.maxRepoCarBytes) || options.maxRepoCarBytes < 1)) {
     throw new TypeError("maxRepoCarBytes must be a positive integer");
   }
+  if (options.subscriptions?.ticketTtlMs !== undefined &&
+    (!Number.isSafeInteger(options.subscriptions.ticketTtlMs) ||
+      options.subscriptions.ticketTtlMs < 1_000 ||
+      options.subscriptions.ticketTtlMs > 5 * 60_000)) {
+    throw new TypeError("subscription ticketTtlMs must be from 1000 through 300000");
+  }
   if (!options.lexicons?.length) {
     throw new TypeError("Spaces providers require a pinned runtime Lexicon bundle");
   }
   bindRecordValidationLexicons(projection, options.lexicons);
   prepareRecordValidation(projection);
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
-    if (type.requireManagingApp !== false && !options.authorization) {
+    if (type.requireManagingApp !== false && !type.access && !options.authorization) {
       throw new TypeError(
-        `Space type ${spaceType} requires an authoritative managing-app authorizer`,
+        `Space type ${spaceType} requires an authoritative managing-app access policy`,
       );
+    }
+    if (type.access) {
+      if (!type.collections.includes(type.access.collection)) {
+        throw new TypeError(
+          `Membership collection ${type.access.collection} is not allowed by Space type ${spaceType}`,
+        );
+      }
+      if (!/^[a-zA-Z0-9_.]+$/.test(type.access.principalField)) {
+        throw new TypeError(`Invalid membership principal field ${type.access.principalField}`);
+      }
+    }
+    for (const nsid of type.authorityOnlyCollections ?? []) {
+      if (!type.collections.includes(nsid)) {
+        throw new TypeError(
+          `Authority-only collection ${nsid} is not allowed by Space type ${spaceType}`,
+        );
+      }
     }
     for (const nsid of type.collections) {
       const collection = Object.values(projection.collections).find(
@@ -393,10 +571,15 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   const encryptionBinding =
     options.bindings?.credentialEncryptionKey ?? "SPACES_CREDENTIAL_ENCRYPTION_KEY";
   const queueBinding = options.bindings?.queue ?? "SPACES_QUEUE";
-  const providerLexicons = buildProviderLexicons(projection);
+  const subscriptionsEnabled = options.subscriptions !== undefined;
+  const subscriptionBinding = options.subscriptions?.binding ?? "SPACE_SUBSCRIPTIONS";
+  const subscriptionTicketTtlMs = options.subscriptions?.ticketTtlMs ?? 30_000;
+  const providerLexicons = buildProviderLexicons(projection, subscriptionsEnabled);
   const exactMethods = [
     `${namespace}.${AUTHORIZE_SPACE_METHOD}`,
     `${namespace}.${SYNC_SPACE_METHOD}`,
+    `${namespace}.${LIST_SPACES_METHOD}`,
+    ...(subscriptionsEnabled ? [`${namespace}.${SUBSCRIBE_SPACE_METHOD}`] : []),
     "com.atproto.space.notifyWrite",
     "com.atproto.space.notifySpaceDeleted",
     "com.atproto.simplespace.checkUserAccess",
@@ -413,11 +596,51 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   });
   const initialized = new WeakMap<object, Promise<void>>();
 
+  const subscriptionHub = (env: Env, spaceUri: string): DurableObjectStub => {
+    const binding = env[subscriptionBinding] as DurableObjectNamespace | undefined;
+    if (!binding || typeof binding.idFromName !== "function" ||
+      typeof binding.get !== "function") {
+      throw new Error(`Missing Durable Object binding ${subscriptionBinding}`);
+    }
+    return binding.get(binding.idFromName(spaceUri));
+  };
+
+  const invalidate = async (spaceUri: string, env: Env): Promise<void> => {
+    if (subscriptionsEnabled) {
+      try {
+        const response = await subscriptionHub(env, spaceUri).fetch(
+          new Request("https://subscriptions.internal/broadcast", {
+            method: "POST",
+            body: JSON.stringify({
+              type: "invalidate",
+              space: spaceUri,
+              at: new Date().toISOString(),
+            }),
+          }),
+        );
+        if (!response.ok) {
+          console.warn(`[spaces] subscription broadcast failed (${response.status})`);
+        }
+      } catch (error) {
+        // Projection commits must not roll back or be retried because a live
+        // browser invalidation could not be delivered.
+        console.warn("[spaces] subscription broadcast failed", error);
+      }
+    }
+    await options.onInvalidate?.(spaceUri, env);
+  };
+
   const runtime = (env: Env) => {
     const db = databaseFrom(env, dbBinding);
     let init = initialized.get(db as object);
     if (!init) {
-      init = initSpacesStorage(db, projection);
+      init = (async () => {
+        await initSpacesStorage(db, projection);
+        await initializeSpaceAccessPolicies(db, {
+          projection,
+          spaceTypes: options.spaceTypes,
+        });
+      })();
       initialized.set(db as object, init);
     }
     const engine = new SpacesSyncEngine(db, {
@@ -429,8 +652,8 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       maxAtomicMutations: options.maxAtomicMutations,
       maxRepoCarBytes: options.maxRepoCarBytes,
       protocol: options.protocol,
-      onInvalidate: options.onInvalidate
-        ? (space) => options.onInvalidate!(space, env)
+      onInvalidate: subscriptionsEnabled || options.onInvalidate
+        ? (space) => invalidate(space, env)
         : undefined,
     });
     return { db, init, engine };
@@ -459,6 +682,15 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     watch: SpaceWatch,
     input: SpaceAuthorizationInput,
   ): Promise<boolean> => {
+    if (input.userDid === watch.authorityDid) return true;
+    const policy = options.spaceTypes[watch.spaceType]?.access;
+    if (policy?.kind === "authority-record-membership") {
+      return hasProjectedSpaceAccess(db, {
+        principalDid: input.userDid,
+        spaceUri: input.spaceUri,
+        spaceGeneration: watch.generation,
+      });
+    }
     if (options.authorization) {
       return options.authorization.authorize(input, { env, db });
     }
@@ -476,6 +708,23 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   ): Promise<Response> => {
     const url = new URL(request.url);
     if (url.href.length > 16 * 1024) return json({ error: "RequestUriTooLong" }, 414);
+    if (subscriptionsEnabled && url.pathname === "/subscribe" && request.method === "GET") {
+      try {
+        const parsed = parseSpaceUri(url.searchParams.get("space"));
+        const ticket = url.searchParams.get("ticket");
+        if (!ticket || !/^[A-Za-z0-9_-]{16,128}$/.test(ticket)) {
+          return json({ error: "InvalidTicket" }, 401);
+        }
+        const internal = new URL("https://subscriptions.internal/connect");
+        internal.searchParams.set("ticket", ticket);
+        return subscriptionHub(env, parsed.uri).fetch(new Request(internal, {
+          method: "GET",
+          headers: request.headers,
+        }));
+      } catch {
+        return json({ error: "InvalidSubscription" }, 400);
+      }
+    }
     if (url.pathname === "/.well-known/did.json" && request.method === "GET") {
       return json({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -631,6 +880,93 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       return privateJson({ queued: true }, 202);
     }
 
+    if (method === `${namespace}.${LIST_SPACES_METHOD}` && request.method === "GET") {
+      const verified = await authorizeRequest(request, method);
+      if (verified.response) return verified.response;
+      const requestedLimit = Number(url.searchParams.get("limit") ?? 100);
+      const cursor = url.searchParams.get("cursor") ?? undefined;
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1 ||
+        requestedLimit > 200 || (cursor?.length ?? 0) > 2_048) {
+        return privateJson({ error: "InvalidRequest" }, 400);
+      }
+      const indexed = await listProjectedAccessibleSpaceWatches(db, {
+        principalDid: verified.did!,
+        cursor,
+        limit: requestedLimit + 1,
+      });
+      const watches = new Map(indexed.map((watch) => [watch.spaceUri, watch]));
+      let customTruncated = false;
+      if (options.authorization?.listSpaces) {
+        const listed = await options.authorization.listSpaces(verified.did!, { env, db });
+        customTruncated = listed.length > 1_000;
+        for (const spaceUri of listed.slice(0, 1_000)) {
+          if (typeof spaceUri !== "string" || spaceUri <= (cursor ?? "")) continue;
+          try {
+            parseSpaceUri(spaceUri);
+          } catch {
+            continue;
+          }
+          const watch = await getSpaceWatch(db, spaceUri);
+          if (!watch || watch.status !== "active") continue;
+          if (await accessAllowed(env, db, watch, {
+            userDid: verified.did!,
+            spaceUri,
+            action: "read",
+            method,
+          })) watches.set(spaceUri, watch);
+        }
+      }
+      const ordered = [...watches.values()].sort((a, b) =>
+        a.spaceUri.localeCompare(b.spaceUri)
+      );
+      const truncated = customTruncated || ordered.length > requestedLimit;
+      const page = ordered.slice(0, requestedLimit);
+      const spaces = page.map((watch) => ({
+        uri: watch.spaceUri,
+        authorityDid: watch.authorityDid,
+        type: watch.spaceType,
+      }));
+      return privateJson({
+        spaces,
+        truncated,
+        ...(truncated && page.length ? { cursor: page.at(-1)!.spaceUri } : {}),
+      });
+    }
+
+    if (
+      subscriptionsEnabled &&
+      method === `${namespace}.${SUBSCRIBE_SPACE_METHOD}` &&
+      request.method === "POST"
+    ) {
+      const verified = await authorizeRequest(request, method);
+      if (verified.response) return verified.response;
+      const body = await boundedJsonBody<{ space?: unknown }>(request);
+      const parsed = parseSpaceUri(body.space);
+      const watch = await getSpaceWatch(db, parsed.uri);
+      if (!watch || watch.status === "hidden") return privateJson({ error: "SpaceNotFound" }, 404);
+      if (!await accessAllowed(env, db, watch, {
+        userDid: verified.did!, spaceUri: parsed.uri, action: "read", method,
+      })) return privateJson({ error: "Forbidden" }, 403);
+      const ticket = crypto.randomUUID().replaceAll("-", "");
+      const expiresAt = Date.now() + subscriptionTicketTtlMs;
+      const issued = await subscriptionHub(env, parsed.uri).fetch(
+        new Request("https://subscriptions.internal/issue", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ticket, expiresAt }),
+        }),
+      );
+      if (!issued.ok) return privateJson({ error: "SubscriptionUnavailable" }, 503);
+      const socketUrl = new URL("/subscribe", options.service.endpoint);
+      socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
+      socketUrl.searchParams.set("space", parsed.uri);
+      socketUrl.searchParams.set("ticket", ticket);
+      return privateJson({
+        url: socketUrl.href,
+        expiresAt: new Date(expiresAt).toISOString(),
+      });
+    }
+
     if (method === "com.atproto.space.notifyWrite" && request.method === "POST") {
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
@@ -681,7 +1017,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         await hideDeletedSpace(db, watch);
         ctx.waitUntil((async () => {
           await purgeSpaceGeneration(db, projection, watch);
-          await options.onInvalidate?.(parsed.uri, env);
+          await invalidate(parsed.uri, env);
         })());
       }
       return json({}, 200);
@@ -698,23 +1034,23 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       if (!userDid) return json({ error: "InvalidRequest" }, 400);
       if (verified.did !== parsed.authorityDid) return json({ error: "InvalidIssuer" }, 403);
       const watch = await getSpaceWatch(db, parsed.uri);
-      let authorized = false;
-      if (options.authorization) {
-        // Credential exchange may invoke policy before the first watch, or for
-        // a verified recreation while the old generation remains hidden.
-        authorized = await options.authorization.authorize({
-          userDid,
-          spaceUri: parsed.uri,
-          action: "read",
-          method,
-        }, { env, db });
-      } else if (watch && watch.status !== "hidden") {
+      let authorized = userDid === parsed.authorityDid;
+      if (!authorized && watch?.status === "active") {
         authorized = await accessAllowed(env, db, watch, {
           userDid,
           spaceUri: parsed.uri,
           action: "read",
           method,
         });
+      } else if (!authorized && options.authorization) {
+        // A custom policy may authorize before the first watch, or for a
+        // verified recreation while the old generation remains hidden.
+        authorized = await options.authorization.authorize({
+          userDid,
+          spaceUri: parsed.uri,
+          action: "read",
+          method,
+        }, { env, db });
       }
       return json({ authorized });
     }

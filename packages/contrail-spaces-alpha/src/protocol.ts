@@ -1,5 +1,9 @@
-import { getPdsEndpoint } from "@atproto/common-web";
-import { IdResolver } from "@atproto/identity";
+import {
+  getPdsEndpoint,
+  getSigningDidKey,
+  isValidDidDoc,
+  type DidDocument,
+} from "@atproto/common-web";
 import { JoseKey } from "@atproto/jwk-jose";
 import { createDpopProof } from "@atproto/space";
 import { validateExternalUrl } from "@atmo-dev/contrail";
@@ -10,6 +14,11 @@ export interface ProtocolOptions {
   fetch?: typeof globalThis.fetch;
   additionalAllowedHosts?: string[];
 }
+
+// Workerd requires platform methods to be invoked with the global object as
+// their receiver. Keep the wrapper rather than storing an unbound `fetch`.
+const runtimeFetch: typeof globalThis.fetch = (input, init) =>
+  globalThis.fetch(input, init);
 
 export class SpaceProtocolError extends Error {
   constructor(
@@ -42,16 +51,52 @@ export class SpaceProtocolError extends Error {
 }
 
 export class SpaceIdentityResolver {
-  private readonly resolver: IdResolver;
+  private readonly cache = new Map<string, DidDocument>();
 
-  constructor(readonly options: ProtocolOptions = {}) {
-    this.resolver = new IdResolver({ plcUrl: options.plcUrl });
+  constructor(readonly options: ProtocolOptions = {}) {}
+
+  private async resolveDid(did: string, forceRefresh = false): Promise<DidDocument> {
+    if (!forceRefresh) {
+      const cached = this.cache.get(did);
+      if (cached) return cached;
+    }
+    let url: URL;
+    if (did.startsWith("did:plc:")) {
+      url = new URL(
+        `/${encodeURIComponent(did)}`,
+        this.options.plcUrl ?? "https://plc.directory",
+      );
+    } else if (did.startsWith("did:web:")) {
+      const parts = did.slice("did:web:".length).split(":").map(decodeURIComponent);
+      if (parts.length !== 1 || !parts[0]) {
+        throw new Error(`Unsupported did:web identifier: ${did}`);
+      }
+      url = new URL(`https://${parts[0]}/.well-known/did.json`);
+      if (url.hostname === "localhost") url.protocol = "http:";
+    } else {
+      throw new Error(`Unsupported DID method: ${did}`);
+    }
+    if (!validateExternalUrl(url.href, this.options.additionalAllowedHosts)) {
+      throw new Error(`${did} resolved through a disallowed identity endpoint`);
+    }
+    const response = await (this.options.fetch ?? runtimeFetch)(url, {
+      redirect: "manual",
+      headers: { accept: "application/did+ld+json,application/json" },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Could not resolve ${did} (${response.status})`);
+    }
+    const document: unknown = await response.json();
+    if (!isValidDidDoc(document) || document.id !== did) {
+      throw new Error(`Invalid DID document for ${did}`);
+    }
+    this.cache.set(did, document);
+    return document;
   }
 
   async resolvePds(did: string): Promise<string> {
-    const document = await this.resolver.did.resolve(did);
-    if (!document) throw new Error(`Could not resolve ${did}`);
-    const endpoint = getPdsEndpoint(document);
+    const endpoint = getPdsEndpoint(await this.resolveDid(did));
     if (!endpoint) throw new Error(`${did} has no PDS endpoint`);
     if (!validateExternalUrl(endpoint, this.options.additionalAllowedHosts)) {
       throw new Error(`${did} resolved to a disallowed PDS endpoint`);
@@ -60,7 +105,10 @@ export class SpaceIdentityResolver {
   }
 
   async resolveSigningKey(did: string, forceRefresh = false): Promise<string> {
-    return this.resolver.did.resolveAtprotoKey(did, forceRefresh);
+    if (did.startsWith("did:key:")) return did;
+    const key = getSigningDidKey(await this.resolveDid(did, forceRefresh));
+    if (!key) throw new Error(`${did} has no AT Protocol signing key`);
+    return key;
   }
 }
 
@@ -75,12 +123,12 @@ export class SpaceCredentialTransport {
     readonly token: string,
     readonly key: JoseKey,
     readonly expiresAt: number,
-    private readonly fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+    private readonly fetchImpl: typeof globalThis.fetch = runtimeFetch,
   ) {}
 
   static async restore(
     value: StoredSpaceCredential,
-    fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+    fetchImpl: typeof globalThis.fetch = runtimeFetch,
   ): Promise<SpaceCredentialTransport> {
     const key = await JoseKey.fromJWK(value.privateJwk);
     return new SpaceCredentialTransport(value.token, key, value.expiresAt, fetchImpl);
@@ -103,7 +151,9 @@ export class SpaceCredentialTransport {
     if (Date.now() >= this.expiresAt) {
       throw new SpaceProtocolError(401, "CredentialExpired");
     }
-    const request = new Request(input, { ...init, redirect: "error" });
+    // Cloudflare Workers support only follow/manual. Manual preserves the
+    // no-follow SSRF boundary while allowing callers to reject 3xx responses.
+    const request = new Request(input, { ...init, redirect: "manual" });
     request.headers.set("authorization", `DPoP ${this.token}`);
     request.headers.set(
       "dpop",
@@ -187,7 +237,7 @@ export async function exchangeSpaceCredential(input: {
     xrpcUrl(input.authorityPds, "com.atproto.space.getSpaceCredential"),
     {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       headers: {
         accept: "application/json",
         authorization: `Bearer ${input.delegationToken}`,
@@ -205,7 +255,7 @@ export async function exchangeSpaceCredential(input: {
     "dpop",
     await createDpopProof(key, { htm: request.method, htu: request.url }),
   );
-  const response = await (input.fetch ?? globalThis.fetch)(request);
+  const response = await (input.fetch ?? runtimeFetch)(request);
   const body = await assertResponse<{ credential?: unknown }>(response);
   if (typeof body?.credential !== "string" || !body.credential) {
     throw new SpaceProtocolError(502, "InvalidResponse", "No Space credential returned");
@@ -220,7 +270,7 @@ export async function exchangeSpaceCredential(input: {
     body.credential,
     key,
     claims.exp * 1000,
-    input.fetch ?? globalThis.fetch,
+    input.fetch ?? runtimeFetch,
   );
 }
 

@@ -1,4 +1,24 @@
-import { NOTE_COLLECTION, REACTION_COLLECTION } from "./constants";
+import {
+  MEMBER_COLLECTION,
+  NOTE_COLLECTION,
+  REACTION_COLLECTION,
+  SPACE_SKEY,
+  SPACE_TYPE,
+} from "./constants";
+
+export const circleLexicon = {
+  lexicon: 1,
+  id: SPACE_TYPE,
+  defs: {
+    main: {
+      type: "space",
+      key: `literal:${SPACE_SKEY}`,
+      name: "Atmo Circle",
+      description: "A private multi-writer circle with an owner-managed member list.",
+      collections: [NOTE_COLLECTION, MEMBER_COLLECTION, REACTION_COLLECTION],
+    },
+  },
+} as const;
 
 export const noteLexicon = {
   lexicon: 1,
@@ -23,6 +43,26 @@ export const noteLexicon = {
       properties: {
         uri: { type: "string", format: "uri" },
         cid: { type: "string", format: "cid" },
+      },
+    },
+  },
+} as const;
+
+export const memberLexicon = {
+  lexicon: 1,
+  id: MEMBER_COLLECTION,
+  defs: {
+    main: {
+      type: "record",
+      key: "any",
+      record: {
+        type: "object",
+        required: ["subject", "createdAt"],
+        properties: {
+          subject: { type: "string", format: "did" },
+          handle: { type: "string", format: "handle" },
+          createdAt: { type: "string", format: "datetime" },
+        },
       },
     },
   },
@@ -55,4 +95,5 @@ export const reactionLexicon = {
   },
 } as const;
 
-export const lexicons = [noteLexicon, reactionLexicon] as const;
+export const recordLexicons = [noteLexicon, memberLexicon, reactionLexicon] as const;
+export const networkLexicons = [circleLexicon, ...recordLexicons] as const;

@@ -1,7 +1,9 @@
 import type { ContrailConfig } from "@atmo-dev/contrail";
 import { createSpacesWorker } from "@atmo-dev/contrail-spaces-alpha/worker";
-import { parseSpaceUri } from "@atmo-dev/contrail-spaces-alpha";
+export { SpaceSubscriptionHub } from "@atmo-dev/contrail-spaces-alpha/worker";
+import { authorityRecordMembership } from "@atmo-dev/contrail-spaces-alpha";
 import {
+  MEMBER_COLLECTION,
   NOTE_COLLECTION,
   PROVIDER_AUDIENCE,
   PROVIDER_ENDPOINT,
@@ -9,14 +11,14 @@ import {
   SPACE_SKEY,
   SPACE_TYPE,
 } from "./constants";
-import { lexicons } from "./lexicons";
+import { recordLexicons } from "./lexicons";
 
 interface Env {
   [key: string]: unknown;
   DB: D1Database;
   SPACES_QUEUE: Queue;
   SPACES_CREDENTIAL_ENCRYPTION_KEY: string;
-  BSKY_APPVIEW_URL: string;
+  SPACE_SUBSCRIPTIONS: DurableObjectNamespace;
 }
 
 const projection: ContrailConfig = {
@@ -36,6 +38,11 @@ const projection: ContrailConfig = {
         reply: { collection: "note", field: "reply.uri" },
       },
     },
+    member: {
+      collection: MEMBER_COLLECTION,
+      validate: true,
+      queryable: { subject: {} },
+    },
     reaction: {
       collection: REACTION_COLLECTION,
       validate: true,
@@ -48,61 +55,24 @@ const projection: ContrailConfig = {
   constellation: false,
 };
 
-async function mutualAccess(
-  userDid: string,
-  ownerDid: string,
-  appview: string,
-): Promise<boolean> {
-  if (userDid === ownerDid) return true;
-  const url = new URL("/xrpc/app.bsky.graph.getRelationships", appview);
-  url.searchParams.set("actor", userDid);
-  url.searchParams.append("others", ownerDid);
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(3_000),
-  });
-  if (!response.ok) return false;
-  const body = await response.json() as {
-    relationships?: Array<{
-      $type?: string;
-      did?: string;
-      following?: unknown;
-      followedBy?: unknown;
-    }>;
-  };
-  const relation = body.relationships?.find((item) => item.did === ownerDid);
-  return Boolean(relation?.following && relation.followedBy);
-}
-
 export default createSpacesWorker<Env>({
   projection,
-  lexicons,
+  lexicons: recordLexicons,
   service: {
     endpoint: PROVIDER_ENDPOINT,
     audience: PROVIDER_AUDIENCE,
   },
   spaceTypes: {
     [SPACE_TYPE]: {
-      collections: [NOTE_COLLECTION, REACTION_COLLECTION],
+      collections: [NOTE_COLLECTION, MEMBER_COLLECTION, REACTION_COLLECTION],
+      access: authorityRecordMembership({
+        collection: MEMBER_COLLECTION,
+        principalField: "subject",
+      }),
       skey: SPACE_SKEY,
     },
   },
-  authorization: {
-    async authorize({ userDid, spaceUri }, { env }) {
-      const space = parseSpaceUri(spaceUri);
-      if (space.type !== SPACE_TYPE || space.skey !== SPACE_SKEY) return false;
-      try {
-        return await mutualAccess(
-          userDid,
-          space.authorityDid,
-          env.BSKY_APPVIEW_URL || "https://public.api.bsky.app",
-        );
-      } catch (error) {
-        console.warn("[circle] relationship policy failed closed", error);
-        return false;
-      }
-    },
-  },
+  subscriptions: { binding: "SPACE_SUBSCRIPTIONS" },
   accessLeaseMs: 15 * 60_000,
   reconcileIntervalMs: 5 * 60_000,
 });
