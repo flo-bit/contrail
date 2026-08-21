@@ -106,7 +106,21 @@ async scheduled(_ev, env, ctx) {
 }
 ```
 
-`ingest()` connects to Jetstream, streams events since the saved cursor, stops when caught up. Running every minute is fine — the next fire resumes where this one left off. Each cycle is bounded, so it can't blow past the Worker time limit.
+`ingest()` connects to Jetstream, streams events since the saved cursor, and stops at the live edge or the first scheduled collection threshold. Defaults are 25 seconds, 250 retained unique commit candidates, and 4 MiB of serialized candidate data. Byte accounting uses the UTF-8 record body plus a fixed 512-byte event-metadata allowance; the threshold-crossing candidate is retained, while deletes use only the allowance. Exact transport duplicates and source-filtered or identity events do not consume candidate/byte limits, but remain accounted for checkpointing.
+
+Override the limits when profiling a deployment:
+
+```ts
+await contrail.ingest({
+  maxDrainMs: 20_000,
+  maxCandidates: 200,
+  maxSerializedBytes: 3 * 1024 * 1024,
+}, env.DB);
+```
+
+Running every minute is fine—the next fire resumes from the last fully accounted cursor. Contrail stores bounded exact-observation hashes at the current microsecond cursor and resumes one microsecond earlier, so a cap can split equal-cursor items without skipping or recounting them. The cycle summary reports its stop reason, work counters, thresholds, safe cursor, and committed database sub-batches.
+
+Scheduled ingestion requires exactly one pinned Jetstream endpoint. Atcute intentionally rolls pooled connections back ten seconds on each new subscription; in a dense overlap that replay can consume every scheduled cap without moving forward. Use `runPersistent()` for multi-endpoint failover. Persistent ingestion is otherwise unchanged and does not inherit the scheduled count or byte defaults.
 
 **Local dev:** wrangler's cron scheduler only runs in deployed production. For local dev use `pnpm contrail dev` — it runs `wrangler dev --test-scheduled`, fires `/__scheduled` on your configured cron interval, and offers to start or resume backfill whenever known work remains.
 

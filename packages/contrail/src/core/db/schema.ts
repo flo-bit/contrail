@@ -702,16 +702,32 @@ export async function initSchema(
   const indexes = buildDynamicIndexes(config, dialect);
   const feeds = buildFeedTables(config, dialect);
   const fts = buildFtsTables(config, dialect);
-  const fingerprint = schemaFingerprint(config, dialect, {
+  const baseFingerprint = schemaFingerprint(config, dialect, {
     base,
     collections,
     indexes,
     feeds,
     fts,
   });
+  const fingerprint = `${baseFingerprint}:cursor-observations-v1`;
+  const cursorObservationsDdl = `CREATE TABLE IF NOT EXISTS cursor_observations (
+    time_us ${dialect.bigintType} NOT NULL,
+    observation TEXT NOT NULL,
+    PRIMARY KEY (time_us, observation)
+  )`;
+  const storedFingerprint = await getMeta(db, SCHEMA_FINGERPRINT_KEY);
 
-  if ((await getMeta(db, SCHEMA_FINGERPRINT_KEY)) === fingerprint) {
+  if (storedFingerprint === fingerprint) {
     for (const apply of options.extraSchemas ?? []) await apply(db);
+    return;
+  }
+  if (storedFingerprint === baseFingerprint) {
+    // This independent additive table must not force an otherwise-current
+    // deployment through the FTS rebuild path. Upgrade the prior fingerprint
+    // directly after its idempotent DDL succeeds.
+    await runIdempotentDdl(db, cursorObservationsDdl);
+    for (const apply of options.extraSchemas ?? []) await apply(db);
+    await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
     return;
   }
 
@@ -725,6 +741,7 @@ export async function initSchema(
     }
   }
 
+  await runIdempotentDdl(db, cursorObservationsDdl);
   await applyFtsTables(db, config, dialect);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);

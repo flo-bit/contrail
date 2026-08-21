@@ -61,6 +61,13 @@ HTTP routes expose the same pipeline, including relationship/reference hydration
 ```ts
 await contrail.ingest(); // bounded Jetstream cycle
 
+// Optional per-cycle overrides (defaults: 25s, 250 candidates, 4 MiB).
+await contrail.ingest({
+  maxDrainMs: 20_000,
+  maxCandidates: 200,
+  maxSerializedBytes: 3 * 1024 * 1024,
+});
+
 await contrail.runPersistent({
   signal: abortController.signal,
   batchSize: 50,
@@ -70,7 +77,7 @@ await contrail.runPersistent({
 
 After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. Only an authoritative not-found response deletes local state; rate limits, server errors, timeouts, malformed responses, and network failures leave it unchanged. Authentication and abuse controls for the public HTTP operation remain under design.
 
-Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact yielded cursor in the same transaction. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
+Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Scheduled collection drops exact Jetstream observations before admission, counts UTF-8 record bodies plus a fixed 512-byte metadata allowance, and retains the threshold-crossing candidate before stopping. Identity and source-filtered observations consume neither candidate nor byte limits, but their yielded cursors remain accounted. Bounded exact-observation hashes at the current microsecond cursor let restarts replay one microsecond of overlap without skipping equal-cursor siblings or recounting earlier ones. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact accounted cursor in the same transaction. Scheduled mode requires one pinned Jetstream endpoint; use `runPersistent()` for an Atcute failover pool. Persistent ingestion retains its streaming batch lifecycle and does not inherit the scheduled count/byte defaults. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
 
 ## Local development
 

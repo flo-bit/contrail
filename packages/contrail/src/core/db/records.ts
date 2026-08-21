@@ -663,10 +663,50 @@ export function saveCursorStatement(
     .bind(timeUs);
 }
 
+/** Exact source observations already accounted for at the current coarse
+ * cursor. Scheduled Jetstream resumes one microsecond earlier and uses these
+ * hashes to avoid both skipping same-cursor siblings and recounting prior ones. */
+export async function getCursorObservations(
+  db: Database,
+  timeUs: number,
+): Promise<Set<string>> {
+  const rows = await db
+    .prepare(
+      "SELECT observation FROM cursor_observations WHERE time_us = ?",
+    )
+    .bind(timeUs)
+    .all<{ observation: string }>();
+  return new Set((rows.results ?? []).map((row) => row.observation));
+}
+
+/** Statements that atomically retire observations behind the monotonic cursor
+ * and union observations accounted for at its current timestamp. Inserts are
+ * conditional so an older concurrent cycle cannot attach hashes to a newer
+ * checkpoint. */
+export function saveCursorObservationStatements(
+  db: Database,
+  timeUs: number,
+  observations: Iterable<string>,
+): Statement[] {
+  return [
+    db.prepare(
+      "DELETE FROM cursor_observations WHERE time_us < (SELECT time_us FROM cursor WHERE id = 1)",
+    ),
+    ...[...new Set(observations)].map((observation) =>
+      db
+        .prepare(
+          "INSERT INTO cursor_observations (time_us, observation) SELECT ?, ? WHERE (SELECT time_us FROM cursor WHERE id = 1) = ? ON CONFLICT(time_us, observation) DO NOTHING",
+        )
+        .bind(timeUs, observation, timeUs),
+    ),
+  ];
+}
+
 export async function saveCursor(
   db: Database,
   timeUs: number,
   orderedSource?: OrderedSourceConfig,
+  observations: Iterable<string> = [],
 ): Promise<void> {
   const statements = [saveCursorStatement(db, timeUs)];
   if (orderedSource) {
@@ -674,6 +714,7 @@ export async function saveCursor(
       saveOrderedSourcePositionStatement(db, orderedSource, timeUs),
     );
   }
+  statements.push(...saveCursorObservationStatements(db, timeUs, observations));
   await db.batch(statements);
 }
 

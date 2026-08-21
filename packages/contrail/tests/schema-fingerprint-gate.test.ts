@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema, getMeta } from "../src/index";
+import { initSchema, getMeta, setMeta } from "../src/index";
 import { resolveConfig } from "../src/index";
 import type { Database, Statement } from "../src/index";
 
@@ -51,6 +51,24 @@ describe("schema fingerprint gate", () => {
     expect(second.prepares).toHaveLength(1);
     expect(second.prepares[0]).toMatch(/_contrail_meta/);
     expect(await getMeta(real, "schema_fingerprint")).toBe(fp); // unchanged
+  });
+
+  it("installs cursor observations additively without rebuilding current projections", async () => {
+    const real = createSqliteDatabase(":memory:");
+    await initSchema(real, CONFIG);
+    const current = (await getMeta(real, "schema_fingerprint"))!;
+    const previous = current.replace(/:cursor-observations-v1$/, "");
+    await real.prepare("DROP TABLE cursor_observations").run();
+    await setMeta(real, "schema_fingerprint", previous);
+
+    const upgraded = recordingDb(real);
+    await initSchema(upgraded.db, CONFIG);
+
+    expect(
+      upgraded.prepares.some((sql) => /CREATE TABLE IF NOT EXISTS cursor_observations/.test(sql)),
+    ).toBe(true);
+    expect(upgraded.prepares.some((sql) => /fts_event|records_event/.test(sql))).toBe(false);
+    expect(await getMeta(real, "schema_fingerprint")).toBe(current);
   });
 
   it("re-applies when the generated schema changes (fingerprint busts)", async () => {

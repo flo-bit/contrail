@@ -3,6 +3,7 @@ import type {
   ContrailConfig,
   Database,
   IngestEvent,
+  Logger,
   MutationSource,
   Statement,
 } from "./types";
@@ -99,6 +100,13 @@ export function recordTimeUs(
   return microseconds > fallbackUs ? fallbackUs : microseconds;
 }
 
+export interface IngestWarningSamples {
+  /** Fixed maximum number of warning strings retained by the caller. */
+  maxSamples: number;
+  samples: string[];
+  omitted: number;
+}
+
 export interface IngestRecordsOptions {
   skipReplayDetection?: boolean;
   skipFeedFanout?: boolean;
@@ -117,6 +125,8 @@ export interface IngestRecordsOptions {
   /** @internal Aggregate private diagnostics for one bulk run. The caller
    * flushes this bounded object once after concurrent page processing. */
   aggregateDiagnostics?: IngestDiagnosticCounts;
+  /** Collect bounded warning details instead of logging per-record lines. */
+  warningSamples?: IngestWarningSamples;
 }
 
 export interface IngestDropCounts {
@@ -138,6 +148,22 @@ export interface IngestRecordsResult {
   dropped: IngestDropCounts;
   /** Discoverable actors admitted by this batch but absent from knownDids. */
   discoveredDids: string[];
+}
+
+function emitIngestWarning(
+  logger: Pick<Logger, "warn">,
+  samples: IngestWarningSamples | undefined,
+  message: string,
+): void {
+  if (!samples) {
+    logger.warn(message);
+    return;
+  }
+  if (samples.samples.length >= samples.maxSamples) {
+    samples.omitted++;
+    return;
+  }
+  samples.samples.push(message.slice(0, 320));
 }
 
 /**
@@ -178,7 +204,9 @@ export async function ingestRecords(
     const shortName = resolveCollectionKey(config, event.collection);
     if (!shortName) {
       dropped.unknownCollection++;
-      logger.warn(
+      emitIngestWarning(
+        logger,
+        options.warningSamples,
         `[ingest] drop unknown collection: ${event.operation} ${event.uri} collection=${event.collection}`,
       );
       continue;
@@ -187,7 +215,11 @@ export async function ingestRecords(
       event.operation === "delete" ? null : parseRecord(event.record);
     if (event.operation !== "delete" && !record) {
       dropped.invalidRecord++;
-      logger.warn(`[ingest] drop invalid record: ${event.uri}`);
+      emitIngestWarning(
+        logger,
+        options.warningSamples,
+        `[ingest] drop invalid record: ${event.uri}`,
+      );
       continue;
     }
     candidates.push({ event, shortName, record });
@@ -249,7 +281,11 @@ export async function ingestRecords(
         try {
           keep = filter(record);
         } catch (error) {
-          logger.warn(`[ingest] recordFilter threw for ${event.uri}: ${error}`);
+          emitIngestWarning(
+            logger,
+            options.warningSamples,
+            `[ingest] recordFilter threw for ${event.uri}: ${error}`,
+          );
         }
         if (!keep) {
           dropped.recordFilter++;
@@ -270,7 +306,9 @@ export async function ingestRecords(
     dropped.cidEncoding +
     dropped.missingCid;
   if (validationDropTotal > 0 && !options.aggregateDiagnostics) {
-    logger.warn(
+    emitIngestWarning(
+      logger,
+      options.warningSamples,
       `[ingest] dropped ${validationDropTotal} record(s) during validation ` +
         `(lexicon=${dropped.lexiconValidation}, cid_mismatch=${dropped.cidMismatch}, ` +
         `cid_encoding=${dropped.cidEncoding}, missing_cid=${dropped.missingCid})`,
