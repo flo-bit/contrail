@@ -18,7 +18,7 @@ import {
   saveCursor,
 } from "../src/index";
 import { resolveConfig } from "../src/index";
-import type { Database } from "../src/index";
+import type { Database, Statement } from "../src/index";
 import { resolveHydrates, resolveReferences } from "../src/index";
 import { makeEvent } from "./helpers";
 
@@ -78,7 +78,7 @@ if (!PG_URL) {
     const tables = await pool.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public'
        AND (tablename LIKE 'records_%' OR tablename LIKE 'fts_%'
-            OR tablename IN ('_contrail_meta', 'backfills', 'backfill_state', 'discovery', 'cursor', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills'))`
+            OR tablename IN ('_contrail_meta', '_contrail_projection_state', 'backfills', 'backfill_state', 'discovery', 'cursor', 'source_position', 'bootstrap_state', 'bootstrap_snapshot_progress', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills', 'change_log_state', 'change_batches', 'change_consumers', 'change_log_coverage'))`
     );
     for (const { tablename } of tables.rows) {
       await pool.query(`DROP TABLE IF EXISTS ${tablename} CASCADE`);
@@ -169,6 +169,81 @@ if (!PG_URL) {
         collection: "community.lexicon.calendar.event",
       });
       expect(result.records).toHaveLength(0);
+    });
+
+    it("retries an overlapping stale projector after the transaction lock", async () => {
+      const uri = "at://did:plc:test/community.lexicon.calendar.event/concurrent";
+      let arrivals = 0;
+      let releaseBoth!: () => void;
+      const both = new Promise<void>((resolve) => {
+        releaseBoth = resolve;
+      });
+      let releaseNewer!: () => void;
+      const newerDone = new Promise<void>((resolve) => {
+        releaseNewer = resolve;
+      });
+
+      const overlap = (role: "older" | "newer"): Database => {
+        let writes = 0;
+        return {
+          prepare(sql: string): Statement {
+            return db.prepare(sql);
+          },
+          async batch(statements: Statement[]) {
+            writes++;
+            if (writes > 1) return db.batch(statements);
+            arrivals++;
+            if (arrivals === 2) releaseBoth();
+            await both;
+            if (role === "older") await newerDone;
+            try {
+              return await db.batch(statements);
+            } finally {
+              if (role === "newer") releaseNewer();
+            }
+          },
+          dialect: db.dialect,
+        };
+      };
+
+      const [older] = await Promise.all([
+        ingestRecords(
+          overlap("older"),
+          [
+            makeEvent({
+              uri,
+              rkey: "concurrent",
+              cid: "cid-old",
+              record: { name: "old", mode: "online" },
+              time_us: 100,
+              indexed_at: 100,
+            }),
+          ],
+          TEST_CONFIG,
+        ),
+        ingestRecords(
+          overlap("newer"),
+          [
+            makeEvent({
+              uri,
+              rkey: "concurrent",
+              cid: "cid-new",
+              record: { name: "new", mode: "online" },
+              time_us: 200,
+              indexed_at: 200,
+            }),
+          ],
+          TEST_CONFIG,
+        ),
+      ]);
+
+      expect(older.dropped.superseded).toBe(1);
+      const row = await pool.query(
+        "SELECT record, cid FROM records_community_lexicon_calendar_event WHERE uri = $1",
+        [uri],
+      );
+      expect(row.rows[0]).toMatchObject({ cid: "cid-new" });
+      expect(row.rows[0].record.name).toBe("new");
     });
 
     it("does nothing for empty events", async () => {

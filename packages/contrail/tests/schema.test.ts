@@ -21,6 +21,8 @@ describe("initSchema", () => {
     expect(names).toContain("identities");
     expect(names).toContain("record_versions");
     expect(names).toContain("ingest_diagnostics");
+    expect(names).toContain("_contrail_projection_state");
+    expect(names).not.toContain("change_log_state");
 
     const backfillColumns = await db
       .prepare("PRAGMA table_info(backfills)")
@@ -115,6 +117,52 @@ describe("initSchema", () => {
     );
   });
 
+  it("migrates optimistic tokens onto existing version rows", async () => {
+    const db = createTestDb();
+    await db
+      .prepare(
+        `CREATE TABLE record_versions (
+          uri TEXT PRIMARY KEY,
+          did TEXT NOT NULL,
+          collection TEXT NOT NULL,
+          rkey TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          cid TEXT,
+          source_id TEXT NOT NULL,
+          source_revision TEXT,
+          source_time_us BIGINT NOT NULL,
+          source_cursor TEXT,
+          indexed_at BIGINT NOT NULL
+        )`,
+      )
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO record_versions
+         (uri, did, collection, rkey, operation, cid, source_id,
+          source_revision, source_time_us, source_cursor, indexed_at)
+         VALUES (?, ?, ?, ?, 'update', ?, 'legacy', NULL, 1, NULL, 1)`,
+      )
+      .bind(
+        "at://did:plc:legacy/community.lexicon.calendar.event/one",
+        "did:plc:legacy",
+        "community.lexicon.calendar.event",
+        "one",
+        "cid-legacy",
+      )
+      .run();
+
+    await initSchema(db, TEST_CONFIG);
+    expect(
+      await db
+        .prepare("SELECT projection_token FROM record_versions")
+        .first(),
+    ).toEqual({
+      projection_token:
+        "at://did:plc:legacy/community.lexicon.calendar.event/one",
+    });
+  });
+
   it("seeds ordering metadata for visible rows from older schemas", async () => {
     const db = createTestDb();
     await db
@@ -149,7 +197,7 @@ describe("initSchema", () => {
 
     const version = await db
       .prepare(
-        "SELECT operation, source_id, source_time_us, cid FROM record_versions WHERE uri = ?",
+        "SELECT operation, source_id, source_time_us, cid, projection_token FROM record_versions WHERE uri = ?",
       )
       .bind("at://did:plc:legacy/community.lexicon.calendar.event/one")
       .first<{
@@ -157,12 +205,15 @@ describe("initSchema", () => {
         source_id: string;
         source_time_us: number;
         cid: string;
+        projection_token: string;
       }>();
     expect(version).toEqual({
       operation: "update",
       source_id: "legacy",
       source_time_us: 200,
       cid: "cid-legacy",
+      projection_token:
+        "at://did:plc:legacy/community.lexicon.calendar.event/one",
     });
   });
 

@@ -185,7 +185,9 @@ async function fetchMissingProfiles(
 
   const events = fetched.filter((event) => event !== null);
   if (events.length === 0) return {};
-  const { accepted } = await ingestRecords(db, events, config);
+  const { accepted } = await ingestRecords(db, events, config, {
+    phase: "historical",
+  });
   const result: Record<string, ProfileEntry[]> = {};
   for (const event of accepted) {
     if (event.operation === "delete") continue;

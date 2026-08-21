@@ -478,6 +478,7 @@ export async function runIngestCycle(
     const batch = events.slice(i, i + BATCH_SIZE);
     const isFinalBatch = i + BATCH_SIZE >= events.length;
     const result = await ingestRecords(db, batch, config, {
+      phase: "live",
       knownDids,
       // Earlier batches may commit without moving the cursor. A crash replays
       // them safely; the final batch atomically commits the exact source cursor.

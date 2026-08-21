@@ -29,6 +29,12 @@ export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";
 export * from "./core/diagnostics";
+export {
+  getChangeLogState,
+  MAX_CHANGE_BATCH_BYTES,
+  MAX_CHANGE_BATCH_CHANGES,
+} from "./core/change-log";
+export type { ChangeLogState, RecordChange } from "./core/change-log";
 export * from "./core/validation";
 export * from "./core/search";
 export * from "./core/constellation";
