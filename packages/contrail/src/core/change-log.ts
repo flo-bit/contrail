@@ -16,6 +16,45 @@ import {
 export const MAX_CHANGE_BATCH_CHANGES = 500;
 export const MAX_CHANGE_BATCH_BYTES = 512_000;
 
+export interface ChangeLogCostPlan {
+  enabled: boolean;
+  consumers: number;
+  coveragePairs: number;
+  projectionStateWrites: number;
+  changeHeadWrites: number;
+  changeBatchWrites: number;
+  acknowledgementWrites: number;
+  /** Total expected rows written by one relevant projection transaction. */
+  relevantProjectionWrites: number;
+}
+
+/** Conservative write-amplification report for one bounded projection batch. */
+export function getChangeLogCostPlan(
+  config: ContrailConfig,
+  mutationUris = 50,
+): ChangeLogCostPlan {
+  if (!Number.isSafeInteger(mutationUris) || mutationUris < 1 || mutationUris > 500) {
+    throw new TypeError("mutationUris must be an integer between 1 and 500");
+  }
+  const enabled = changesEnabled(config);
+  // One serialized revision update plus one predecessor-check update per forty
+  // unique URIs. The idempotent singleton INSERT normally writes no row.
+  const projectionStateWrites = 1 + Math.ceil(mutationUris / 40);
+  const changeHeadWrites = enabled ? 1 : 0;
+  const changeBatchWrites = enabled ? 1 : 0;
+  return {
+    enabled,
+    consumers: Object.keys(config.changes?.consumers ?? {}).length,
+    coveragePairs: changeLogCoverage(config).length,
+    projectionStateWrites,
+    changeHeadWrites,
+    changeBatchWrites,
+    acknowledgementWrites: enabled ? 1 : 0,
+    relevantProjectionWrites:
+      projectionStateWrites + changeHeadWrites + changeBatchWrites,
+  };
+}
+
 export interface RecordChange {
   id: string;
   kind: "record";

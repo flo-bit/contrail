@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   Contrail,
   createIngestEvent,
+  getChangeLogCostPlan,
   getChangeLogState,
   ingestRecords,
   initSchema,
@@ -146,6 +147,16 @@ describe("transactional projection change log", () => {
   it("has no change-log schema or writes when disabled", async () => {
     const db = createSqliteDatabase(":memory:");
     const resolved = config();
+    expect(getChangeLogCostPlan(resolved, 50)).toEqual({
+      enabled: false,
+      consumers: 0,
+      coveragePairs: 0,
+      projectionStateWrites: 3,
+      changeHeadWrites: 0,
+      changeBatchWrites: 0,
+      acknowledgementWrites: 0,
+      relevantProjectionWrites: 3,
+    });
     await initSchema(db, resolved);
 
     const tables = await db
@@ -169,6 +180,16 @@ describe("transactional projection change log", () => {
   it("initializes a fresh generation, registrations, and coverage ledger", async () => {
     const db = createSqliteDatabase(":memory:");
     const resolved = loggedConfig();
+    expect(getChangeLogCostPlan(resolved, 50)).toMatchObject({
+      enabled: true,
+      consumers: 2,
+      coveragePairs: 2,
+      projectionStateWrites: 3,
+      changeHeadWrites: 1,
+      changeBatchWrites: 1,
+      acknowledgementWrites: 1,
+      relevantProjectionWrites: 5,
+    });
     await initSchema(db, resolved);
 
     const state = await getChangeLogState(db);
@@ -422,6 +443,30 @@ describe("transactional projection change log", () => {
     await expect(initSchema(initialized, changed)).rejects.toThrow(
       "cannot be removed or modified",
     );
+  });
+
+  it("upgrades retained pre-byte-count change batches without resetting consumers", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const resolved = loggedConfig();
+    await initSchema(db, resolved);
+    await ingestRecords(db, [mutation({ sourceTime: 1 })], resolved);
+    await db
+      .prepare("ALTER TABLE change_batches DROP COLUMN encoded_bytes")
+      .run();
+    await db
+      .prepare(
+        "UPDATE _contrail_meta SET value = 'old-change-schema' WHERE key = 'schema_fingerprint'",
+      )
+      .run();
+
+    await initSchema(db, resolved);
+    const row = await db
+      .prepare("SELECT encoded_bytes, changes_json FROM change_batches")
+      .first<{ encoded_bytes: number; changes_json: string }>();
+    expect(row?.encoded_bytes).toBe(
+      new TextEncoder().encode(row!.changes_json).byteLength,
+    );
+    expect((await getChangeLogState(db))?.head).toBe("1");
   });
 
   it("retries a losing overlapping writer from fresh durable state", async () => {

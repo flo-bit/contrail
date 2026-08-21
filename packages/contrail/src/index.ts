@@ -30,11 +30,16 @@ export * from "./core/backfill";
 export * from "./core/status";
 export * from "./core/diagnostics";
 export {
+  getChangeLogCostPlan,
   getChangeLogState,
   MAX_CHANGE_BATCH_BYTES,
   MAX_CHANGE_BATCH_CHANGES,
 } from "./core/change-log";
-export type { ChangeLogState, RecordChange } from "./core/change-log";
+export type {
+  ChangeLogCostPlan,
+  ChangeLogState,
+  RecordChange,
+} from "./core/change-log";
 export * from "./core/changes";
 export * from "./core/change-bootstrap";
 export * from "./core/delivery";

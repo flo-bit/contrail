@@ -1,5 +1,6 @@
 import type { CAC } from "cac";
 import { Contrail } from "../../contrail.js";
+import { getChangeLogCostPlan } from "../../core/change-log.js";
 import type { Database } from "../../core/types.js";
 import {
   resolveAndLoadConfig,
@@ -143,8 +144,9 @@ export function registerChanges(cli: CAC): void {
           }
 
           const status = await contrail.changes.status(db);
+          const cost = getChangeLogCostPlan(contrail.config);
           if (commandOptions.json) {
-            console.log(JSON.stringify(status, null, 2));
+            console.log(JSON.stringify({ ...status, cost }, null, 2));
             return;
           }
           if (!status.enabled || !status.state) {
@@ -155,6 +157,11 @@ export function registerChanges(cli: CAC): void {
             `change log: generation=${status.state.generation} head=${status.state.head} ` +
               `floor=${status.state.retainedFloor} rows=${status.rows} ` +
               `changes=${status.changes} bytes=${status.bytes}`,
+          );
+          console.log(
+            `  write plan: projection=${cost.projectionStateWrites} ` +
+              `head=${cost.changeHeadWrites} batch=${cost.changeBatchWrites} ` +
+              `ack=${cost.acknowledgementWrites}`,
           );
           for (const item of status.consumers) {
             const retry =
