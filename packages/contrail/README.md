@@ -96,6 +96,34 @@ const config = {
 
 Static definitions contain no handlers, URLs, clients, credentials, or secrets. Contrail registers them with a random database-generation ID and collection/phase coverage ledger. A winning logical put/delete appends one compact URI/version reference in the same transaction as canonical and derived state plus the source checkpoint. Duplicate, stale, same-CID, absent-delete, rejected, and rolled-back mutations append nothing. Record bodies are hydrated from current state by the later delivery layer rather than copied into the log.
 
+Cloudflare Workers bind handlers and runtime-only secrets separately from static policy:
+
+```ts
+export default createWorker(config, {
+  deliveries: {
+    search: async (batch, { env, signal }) => {
+      await updateSearch(env.SEARCH_KEY, batch, signal);
+    },
+  },
+  changeBootstraps: {
+    search: {
+      snapshot: async (page, { env, signal }) => {
+        await writeCandidateIndex(env.SEARCH_KEY, page, signal);
+      },
+      activate: async (activation, { env, signal }) => {
+        await activateCandidateIdempotently(
+          env.SEARCH_KEY,
+          activation.bootstrapToken,
+          signal,
+        );
+      },
+    },
+  },
+});
+```
+
+Scheduled execution runs ingestion, due historical retries, then bounded fair delivery rounds. One consumer failure is persisted with backoff and does not stop ingestion or another consumer. A successful notify request schedules a best-effort one-round wake through `ExecutionContext`; projection success never depends on it. Persistent deployments run `contrail.runPersistentDeliveries()` alongside `runPersistent()`.
+
 Low-level delivery uses bounded leases and compare-and-swap acknowledgement:
 
 ```ts
