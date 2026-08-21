@@ -22,8 +22,10 @@ import {
 } from "./core/db/records";
 import {
   createIngestState,
+  resolveScheduledIngestBudget,
   runIngestCycle,
   type IngestState,
+  type ScheduledIngestOptions,
 } from "./core/jetstream";
 import {
   backfillPending,
@@ -115,16 +117,17 @@ export class Contrail {
   }
 
   /** Run one ingestion cycle: catches up records from Jetstream and — when
-   *  `config.labels` is set — labels from each configured labeler in parallel.
-   *  Both share the same `timeoutMs` budget; they're independent network
-   *  operations so concurrency is free. */
-  async ingest(options?: { timeoutMs?: number }, db?: Database): Promise<void> {
+   * `config.labels` is set — labels from each configured labeler in parallel.
+   * Scheduled record collection is independently bounded by drain time,
+   * retained candidates, and serialized bytes. */
+  async ingest(options?: ScheduledIngestOptions, db?: Database): Promise<void> {
     const d = this.getDb(db);
+    const budget = resolveScheduledIngestBudget(options);
     const tasks: Promise<void>[] = [
-      runIngestCycle(d, this.config, options?.timeoutMs, this._ingestState),
+      runIngestCycle(d, this.config, budget, this._ingestState),
     ];
     if (this.config.labels) {
-      tasks.push(runLabelIngestCycle(d, this.config, options?.timeoutMs));
+      tasks.push(runLabelIngestCycle(d, this.config, budget.maxDrainMs));
     }
     await Promise.all(tasks);
   }

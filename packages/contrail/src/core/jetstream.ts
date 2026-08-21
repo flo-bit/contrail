@@ -1,6 +1,7 @@
 import { JetstreamSubscription } from "@atcute/jetstream";
 import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
 import {
+  DEFAULT_JETSTREAMS,
   getCollectionNsids,
   getDependentNsids,
   jetstreamUrlOption,
@@ -10,12 +11,121 @@ import {
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, saveCursorStatement, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
-import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
+import { initSchema, getLastCursor, saveCursor, saveCursorStatement, getCursorObservations, saveCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import {
+  createIngestEvent,
+  ingestRecords,
+  recordTimeUs,
+  type IngestDropCounts,
+  type IngestWarningSamples,
+} from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
 const BATCH_SIZE = 50;
+
+/** Fixed estimate for the URI, source position, revision, CID, and other
+ * metadata retained beside each serialized record body. Deletes consume only
+ * this allowance. The byte budget is intentionally an admission threshold: the
+ * candidate that reaches it is retained, bounding overshoot to one record plus
+ * this allowance. */
+export const SCHEDULED_INGEST_METADATA_BYTES = 512;
+
+/** Conservative defaults for one D1/Worker scheduled drain. Persistent
+ * ingestion has its own streaming lifecycle and does not use these limits. */
+export const DEFAULT_SCHEDULED_INGEST_BUDGET = Object.freeze({
+  maxDrainMs: 25_000,
+  maxCandidates: 250,
+  maxSerializedBytes: 4 * 1024 * 1024,
+}) satisfies ScheduledIngestBudget;
+
+export interface ScheduledIngestBudget {
+  maxDrainMs: number;
+  maxCandidates: number;
+  maxSerializedBytes: number;
+}
+
+export interface ScheduledIngestOptions {
+  /** Maximum wall time spent requesting source items. Default: 25 seconds. */
+  maxDrainMs?: number;
+  /** Maximum unique commit candidates retained by one drain. Default: 250. */
+  maxCandidates?: number;
+  /** UTF-8 record bytes plus metadata allowances. Default: 4 MiB. */
+  maxSerializedBytes?: number;
+  /** @deprecated Compatibility alias for maxDrainMs. */
+  timeoutMs?: number;
+}
+
+export type ScheduledIngestStopReason =
+  | "head"
+  | "idle"
+  | "count"
+  | "bytes"
+  | "drain-time"
+  | "cancelled";
+
+export interface ScheduledIngestCollectionStats {
+  observedSourceItems: number;
+  commitObservations: number;
+  identityObservations: number;
+  retainedCandidates: number;
+  exactDuplicatesDropped: number;
+  cursorBoundaryDuplicatesDropped: number;
+  resumeOverlapDropped: number;
+  sourceScopeFiltered: number;
+  sourceInconsistencies: number;
+  serializedCandidateBytes: number;
+  startingCursor: number | null;
+  lastAccountedCursor: number | null;
+  safeEndingCursor: number | null;
+  stopReason: ScheduledIngestStopReason;
+  connections: number;
+  connectionCloses: number;
+  connectionErrors: number;
+  diagnosticSamples: string[];
+  diagnosticSamplesOmitted: number;
+}
+
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive finite integer`);
+  }
+  return value;
+}
+
+/** Resolve and validate every scheduled collection threshold. */
+export function resolveScheduledIngestBudget(
+  value?: ScheduledIngestOptions | ScheduledIngestBudget | number,
+): ScheduledIngestBudget {
+  if (typeof value === "number") {
+    return {
+      ...DEFAULT_SCHEDULED_INGEST_BUDGET,
+      maxDrainMs: positiveInteger(value, "maxDrainMs"),
+    };
+  }
+  const options = (value ?? {}) as ScheduledIngestOptions;
+  if (options.timeoutMs !== undefined) {
+    positiveInteger(options.timeoutMs, "timeoutMs");
+  }
+  return {
+    maxDrainMs: positiveInteger(
+      options.maxDrainMs ??
+        options.timeoutMs ??
+        DEFAULT_SCHEDULED_INGEST_BUDGET.maxDrainMs,
+      "maxDrainMs",
+    ),
+    maxCandidates: positiveInteger(
+      options.maxCandidates ?? DEFAULT_SCHEDULED_INGEST_BUDGET.maxCandidates,
+      "maxCandidates",
+    ),
+    maxSerializedBytes: positiveInteger(
+      options.maxSerializedBytes ??
+        DEFAULT_SCHEDULED_INGEST_BUDGET.maxSerializedBytes,
+      "maxSerializedBytes",
+    ),
+  };
+}
+
 /** Distinct actors pruned per ingest tick by the rolling feed sweep. Each
  *  actor costs a handful of index-backed O(cap) deletes, so this bounds the
  *  prune's per-tick CPU regardless of how large feed_items grows. */
@@ -161,17 +271,15 @@ function getLogger(config: ContrailConfig): Logger {
 const INGEST_TIMEOUT = Symbol("ingest-timeout");
 
 /** Await the iterator's next value, but give up after `ms`. Without this a
- *  quiet Jetstream (the async iterator blocks forever waiting for an event that
- *  never arrives) holds the cycle past its safety timeout until the caller's
- *  hard timeout kills the isolate — so the batch and cursor are never written. */
+ * quiet Jetstream can hold a scheduled drain past its deadline. */
 function nextWithDeadline<T>(
   iterator: AsyncIterator<T>,
-  ms: number
+  ms: number,
 ): Promise<IteratorResult<T> | typeof INGEST_TIMEOUT> {
   let timer: ReturnType<typeof setTimeout>;
   const next = iterator.next();
-  // If the timeout wins this race the next() promise stays pending; swallow a
-  // later rejection so it can't surface as an unhandled rejection.
+  // The transport currently has no structural cancellation seam. If the timer
+  // wins, swallow a later rejection while the iterator is closed best-effort.
   next.catch(() => {});
   const timeout = new Promise<typeof INGEST_TIMEOUT>((resolve) => {
     timer = setTimeout(() => resolve(INGEST_TIMEOUT), ms);
@@ -179,71 +287,257 @@ function nextWithDeadline<T>(
   return Promise.race([next, timeout]).finally(() => clearTimeout(timer));
 }
 
+const utf8 = new TextEncoder();
+const MAX_DIAGNOSTIC_SAMPLES = 5;
+const MAX_DIAGNOSTIC_SAMPLE_LENGTH = 320;
+
+function addDiagnosticSample(
+  stats: Pick<
+    ScheduledIngestCollectionStats,
+    "diagnosticSamples" | "diagnosticSamplesOmitted"
+  >,
+  message: string,
+): void {
+  if (stats.diagnosticSamples.length >= MAX_DIAGNOSTIC_SAMPLES) {
+    stats.diagnosticSamplesOmitted++;
+    return;
+  }
+  stats.diagnosticSamples.push(message.slice(0, MAX_DIAGNOSTIC_SAMPLE_LENGTH));
+}
+
+/** JSON normalization used only for transport-observation fingerprints. The
+ * Jetstream payload has already been decoded from JSON, so sorting object keys
+ * makes semantically identical payloads stable across decoder/property order. */
+function normalizedJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? "null" : encoded;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => normalizedJson(item)).join(",")}]`;
+  }
+  const fields: string[] = [];
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    const field = (value as Record<string, unknown>)[key];
+    if (field === undefined) continue;
+    fields.push(`${JSON.stringify(key)}:${normalizedJson(field)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+async function observationHash(value: string): Promise<string> {
+  const subtle = (
+    globalThis as typeof globalThis & {
+      crypto?: {
+        subtle?: {
+          digest(
+            algorithm: string,
+            data: Uint8Array,
+          ): Promise<ArrayBuffer>;
+        };
+      };
+    }
+  ).crypto?.subtle;
+  if (!subtle) throw new Error("Web Crypto SHA-256 is required for ingestion");
+  const digest = await subtle.digest("SHA-256", utf8.encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+interface JetstreamCommitObservation {
+  /** One logical Jetstream source slot, before source ID/epoch prefixing. */
+  key: string;
+  /** Stable operation/CID/normalized-payload identity for that slot. */
+  fingerprint: string;
+  uri: string;
+}
+
+/** Jetstream owns the transport-specific observation identity. Core collection
+ * adds the configured source ID and epoch before cycle-local deduplication. */
+function jetstreamCommitObservation(
+  event: {
+    did: string;
+    time_us: number;
+    commit: {
+      rev?: string;
+      collection: string;
+      rkey: string;
+      operation: string;
+      cid?: string;
+      record?: unknown;
+    };
+  },
+): JetstreamCommitObservation {
+  const { commit } = event;
+  const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
+  return {
+    key: JSON.stringify([event.time_us, uri, commit.rev ?? null]),
+    fingerprint: JSON.stringify([
+      commit.operation,
+      commit.cid ?? null,
+      commit.operation === "delete" ? null : normalizedJson(commit.record),
+    ]),
+    uri,
+  };
+}
+
 export async function ingestEvents(
   config: ContrailConfig,
   cursor: number | null,
-  safetyTimeoutMs: number = 25_000,
-  knownDids?: Set<string>
+  budgetInput: ScheduledIngestOptions | ScheduledIngestBudget | number =
+    DEFAULT_SCHEDULED_INGEST_BUDGET,
+  knownDids?: Set<string>,
+  startingCursorObservations: ReadonlySet<string> = new Set(),
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
+  cursorObservations: Set<string>;
   identityUpdates: Map<string, string>;
+  stats: ScheduledIngestCollectionStats;
 }> {
-  const log = getLogger(config);
+  const budget = resolveScheduledIngestBudget(budgetInput);
   const startTimeUs = Date.now() * 1000;
-  const deadline = Date.now() + safetyTimeoutMs;
+  const deadline = Date.now() + budget.maxDrainMs;
   const collected: IngestEvent[] = [];
 
   const collections = getCollectionNsids(config);
   const dependentCollections = new Set(getDependentNsids(config));
   const provisionalKnownDids = knownDids ? new Set(knownDids) : undefined;
-  const urls = config.jetstreams ?? [];
+  const urls = config.jetstreams ?? DEFAULT_JETSTREAMS;
+  const sourceId = config.orderedSource?.source ?? "jetstream";
+  const sourceEpoch = config.orderedSource?.epoch ?? null;
 
-  let totalCommits = 0;
-  let filteredUnknownDid = 0;
-  const filteredDidSamples = new Set<string>();
-  let lastYieldedTimeUs: number | null = null;
-  let firstYieldedTimeUs: number | null = null;
-  let connectCount = 0;
-  const seenUris = new Map<string, number>(); // uri -> time_us of first occurrence
-  const duplicateUris: string[] = [];
+  const seenObservations = new Map<string, Set<string>>();
   const identityUpdates = new Map<string, string>();
+  const stats: ScheduledIngestCollectionStats = {
+    observedSourceItems: 0,
+    commitObservations: 0,
+    identityObservations: 0,
+    retainedCandidates: 0,
+    exactDuplicatesDropped: 0,
+    cursorBoundaryDuplicatesDropped: 0,
+    resumeOverlapDropped: 0,
+    sourceScopeFiltered: 0,
+    sourceInconsistencies: 0,
+    serializedCandidateBytes: 0,
+    startingCursor: cursor,
+    lastAccountedCursor: null,
+    safeEndingCursor: cursor,
+    stopReason: "idle",
+    connections: 0,
+    connectionCloses: 0,
+    connectionErrors: 0,
+    diagnosticSamples: [],
+    diagnosticSamplesOmitted: 0,
+  };
 
+  // A durable timestamp cursor is resumed one microsecond earlier. This works
+  // with inclusive and exclusive timestamp APIs: all observations at the
+  // coarse cursor are replayed, while persisted hashes suppress only the exact
+  // items already accounted for there. It also protects a captured empty-start
+  // cursor from a later item that happens to share its microsecond.
+  const requestedCursor =
+    cursor === null ? null : Math.max(0, cursor - 1);
   const subscription = new JetstreamSubscription({
     // A single-instance config is handed over as a string so @atcute skips its
-    // array-only first-connect cursor rollback (see jetstreamUrlOption). On the
-    // cron model that rollback would otherwise re-ingest 10s every cycle.
+    // array-only first-connect cursor rollback (see jetstreamUrlOption).
     url: jetstreamUrlOption(urls),
     wantedCollections: collections,
-    ...(cursor !== null ? { cursor } : {}),
+    ...(requestedCursor !== null ? { cursor: requestedCursor } : {}),
     onConnectionOpen() {
-      connectCount++;
-      log.log(
-        `[ingest] connected to Jetstream #${connectCount} (url=${urls.join("|")}, cursor=${cursor ?? "none"}, wanted=${collections.join(",")})`
-      );
+      stats.connections++;
     },
-    onConnectionClose(event) {
-      log.log(
-        `[ingest] disconnected from Jetstream: ${event.code} ${event.reason}`
-      );
+    onConnectionClose() {
+      stats.connectionCloses++;
     },
     onConnectionError(event) {
-      log.error("[ingest] Jetstream error:", event.error);
+      stats.connectionErrors++;
+      addDiagnosticSample(stats, `Jetstream connection error: ${String(event.error)}`);
     },
   });
+
+  // Capture Atcute's constructor cursor before iteration can buffer frames and
+  // move it ahead. With no durable cursor this is the subscription's effective
+  // lower bound and must be persisted even when the first drain stays empty.
+  const effectiveStartCursor = cursor ?? subscription.cursor ?? null;
+  stats.safeEndingCursor = effectiveStartCursor;
+  let boundaryCursor = effectiveStartCursor;
+  let boundaryObservations = new Set(startingCursorObservations);
+  // Only hashes newly accounted for this cycle are returned for insertion. The
+  // database unions them with existing boundary rows, keeping each DB batch
+  // bounded even if many cycles share one coarse cursor.
+  let cursorObservations = new Set<string>();
+  const singleEndpoint = urls.length === 1;
 
   const iterator = subscription[Symbol.asyncIterator]();
   type Ev = typeof subscription extends AsyncIterable<infer V> ? V : never;
 
-  // Collect or skip a single event. Filtering uses early `return` rather than
-  // the loop's `continue` so the loop's exit checks still run after a filtered
-  // event (a stream of all-filtered events must not skip the deadline).
-  const handleEvent = (event: Ev): void => {
+  const accountSourceItem = async (
+    event: Ev,
+    identity: string,
+  ): Promise<boolean> => {
+    // The scheduled path requires one pinned endpoint. Its one-microsecond
+    // boundary overlap is known-complete below the durable cursor and must not
+    // consume candidate/byte budgets on every restart.
+    if (
+      singleEndpoint &&
+      effectiveStartCursor !== null &&
+      event.time_us < effectiveStartCursor
+    ) {
+      stats.resumeOverlapDropped++;
+      return true;
+    }
+
+    const hash = await observationHash(
+      JSON.stringify([sourceId, sourceEpoch, identity]),
+    );
+    if (boundaryCursor === null || event.time_us > boundaryCursor) {
+      boundaryCursor = event.time_us;
+      boundaryObservations = new Set([hash]);
+      cursorObservations = new Set([hash]);
+    } else if (event.time_us === boundaryCursor) {
+      const alreadyAccounted = boundaryObservations.has(hash);
+      boundaryObservations.add(hash);
+      if (!alreadyAccounted) cursorObservations.add(hash);
+    }
+
+    if (
+      effectiveStartCursor !== null &&
+      event.time_us === effectiveStartCursor &&
+      startingCursorObservations.has(hash)
+    ) {
+      stats.cursorBoundaryDuplicatesDropped++;
+      return true;
+    }
+    return false;
+  };
+
+  // Fully account for one yielded item before the loop considers any stop
+  // threshold. Exact boundary observations are suppressed before evolving
+  // source-scope policy; ordinary cheap filters still precede cycle dedupe.
+  const handleEvent = async (event: Ev): Promise<void> => {
     if (event.kind === "commit") {
       const { commit } = event;
-      totalCommits++;
-
-      const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
+      stats.commitObservations++;
+      const observation = jetstreamCommitObservation(event);
+      const dedupeKey = JSON.stringify([
+        sourceId,
+        sourceEpoch,
+        observation.key,
+      ]);
+      if (
+        await accountSourceItem(
+          event,
+          JSON.stringify([
+            "commit",
+            observation.key,
+            observation.fingerprint,
+          ]),
+        )
+      ) {
+        return;
+      }
 
       if (
         provisionalKnownDids &&
@@ -257,89 +551,104 @@ export async function ingestEvents(
         provisionalKnownDids &&
         !provisionalKnownDids.has(event.did)
       ) {
-        filteredUnknownDid++;
-        if (filteredDidSamples.size < 10) filteredDidSamples.add(event.did);
+        stats.sourceScopeFiltered++;
         return;
       }
 
-      const prev = seenUris.get(uri);
-      if (prev !== undefined) {
-        duplicateUris.push(uri);
-        log.warn(
-          `[ingest] DUPLICATE in cycle: ${uri} first time_us=${prev}, again=${event.time_us}, delta=${event.time_us - prev}us`
+      const fingerprints = seenObservations.get(dedupeKey);
+      if (fingerprints?.has(observation.fingerprint)) {
+        stats.exactDuplicatesDropped++;
+        return;
+      }
+      if (fingerprints) {
+        stats.sourceInconsistencies++;
+        addDiagnosticSample(
+          stats,
+          `source slot changed payload: ${observation.uri} time_us=${event.time_us}`,
         );
+        fingerprints.add(observation.fingerprint);
       } else {
-        seenUris.set(uri, event.time_us);
+        seenObservations.set(dedupeKey, new Set([observation.fingerprint]));
       }
 
-      collected.push(
-        createIngestEvent({
-          did: event.did,
-          timeUs:
-            commit.operation === "delete"
-              ? event.time_us
-              : recordTimeUs(
-                  commit.record,
-                  commit.collection,
-                  config,
-                  event.time_us,
-                ),
-          collection: commit.collection,
-          operation: commit.operation,
-          rkey: commit.rkey,
-          cid: commit.operation === "delete" ? null : commit.cid,
-          value: commit.operation === "delete" ? undefined : commit.record,
-          source: {
-            id: config.orderedSource?.source ?? "jetstream",
-            ...(config.orderedSource
-              ? { epoch: config.orderedSource.epoch }
-              : {}),
-            time_us: event.time_us,
-            revision: commit.rev,
-            cursor: String(event.time_us),
-          },
-        }),
-      );
-
-      log.log(
-        `[ingest] candidate: ${commit.operation} ${uri} time_us=${event.time_us}`
-      );
-
+      const candidate = createIngestEvent({
+        did: event.did,
+        timeUs:
+          commit.operation === "delete"
+            ? event.time_us
+            : recordTimeUs(
+                commit.record,
+                commit.collection,
+                config,
+                event.time_us,
+              ),
+        collection: commit.collection,
+        operation: commit.operation,
+        rkey: commit.rkey,
+        cid: commit.operation === "delete" ? null : commit.cid,
+        value: commit.operation === "delete" ? undefined : commit.record,
+        source: {
+          id: sourceId,
+          ...(sourceEpoch === null ? {} : { epoch: sourceEpoch }),
+          time_us: event.time_us,
+          revision: commit.rev,
+          cursor: String(event.time_us),
+        },
+      });
+      collected.push(candidate);
+      stats.retainedCandidates++;
+      stats.serializedCandidateBytes +=
+        SCHEDULED_INGEST_METADATA_BYTES +
+        (candidate.record === null ? 0 : utf8.encode(candidate.record).byteLength);
     } else if (event.kind === "identity") {
+      stats.identityObservations++;
+      if (await accountSourceItem(event, normalizedJson(event))) return;
       identityUpdates.set(event.did, event.identity.handle);
+    } else {
+      await accountSourceItem(event, normalizedJson(event));
     }
   };
 
   for (;;) {
-    // Run the exit checks BEFORE awaiting the next event and regardless of
-    // whether the previous event was filtered — otherwise a quiet stream blocks
-    // forever and an all-filtered flood never reaches the deadline check.
-    if (Date.now() >= deadline) {
-      log.log(
-        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
-      );
+    // Check the deadline before requesting another item. A hot iterator must not
+    // get one extra next() after any threshold has been reached.
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      stats.stopReason = "drain-time";
       break;
     }
 
-    const step = await nextWithDeadline(iterator, Math.max(0, deadline - Date.now()));
+    const step = await nextWithDeadline(iterator, remainingMs);
     if (step === INGEST_TIMEOUT) {
-      log.log(
-        `[ingest] safety timeout reached, stopping (deadline=${deadline}, collected=${collected.length})`
-      );
+      stats.stopReason = "drain-time";
       break;
     }
-    if (step.done) break;
+    if (step.done) {
+      stats.stopReason = "idle";
+      break;
+    }
     const event = step.value;
+    stats.observedSourceItems++;
 
-    if (firstYieldedTimeUs === null) firstYieldedTimeUs = event.time_us;
-    lastYieldedTimeUs = event.time_us;
+    await handleEvent(event);
+    // handleEvent either retained, filtered, deduplicated, or deliberately
+    // handled the item. Only now is its cursor safe to checkpoint. Keep the
+    // representable checkpoint monotonic across deliberate overlap replay.
+    stats.lastAccountedCursor = Math.max(
+      stats.lastAccountedCursor ?? event.time_us,
+      event.time_us,
+    );
 
-    handleEvent(event);
-
+    if (stats.retainedCandidates >= budget.maxCandidates) {
+      stats.stopReason = "count";
+      break;
+    }
+    if (stats.serializedCandidateBytes >= budget.maxSerializedBytes) {
+      stats.stopReason = "bytes";
+      break;
+    }
     if (event.time_us >= startTimeUs) {
-      log.log(
-        `[ingest] caught up to present, stopping (last time_us=${event.time_us}, startTimeUs=${startTimeUs})`
-      );
+      stats.stopReason = "head";
       break;
     }
   }
@@ -348,74 +657,98 @@ export async function ingestEvents(
   // iterator's return on a quiet stream could itself block (the hang we fix).
   Promise.resolve(iterator.return?.()).catch(() => {});
 
-  if (filteredUnknownDid > 0) {
-    const sample = [...filteredDidSamples].join(", ");
-    log.log(
-      `[ingest] ${filteredUnknownDid} events filtered (unknown did). sample dids: ${sample}`
-    );
-  }
-  const subscriptionCursor = subscription.cursor || null;
-  // @atcute may advance its internal cursor when an event enters its buffer,
-  // before the async iterator yields that event. Persist only through the last
-  // event Contrail actually observed; anything buffered is deliberately replayed.
+  // Never read Atcute's cursor again here: it may have moved when a frame was
+  // buffered but not yielded. The constructor cursor captured above and the
+  // maximum fully-accounted yielded cursor are the only safe positions.
   const lastCursor =
-    lastYieldedTimeUs === null
-      ? subscriptionCursor
-      : subscriptionCursor === null
-        ? lastYieldedTimeUs
-        : Math.min(subscriptionCursor, lastYieldedTimeUs);
+    effectiveStartCursor === null
+      ? stats.lastAccountedCursor
+      : Math.max(
+          effectiveStartCursor,
+          stats.lastAccountedCursor ?? effectiveStartCursor,
+        );
+  stats.safeEndingCursor = lastCursor;
+  if (lastCursor !== boundaryCursor) {
+    // This occurs only for an older deliberate overlap. Leave the durable
+    // boundary unchanged rather than attaching old hashes to a newer cursor.
+    cursorObservations = new Set();
+  }
 
-  const cursorGap =
-    subscriptionCursor !== null && lastYieldedTimeUs !== null
-      ? subscriptionCursor - lastYieldedTimeUs
-      : null;
+  return {
+    events: collected,
+    lastCursor,
+    cursorObservations,
+    identityUpdates,
+    stats,
+  };
+}
 
-  // Detect the library's internal cursor rollback (picks a different URL → rolls
-  // back 10s → first event comes in BEFORE the cursor we asked it to start from).
-  const rolledBackUs =
-    cursor !== null && firstYieldedTimeUs !== null && firstYieldedTimeUs < cursor
-      ? cursor - firstYieldedTimeUs
-      : 0;
+function emptyDropCounts(): IngestDropCounts {
+  return {
+    unknownCollection: 0,
+    invalidRecord: 0,
+    lexiconValidation: 0,
+    cidMismatch: 0,
+    cidEncoding: 0,
+    missingCid: 0,
+    recordFilter: 0,
+    unknownActor: 0,
+    unknownSubject: 0,
+    superseded: 0,
+  };
+}
 
-  log.log(
-    `[ingest] jetstream loop done. commits_seen=${totalCommits}, filtered=${filteredUnknownDid}, candidates=${collected.length}, dupes=${duplicateUris.length}, connects=${connectCount}, first_yielded=${firstYieldedTimeUs ?? "none"}, last_yielded=${lastYieldedTimeUs ?? "none"}, subscription_cursor=${subscriptionCursor ?? "none"}, safe_cursor=${lastCursor ?? "none"}, cursor_gap=${cursorGap ?? "n/a"}us, rolled_back=${rolledBackUs}us`
+function addDropCounts(target: IngestDropCounts, value: IngestDropCounts): void {
+  for (const key of Object.keys(target) as Array<keyof IngestDropCounts>) {
+    target[key] += value[key];
+  }
+}
+
+function admissionFilteredCount(dropped: IngestDropCounts): number {
+  return Object.entries(dropped).reduce(
+    (total, [key, value]) => key === "superseded" ? total : total + value,
+    0,
   );
+}
 
-  if (cursorGap !== null && cursorGap > 1000) {
-    log.warn(
-      `[ingest] CURSOR GAP: subscription cursor is ${cursorGap}us (${Math.floor(
-        cursorGap / 1000
-      )}ms) ahead of last yielded event — saving safe_cursor=${lastCursor ?? "none"}; buffered events will replay`
-    );
-  }
-
-  if (connectCount > 1) {
-    if (urls.length > 1) {
-      // Multi-instance pool: each reconnect picks a URL at random, and @atcute
-      // rolls the cursor back up to 10s on a fresh instance to absorb clock skew.
-      log.warn(
-        `[ingest] RECONNECTED ${connectCount} times during cycle across a ${urls.length}-instance pool — each reconnect picks a URL at random and may roll the cursor back up to 10s (rolled_back=${rolledBackUs}us this cycle)`
-      );
-    } else {
-      // Single fixed instance (see jetstreamUrlOption): reconnects resume on the
-      // same instance from the saved cursor, so there is no rollback.
-      log.log(
-        `[ingest] reconnected ${connectCount} times during cycle to the single fixed instance — no cursor rollback (rolled_back=${rolledBackUs}us)`
-      );
+function runtimeCpuUsage(): (() => number) | null {
+  const runtimeProcess = (
+    globalThis as typeof globalThis & {
+      process?: {
+        cpuUsage?: (previous?: { user: number; system: number }) => {
+          user: number;
+          system: number;
+        };
+      };
     }
-  }
-
-  return { events: collected, lastCursor, identityUpdates };
+  ).process;
+  if (!runtimeProcess?.cpuUsage) return null;
+  const start = runtimeProcess.cpuUsage();
+  return () => {
+    const elapsed = runtimeProcess.cpuUsage!(start);
+    return Math.round((elapsed.user + elapsed.system) / 100) / 10;
+  };
 }
 
 // Run a full ingest cycle: init schema, load cursor, ingest, apply, save cursor
 export async function runIngestCycle(
   db: Database,
   config: ContrailConfig,
-  timeoutMs: number = 25_000,
+  budgetInput: ScheduledIngestOptions | ScheduledIngestBudget | number =
+    DEFAULT_SCHEDULED_INGEST_BUDGET,
   state?: IngestState,
 ): Promise<void> {
   const log = getLogger(config);
+  const budget = resolveScheduledIngestBudget(budgetInput);
+  const scheduledUrls = config.jetstreams ?? DEFAULT_JETSTREAMS;
+  if (scheduledUrls.length !== 1) {
+    throw new TypeError(
+      "scheduled ingestion requires exactly one pinned Jetstream endpoint; " +
+        "use runPersistent() for a failover pool",
+    );
+  }
+  const wallStartedAt = Date.now();
+  const finishCpuUsage = runtimeCpuUsage();
   const s = state ?? createIngestState();
 
   if (!s.schemaInitialized) {
@@ -424,15 +757,8 @@ export async function runIngestCycle(
   }
 
   const cursor = await getLastCursor(db);
-  const collections = getCollectionNsids(config);
-  const nowUs = Date.now() * 1000;
-  const lagMs = cursor !== null ? Math.floor((nowUs - cursor) / 1000) : null;
-
-  log.log(
-    `[ingest] starting cycle. cursor=${cursor ?? "none"}${
-      lagMs !== null ? ` (lag=${lagMs}ms)` : ""
-    }, timeout=${timeoutMs}ms, collections=${collections.join(", ")}`
-  );
+  const startingCursorObservations =
+    cursor === null ? new Set<string>() : await getCursorObservations(db, cursor);
 
   // Load known DIDs for filtering dependent collections
   const dependentCollections = getDependentNsids(config);
@@ -441,44 +767,44 @@ export async function runIngestCycle(
   if (dependentCollections.length > 0) {
     if (s.cachedKnownDids) {
       knownDids = s.cachedKnownDids;
-      log.log(`Using cached known DIDs (${knownDids.size} users)`);
     } else {
       const result = await db
         .prepare("SELECT did FROM identities")
         .all<{ did: string }>();
       knownDids = new Set((result.results ?? []).map((r) => r.did));
       s.cachedKnownDids = knownDids;
-      log.log(`Loaded ${knownDids.size} known DIDs from database`);
     }
   }
 
-  const { events, lastCursor, identityUpdates } = await ingestEvents(
+  const {
+    events,
+    lastCursor,
+    cursorObservations,
+    identityUpdates,
+    stats,
+  } = await ingestEvents(
     config,
     cursor,
-    timeoutMs,
-    knownDids
+    budget,
+    knownDids,
+    startingCursorObservations,
   );
-
-  if (events.length > 0) {
-    const breakdown: Record<string, number> = {};
-    for (const e of events) {
-      const key = `${e.collection}:${e.operation}`;
-      breakdown[key] = (breakdown[key] ?? 0) + 1;
-    }
-    log.log(
-      `[ingest] received ${events.length} events. breakdown=${JSON.stringify(breakdown)}`
-    );
-  } else {
-    log.log(`[ingest] received 0 events from Jetstream`);
-  }
 
   const accepted: IngestEvent[] = [];
   const newlyKnownDids: string[] = [];
+  const dropped = emptyDropCounts();
+  let databaseSubBatchesCommitted = 0;
+  const warningSamples: IngestWarningSamples = {
+    maxSamples: MAX_DIAGNOSTIC_SAMPLES,
+    samples: stats.diagnosticSamples,
+    omitted: stats.diagnosticSamplesOmitted,
+  };
   for (let i = 0; i < events.length; i += BATCH_SIZE) {
     const batch = events.slice(i, i + BATCH_SIZE);
     const isFinalBatch = i + BATCH_SIZE >= events.length;
     const result = await ingestRecords(db, batch, config, {
       knownDids,
+      warningSamples,
       // Earlier batches may commit without moving the cursor. A crash replays
       // them safely; the final batch atomically commits the exact source cursor.
       trailingStatements:
@@ -494,10 +820,17 @@ export async function runIngestCycle(
                     ),
                   ]
                 : []),
+              ...saveCursorObservationStatements(
+                db,
+                lastCursor,
+                cursorObservations,
+              ),
             ]
           : undefined,
     });
+    databaseSubBatchesCommitted++;
     accepted.push(...result.accepted);
+    addDropCounts(dropped, result.dropped);
     if (knownDids) {
       for (const did of result.discoveredDids) {
         knownDids.add(did);
@@ -506,54 +839,97 @@ export async function runIngestCycle(
     }
   }
 
-  // Apply handle changes from #identity events. UPDATE-only, so unknown
-  // DIDs are no-ops — we don't want to create partial rows lacking PDS.
-  if (identityUpdates.size > 0) {
-    for (const [did, handle] of identityUpdates) {
-      try {
-        await applyIdentityEvent(db, did, handle);
-      } catch (err) {
-        log.warn(`[ingest] identity update failed for ${did}: ${err}`);
+  // Apply handle changes from #identity events. UPDATE-only, so unknown DIDs
+  // are no-ops. Failures are sampled into the bounded cycle summary.
+  let identityUpdateFailures = 0;
+  for (const [did, handle] of identityUpdates) {
+    try {
+      await applyIdentityEvent(db, did, handle);
+    } catch (error) {
+      identityUpdateFailures++;
+      if (warningSamples.samples.length < warningSamples.maxSamples) {
+        warningSamples.samples.push(
+          `identity update failed for ${did}: ${String(error)}`.slice(
+            0,
+            MAX_DIAGNOSTIC_SAMPLE_LENGTH,
+          ),
+        );
+      } else {
+        warningSamples.omitted++;
       }
     }
-    log.log(`[ingest] applied ${identityUpdates.size} identity event(s)`);
   }
 
   // A commit batch saves its source cursor in the projection transaction above.
-  // An identity-only or fully filtered stream has no canonical record batch, so
-  // its cursor can advance independently after best-effort identity handling.
-  if (lastCursor !== null && events.length === 0) {
-    await saveCursor(db, lastCursor, config.orderedSource);
-  }
-  if (lastCursor !== null) {
-    log.log(
-      `[ingest] saved cursor=${lastCursor} (advanced ${
-        cursor !== null ? lastCursor - cursor : "n/a"
-      }us, atomic=${events.length > 0})`,
+  // Identity-only, filtered-only, or otherwise candidate-free accounted ranges
+  // checkpoint only after best-effort identity handling. No observed item means
+  // there is no new source work to save, even if the subscription buffered ahead.
+  if (
+    lastCursor !== null &&
+    events.length === 0 &&
+    // Save an accounted range, or capture Atcute's constructor cursor for an
+    // empty first drain so the next cron cannot silently start later.
+    (stats.lastAccountedCursor !== null || cursor === null)
+  ) {
+    await saveCursor(
+      db,
+      lastCursor,
+      config.orderedSource,
+      cursorObservations,
     );
-  } else {
-    log.log(`[ingest] no cursor returned from subscription; not saving`);
+    databaseSubBatchesCommitted++;
   }
 
   // Refresh stale/missing identities for DIDs in this batch (best-effort; runs
   // after the cursor save so its network latency can't strand forward progress).
   const uniqueDids = [...new Set(accepted.map((e) => e.did))];
+  let identityRefreshFailures = 0;
   if (uniqueDids.length > 0) {
     try {
       await refreshStaleIdentities(db, uniqueDids, config);
-    } catch (err) {
-      log.warn(`Identity refresh failed: ${err}`);
+    } catch (error) {
+      identityRefreshFailures++;
+      if (warningSamples.samples.length < warningSamples.maxSamples) {
+        warningSamples.samples.push(
+          `identity refresh failed: ${String(error)}`.slice(
+            0,
+            MAX_DIAGNOSTIC_SAMPLE_LENGTH,
+          ),
+        );
+      } else {
+        warningSamples.omitted++;
+      }
     }
   }
 
-  // Newly-discovered DIDs: ask Constellation for back-edges so they
-  // immediately appear in existing followers' feeds (best-effort, opt-out).
+  // Newly-discovered DIDs: ask Constellation for back-edges. Suppress helper
+  // per-subject logs and report bounded aggregate results in the cycle summary.
+  let constellationFailures = 0;
+  let constellationInserted = 0;
   if (config.feeds && newlyKnownDids.length > 0) {
+    const quietConfig = {
+      ...config,
+      logger: { log() {}, warn() {}, error() {} },
+    };
     for (const subj of newlyKnownDids) {
       try {
-        await backfillFollowersFromConstellation(db, config, subj);
-      } catch (err) {
-        log.warn(`[constellation] subject=${subj} failed: ${err}`);
+        constellationInserted += await backfillFollowersFromConstellation(
+          db,
+          quietConfig,
+          subj,
+        );
+      } catch (error) {
+        constellationFailures++;
+        if (warningSamples.samples.length < warningSamples.maxSamples) {
+          warningSamples.samples.push(
+            `constellation failed for ${subj}: ${String(error)}`.slice(
+              0,
+              MAX_DIAGNOSTIC_SAMPLE_LENGTH,
+            ),
+          );
+        } else {
+          warningSamples.omitted++;
+        }
       }
     }
   }
@@ -586,5 +962,41 @@ export async function runIngestCycle(
   // config.maintenance.optimize is set).
   await maybeOptimize(db, config, log);
 
-  log.log(`[ingest] cycle complete. stored=${accepted.length}`);
+  const summary = {
+    observed_source_items: stats.observedSourceItems,
+    commit_observations: stats.commitObservations,
+    identity_observations: stats.identityObservations,
+    retained_candidates: stats.retainedCandidates,
+    exact_duplicates_dropped: stats.exactDuplicatesDropped,
+    cursor_boundary_duplicates_dropped:
+      stats.cursorBoundaryDuplicatesDropped,
+    resume_overlap_dropped: stats.resumeOverlapDropped,
+    source_scope_filtered: stats.sourceScopeFiltered,
+    admission_policy_filtered: admissionFilteredCount(dropped),
+    candidates_superseded: dropped.superseded,
+    source_inconsistencies: stats.sourceInconsistencies,
+    serialized_candidate_bytes: stats.serializedCandidateBytes,
+    max_candidates: budget.maxCandidates,
+    max_serialized_bytes: budget.maxSerializedBytes,
+    max_drain_ms: budget.maxDrainMs,
+    starting_cursor: cursor,
+    last_accounted_cursor: stats.lastAccountedCursor,
+    safe_ending_cursor: stats.safeEndingCursor,
+    stop_reason: stats.stopReason,
+    database_sub_batches_committed: databaseSubBatchesCommitted,
+    projected_mutations_accepted: accepted.length,
+    identity_updates_attempted: identityUpdates.size,
+    identity_update_failures: identityUpdateFailures,
+    identity_refresh_failures: identityRefreshFailures,
+    constellation_inserted: constellationInserted,
+    constellation_failures: constellationFailures,
+    connections: stats.connections,
+    connection_closes: stats.connectionCloses,
+    connection_errors: stats.connectionErrors,
+    wall_ms: Date.now() - wallStartedAt,
+    cpu_ms: finishCpuUsage?.() ?? null,
+    diagnostic_samples: warningSamples.samples,
+    diagnostic_samples_omitted: warningSamples.omitted,
+  };
+  log.log(`[ingest] cycle summary ${JSON.stringify(summary)}`);
 }

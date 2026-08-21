@@ -18,6 +18,7 @@ import { Contrail } from "../contrail.js";
 import { createHandler } from "../server.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillRetryOptions } from "../core/backfill.js";
+import type { ScheduledIngestOptions } from "../core/jetstream.js";
 import {
   normalizePublicServiceEndpoint,
   validatePublicServiceAuthEndpoint,
@@ -33,6 +34,8 @@ export interface CreateWorkerOptions {
   lexicons?: object[];
   /** Enable stable discovery and Lexicon routes for anonymous remote clients. */
   publicService?: PublicServiceOptions;
+  /** Count, byte, and drain-time limits for each scheduled Jetstream cycle. */
+  scheduledIngest?: ScheduledIngestOptions;
   /** Bounded pending-account retry slice after each scheduled ingest. Enabled
    *  by default; pass `false` to disable or options to tune its budget. */
   backfillRetries?: BackfillRetryOptions | false;
@@ -84,7 +87,7 @@ export function createWorker(
       // failures. A database lease prevents overlap with a manual backfill.
       ctx.waitUntil(
         (async () => {
-          await contrail.ingest({}, db);
+          await contrail.ingest(options.scheduledIngest, db);
           if (options.backfillRetries !== false) {
             await contrail.retryBackfill(options.backfillRetries, db);
           }
