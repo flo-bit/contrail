@@ -37,7 +37,7 @@ import {
 } from "../types";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 12;
+export const CONTRAIL_SCHEMA_VERSION = 13;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -783,6 +783,17 @@ export async function initSchema(
       await assertFreshChangeLogGeneration(db);
     }
     for (const statement of changes) await runIdempotentDdl(db, statement);
+    await addColumnIfNotExists(
+      db,
+      "change_batches",
+      "encoded_bytes",
+      "INTEGER",
+    );
+    await db
+      .prepare(
+        "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",
+      )
+      .run();
     await initializeChangeLog(db, config);
   }
 

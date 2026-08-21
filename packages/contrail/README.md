@@ -96,7 +96,32 @@ const config = {
 
 Static definitions contain no handlers, URLs, clients, credentials, or secrets. Contrail registers them with a random database-generation ID and collection/phase coverage ledger. A winning logical put/delete appends one compact URI/version reference in the same transaction as canonical and derived state plus the source checkpoint. Duplicate, stale, same-CID, absent-delete, rejected, and rolled-back mutations append nothing. Record bodies are hydrated from current state by the later delivery layer rather than copied into the log.
 
-This milestone intentionally exposes only the atomic log foundation; leased claim/hydrate/ack delivery and current-state bootstrap APIs follow separately. Enabling logging on a populated database, changing coverage, or disabling an existing log fails closed until explicit quiet-boundary migration tooling lands. With no configured consumers, no change-log tables or append writes exist.
+Low-level delivery uses bounded leases and compare-and-swap acknowledgement:
+
+```ts
+const claim = await contrail.changes.claim("webhooks", {
+  maxBatches: 20,
+  maxChanges: 500,
+  maxBytes: 512_000,
+  leaseMs: 30_000,
+});
+if (claim) {
+  try {
+    const batch = await contrail.changes.hydrate(claim);
+    await deliverIdempotently(batch);
+    await contrail.changes.ack(claim);
+  } catch {
+    await contrail.changes.fail(claim, {
+      code: "destination_unavailable",
+      nextAttemptAt: Date.now() + 30_000,
+    });
+  }
+}
+```
+
+Claims coalesce repeated URIs, hydrate in set-oriented collection queries, and resolve delete/recreate races from newest canonical state. Consumers lease and progress independently; irrelevant position ranges advance without invoking a handler. Delivery is intentionally at least once—a destination success followed by an acknowledgement crash causes duplicate delivery. Handlers must be idempotent by stable record/document key.
+
+`initial: "future"` and `initial: "history"` consumers can use this API now. `initial: "current"` remains pending until the snapshot-plus-tail bootstrap coordinator lands in the next milestone. `contrail changes status` and `contrail changes retry <consumer>` expose private status and manual retry for SQLite or Wrangler D1 deployments. Enabling logging on a populated database, changing coverage, or disabling an existing log fails closed until explicit quiet-boundary migration tooling lands. With no configured consumers, no change-log tables or append writes exist.
 
 ## Local development
 

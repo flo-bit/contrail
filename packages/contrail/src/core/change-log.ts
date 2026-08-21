@@ -102,6 +102,7 @@ export function buildChangeLogSchema(
       phase TEXT NOT NULL CHECK (phase IN ('historical', 'live')),
       changes_json TEXT NOT NULL,
       change_count INTEGER NOT NULL,
+      encoded_bytes INTEGER NOT NULL,
       created_at ${bigint} NOT NULL,
       PRIMARY KEY (generation_id, position)
     )`,
@@ -235,8 +236,8 @@ export async function initializeChangeLog(
             configured_collections_json, configured_phases_json, initial_mode,
             required_for_activation, bootstrap_state,
             bootstrap_anchor_position, attempts, updated_at)
-           SELECT ?, generation_id, head_position, ?, ?, ?, ?, ?,
-                  CASE WHEN ? = 'current' THEN head_position ELSE NULL END,
+           SELECT ?, generation_id, 0, ?, ?, ?, ?, ?,
+                  CASE WHEN ? = 'current' THEN 0 ELSE NULL END,
                   0, ?
            FROM change_log_state
            WHERE id = 1 AND definitions_json = ?
@@ -262,7 +263,7 @@ export async function initializeChangeLog(
         .prepare(
           `INSERT INTO change_log_coverage
            (generation_id, collection, phase, from_position, through_position)
-           SELECT generation_id, ?, ?, head_position, NULL
+           SELECT generation_id, ?, ?, 0, NULL
            FROM change_log_state
            WHERE id = 1 AND definitions_json = ?
            ON CONFLICT(generation_id, collection, phase, from_position)
@@ -312,7 +313,6 @@ async function assertChangeLogDefinition(
   for (let index = 0; index < expectedConsumers.length; index++) {
     const [id, expected] = expectedConsumers[index]!;
     const actual = consumers.results[index]!;
-    const bootstrapState = expected.initial === "current" ? "pending" : "ready";
     if (
       actual.consumer_id !== id ||
       actual.generation_id !== state.generation_id ||
@@ -320,12 +320,7 @@ async function assertChangeLogDefinition(
       actual.configured_phases_json !== canonicalPhases(changeConsumerPhases(expected)) ||
       actual.initial_mode !== expected.initial ||
       Number(actual.required_for_activation) !==
-        (expected.requiredForActivation === true ? 1 : 0) ||
-      actual.bootstrap_state !== bootstrapState ||
-      Number(actual.acknowledged_position) !== 0 ||
-      (expected.initial === "current"
-        ? Number(actual.bootstrap_anchor_position) !== 0
-        : actual.bootstrap_anchor_position !== null)
+        (expected.requiredForActivation === true ? 1 : 0)
     ) {
       throw new Error(`Durable change consumer ${id} is incompatible`);
     }
@@ -499,11 +494,11 @@ export function appendChangeLogStatements(
         `INSERT INTO change_batches
          (generation_id, position, projection_transaction_id, source_id,
           source_epoch, source_cursor, phase, changes_json, change_count,
-          created_at)
+          encoded_bytes, created_at)
          VALUES (
            (SELECT generation_id FROM change_log_state WHERE id = 1),
            (SELECT head_position FROM change_log_state WHERE id = 1),
-           ?, ?, ?, ?, ?, ?, ?, ?
+           ?, ?, ?, ?, ?, ?, ?, ?, ?
          )`,
       )
       .bind(
@@ -514,6 +509,7 @@ export function appendChangeLogStatements(
         phase,
         serialized,
         changes.length,
+        bytes,
         now,
       ),
   ];

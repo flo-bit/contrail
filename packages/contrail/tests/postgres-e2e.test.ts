@@ -12,6 +12,10 @@ import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
 import { initSchema } from "../src/index";
 import {
+  acknowledgeChanges,
+  claimChanges,
+  getChangesStatus,
+  hydrateChanges,
   ingestRecords,
   queryRecords,
   getLastCursor,
@@ -50,6 +54,26 @@ const TEST_CONFIG = resolveConfig({
           collection: "community.lexicon.calendar.event",
           field: "subject.uri",
         },
+      },
+    },
+  },
+});
+
+const CHANGE_CONFIG = resolveConfig({
+  namespace: "com.example",
+  profiles: [],
+  collections: {
+    event: { collection: "community.lexicon.calendar.event" },
+  },
+  changes: {
+    consumers: {
+      search: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "history",
+      },
+      analytics: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "history",
       },
     },
   },
@@ -556,6 +580,44 @@ if (!PG_URL) {
         expect(refs[rsvp.uri]?.event).toBeDefined();
         expect(refs[rsvp.uri].event.uri).toBe(eventUri1);
       }
+    });
+  });
+
+  describe("durable change consumers", () => {
+    it("claims, hydrates, and acknowledges independently", async () => {
+      await initSchema(db, CHANGE_CONFIG);
+      await ingestRecords(
+        db,
+        [
+          makeEvent({
+            uri: "at://did:plc:test/community.lexicon.calendar.event/change",
+            rkey: "change",
+            cid: "cid-change",
+            record: { name: "Change", mode: "online" },
+            time_us: 100,
+            indexed_at: 100,
+          }),
+        ],
+        CHANGE_CONFIG,
+      );
+
+      const search = await claimChanges(db, "search", { now: 1_000 });
+      const analytics = await claimChanges(db, "analytics", { now: 1_000 });
+      expect(search?.through).toBe("1");
+      expect(analytics?.through).toBe("1");
+      const delivery = await hydrateChanges(db, CHANGE_CONFIG, search!);
+      expect(delivery.currentRecords[0]).toMatchObject({
+        cid: "cid-change",
+        value: { name: "Change", mode: "online" },
+      });
+      await acknowledgeChanges(db, search!, { now: 1_001 });
+      expect((await getChangesStatus(db)).consumers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "search", position: "1" }),
+          expect.objectContaining({ id: "analytics", position: "0" }),
+        ]),
+      );
+      await acknowledgeChanges(db, analytics!, { now: 1_001 });
     });
   });
 

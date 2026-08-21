@@ -14,6 +14,7 @@ import {
   prepareRecordValidation,
 } from "./core/validation";
 import { getIngestDiagnostics } from "./core/diagnostics";
+import { ChangeConsumers } from "./core/changes";
 import { optimizeDatabase } from "./core/db/optimize";
 import {
   assertServingSourceCompatibility,
@@ -60,6 +61,8 @@ export interface ContrailOptions extends ContrailConfig {
 
 export class Contrail {
   readonly config: ResolvedContrailConfig;
+  /** Durable low-level claim/hydrate/ack consumer API. */
+  readonly changes: ChangeConsumers;
   private _db?: Database;
   private _ingestState: IngestState = createIngestState();
 
@@ -72,6 +75,10 @@ export class Contrail {
     // Otherwise init/app binds the runtime's generated bundle first.
     if (lexicons) prepareRecordValidation(this.config);
     this._db = db;
+    this.changes = new ChangeConsumers(
+      this.config,
+      (database) => this.getDb(database),
+    );
   }
 
   private getDb(db?: Database): Database {
