@@ -2,7 +2,7 @@
 
 > **Pre-alpha.** Expect breaking changes.
 
-Contrail turns public AT Protocol records into a queryable AppView.
+Contrail turns AT Protocol records into a queryable AppView. The published package targets public records; an optional workspace-private alpha extension adds permissioned Space projections.
 
 It provides:
 
@@ -146,15 +146,17 @@ The runnable [`apps/sqlite`](apps/sqlite) example wires the standard backfill CL
   - [Using a service](docs/public-services/using.md)
   - [Example: api.atmo.rsvp](docs/public-services/api-atmo-rsvp.md)
 - [SvelteKit + Cloudflare](docs/frameworks/sveltekit-cloudflare.md)
+- [Experimental AT Protocol Spaces](docs/experimental-spaces-alpha.md)
 
 ## Repository layout
 
-There is one published package and one implementation:
+There is one published package and one optional unpublished alpha extension:
 
 ```text
-packages/contrail/   @atmo-dev/contrail
+packages/contrail/                @atmo-dev/contrail
+packages/contrail-spaces-alpha/   @atmo-dev/contrail-spaces-alpha (private)
 ```
 
-The previous AppView, base, community, authority, record-host, sync, and Lexicon packages have been removed.
+The Spaces extension is an aggregator/AppView, not an authority or record host. The previous custom authority, record-host, community, and realtime products remain removed.
 
 See [development.md](development.md) for repository commands.

@@ -1,0 +1,35 @@
+diff --git a/dist/bases/base64-node.js b/dist/bases/base64-node.js
+index 292c3a70f8f97ccfc7f324f8bf77ab329724e1b3..1633d166b3a61903cf9ff437a10c200dc145b5a7 100644
+--- a/dist/bases/base64-node.js
++++ b/dist/bases/base64-node.js
+@@ -66,26 +66,26 @@ const rawFromBase64UrlPad = (str) => {
+ };
+ // #region base64
+ export const toBase64 = (bytes) => {
+-    return trimBase64Padding(_base64Slice.call(bytes));
++    return trimBase64Padding(_base64Slice.call(bytes, 0, bytes.length));
+ };
+ export const fromBase64 = /*#__PURE__*/ roundtrip(rawFromBase64, toBase64);
+ // #endregion
+ // #region base64pad
+ export const toBase64Pad = (bytes) => {
+-    return _base64Slice.call(bytes);
++    return _base64Slice.call(bytes, 0, bytes.length);
+ };
+ export const fromBase64Pad = /*#__PURE__*/ roundtrip(rawFromBase64Pad, toBase64Pad);
+ // #endregion
+ // #region base64url
+ export const toBase64Url = (bytes) => {
+-    return _base64UrlSlice.call(bytes);
++    return _base64UrlSlice.call(bytes, 0, bytes.length);
+ };
+ export const fromBase64Url = /*#__PURE__*/ roundtrip(rawFromBase64Url, toBase64Url);
+ // #endregion
+ // #region base64urlpad
+ const PADDING = ['', '===', '==', '='];
+ export const toBase64UrlPad = (bytes) => {
+-    const str = _base64UrlSlice.call(bytes);
++    const str = _base64UrlSlice.call(bytes, 0, bytes.length);
+     return str + PADDING[str.length % 4];
+ };
+ export const fromBase64UrlPad = /*#__PURE__*/ roundtrip(rawFromBase64UrlPad, toBase64UrlPad);
