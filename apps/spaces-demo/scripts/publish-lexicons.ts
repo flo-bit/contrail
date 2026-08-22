@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { networkLexicons } from "../src/lexicons";
+import { networkLexicons } from "../src/lib/lexicons";
 
 const collection = "com.atproto.lexicon.schema";
 

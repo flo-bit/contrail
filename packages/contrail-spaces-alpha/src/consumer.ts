@@ -35,12 +35,29 @@ export function formatSpacePermissionScope(input: SpacePermissionScopeInput): st
   return `space:${input.type}?${params.toString()}`;
 }
 
-export function spacesConsumerOAuthScopes(input: {
-  audience: string;
-  namespace: string;
+export interface SpacesOAuthScopeInput {
   collections: readonly string[];
   spaceType: string;
   skey?: string;
+}
+
+/** OAuth scopes for an integrated application. User-facing Contrail calls are
+ * authenticated by the application's own session rather than AT service JWTs. */
+export function spacesIntegratedOAuthScopes(input: SpacesOAuthScopeInput): string[] {
+  return [
+    "atproto",
+    formatSpacePermissionScope({
+      type: input.spaceType,
+      skey: input.skey,
+      collections: input.collections,
+    }),
+  ];
+}
+
+/** OAuth scopes for the optional standalone service-auth adapter. */
+export function spacesConsumerOAuthScopes(input: SpacesOAuthScopeInput & {
+  audience: string;
+  namespace: string;
 }): string[] {
   const methods = [
     `${input.namespace}.authorizeSpace`,
@@ -56,12 +73,7 @@ export function spacesConsumerOAuthScopes(input: {
     }),
   ];
   return [
-    "atproto",
-    formatSpacePermissionScope({
-      type: input.spaceType,
-      skey: input.skey,
-      collections: input.collections,
-    }),
+    ...spacesIntegratedOAuthScopes(input),
     formatServiceOAuthScope(input.audience as never, methods),
   ];
 }

@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@atcute/multibase@1.2.5':
+    hash: a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9
+    path: patches/@atcute__multibase@1.2.5.patch
+  '@svelte-atproto/oauth@0.3.0':
+    hash: 6e9cef7a07d214f8a2d7e7142343bb25ebfd9146a99f667c7363322cbbfd7036
+    path: patches/@svelte-atproto__oauth@0.3.0.patch
+
 importers:
 
   .:
@@ -102,12 +110,15 @@ importers:
 
   apps/spaces-demo:
     dependencies:
+      '@atmo-dev/contrail':
+        specifier: workspace:*
+        version: link:../../packages/contrail
       '@atmo-dev/contrail-spaces-alpha':
         specifier: workspace:*
         version: link:../../packages/contrail-spaces-alpha
       '@svelte-atproto/oauth':
         specifier: ^0.3.0
-        version: 0.3.0(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@sveltejs/kit@2.70.2(@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(@typescript-eslint/types@8.66.0))(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)
+        version: 0.3.0(patch_hash=6e9cef7a07d214f8a2d7e7142343bb25ebfd9146a99f667c7363322cbbfd7036)(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@sveltejs/kit@2.70.2(@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(@typescript-eslint/types@8.66.0))(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20260804.1
@@ -127,34 +138,15 @@ importers:
       svelte-check:
         specifier: ^4.7.4
         version: 4.7.4(picomatch@4.0.5)(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vite:
-        specifier: ^8.2.0
-        version: 8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)
-      wrangler:
-        specifier: ^4.118.0
-        version: 4.118.0(@cloudflare/workers-types@5.20260804.1)
-
-  apps/spaces-demo-provider:
-    dependencies:
-      '@atmo-dev/contrail':
-        specifier: workspace:*
-        version: link:../../packages/contrail
-      '@atmo-dev/contrail-spaces-alpha':
-        specifier: workspace:*
-        version: link:../../packages/contrail-spaces-alpha
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: ^5.20260804.1
-        version: 5.20260804.1
       tsx:
         specifier: ^4.21.0
         version: 4.23.6
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+      vite:
+        specifier: ^8.2.0
+        version: 8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)
       wrangler:
         specifier: ^4.118.0
         version: 4.118.0(@cloudflare/workers-types@5.20260804.1)
@@ -4280,12 +4272,12 @@ snapshots:
   '@atcute/cbor@2.3.6(@atcute/cid@2.4.2)':
     dependencies:
       '@atcute/cid': 2.4.2
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/uint8array': 1.1.5
 
   '@atcute/cid@2.4.2':
     dependencies:
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/uint8array': 1.1.5
 
   '@atcute/client@5.1.1(@atcute/lexicons@2.0.3)(typescript@6.0.3)':
@@ -4297,7 +4289,7 @@ snapshots:
 
   '@atcute/crypto@2.4.4':
     dependencies:
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/uint8array': 1.1.5
       '@noble/secp256k1': 3.1.0
 
@@ -4386,7 +4378,7 @@ snapshots:
       '@atcute/cid': 2.4.2
       '@atcute/uint8array': 1.1.5
 
-  '@atcute/multibase@1.2.5':
+  '@atcute/multibase@1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)':
     dependencies:
       '@atcute/uint8array': 1.1.5
 
@@ -4395,7 +4387,7 @@ snapshots:
       '@atcute/client': 5.1.1(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/identity-resolver': 2.0.1(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/lexicons': 2.0.3
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/oauth-crypto': 1.0.1(typescript@6.0.3)
       '@atcute/oauth-types': 1.0.1(typescript@6.0.3)
       nanoid: 5.1.16
@@ -4404,7 +4396,7 @@ snapshots:
 
   '@atcute/oauth-crypto@1.0.1(typescript@6.0.3)':
     dependencies:
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/uint8array': 1.1.5
       nanoid: 5.1.16
       valibot: 1.4.2(typescript@6.0.3)
@@ -4478,7 +4470,7 @@ snapshots:
       '@atcute/identity': 2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/identity-resolver': 2.0.1(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/lexicons': 2.0.3
-      '@atcute/multibase': 1.2.5
+      '@atcute/multibase': 1.2.5(patch_hash=a69cbd2cf51eb578b303df98cb16d071b3eb3727445ee58926ce090c0b647cc9)
       '@atcute/uint8array': 1.1.5
       nanoid: 6.0.1
       valibot: 1.4.2(typescript@6.0.3)
@@ -5613,7 +5605,7 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@svelte-atproto/oauth@0.3.0(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@sveltejs/kit@2.70.2(@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(@typescript-eslint/types@8.66.0))(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)':
+  '@svelte-atproto/oauth@0.3.0(patch_hash=6e9cef7a07d214f8a2d7e7142343bb25ebfd9146a99f667c7363322cbbfd7036)(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@sveltejs/kit@2.70.2(@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(@typescript-eslint/types@8.66.0))(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.6)))(svelte@5.56.8(@typescript-eslint/types@8.66.0))(typescript@6.0.3)':
     dependencies:
       '@atcute/atproto': 4.0.4(@atcute/lexicons@2.0.3)
       '@atcute/bluesky': 4.0.17(@atcute/lexicons@2.0.3)

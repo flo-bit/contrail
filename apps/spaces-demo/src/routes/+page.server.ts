@@ -1,17 +1,15 @@
 import { fail, redirect } from "@sveltejs/kit";
 import {
-  SpacesProviderClient,
   addSimpleSpaceMember,
   createSpace,
   createSpaceRecord,
   formatSpaceUri,
+  getDelegationToken,
   listSimpleSpaceMembers,
   removeSimpleSpaceMember,
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
 import {
   NOTE_COLLECTION,
-  PROVIDER_AUDIENCE,
-  PROVIDER_ENDPOINT,
   REACTION_COLLECTION,
   SPACE_SKEY,
   SPACE_TYPE,
@@ -32,20 +30,28 @@ interface NoteRecord {
 
 interface CircleMember {
   did: string;
-  handle?: string;
 }
 
 function circleUri(ownerDid: string): string {
   return formatSpaceUri({ authorityDid: ownerDid, type: SPACE_TYPE, skey: SPACE_SKEY });
 }
 
-function provider(session: NonNullable<App.Locals["session"]>) {
-  return new SpacesProviderClient({
-    endpoint: PROVIDER_ENDPOINT,
-    audience: PROVIDER_AUDIENCE,
-    namespace: SPACE_TYPE,
-    session,
-  });
+function spacesRuntime(platform: App.Platform | undefined) {
+  if (!platform) throw new Error("The integrated Spaces runtime requires a platform");
+  return platform.env.SPACES_RUNTIME;
+}
+
+function notifySpaceWrite(
+  platform: App.Platform | undefined,
+  userDid: string,
+  space: string,
+): void {
+  if (!platform) throw new Error("The integrated Spaces runtime requires a platform");
+  platform.context.waitUntil(
+    platform.env.SPACES_RUNTIME
+      .syncSpace({ userDid, space, repo: userDid })
+      .catch((error) => console.warn("Could not notify the Spaces projection", error)),
+  );
 }
 
 function signedIn(locals: App.Locals) {
@@ -62,7 +68,7 @@ function ownerFrom(form: FormData, fallback: string): string {
   return validDid(owner) ? owner : fallback;
 }
 
-async function resolveMember(value: unknown): Promise<{ did: string; handle?: string }> {
+async function resolveMember(value: unknown): Promise<{ did: string }> {
   if (validDid(value)) return { did: value };
   const handle = typeof value === "string"
     ? value.trim().replace(/^@/, "").toLowerCase()
@@ -81,24 +87,7 @@ async function resolveMember(value: unknown): Promise<{ did: string; handle?: st
   if (!response.ok) throw new Error(`Could not resolve @${handle}`);
   const result = await response.json() as { did?: unknown };
   if (!validDid(result.did)) throw new Error(`Could not resolve @${handle}`);
-  return { did: result.did, handle };
-}
-
-async function profileHandle(did: string): Promise<string | undefined> {
-  const url = new URL("/xrpc/app.bsky.actor.getProfile", "https://public.api.bsky.app");
-  url.searchParams.set("actor", did);
-  try {
-    const response = await fetch(url, {
-      headers: { accept: "application/json" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) return undefined;
-    const profile = await response.json() as { handle?: unknown };
-    return typeof profile.handle === "string" ? profile.handle : undefined;
-  } catch {
-    return undefined;
-  }
+  return { did: result.did };
 }
 
 async function nativeMembers(
@@ -112,14 +101,10 @@ async function nativeMembers(
     dids.push(...page.members.map((member) => member.did));
     cursor = page.cursor;
   } while (cursor && dids.length < 1_000);
-  const members = await Promise.all(dids.map(async (did) => ({
-    did,
-    handle: await profileHandle(did),
-  })));
-  return members;
+  return dids.map((did) => ({ did }));
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, platform, url }) => {
   if (!locals.session || !locals.did) {
     return {
       signedIn: false as const,
@@ -133,15 +118,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const ownerParam = url.searchParams.get("owner");
   const owner = validDid(ownerParam) ? ownerParam : locals.did;
   const space = circleUri(owner);
-  const client = provider(locals.session);
-  const available = await client.listSpaces({ limit: 200 }).catch(() => ({
+  const runtime = spacesRuntime(platform);
+  const availablePromise = runtime.listSpaces({
+    userDid: locals.did,
+    limit: 200,
+  }).catch(() => ({
     spaces: [] as Array<{ uri: string; authorityDid: string; type: string }>,
     truncated: false,
   }));
-  const members = owner === locals.did
-    ? await nativeMembers(locals.session, space).catch(() => [] as CircleMember[])
-    : [] as CircleMember[];
-  const queryNotes = () => client.listSpaceRecords<NoteRecord>({
+  const membersPromise = owner === locals.did
+    ? nativeMembers(locals.session, space).catch(() => [] as CircleMember[])
+    : Promise.resolve([] as CircleMember[]);
+  const queryNotes = () => runtime.listSpaceRecords<NoteRecord>({
+    userDid: locals.did!,
     space,
     collection: NOTE_COLLECTION,
     limit: 100,
@@ -152,11 +141,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     try {
       notes = await queryNotes();
     } catch {
-      // Native PDS policy remains authoritative. Renew the short provider
+      // Native PDS policy remains authoritative. Renew the short projection
       // lease only when cached access expires; removed members fail here.
-      await client.authorizeSpace(space);
+      await runtime.authorizeSpace({
+        userDid: locals.did,
+        space,
+        delegation: await getDelegationToken(locals.session, space),
+      });
       notes = await queryNotes();
     }
+    const [available, members] = await Promise.all([availablePromise, membersPromise]);
     return {
       signedIn: true as const,
       owner,
@@ -169,6 +163,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       needsAuthorization: false,
     };
   } catch (error) {
+    const [available, members] = await Promise.all([availablePromise, membersPromise]);
     return {
       signedIn: true as const,
       owner,
@@ -185,7 +180,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 export const actions: Actions = {
-  async create({ locals }) {
+  async create({ locals, platform }) {
     const { session, did } = signedIn(locals);
     try {
       const created = await createSpace(session, {
@@ -193,7 +188,11 @@ export const actions: Actions = {
         skey: SPACE_SKEY,
         policy: { kind: "member-list" },
       });
-      await provider(session).authorizeSpace(created.uri);
+      await spacesRuntime(platform).authorizeSpace({
+        userDid: did,
+        space: created.uri,
+        delegation: await getDelegationToken(session, created.uri),
+      });
     } catch (error) {
       return fail(400, {
         action: "create",
@@ -203,12 +202,17 @@ export const actions: Actions = {
     throw redirect(303, `/?owner=${encodeURIComponent(did)}`);
   },
 
-  async authorize({ request, locals }) {
+  async authorize({ request, locals, platform }) {
     const { session, did } = signedIn(locals);
     const form = await request.formData();
     const owner = ownerFrom(form, did);
     try {
-      await provider(session).authorizeSpace(circleUri(owner));
+      const space = circleUri(owner);
+      await spacesRuntime(platform).authorizeSpace({
+        userDid: did,
+        space,
+        delegation: await getDelegationToken(session, space),
+      });
     } catch (error) {
       return fail(403, {
         action: "authorize",
@@ -264,7 +268,7 @@ export const actions: Actions = {
     throw redirect(303, `/?owner=${encodeURIComponent(owner)}`);
   },
 
-  async post({ request, locals }) {
+  async post({ request, locals, platform }) {
     const { session, did } = signedIn(locals);
     const form = await request.formData();
     const owner = ownerFrom(form, did);
@@ -289,7 +293,7 @@ export const actions: Actions = {
             : {}),
         },
       });
-      await provider(session).syncSpace(space, did);
+      notifySpaceWrite(platform, did, space);
     } catch (error) {
       return fail(400, {
         action: "post",
@@ -299,7 +303,7 @@ export const actions: Actions = {
     throw redirect(303, `/?owner=${encodeURIComponent(owner)}`);
   },
 
-  async react({ request, locals }) {
+  async react({ request, locals, platform }) {
     const { session, did } = signedIn(locals);
     const form = await request.formData();
     const owner = ownerFrom(form, did);
@@ -317,7 +321,7 @@ export const actions: Actions = {
           createdAt: new Date().toISOString(),
         },
       });
-      await provider(session).syncSpace(space, did);
+      notifySpaceWrite(platform, did, space);
     } catch (error) {
       return fail(400, {
         action: "react",

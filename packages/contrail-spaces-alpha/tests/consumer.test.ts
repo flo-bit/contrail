@@ -6,6 +6,7 @@ import {
   listSimpleSpaceMembers,
   removeSimpleSpaceMember,
   spacesConsumerOAuthScopes,
+  spacesIntegratedOAuthScopes,
   updateSimpleSpacePolicy,
   type AuthenticatedPdsSession,
 } from "../src/consumer";
@@ -31,6 +32,14 @@ describe("consumer scopes", () => {
     expect(scopes[2]).toContain("garden.atmo.circle.listSpaces");
     expect(scopes[2]).toContain("garden.atmo.circle.subscribeSpace");
     expect(scopes[2]).not.toContain("notifyWrite");
+
+    const integrated = spacesIntegratedOAuthScopes({
+      collections: ["garden.atmo.circle.note"],
+      spaceType: "garden.atmo.circle",
+      skey: "self",
+    });
+    expect(integrated).toHaveLength(2);
+    expect(integrated.some((scope) => scope.startsWith("rpc?"))).toBe(false);
   });
 
   it("uses the PDS-native member-list procedures", async () => {

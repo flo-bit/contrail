@@ -1,6 +1,5 @@
 import type { ContrailConfig } from "@atmo-dev/contrail";
 import { createSpacesWorker } from "@atmo-dev/contrail-spaces-alpha/worker";
-export { SpaceSubscriptionHub } from "@atmo-dev/contrail-spaces-alpha/worker";
 import {
   NOTE_COLLECTION,
   PROVIDER_AUDIENCE,
@@ -8,15 +7,16 @@ import {
   REACTION_COLLECTION,
   SPACE_SKEY,
   SPACE_TYPE,
-} from "./constants";
-import { recordLexicons } from "./lexicons";
+} from "$lib/constants";
+import { recordLexicons } from "$lib/lexicons";
 
-interface Env {
+export interface SpacesDemoEnv {
   [key: string]: unknown;
   DB: D1Database;
   SPACES_QUEUE: Queue;
   SPACES_CREDENTIAL_ENCRYPTION_KEY: string;
   SPACE_SUBSCRIPTIONS: DurableObjectNamespace;
+  OAUTH_PUBLIC_URL?: string;
 }
 
 const projection: ContrailConfig = {
@@ -48,7 +48,7 @@ const projection: ContrailConfig = {
   constellation: false,
 };
 
-export default createSpacesWorker<Env>({
+export const spaces = createSpacesWorker<SpacesDemoEnv>({
   projection,
   lexicons: recordLexicons,
   service: {
@@ -64,5 +64,11 @@ export default createSpacesWorker<Env>({
   },
   subscriptions: { binding: "SPACE_SUBSCRIPTIONS" },
   accessLeaseMs: 2 * 60_000,
+  notificationRegistration: (env) => {
+    const hostname = new URL(env.OAUTH_PUBLIC_URL ?? PROVIDER_ENDPOINT).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]"
+      ? "disabled"
+      : "best-effort";
+  },
   reconcileIntervalMs: 5 * 60_000,
 });

@@ -120,6 +120,7 @@ describe("Spaces Worker private query boundary", () => {
           },
         },
       },
+      standaloneUserApi: true,
       spaceTypes: {
         "garden.atmo.circle": {
           collections: [collection],
@@ -164,6 +165,13 @@ describe("Spaces Worker private query boundary", () => {
       truncated: false,
     });
 
+    const integrated = worker.integrated(env, context());
+    expect((await integrated.listSpaceRecords<{ value: { text: string } }>({
+      userDid: issuer,
+      space,
+      collection,
+    })).records.map((record) => record.value.text)).toEqual(["private hello"]);
+
     const wrongMethod = new Request(url, {
       headers: {
         authorization: `Bearer ${await token("garden.atmo.circle.syncSpace")}`,
@@ -186,6 +194,34 @@ describe("Spaces Worker private query boundary", () => {
       space,
       preferredRepo: "did:plc:unadvertised",
     }]);
+  });
+
+  it("defaults to integrated user APIs while retaining authenticated PDS callbacks", async () => {
+    const worker = createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          policy: "member-list",
+        },
+      },
+    });
+    const discovery = await worker.fetch!(new Request(
+      "https://spaces.atmo.garden/.well-known/contrail-spaces-alpha",
+    ) as never, {} as never, context());
+    expect((await discovery.json() as { methods: string[] }).methods).toEqual([
+      "com.atproto.space.notifyWrite",
+      "com.atproto.space.notifySpaceDeleted",
+    ]);
+    const removed = await worker.fetch!(new Request(
+      "https://spaces.atmo.garden/xrpc/garden.atmo.circle.listSpaces",
+    ) as never, {} as never, context());
+    expect(removed.status).toBe(404);
   });
 
   it("requires an application authorizer only for managing-app policies", () => {

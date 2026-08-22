@@ -1,21 +1,16 @@
 import { json } from "@sveltejs/kit";
 import {
-  SpacesProviderClient,
   formatSpaceUri,
+  getDelegationToken,
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
-import {
-  PROVIDER_AUDIENCE,
-  PROVIDER_ENDPOINT,
-  SPACE_SKEY,
-  SPACE_TYPE,
-} from "$lib/constants";
+import { SPACE_SKEY, SPACE_TYPE } from "$lib/constants";
 import type { RequestHandler } from "./$types";
 
 function validDid(value: unknown): value is string {
   return typeof value === "string" && /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/.test(value);
 }
 
-export const POST: RequestHandler = async ({ locals, request }) => {
+export const POST: RequestHandler = async ({ locals, platform, request, url }) => {
   if (!locals.session || !locals.did) {
     return json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -29,18 +24,26 @@ export const POST: RequestHandler = async ({ locals, request }) => {
     skey: SPACE_SKEY,
   });
   try {
-    const client = new SpacesProviderClient({
-      endpoint: PROVIDER_ENDPOINT,
-      audience: PROVIDER_AUDIENCE,
-      namespace: SPACE_TYPE,
-      session: locals.session,
-    });
+    if (!platform) throw new Error("The integrated Spaces runtime requires a platform");
+    const runtime = platform.env.SPACES_RUNTIME;
     let subscription;
     try {
-      subscription = await client.subscribeSpace(space);
+      subscription = await runtime.subscribeSpace({
+        userDid: locals.did,
+        space,
+        endpoint: url.origin,
+      });
     } catch {
-      await client.authorizeSpace(space);
-      subscription = await client.subscribeSpace(space);
+      await runtime.authorizeSpace({
+        userDid: locals.did,
+        space,
+        delegation: await getDelegationToken(locals.session, space),
+      });
+      subscription = await runtime.subscribeSpace({
+        userDid: locals.did,
+        space,
+        endpoint: url.origin,
+      });
     }
     return json(subscription, {
       headers: { "cache-control": "private, no-store" },

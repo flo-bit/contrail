@@ -12,20 +12,20 @@ Pinned compatibility tuple:
 ## What it provides
 
 - delegation-token to DPoP-bound Space credential exchange;
-- encrypted, expiring provider credential storage;
+- encrypted, expiring Space credential storage;
 - explicit Space watches and per-writer checkpoints;
 - signed commit, LtHash, and full CAR verification;
 - staged writer-generation recovery with atomic visibility cutover;
 - incremental repo operation synchronization;
 - signed notification routes, Queue jobs, leases, and scheduled reconciliation;
-- exact method-bound service authentication;
+- exact method-bound service authentication for PDS callbacks and optional standalone APIs;
 - delegation access leases or an authoritative application callback;
 - explicit support for public, native member-list, and managing-app user policies;
 - paginated discovery of owned or currently connected Spaces;
 - exact-Space list/get/search/reference/relation-count queries over Contrail's isolated projection seam; and
 - optional one-time-ticket, hibernating Durable Object WebSocket invalidations.
 
-Public Contrail tables and anonymous methods are unchanged. Installing the package does not create isolated tables; `createSpacesWorker` initializes them only in a provider deployment.
+Public Contrail tables and anonymous methods are unchanged. Installing the package does not create isolated tables; `createSpacesWorker` initializes them only inside a configured application or standalone deployment.
 
 ## Entry points
 
@@ -39,7 +39,7 @@ import {
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
 ```
 
-The consumer owns OAuth refresh tokens and writes through the user's PDS. The provider receives only one-time delegation evidence, stores an encrypted short-lived credential, verifies permissioned repos, and serves authorized private projections.
+The primary deployment is integrated: the application owns OAuth refresh tokens and passes its trusted session principal to `handler.integrated(env, ctx)`. Contrail receives only one-time delegation evidence, stores an encrypted short-lived Space credential, verifies permissioned repos, and serves private projections from the same process. Set `standaloneUserApi: true` only when an independent exact-service-authenticated provider is deliberately required.
 
 ## Provider requirements
 
@@ -64,4 +64,4 @@ Credentials and DPoP private keys are AES-256-GCM encrypted with Space-generatio
 - client-attested `appAccess` allow-lists; and
 - generic membership or invitation semantics.
 
-See [`apps/spaces-demo-provider`](../../apps/spaces-demo-provider) and [`apps/spaces-demo`](../../apps/spaces-demo) for the complete Worker + SvelteKit example.
+See [`apps/spaces-demo`](../../apps/spaces-demo) for the complete integrated Worker + SvelteKit example.

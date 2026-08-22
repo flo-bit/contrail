@@ -4,14 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "pnpm build && wrangler dev --port 5173",
+    "dev:vite": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "prepare": "svelte-kit sync || echo ''",
+    "publish-lexicons": "tsx scripts/publish-lexicons.ts",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "deploy": "wrangler deploy"
+    "deploy": "pnpm build && wrangler deploy"
   },
   "dependencies": {
+    "@atmo-dev/contrail": "workspace:*",
     "@atmo-dev/contrail-spaces-alpha": "workspace:*",
     "@svelte-atproto/oauth": "^0.3.0"
   },
@@ -22,6 +25,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "svelte": "^5.56.8",
     "svelte-check": "^4.7.4",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.2.0",
     "wrangler": "^4.118.0"

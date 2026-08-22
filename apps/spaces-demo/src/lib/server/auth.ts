@@ -1,21 +1,25 @@
-import { env } from "$env/dynamic/private";
+import { env } from "cloudflare:workers";
 import { createAtprotoAuth } from "@svelte-atproto/oauth/server";
 import { cloudflareKV } from "@svelte-atproto/oauth/server/stores/cloudflare";
-import { spacesConsumerOAuthScopes } from "@atmo-dev/contrail-spaces-alpha/consumer";
+import { spacesIntegratedOAuthScopes } from "@atmo-dev/contrail-spaces-alpha/consumer";
 import {
   COLLECTIONS,
-  PROVIDER_AUDIENCE,
   SPACE_SKEY,
   SPACE_TYPE,
 } from "$lib/constants";
 
+const bindings = env as unknown as App.Platform["env"];
+const oauthOrigin = new URL(bindings.OAUTH_PUBLIC_URL);
+const localDevelopment = oauthOrigin.hostname === "localhost" ||
+  oauthOrigin.hostname === "127.0.0.1" || oauthOrigin.hostname === "[::1]";
+
 export const atproto = createAtprotoAuth({
-  origin: env.OAUTH_PUBLIC_URL,
-  cookieSecret: env.COOKIE_SECRET,
-  clientAssertionKey: env.CLIENT_ASSERTION_KEY,
-  scope: spacesConsumerOAuthScopes({
-    audience: PROVIDER_AUDIENCE,
-    namespace: SPACE_TYPE,
+  origin: localDevelopment ? undefined : oauthOrigin.href.replace(/\/$/, ""),
+  dev: localDevelopment,
+  devPort: Number(oauthOrigin.port || 5173),
+  cookieSecret: bindings.COOKIE_SECRET,
+  clientAssertionKey: bindings.CLIENT_ASSERTION_KEY,
+  scope: spacesIntegratedOAuthScopes({
     collections: COLLECTIONS,
     spaceType: SPACE_TYPE,
     skey: SPACE_SKEY,

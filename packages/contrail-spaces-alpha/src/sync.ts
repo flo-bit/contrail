@@ -65,6 +65,7 @@ export interface SpacesSyncConfig {
   serviceAudience: string;
   credentialEncryptionKey: string;
   reconcileIntervalMs?: number;
+  notificationRegistration?: "required" | "best-effort" | "disabled";
   registrationRenewalWindowMs?: number;
   /** Maximum mutations admitted with one verified incremental checkpoint.
    * Larger commits recover through a staged full CAR instead (default 10). */
@@ -215,19 +216,28 @@ export class SpacesSyncEngine {
       const transport = await this.transport(watch);
       await this.validateWatch(watch, transport);
       const authorityPds = await this.identities.resolvePds(watch.authorityDid);
+      const registrationMode = this.config.notificationRegistration ?? "best-effort";
       const renewalWindow = this.config.registrationRenewalWindowMs ?? 60 * 60_000;
-      if (
+      if (registrationMode !== "disabled" && (
         !watch.registrationExpiresAt ||
         Date.parse(watch.registrationExpiresAt) - Date.now() < renewalWindow
-      ) {
-        const registration = await registerNotify(transport, authorityPds, {
-          space: watch.spaceUri,
-          service: this.config.serviceAudience,
-        });
-        await updateWatch(this.db, watch.spaceUri, {
-          registrationExpiresAt: registration.expiresAt,
-          expectedGeneration: watch.generation,
-        });
+      )) {
+        try {
+          const registration = await registerNotify(transport, authorityPds, {
+            space: watch.spaceUri,
+            service: this.config.serviceAudience,
+          });
+          await updateWatch(this.db, watch.spaceUri, {
+            registrationExpiresAt: registration.expiresAt,
+            expectedGeneration: watch.generation,
+          });
+        } catch (error) {
+          if (registrationMode === "required") throw error;
+          this.logger.warn(
+            "[spaces] notification registration failed; reconciliation continues",
+            error,
+          );
+        }
       }
 
       const advertised = new Map<string, { rev: string; hash: Uint8Array }>();

@@ -51,6 +51,67 @@ export interface SpacesWorkerEnv {
   [key: string]: unknown;
 }
 
+export interface IntegratedSpacesRuntime {
+  authorizeSpace(input: {
+    userDid: string;
+    space: string;
+    delegation: string;
+    rediscover?: boolean;
+  }): Promise<{ space: string; generation: number; accessExpiresAt: string }>;
+  syncSpace(input: {
+    userDid: string;
+    space: string;
+    repo?: string;
+  }): Promise<{ queued: boolean }>;
+  listSpaces(input: {
+    userDid: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<{
+    spaces: Array<{ uri: string; authorityDid: string; type: string }>;
+    cursor?: string;
+    truncated: boolean;
+  }>;
+  subscribeSpace(input: {
+    userDid: string;
+    space: string;
+    /** Public application origin used for the browser WebSocket. */
+    endpoint?: string;
+  }): Promise<{ url: string; expiresAt: string }>;
+  listSpaceRecords<T = Record<string, unknown>>(input: {
+    userDid: string;
+    space: string;
+    collection: string;
+    limit?: number;
+    cursor?: string;
+    search?: string;
+    did?: string;
+    filters?: Record<string, string>;
+    rangeFilters?: Record<string, { min?: string; max?: string }>;
+  }): Promise<{
+    records: T[];
+    cursor?: string;
+    references: Record<string, Record<string, unknown>>;
+  }>;
+  getSpaceRecord<T = Record<string, unknown>>(input: {
+    userDid: string;
+    space: string;
+    collection: string;
+    uri: string;
+  }): Promise<{
+    record: T;
+    references: Record<string, Record<string, unknown>>;
+  }>;
+}
+
+export interface SpacesWorkerHandler<
+  Env extends SpacesWorkerEnv = SpacesWorkerEnv,
+> extends ExportedHandler<Env, SyncMessage> {
+  /** Trusted in-process API for an application that already authenticated the
+   * user. This avoids minting service-auth JWTs for calls inside one Worker. */
+  integrated(env: Env, ctx: ExecutionContext): IntegratedSpacesRuntime;
+}
+
 export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerEnv> {
   projection: ContrailConfig;
   lexicons?: readonly object[];
@@ -61,6 +122,9 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
     /** Optional DID resolver for private networks and deterministic tests. */
     resolver?: NonNullable<ContrailConfig["serviceAuth"]>["resolver"];
   };
+  /** Expose user-facing query/sync methods through exact AT service auth.
+   * Integrated applications should use `handler.integrated(...)` instead. */
+  standaloneUserApi?: boolean;
   bindings?: {
     database?: string;
     credentialEncryptionKey?: string;
@@ -80,6 +144,13 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
   };
   accessLeaseMs?: number;
   reconcileIntervalMs?: number;
+  /** PDS push registration is optional because integrated applications notify
+   * successful writes directly and reconciliation remains authoritative. */
+  notificationRegistration?:
+    | "required"
+    | "best-effort"
+    | "disabled"
+    | ((env: Env) => "required" | "best-effort" | "disabled");
   maxAtomicMutations?: number;
   maxRepoCarBytes?: number;
   protocol?: {
@@ -265,7 +336,21 @@ async function boundedJsonBody<T>(request: Request, maximum = 64 * 1024): Promis
   }
 }
 
+class SpacesRuntimeError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message = code,
+  ) {
+    super(message);
+    this.name = "SpacesRuntimeError";
+  }
+}
+
 function errorResponse(error: unknown): Response {
+  if (error instanceof SpacesRuntimeError) {
+    return privateJson({ error: error.code, message: error.message }, error.status);
+  }
   if (error instanceof TypeError) {
     return json({ error: "InvalidRequest", message: error.message }, 400);
   }
@@ -496,7 +581,7 @@ function stringBinding<Env extends SpacesWorkerEnv>(env: Env, binding: string): 
 
 export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv>(
   options: SpacesWorkerOptions<Env>,
-): ExportedHandler<Env, SyncMessage> {
+): SpacesWorkerHandler<Env> {
   const projection = resolveConfig(options.projection);
   validateConfig(projection);
   if (options.accessLeaseMs !== undefined &&
@@ -561,21 +646,26 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     options.bindings?.credentialEncryptionKey ?? "SPACES_CREDENTIAL_ENCRYPTION_KEY";
   const queueBinding = options.bindings?.queue ?? "SPACES_QUEUE";
   const subscriptionsEnabled = options.subscriptions !== undefined;
+  const standaloneUserApi = options.standaloneUserApi ?? false;
   const subscriptionBinding = options.subscriptions?.binding ?? "SPACE_SUBSCRIPTIONS";
   const subscriptionTicketTtlMs = options.subscriptions?.ticketTtlMs ?? 30_000;
-  const providerLexicons = buildProviderLexicons(projection, subscriptionsEnabled);
+  const providerLexicons = standaloneUserApi
+    ? buildProviderLexicons(projection, subscriptionsEnabled)
+    : [];
   const exactMethods = [
-    `${namespace}.${AUTHORIZE_SPACE_METHOD}`,
-    `${namespace}.${SYNC_SPACE_METHOD}`,
-    `${namespace}.${LIST_SPACES_METHOD}`,
-    ...(subscriptionsEnabled ? [`${namespace}.${SUBSCRIBE_SPACE_METHOD}`] : []),
+    ...(standaloneUserApi ? [
+      `${namespace}.${AUTHORIZE_SPACE_METHOD}`,
+      `${namespace}.${SYNC_SPACE_METHOD}`,
+      `${namespace}.${LIST_SPACES_METHOD}`,
+      ...(subscriptionsEnabled ? [`${namespace}.${SUBSCRIBE_SPACE_METHOD}`] : []),
+      ...Object.keys(projection.collections).flatMap((short) => [
+        collectionMethod(namespace, short, LIST_SPACE_RECORDS_METHOD),
+        collectionMethod(namespace, short, GET_SPACE_RECORD_METHOD),
+      ]),
+    ] : []),
     "com.atproto.space.notifyWrite",
     "com.atproto.space.notifySpaceDeleted",
     ...(managingAppEnabled ? ["com.atproto.simplespace.checkUserAccess"] : []),
-    ...Object.keys(projection.collections).flatMap((short) => [
-      collectionMethod(namespace, short, LIST_SPACE_RECORDS_METHOD),
-      collectionMethod(namespace, short, GET_SPACE_RECORD_METHOD),
-    ]),
   ];
   const auth = createExactServiceAuthGate({
     audience: options.service.audience as never,
@@ -632,6 +722,9 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       serviceAudience: options.service.audience,
       credentialEncryptionKey: stringBinding(env, encryptionBinding),
       reconcileIntervalMs: options.reconcileIntervalMs,
+      notificationRegistration: typeof options.notificationRegistration === "function"
+        ? options.notificationRegistration(env)
+        : options.notificationRegistration,
       maxAtomicMutations: options.maxAtomicMutations,
       maxRepoCarBytes: options.maxRepoCarBytes,
       protocol: options.protocol,
@@ -676,6 +769,293 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       spaceUri: input.spaceUri,
       generation: watch.generation,
     });
+  };
+
+  const integrated = (
+    env: Env,
+    ctx: ExecutionContext,
+  ): IntegratedSpacesRuntime => {
+    const { db, init, engine } = runtime(env);
+    const ready = async () => {
+      await init;
+      return { db, engine };
+    };
+    const activeWatch = async (userDid: string, space: string, method: string) => {
+      const parsed = parseSpaceUri(space);
+      const watch = await getSpaceWatch(db, parsed.uri);
+      if (!watch || watch.status !== "active") {
+        throw new SpacesRuntimeError("SpaceUnavailable", 404, "Space unavailable");
+      }
+      if (!await accessAllowed(env, db, watch, {
+        userDid,
+        spaceUri: parsed.uri,
+        action: "read",
+        method,
+      })) throw new SpacesRuntimeError("Forbidden", 403, "Space access denied");
+      return { parsed, watch };
+    };
+    const references = (rows: Record<string, unknown> | undefined) =>
+      Object.fromEntries(Object.entries(rows ?? {}).map(([uri, row]) => [
+        uri,
+        parsedRecord(row as Record<string, unknown>),
+      ]));
+
+    return {
+      async authorizeSpace(input) {
+        await ready();
+        if (!validDid(input.userDid)) throw new TypeError("invalid user DID");
+        const parsed = parseSpaceUri(input.space);
+        if (!options.spaceTypes[parsed.type]) {
+          throw new SpacesRuntimeError("UnsupportedSpace", 400, "Unsupported Space");
+        }
+        if (!input.delegation) throw new TypeError("delegation is required");
+        const claims = decodeJwtClaims(input.delegation);
+        const delegationDid = typeof claims.iss === "string"
+          ? baseDid(claims.iss)
+          : typeof claims.sub === "string"
+            ? baseDid(claims.sub)
+            : null;
+        if (delegationDid !== input.userDid) {
+          throw new SpacesRuntimeError("DelegationIssuerMismatch", 403, "Delegation issuer mismatch");
+        }
+        if (typeof claims.sub === "string" && claims.sub !== parsed.uri) {
+          throw new SpacesRuntimeError("DelegationSpaceMismatch", 403, "Delegation Space mismatch");
+        }
+        if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now()) {
+          throw new SpacesRuntimeError("DelegationExpired", 401, "Delegation expired");
+        }
+        const existingWatch = await getSpaceWatch(db, parsed.uri);
+        if (existingWatch?.status === "hidden" && input.rediscover !== true) {
+          throw new SpacesRuntimeError("RediscoveryRequired", 409, "Explicit rediscovery is required");
+        }
+        if (input.rediscover === true && existingWatch?.status !== "hidden") {
+          throw new SpacesRuntimeError(
+            "RediscoveryNotAllowed",
+            409,
+            "Rediscovery is not allowed for this Space",
+          );
+        }
+        const authorityPds = await engine.identities.resolvePds(parsed.authorityDid);
+        const transport = await exchangeSpaceCredential({
+          authorityPds,
+          delegationToken: input.delegation,
+          spaceUri: parsed.uri,
+          fetch: options.protocol?.fetch,
+        });
+        const provisionalWatch: SpaceWatch = existingWatch ?? {
+          spaceUri: parsed.uri,
+          authorityDid: parsed.authorityDid,
+          spaceType: parsed.type,
+          generation: 1,
+          status: "active",
+          registrationExpiresAt: null,
+          nextReconcileAt: Date.now(),
+          lastReconciledAt: null,
+          lastError: null,
+        };
+        await engine.validateWatch(provisionalWatch, transport);
+        const watch = input.rediscover === true
+          ? await rediscoverSpace(db, parsed.uri)
+          : await ensureSpaceWatch(db, { spaceUri: parsed.uri });
+        await saveCredential(db, {
+          spaceUri: parsed.uri,
+          generation: watch.generation,
+          viewerDid: input.userDid,
+          credential: transport.serialize(),
+          encryptionKey: stringBinding(env, encryptionBinding),
+        });
+        const leaseExpiry = Math.min(
+          transport.expiresAt,
+          Date.now() + (options.accessLeaseMs ?? 15 * 60_000),
+        );
+        await saveAccessLease(db, {
+          userDid: input.userDid,
+          spaceUri: parsed.uri,
+          generation: watch.generation,
+          expiresAt: leaseExpiry,
+        });
+        await updateWatch(db, parsed.uri, {
+          status: "active",
+          error: null,
+          nextReconcileAt: Date.now(),
+          expectedGeneration: watch.generation,
+        });
+        await enqueue(env, ctx, { kind: "reconcile", space: parsed.uri }, () =>
+          engine.reconcileSpace(parsed.uri));
+        return {
+          space: parsed.uri,
+          generation: watch.generation,
+          accessExpiresAt: new Date(leaseExpiry).toISOString(),
+        };
+      },
+
+      async syncSpace(input) {
+        await ready();
+        const method = `${namespace}.${SYNC_SPACE_METHOD}`;
+        const { parsed } = await activeWatch(input.userDid, input.space, method);
+        if (input.repo !== undefined && !validDid(input.repo)) {
+          throw new TypeError("invalid repo DID");
+        }
+        const preferredRepo = validDid(input.repo) ? input.repo : undefined;
+        await enqueue(
+          env,
+          ctx,
+          { kind: "reconcile", space: parsed.uri, preferredRepo },
+          () => engine.reconcileSpace(parsed.uri, { preferredRepo }),
+        );
+        return { queued: true };
+      },
+
+      async listSpaces(input) {
+        await ready();
+        const limit = input.limit ?? 100;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200 ||
+          (input.cursor?.length ?? 0) > 2_048) {
+          throw new TypeError("invalid list options");
+        }
+        const indexed = await listConnectedSpaceWatches(db, {
+          userDid: input.userDid,
+          cursor: input.cursor,
+          limit: limit + 1,
+        });
+        const watches = new Map(indexed.map((watch) => [watch.spaceUri, watch]));
+        let customTruncated = false;
+        if (options.authorization?.listSpaces) {
+          const listed = await options.authorization.listSpaces(input.userDid, { env, db });
+          customTruncated = listed.length > 1_000;
+          for (const spaceUri of listed.slice(0, 1_000)) {
+            if (typeof spaceUri !== "string" || spaceUri <= (input.cursor ?? "")) continue;
+            try {
+              parseSpaceUri(spaceUri);
+            } catch {
+              continue;
+            }
+            const watch = await getSpaceWatch(db, spaceUri);
+            if (!watch || watch.status !== "active") continue;
+            if (await accessAllowed(env, db, watch, {
+              userDid: input.userDid,
+              spaceUri,
+              action: "read",
+              method: `${namespace}.${LIST_SPACES_METHOD}`,
+            })) watches.set(spaceUri, watch);
+          }
+        }
+        const ordered = [...watches.values()].sort((left, right) =>
+          left.spaceUri.localeCompare(right.spaceUri));
+        const truncated = customTruncated || ordered.length > limit;
+        const page = ordered.slice(0, limit);
+        return {
+          spaces: page.map((watch) => ({
+            uri: watch.spaceUri,
+            authorityDid: watch.authorityDid,
+            type: watch.spaceType,
+          })),
+          truncated,
+          ...(truncated && page.length ? { cursor: page.at(-1)!.spaceUri } : {}),
+        };
+      },
+
+      async subscribeSpace(input) {
+        await ready();
+        if (!subscriptionsEnabled) {
+          throw new SpacesRuntimeError("SubscriptionsDisabled", 404);
+        }
+        const method = `${namespace}.${SUBSCRIBE_SPACE_METHOD}`;
+        const { parsed } = await activeWatch(input.userDid, input.space, method);
+        const ticket = crypto.randomUUID().replaceAll("-", "");
+        const expiresAt = Date.now() + subscriptionTicketTtlMs;
+        const issued = await subscriptionHub(env, parsed.uri).fetch(
+          new Request("https://subscriptions.internal/issue", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ticket, expiresAt }),
+          }),
+        );
+        if (!issued.ok) {
+          throw new SpacesRuntimeError("SubscriptionUnavailable", 503);
+        }
+        const socketUrl = new URL("/subscribe", input.endpoint ?? options.service.endpoint);
+        socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
+        socketUrl.searchParams.set("space", parsed.uri);
+        socketUrl.searchParams.set("ticket", ticket);
+        return { url: socketUrl.href, expiresAt: new Date(expiresAt).toISOString() };
+      },
+
+      async listSpaceRecords<T = Record<string, unknown>>(input: {
+        userDid: string;
+        space: string;
+        collection: string;
+        limit?: number;
+        cursor?: string;
+        search?: string;
+        did?: string;
+        filters?: Record<string, string>;
+        rangeFilters?: Record<string, { min?: string; max?: string }>;
+      }) {
+        await ready();
+        const entry = Object.entries(projection.collections).find(
+          ([, candidate]) => candidate.collection === input.collection,
+        );
+        if (!entry) throw new TypeError("unknown collection");
+        const [short] = entry;
+        const method = collectionMethod(namespace, short, LIST_SPACE_RECORDS_METHOD);
+        const { parsed, watch } = await activeWatch(input.userDid, input.space, method);
+        const limit = input.limit ?? 50;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+          throw new TypeError("invalid limit");
+        }
+        const result = await queryIsolatedRecords(db, projection, {
+          scope: {
+            kind: "isolated",
+            key: spaceProjectionKey(parsed.uri, watch.generation),
+          },
+          collection: short,
+          ...(input.did ? { did: input.did } : {}),
+          limit,
+          cursor: input.cursor,
+          search: input.search,
+          filters: input.filters ?? {},
+          rangeFilters: input.rangeFilters ?? {},
+        });
+        return {
+          records: result.records.map((row) =>
+            parsedRecord(row as unknown as Record<string, unknown>)) as T[],
+          ...(result.cursor ? { cursor: result.cursor } : {}),
+          references: references(result.references as unknown as Record<string, unknown>),
+        };
+      },
+
+      async getSpaceRecord<T = Record<string, unknown>>(input: {
+        userDid: string;
+        space: string;
+        collection: string;
+        uri: string;
+      }) {
+        await ready();
+        const entry = Object.entries(projection.collections).find(
+          ([, candidate]) => candidate.collection === input.collection,
+        );
+        if (!entry) throw new TypeError("unknown collection");
+        const [short] = entry;
+        const method = collectionMethod(namespace, short, GET_SPACE_RECORD_METHOD);
+        const { parsed, watch } = await activeWatch(input.userDid, input.space, method);
+        const result = await queryIsolatedRecords(db, projection, {
+          scope: {
+            kind: "isolated",
+            key: spaceProjectionKey(parsed.uri, watch.generation),
+          },
+          collection: short,
+          uri: input.uri,
+          limit: 1,
+        });
+        const record = result.records[0];
+        if (!record) throw new SpacesRuntimeError("RecordNotFound", 404);
+        return {
+          record: parsedRecord(record as unknown as Record<string, unknown>) as T,
+          references: references(result.references as unknown as Record<string, unknown>),
+        };
+      },
+    };
   };
 
   const handle = async (
@@ -729,17 +1109,23 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         audience: auth.audience,
         namespace,
         methods: exactMethods,
-        lexicons: new URL("/lexicons", options.service.endpoint).href,
+        ...(providerLexicons.length
+          ? { lexicons: new URL("/lexicons", options.service.endpoint).href }
+          : {}),
         spacesAlpha: "0.0.0-spaces-alpha-20260818163953",
       });
     }
 
     const method = xrpcMethod(url.pathname);
     if (!method) return json({ error: "NotFound" }, 404);
+    if (!standaloneUserApi && method.startsWith(`${namespace}.`)) {
+      return json({ error: "MethodNotFound" }, 404);
+    }
     const { db, init, engine } = runtime(env);
     await init;
 
-    if (method === `${namespace}.${AUTHORIZE_SPACE_METHOD}` && request.method === "POST") {
+    if (standaloneUserApi &&
+      method === `${namespace}.${AUTHORIZE_SPACE_METHOD}` && request.method === "POST") {
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
       const body = await boundedJsonBody<{
@@ -747,201 +1133,53 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
         delegation?: unknown;
         rediscover?: unknown;
       }>(request);
-      const parsed = parseSpaceUri(body.space);
-      if (!options.spaceTypes[parsed.type]) {
-        return privateJson({ error: "UnsupportedSpace" }, 400);
-      }
-      if (typeof body.delegation !== "string" || !body.delegation) {
+      if (typeof body.delegation !== "string") {
         return privateJson({ error: "InvalidRequest", message: "delegation is required" }, 400);
       }
-      const claims = decodeJwtClaims(body.delegation);
-      const delegationDid = typeof claims.iss === "string"
-        ? baseDid(claims.iss)
-        : typeof claims.sub === "string"
-          ? baseDid(claims.sub)
-          : null;
-      if (delegationDid !== verified.did) {
-        return privateJson({ error: "DelegationIssuerMismatch" }, 403);
-      }
-      if (typeof claims.sub === "string" && claims.sub !== parsed.uri) {
-        return privateJson({ error: "DelegationSpaceMismatch" }, 403);
-      }
-      if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now()) {
-        return privateJson({ error: "DelegationExpired" }, 401);
-      }
-      const existingWatch = await getSpaceWatch(db, parsed.uri);
-      if (existingWatch?.status === "hidden" && body.rediscover !== true) {
-        return privateJson({ error: "RediscoveryRequired" }, 409);
-      }
-      if (body.rediscover === true && existingWatch?.status !== "hidden") {
-        return privateJson({ error: "RediscoveryNotAllowed" }, 409);
-      }
-      const authorityPds = await engine.identities.resolvePds(parsed.authorityDid);
-      const transport = await exchangeSpaceCredential({
-        authorityPds,
-        delegationToken: body.delegation,
-        spaceUri: parsed.uri,
-        fetch: options.protocol?.fetch,
-      });
-      const provisionalWatch: SpaceWatch = existingWatch ?? {
-        spaceUri: parsed.uri,
-        authorityDid: parsed.authorityDid,
-        spaceType: parsed.type,
-        generation: 1,
-        status: "active",
-        registrationExpiresAt: null,
-        nextReconcileAt: Date.now(),
-        lastReconciledAt: null,
-        lastError: null,
-      };
-      await engine.validateWatch(provisionalWatch, transport);
-      const watch = body.rediscover === true
-        ? await rediscoverSpace(db, parsed.uri)
-        : await ensureSpaceWatch(db, { spaceUri: parsed.uri });
-      await saveCredential(db, {
-        spaceUri: parsed.uri,
-        generation: watch.generation,
-        viewerDid: verified.did!,
-        credential: transport.serialize(),
-        encryptionKey: stringBinding(env, encryptionBinding),
-      });
-      const leaseExpiry = Math.min(
-        transport.expiresAt,
-        Date.now() + (options.accessLeaseMs ?? 15 * 60_000),
-      );
-      await saveAccessLease(db, {
+      return privateJson(await integrated(env, ctx).authorizeSpace({
         userDid: verified.did!,
-        spaceUri: parsed.uri,
-        generation: watch.generation,
-        expiresAt: leaseExpiry,
-      });
-      await updateWatch(db, parsed.uri, {
-        status: "active",
-        error: null,
-        nextReconcileAt: Date.now(),
-        expectedGeneration: watch.generation,
-      });
-      await enqueue(env, ctx, { kind: "reconcile", space: parsed.uri }, () =>
-        engine.reconcileSpace(parsed.uri));
-      return privateJson({
-        space: parsed.uri,
-        generation: watch.generation,
-        accessExpiresAt: new Date(leaseExpiry).toISOString(),
-      });
+        space: String(body.space ?? ""),
+        delegation: body.delegation,
+        rediscover: body.rediscover === true,
+      }));
     }
 
-    if (method === `${namespace}.${SYNC_SPACE_METHOD}` && request.method === "POST") {
+    if (standaloneUserApi &&
+      method === `${namespace}.${SYNC_SPACE_METHOD}` && request.method === "POST") {
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
       const body = await boundedJsonBody<{ space?: unknown; repo?: unknown }>(request);
-      const parsed = parseSpaceUri(body.space);
-      const watch = await getSpaceWatch(db, parsed.uri);
-      if (!watch || watch.status === "hidden") return privateJson({ error: "SpaceNotFound" }, 404);
-      if (!await accessAllowed(env, db, watch, {
-        userDid: verified.did!, spaceUri: parsed.uri, action: "read", method,
-      })) return privateJson({ error: "Forbidden" }, 403);
-      if (body.repo !== undefined && !validDid(body.repo)) {
-        return privateJson({ error: "InvalidRequest", message: "invalid repo DID" }, 400);
-      }
-      // Consumer-triggered sync always starts from the authority's complete
-      // writer list. The optional repo hint must never admit an unadvertised or
-      // previously removed writer; trusted authority notifications retain the
-      // targeted fast path below.
-      const preferredRepo = validDid(body.repo) ? body.repo : undefined;
-      await enqueue(
-        env,
-        ctx,
-        { kind: "reconcile", space: parsed.uri, preferredRepo },
-        () => engine.reconcileSpace(parsed.uri, { preferredRepo }),
-      );
-      return privateJson({ queued: true }, 202);
+      const result = await integrated(env, ctx).syncSpace({
+        userDid: verified.did!,
+        space: String(body.space ?? ""),
+        ...(body.repo === undefined ? {} : { repo: String(body.repo) }),
+      });
+      return privateJson(result, 202);
     }
 
-    if (method === `${namespace}.${LIST_SPACES_METHOD}` && request.method === "GET") {
+    if (standaloneUserApi &&
+      method === `${namespace}.${LIST_SPACES_METHOD}` && request.method === "GET") {
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
-      const requestedLimit = Number(url.searchParams.get("limit") ?? 100);
-      const cursor = url.searchParams.get("cursor") ?? undefined;
-      if (!Number.isInteger(requestedLimit) || requestedLimit < 1 ||
-        requestedLimit > 200 || (cursor?.length ?? 0) > 2_048) {
-        return privateJson({ error: "InvalidRequest" }, 400);
-      }
-      const indexed = await listConnectedSpaceWatches(db, {
+      return privateJson(await integrated(env, ctx).listSpaces({
         userDid: verified.did!,
-        cursor,
-        limit: requestedLimit + 1,
-      });
-      const watches = new Map(indexed.map((watch) => [watch.spaceUri, watch]));
-      let customTruncated = false;
-      if (options.authorization?.listSpaces) {
-        const listed = await options.authorization.listSpaces(verified.did!, { env, db });
-        customTruncated = listed.length > 1_000;
-        for (const spaceUri of listed.slice(0, 1_000)) {
-          if (typeof spaceUri !== "string" || spaceUri <= (cursor ?? "")) continue;
-          try {
-            parseSpaceUri(spaceUri);
-          } catch {
-            continue;
-          }
-          const watch = await getSpaceWatch(db, spaceUri);
-          if (!watch || watch.status !== "active") continue;
-          if (await accessAllowed(env, db, watch, {
-            userDid: verified.did!,
-            spaceUri,
-            action: "read",
-            method,
-          })) watches.set(spaceUri, watch);
-        }
-      }
-      const ordered = [...watches.values()].sort((a, b) =>
-        a.spaceUri.localeCompare(b.spaceUri)
-      );
-      const truncated = customTruncated || ordered.length > requestedLimit;
-      const page = ordered.slice(0, requestedLimit);
-      const spaces = page.map((watch) => ({
-        uri: watch.spaceUri,
-        authorityDid: watch.authorityDid,
-        type: watch.spaceType,
+        cursor: url.searchParams.get("cursor") ?? undefined,
+        limit: Number(url.searchParams.get("limit") ?? 100),
       }));
-      return privateJson({
-        spaces,
-        truncated,
-        ...(truncated && page.length ? { cursor: page.at(-1)!.spaceUri } : {}),
-      });
     }
 
     if (
-      subscriptionsEnabled &&
+      standaloneUserApi && subscriptionsEnabled &&
       method === `${namespace}.${SUBSCRIBE_SPACE_METHOD}` &&
       request.method === "POST"
     ) {
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
       const body = await boundedJsonBody<{ space?: unknown }>(request);
-      const parsed = parseSpaceUri(body.space);
-      const watch = await getSpaceWatch(db, parsed.uri);
-      if (!watch || watch.status === "hidden") return privateJson({ error: "SpaceNotFound" }, 404);
-      if (!await accessAllowed(env, db, watch, {
-        userDid: verified.did!, spaceUri: parsed.uri, action: "read", method,
-      })) return privateJson({ error: "Forbidden" }, 403);
-      const ticket = crypto.randomUUID().replaceAll("-", "");
-      const expiresAt = Date.now() + subscriptionTicketTtlMs;
-      const issued = await subscriptionHub(env, parsed.uri).fetch(
-        new Request("https://subscriptions.internal/issue", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ticket, expiresAt }),
-        }),
-      );
-      if (!issued.ok) return privateJson({ error: "SubscriptionUnavailable" }, 503);
-      const socketUrl = new URL("/subscribe", options.service.endpoint);
-      socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
-      socketUrl.searchParams.set("space", parsed.uri);
-      socketUrl.searchParams.set("ticket", ticket);
-      return privateJson({
-        url: socketUrl.href,
-        expiresAt: new Date(expiresAt).toISOString(),
-      });
+      return privateJson(await integrated(env, ctx).subscribeSpace({
+        userDid: verified.did!,
+        space: String(body.space ?? ""),
+      }));
     }
 
     if (method === "com.atproto.space.notifyWrite" && request.method === "POST") {
@@ -1033,95 +1271,51 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       return json({ authorized });
     }
 
-    for (const [short, collection] of Object.entries(projection.collections)) {
+    if (standaloneUserApi) for (const [short, collection] of Object.entries(projection.collections)) {
       const listMethod = collectionMethod(namespace, short, LIST_SPACE_RECORDS_METHOD);
       const getMethod = collectionMethod(namespace, short, GET_SPACE_RECORD_METHOD);
       if (method !== listMethod && method !== getMethod) continue;
       if (request.method !== "GET") return json({ error: "MethodNotAllowed" }, 405);
       const verified = await authorizeRequest(request, method);
       if (verified.response) return verified.response;
-      const parsed = parseSpaceUri(url.searchParams.get("space"));
-      const watch = await getSpaceWatch(db, parsed.uri);
-      if (!watch || watch.status !== "active") {
-        return privateJson({ error: "SpaceUnavailable" }, 404);
+      const space = url.searchParams.get("space") ?? "";
+      if (method === getMethod) {
+        const uri = url.searchParams.get("uri");
+        if (!uri) return privateJson({ error: "InvalidRequest", message: "uri is required" }, 400);
+        return privateJson(await integrated(env, ctx).getSpaceRecord({
+          userDid: verified.did!,
+          space,
+          collection: collection.collection!,
+          uri,
+        }));
       }
-      if (!await accessAllowed(env, db, watch, {
-        userDid: verified.did!,
-        spaceUri: parsed.uri,
-        action: "read",
-        method,
-      })) return privateJson({ error: "Forbidden" }, 403);
-
       const filters: Record<string, string> = {};
-      const ranges: Record<string, { min?: string; max?: string }> = {};
+      const rangeFilters: Record<string, { min?: string; max?: string }> = {};
       for (const field of Object.keys(collection.queryable ?? {})) {
         const exact = url.searchParams.get(field);
         if (exact !== null) filters[field] = exact;
-        const minimum = url.searchParams.get(`${field}Min`);
-        const maximum = url.searchParams.get(`${field}Max`);
-        if (minimum !== null || maximum !== null) {
-          ranges[field] = {
-            ...(minimum === null ? {} : { min: minimum }),
-            ...(maximum === null ? {} : { max: maximum }),
-          };
-        }
+        const min = url.searchParams.get(`${field}Min`) ?? undefined;
+        const max = url.searchParams.get(`${field}Max`) ?? undefined;
+        if (min !== undefined || max !== undefined) rangeFilters[field] = { min, max };
       }
-      const requestedUri = url.searchParams.get("uri");
-      if (method === getMethod && !requestedUri) {
-        return privateJson({ error: "InvalidRequest", message: "uri is required" }, 400);
-      }
-      const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
-      if (method === listMethod &&
-        (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1)) {
-        return privateJson({ error: "InvalidRequest", message: "invalid limit" }, 400);
-      }
-      const result = await queryIsolatedRecords(db, projection, {
-        scope: {
-          kind: "isolated",
-          key: spaceProjectionKey(parsed.uri, watch.generation),
-        },
-        collection: short,
-        ...(url.searchParams.get("did") ? { did: url.searchParams.get("did")! } : {}),
-        ...(method === getMethod
-          ? { uri: requestedUri!, limit: 1 }
-          : {
-              limit: requestedLimit,
-              cursor: url.searchParams.get("cursor") ?? undefined,
-              search: url.searchParams.get("search") ?? undefined,
-            }),
+      return privateJson(await integrated(env, ctx).listSpaceRecords({
+        userDid: verified.did!,
+        space,
+        collection: collection.collection!,
+        limit: Number(url.searchParams.get("limit") ?? 50),
+        cursor: url.searchParams.get("cursor") ?? undefined,
+        search: url.searchParams.get("search") ?? undefined,
+        did: url.searchParams.get("did") ?? undefined,
         filters,
-        rangeFilters: ranges,
-      });
-      if (method === getMethod) {
-        const record = result.records[0];
-        if (!record) return privateJson({ error: "RecordNotFound" }, 404);
-        return privateJson({
-          record: parsedRecord(record as unknown as Record<string, unknown>),
-          references: Object.fromEntries(
-            Object.entries(result.references ?? {}).map(([uri, row]) => [
-              uri,
-              parsedRecord(row as unknown as Record<string, unknown>),
-            ]),
-          ),
-        });
-      }
-      return privateJson({
-        records: result.records.map((row) =>
-          parsedRecord(row as unknown as Record<string, unknown>)),
-        ...(result.cursor ? { cursor: result.cursor } : {}),
-        references: Object.fromEntries(
-          Object.entries(result.references ?? {}).map(([uri, row]) => [
-            uri,
-            parsedRecord(row as unknown as Record<string, unknown>),
-          ]),
-        ),
-      });
+        rangeFilters,
+      }));
     }
 
     return json({ error: "MethodNotFound" }, 404);
   };
 
   return {
+    integrated,
     fetch(request, env, ctx) {
       return handle(request, env, ctx).catch(errorResponse);
     },

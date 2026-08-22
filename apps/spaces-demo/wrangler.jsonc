@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "contrail-spaces-demo",
-  "main": ".svelte-kit/cloudflare/_worker.js",
+  "name": "contrail-spaces-demo-provider",
+  "main": "worker.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -10,13 +10,38 @@
   },
   "observability": { "enabled": true },
   "routes": [
-    { "pattern": "circle.atmo.garden", "custom_domain": true }
+    { "pattern": "circle.atmo.garden", "custom_domain": true },
+    { "pattern": "spaces.atmo.garden", "custom_domain": true }
   ],
   "vars": {
     "OAUTH_PUBLIC_URL": "https://circle.atmo.garden"
   },
   "kv_namespaces": [
-    { "binding": "OAUTH_SESSIONS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" },
-    { "binding": "OAUTH_STATES", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
-  ]
+    { "binding": "OAUTH_SESSIONS", "id": "d17f1d2f045f47259824805cfef9b508" },
+    { "binding": "OAUTH_STATES", "id": "a13d034179504723a5ff54b028c20109" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "contrail-spaces-demo",
+      "database_id": "4d0d01ba-8164-4fba-8526-472de88c5f19"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SPACE_SUBSCRIPTIONS", "class_name": "SpaceSubscriptionHub" }
+    ]
+  },
+  "migrations": [
+    { "tag": "spaces-subscriptions-v1", "new_sqlite_classes": ["SpaceSubscriptionHub"] }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "SPACES_QUEUE", "queue": "contrail-spaces-demo" }
+    ],
+    "consumers": [
+      { "queue": "contrail-spaces-demo", "max_batch_size": 10, "max_batch_timeout": 1 }
+    ]
+  },
+  "triggers": { "crons": ["*/5 * * * *"] }
 }

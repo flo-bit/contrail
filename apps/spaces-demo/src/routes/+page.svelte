@@ -112,7 +112,11 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ handle: loginHandle })
       });
-      const body = await response.json();
+      const body = await response.json() as {
+        url?: string;
+        message?: string;
+        error?: string;
+      };
       if (!response.ok || !body.url) throw new Error(body.message ?? body.error ?? "Login failed");
       window.location.href = body.url;
     } catch (error) {
@@ -210,7 +214,7 @@
       <form method="POST" action="?/authorize" class="card stack" use:enhance>
         <input type="hidden" name="owner" value={data.owner} />
         <h2>Connect this circle</h2>
-        <p class="subtle">Ask the circle owner to add your handle to the PDS-native member list. The PDS must authorize your delegation before the provider will serve this circle.</p>
+        <p class="subtle">Ask the circle owner to add your handle to the PDS-native member list. The PDS must authorize your delegation before this application will serve the circle.</p>
         {#if data.error}<div class="error">{data.error}</div>{/if}
         <button>Authorize private reads</button>
       </form>
@@ -227,8 +231,7 @@
           </div>
           {#each data.members as member (member.did)}
             <div class="row">
-              <span class="meta">{member.handle ? `@${member.handle}` : member.did}</span>
-              {#if member.handle}<span class="subtle">{member.did}</span>{/if}
+              <span class="meta">{member.did}</span>
               <form method="POST" action="?/removeMember" use:enhance>
                 <input type="hidden" name="owner" value={data.owner} />
                 <input type="hidden" name="memberDid" value={member.did} />
@@ -281,7 +284,7 @@
             </div>
           </article>
         {:else}
-          <div class="card subtle">No synchronized notes yet. New writes may take a few seconds to arrive through the provider queue.</div>
+          <div class="card subtle">No synchronized notes yet. New writes may take a moment to arrive through the projection queue.</div>
         {/each}
       </section>
     {/if}
