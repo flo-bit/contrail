@@ -200,16 +200,10 @@
           <form method="POST" action="?/create" use:enhance>
             <button>Create and connect</button>
           </form>
-          {#if !data.nativeMemberPolicy}
-            <form method="POST" action="?/enableNativeMembers" use:enhance>
-              <button class="secondary">Use native member list</button>
-            </form>
-          {:else}
-            <form method="POST" action="?/authorize" use:enhance>
-              <input type="hidden" name="owner" value={data.owner} />
-              <button class="secondary">Connect an existing circle</button>
-            </form>
-          {/if}
+          <form method="POST" action="?/authorize" use:enhance>
+            <input type="hidden" name="owner" value={data.owner} />
+            <button class="secondary">Connect an existing circle</button>
+          </form>
         </div>
       </section>
     {:else if data.needsAuthorization}
@@ -225,43 +219,34 @@
         <section class="card stack" aria-label="Circle members">
           <div class="row">
             <h2>Native PDS members</h2>
-            {#if data.nativeMemberPolicy}
-              <span class="badge">{data.members.length + 1}</span>
-            {/if}
+            <span class="badge">{data.members.length + 1}</span>
           </div>
-          {#if !data.nativeMemberPolicy}
-            <p class="subtle">This existing circle still uses the managing-app policy. Switch it to the protocol's native member-list policy before adding people.</p>
-            <form method="POST" action="?/enableNativeMembers" use:enhance>
-              <button>Use native member list</button>
-            </form>
-          {:else}
+          <div class="row">
+            <span class="badge">owner</span>
+            <span class="meta">{data.owner}</span>
+          </div>
+          {#each data.members as member (member.did)}
             <div class="row">
-              <span class="badge">owner</span>
-              <span class="meta">{data.owner}</span>
+              <span class="meta">{member.handle ? `@${member.handle}` : member.did}</span>
+              {#if member.handle}<span class="subtle">{member.did}</span>{/if}
+              <form method="POST" action="?/removeMember" use:enhance>
+                <input type="hidden" name="owner" value={data.owner} />
+                <input type="hidden" name="memberDid" value={member.did} />
+                <button class="secondary">Remove</button>
+              </form>
             </div>
-            {#each data.members as member (member.did)}
-              <div class="row">
-                <span class="meta">{member.handle ? `@${member.handle}` : member.did}</span>
-                {#if member.handle}<span class="subtle">{member.did}</span>{/if}
-                <form method="POST" action="?/removeMember" use:enhance>
-                  <input type="hidden" name="owner" value={data.owner} />
-                  <input type="hidden" name="memberDid" value={member.did} />
-                  <button class="secondary">Remove</button>
-                </form>
-              </div>
-            {/each}
-            <form method="POST" action="?/addMember" class="row" use:enhance>
-              <input type="hidden" name="owner" value={data.owner} />
-              <input
-                name="member"
-                required
-                placeholder="handle.example.com or did:plc:…"
-                aria-label="New member handle or DID"
-                style="flex:1;min-width:18rem"
-              />
-              <button>Add member</button>
-            </form>
-          {/if}
+          {/each}
+          <form method="POST" action="?/addMember" class="row" use:enhance>
+            <input type="hidden" name="owner" value={data.owner} />
+            <input
+              name="member"
+              required
+              placeholder="handle.example.com or did:plc:…"
+              aria-label="New member handle or DID"
+              style="flex:1;min-width:18rem"
+            />
+            <button>Add member</button>
+          </form>
         </section>
       {/if}
 

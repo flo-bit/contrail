@@ -121,7 +121,11 @@ describe("Spaces Worker private query boundary", () => {
         },
       },
       spaceTypes: {
-        "garden.atmo.circle": { collections: [collection], skey: "self" },
+        "garden.atmo.circle": {
+          collections: [collection],
+          policy: "managing-app",
+          skey: "self",
+        },
       },
       authorization: { authorize: () => true },
     });
@@ -196,7 +200,17 @@ describe("Spaces Worker private query boundary", () => {
     expect(() => createSpacesWorker({
       ...base,
       spaceTypes: {
+        // @ts-expect-error Policies must also be explicit at the type boundary.
         "garden.atmo.circle": { collections: [collection] },
+      },
+    })).toThrow(/explicit supported policy/);
+    expect(() => createSpacesWorker({
+      ...base,
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          policy: "managing-app",
+        },
       },
     })).toThrow(/Managing-app/);
     expect(() => createSpacesWorker({

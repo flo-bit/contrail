@@ -55,9 +55,8 @@ export type SpaceUserPolicy = "public" | "member-list" | "managing-app";
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
-  /** User policy asserted against the authority PDS description. Defaults to
-   * `managing-app` for backwards compatibility. */
-  policy?: SpaceUserPolicy;
+  /** User policy asserted against the authority PDS description. */
+  policy: SpaceUserPolicy;
 }
 
 export interface SpacesSyncConfig {
@@ -167,7 +166,7 @@ export class SpacesSyncEngine {
     if (description.uri !== watch.spaceUri) {
       throw new Error("Space authority returned a different URI");
     }
-    const expectedPolicy = type.policy ?? "managing-app";
+    const expectedPolicy = type.policy;
     const expectedPolicyType = {
       public: "com.atproto.simplespace.defs#publicPolicy",
       "member-list": "com.atproto.simplespace.defs#memberListPolicy",

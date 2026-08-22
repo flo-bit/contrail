@@ -5,10 +5,8 @@ import {
   createSpace,
   createSpaceRecord,
   formatSpaceUri,
-  getSimpleSpace,
   listSimpleSpaceMembers,
   removeSimpleSpaceMember,
-  updateSimpleSpacePolicy,
 } from "@atmo-dev/contrail-spaces-alpha/consumer";
 import {
   NOTE_COLLECTION,
@@ -103,14 +101,10 @@ async function profileHandle(did: string): Promise<string | undefined> {
   }
 }
 
-async function nativeMembership(
+async function nativeMembers(
   session: NonNullable<App.Locals["session"]>,
   space: string,
-): Promise<{ enabled: boolean; members: CircleMember[] }> {
-  const description = await getSimpleSpace(session, space);
-  const enabled = description.policy?.$type ===
-    "com.atproto.simplespace.defs#memberListPolicy";
-  if (!enabled) return { enabled, members: [] };
+): Promise<CircleMember[]> {
   const dids: string[] = [];
   let cursor: string | undefined;
   do {
@@ -122,7 +116,7 @@ async function nativeMembership(
     did,
     handle: await profileHandle(did),
   })));
-  return { enabled, members };
+  return members;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -133,7 +127,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       space: null,
       notes: [],
       members: [],
-      nativeMemberPolicy: false,
       circles: [],
     };
   }
@@ -145,12 +138,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     spaces: [] as Array<{ uri: string; authorityDid: string; type: string }>,
     truncated: false,
   }));
-  const membership = owner === locals.did
-    ? await nativeMembership(locals.session, space).catch(() => ({
-        enabled: false,
-        members: [] as CircleMember[],
-      }))
-    : { enabled: true, members: [] as CircleMember[] };
+  const members = owner === locals.did
+    ? await nativeMembers(locals.session, space).catch(() => [] as CircleMember[])
+    : [] as CircleMember[];
   const queryNotes = () => client.listSpaceRecords<NoteRecord>({
     space,
     collection: NOTE_COLLECTION,
@@ -172,8 +162,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       owner,
       space,
       notes: notes.records,
-      members: membership.members,
-      nativeMemberPolicy: membership.enabled,
+      members,
       circles: available.spaces,
       circlesTruncated: available.truncated,
       viewer: locals.did,
@@ -185,8 +174,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       owner,
       space,
       notes: [] as NoteRecord[],
-      members: membership.members,
-      nativeMemberPolicy: membership.enabled,
+      members,
       circles: available.spaces,
       circlesTruncated: available.truncated,
       viewer: locals.did,
@@ -210,21 +198,6 @@ export const actions: Actions = {
       return fail(400, {
         action: "create",
         message: error instanceof Error ? error.message : "Could not create circle",
-      });
-    }
-    throw redirect(303, `/?owner=${encodeURIComponent(did)}`);
-  },
-
-  async enableNativeMembers({ locals }) {
-    const { session, did } = signedIn(locals);
-    const space = circleUri(did);
-    try {
-      await updateSimpleSpacePolicy(session, space, { kind: "member-list" });
-      await provider(session).authorizeSpace(space);
-    } catch (error) {
-      return fail(400, {
-        action: "enableNativeMembers",
-        message: error instanceof Error ? error.message : "Could not update circle policy",
       });
     }
     throw redirect(303, `/?owner=${encodeURIComponent(did)}`);
@@ -255,13 +228,7 @@ export const actions: Actions = {
     try {
       const member = await resolveMember(form.get("member"));
       if (member.did === owner) throw new Error("The owner already has access");
-      const space = circleUri(owner);
-      const description = await getSimpleSpace(session, space);
-      if (description.policy?.$type !==
-        "com.atproto.simplespace.defs#memberListPolicy") {
-        throw new Error("Enable the native member-list policy first");
-      }
-      await addSimpleSpaceMember(session, space, member.did);
+      await addSimpleSpaceMember(session, circleUri(owner), member.did);
     } catch (error) {
       return fail(400, {
         action: "addMember",

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { networkLexicons } from "../src/lexicons";
 
 const collection = "com.atproto.lexicon.schema";
-const retiredLexicons = ["garden.atmo.circle.member"] as const;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -74,29 +73,6 @@ for (const doc of networkLexicons) {
     }),
   });
   console.log(`published lexicon: ${doc.id}`);
-}
-
-for (const nsid of retiredLexicons) {
-  const existing = new URL(`${pds}/xrpc/com.atproto.repo.getRecord`);
-  existing.searchParams.set("repo", did);
-  existing.searchParams.set("collection", collection);
-  existing.searchParams.set("rkey", nsid);
-  const current = await fetch(existing, {
-    headers: { authorization: `Bearer ${accessJwt}` },
-  });
-  if (current.status === 400 || current.status === 404) continue;
-  if (!current.ok) {
-    throw new Error(`${existing} failed (${current.status}): ${await current.text()}`);
-  }
-  await jsonRequest(`${pds}/xrpc/com.atproto.repo.deleteRecord`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${accessJwt}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ repo: did, collection, rkey: nsid }),
-  });
-  console.log(`retired lexicon: ${nsid}`);
 }
 
 console.log(`published ${networkLexicons.length} network Lexicons from ${did}`);

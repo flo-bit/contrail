@@ -528,8 +528,14 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
   }
   bindRecordValidationLexicons(projection, options.lexicons);
   prepareRecordValidation(projection);
+  const supportedPolicies = new Set(["public", "member-list", "managing-app"]);
+  for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
+    if (!supportedPolicies.has(type.policy)) {
+      throw new TypeError(`Space type ${spaceType} requires an explicit supported policy`);
+    }
+  }
   const managingAppEnabled = Object.values(options.spaceTypes).some(
-    (type) => (type.policy ?? "managing-app") === "managing-app",
+    (type) => type.policy === "managing-app",
   );
   if (managingAppEnabled && !options.authorization) {
     throw new TypeError("Managing-app Space types require an authoritative authorizer");
@@ -660,7 +666,8 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
     input: SpaceAuthorizationInput,
   ): Promise<boolean> => {
     if (input.userDid === watch.authorityDid) return true;
-    const policy = options.spaceTypes[watch.spaceType]?.policy ?? "managing-app";
+    const policy = options.spaceTypes[watch.spaceType]?.policy;
+    if (!policy) return false;
     if (policy === "managing-app") {
       return options.authorization!.authorize(input, { env, db });
     }
