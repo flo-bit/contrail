@@ -854,6 +854,8 @@ export async function failChanges(
   ) {
     throw new TypeError("nextAttemptAt must be null or a future safe timestamp");
   }
+  // Expiry permits reclamation; owner equality remains the CAS guard. Preserve
+  // failure/backoff when slow work expires but no replacement has claimed it.
   const failed = await db
     .prepare(
       `UPDATE change_consumers
@@ -862,7 +864,6 @@ export async function failChanges(
            last_error_code = ?, last_error_at = ?, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
          AND acknowledged_position = ? AND lease_owner = ?
-         AND lease_expires_at > ?
        RETURNING attempts, next_attempt_at`,
     )
     .bind(
@@ -874,12 +875,11 @@ export async function failChanges(
       claim.generation,
       claim.from,
       claim.leaseOwner,
-      now,
     )
     .first<{ attempts: number | string; next_attempt_at: number | string | null }>();
   if (!failed) {
     throw new ChangeLeaseLostError(
-      `Change claim for ${claim.consumerId} is stale or expired`,
+      `Change claim for ${claim.consumerId} is stale or no longer owned`,
     );
   }
   return {

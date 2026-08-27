@@ -246,7 +246,7 @@ describe("durable change consumers", () => {
     });
   });
 
-  it("allows only one concurrent lease and rejects an expired owner", async () => {
+  it("allows only one concurrent lease and rejects a replaced owner", async () => {
     const db = createSqliteDatabase(":memory:");
     const config = readyEventConsumer();
     await initSchema(db, config);
@@ -268,6 +268,14 @@ describe("durable change consumers", () => {
     );
     await expect(
       acknowledgeChanges(db, stale, { now: 152 }),
+    ).rejects.toBeInstanceOf(ChangeLeaseLostError);
+    await expect(
+      failChanges(
+        db,
+        stale,
+        { code: "stale_failure", nextAttemptAt: 300 },
+        { now: 152 },
+      ),
     ).rejects.toBeInstanceOf(ChangeLeaseLostError);
     await acknowledgeChanges(db, replacement!, { now: 152 });
   });

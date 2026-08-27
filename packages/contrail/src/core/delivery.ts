@@ -314,7 +314,7 @@ async function runCurrent<Env>(
   if (before.state === "activating") {
     const claim = await state.changes.claimActivation(
       consumerId,
-      { now: state.clock() },
+      { leaseMs: state.claim.leaseMs, now: state.clock() },
       state.db,
     );
     if (!claim) return "empty";

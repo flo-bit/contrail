@@ -211,7 +211,7 @@ describe("current-state change consumer bootstrap", () => {
     expect(ordinaryDelivery).not.toHaveProperty("destinationToken");
   });
 
-  it("persists snapshot failure backoff and resumes the same page", async () => {
+  it("persists expired snapshot failure backoff and resumes the same page", async () => {
     const db = createSqliteDatabase(":memory:");
     const resolved = config({
       keeper,
@@ -220,13 +220,14 @@ describe("current-state change consumer bootstrap", () => {
     await initSchema(db, resolved);
     await apply(db, resolved, event({ rkey: "a", time: 1 }));
     const page = await claimCurrentSnapshotPage(db, resolved, "search", {
+      leaseMs: 10,
       now: 100,
     });
     await failCurrentSnapshotPage(
       db,
       page!,
       { code: "destination_unavailable", nextAttemptAt: 200 },
-      { now: 101 },
+      { now: 111 },
     );
     expect(
       await claimCurrentSnapshotPage(db, resolved, "search", { now: 150 }),

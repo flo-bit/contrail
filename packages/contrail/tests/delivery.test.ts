@@ -192,6 +192,46 @@ describe("change delivery runtime", () => {
     });
   });
 
+  it("persists handler failure after the claim lease expires", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const resolved = config({
+      webhook: { collections: [EVENT], initial: "history" },
+    });
+    const contrail = new Contrail({ ...resolved, db });
+    await contrail.init();
+    await append(db, resolved, "one", 1);
+
+    let current = 100;
+    const result = await runChangeDeliverySlice({
+      changes: contrail.changes,
+      config: resolved,
+      db,
+      env: {},
+      deliveries: {
+        webhook: async () => {
+          current = 151;
+          throw new Error("slow destination failure");
+        },
+      },
+      runtime: {
+        maxRounds: 1,
+        claim: { leaseMs: 50 },
+        baseRetryMs: 100,
+        maxRetryMs: 100,
+        jitter: 0,
+        clock: () => current,
+      },
+    });
+
+    expect(result).toMatchObject({ delivered: 0, failures: 1 });
+    expect((await getChangesStatus(db)).consumers[0]).toMatchObject({
+      position: "0",
+      attempts: 1,
+      nextAttemptAt: 251,
+      lastErrorCode: "handler_error",
+    });
+  });
+
   it("drives current snapshot, catch-up, and idempotent activation", async () => {
     const db = createSqliteDatabase(":memory:");
     const resolved = config({
@@ -258,6 +298,47 @@ describe("change delivery runtime", () => {
       ).json<any>(),
     ).toMatchObject({
       delivery: { required: "ready", pending: 0 },
+    });
+  });
+
+  it("uses the configured lease for a slow activation", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const resolved = config({
+      search: { collections: [EVENT], initial: "current" },
+    });
+    const contrail = new Contrail({ ...resolved, db });
+    await contrail.init();
+    await append(db, resolved, "one", 1);
+
+    let current = 100;
+    const result = await runChangeDeliverySlice({
+      changes: contrail.changes,
+      config: resolved,
+      db,
+      env: {},
+      deliveries: { search: async () => {} },
+      bootstraps: {
+        search: {
+          snapshot: async () => {},
+          activate: async (activation) => {
+            expect(activation.leaseExpiresAt).toBe(40_100);
+            current = 31_100;
+          },
+        },
+      },
+      runtime: {
+        maxRounds: 6,
+        maxDurationMs: 60_000,
+        claim: { leaseMs: 40_000 },
+        jitter: 0,
+        clock: () => current,
+      },
+    });
+
+    expect(result).toMatchObject({ activations: 1, failures: 0 });
+    expect(await contrail.changes.bootstrapStatus("search")).toMatchObject({
+      state: "ready",
+      position: "1",
     });
   });
 
