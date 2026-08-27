@@ -28,7 +28,9 @@ import {
   type SpaceWatch,
 } from "./storage";
 import {
+  resolveSpacesSyncBudget,
   SpacesSyncEngine,
+  type SpacesSyncBudgetOptions,
   type SpaceTypeConfig,
 } from "./sync";
 import { parseSpaceUri, spaceProjectionKey } from "./uri";
@@ -151,7 +153,8 @@ export interface SpacesWorkerOptions<Env extends SpacesWorkerEnv = SpacesWorkerE
     | "best-effort"
     | "disabled"
     | ((env: Env) => "required" | "best-effort" | "disabled");
-  maxAtomicMutations?: number;
+  /** Independent whole-repo incremental and staged-recovery work bounds. */
+  syncBudget?: SpacesSyncBudgetOptions;
   maxRepoCarBytes?: number;
   protocol?: {
     plcUrl?: string;
@@ -593,11 +596,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       options.reconcileIntervalMs < 1)) {
     throw new TypeError("reconcileIntervalMs must be a positive integer");
   }
-  if (options.maxAtomicMutations !== undefined &&
-    (!Number.isSafeInteger(options.maxAtomicMutations) ||
-      options.maxAtomicMutations < 1 || options.maxAtomicMutations > 50)) {
-    throw new TypeError("maxAtomicMutations must be an integer from 1 through 50");
-  }
+  const syncBudget = resolveSpacesSyncBudget(options.syncBudget);
   if (options.maxRepoCarBytes !== undefined &&
     (!Number.isSafeInteger(options.maxRepoCarBytes) || options.maxRepoCarBytes < 1)) {
     throw new TypeError("maxRepoCarBytes must be a positive integer");
@@ -725,7 +724,7 @@ export function createSpacesWorker<Env extends SpacesWorkerEnv = SpacesWorkerEnv
       notificationRegistration: typeof options.notificationRegistration === "function"
         ? options.notificationRegistration(env)
         : options.notificationRegistration,
-      maxAtomicMutations: options.maxAtomicMutations,
+      syncBudget,
       maxRepoCarBytes: options.maxRepoCarBytes,
       protocol: options.protocol,
       onInvalidate: subscriptionsEnabled || options.onInvalidate

@@ -28,6 +28,7 @@ import {
   SpaceIdentityResolver,
   SpaceProtocolError,
   type ProtocolOptions,
+  type RepoOp,
   type SignedCommitInput,
 } from "./protocol";
 import {
@@ -59,6 +60,44 @@ export interface SpaceTypeConfig {
   policy: SpaceUserPolicy;
 }
 
+export interface SpacesSyncBudget {
+  /** Maximum whole-repo operations verified from one incremental checkpoint.
+   * Operations from excluded collections still consume this bound. */
+  maxIncrementalOperations: number;
+  /** Maximum in-scope records projected by one staged recovery batch. */
+  recoveryBatchSize: number;
+}
+
+export type SpacesSyncBudgetOptions = Partial<SpacesSyncBudget>;
+
+export const DEFAULT_SPACES_SYNC_BUDGET = Object.freeze({
+  maxIncrementalOperations: 10,
+  recoveryBatchSize: 50,
+}) satisfies SpacesSyncBudget;
+
+function boundedSyncInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 50) {
+    throw new TypeError(`${label} must be an integer from 1 through 50`);
+  }
+  return value;
+}
+
+export function resolveSpacesSyncBudget(
+  value: SpacesSyncBudgetOptions = {},
+): SpacesSyncBudget {
+  return {
+    maxIncrementalOperations: boundedSyncInteger(
+      value.maxIncrementalOperations ??
+        DEFAULT_SPACES_SYNC_BUDGET.maxIncrementalOperations,
+      "syncBudget.maxIncrementalOperations",
+    ),
+    recoveryBatchSize: boundedSyncInteger(
+      value.recoveryBatchSize ?? DEFAULT_SPACES_SYNC_BUDGET.recoveryBatchSize,
+      "syncBudget.recoveryBatchSize",
+    ),
+  };
+}
+
 export interface SpacesSyncConfig {
   projection: ContrailConfig;
   spaceTypes: Record<string, SpaceTypeConfig>;
@@ -67,9 +106,7 @@ export interface SpacesSyncConfig {
   reconcileIntervalMs?: number;
   notificationRegistration?: "required" | "best-effort" | "disabled";
   registrationRenewalWindowMs?: number;
-  /** Maximum mutations admitted with one verified incremental checkpoint.
-   * Larger commits recover through a staged full CAR instead (default 10). */
-  maxAtomicMutations?: number;
+  syncBudget?: SpacesSyncBudgetOptions;
   /** Maximum complete repo CAR buffered by the Worker (default 16 MiB). */
   maxRepoCarBytes?: number;
   protocol?: ProtocolOptions;
@@ -88,6 +125,13 @@ class SyncLeaseLostError extends Error {
   constructor() {
     super("Space repo sync lease was lost");
     this.name = "SyncLeaseLostError";
+  }
+}
+
+class SyncDeadlineExceededError extends Error {
+  constructor() {
+    super("Space reconciliation deadline reached during incremental sync");
+    this.name = "SyncDeadlineExceededError";
   }
 }
 
@@ -115,6 +159,7 @@ function collectionAllowed(
 export class SpacesSyncEngine {
   readonly identities: SpaceIdentityResolver;
   private readonly logger: Pick<Console, "log" | "warn" | "error">;
+  private readonly budget: SpacesSyncBudget;
 
   constructor(
     readonly db: Database,
@@ -122,6 +167,7 @@ export class SpacesSyncEngine {
   ) {
     this.identities = new SpaceIdentityResolver(config.protocol);
     this.logger = config.logger ?? console;
+    this.budget = resolveSpacesSyncBudget(config.syncBudget);
   }
 
   private scope(watch: SpaceWatch) {
@@ -272,7 +318,7 @@ export class SpacesSyncEngine {
         if (Date.now() >= deadline) break;
         const state = local.get(repoDid);
         if (!state || state.rev !== remote.rev || !bytesEqual(state.commitHash, remote.hash)) {
-          await this.syncRepo(watch.spaceUri, repoDid);
+          await this.syncRepo(watch.spaceUri, repoDid, undefined, { deadline });
         }
       }
 
@@ -310,6 +356,7 @@ export class SpacesSyncEngine {
     spaceUri: string,
     repoDid: string,
     advertised?: { rev?: string; hash?: Uint8Array },
+    options: { deadline?: number } = {},
   ): Promise<void> {
     const watch = await getSpaceWatch(this.db, spaceUri);
     if (!watch || watch.status === "hidden") return;
@@ -346,9 +393,16 @@ export class SpacesSyncEngine {
         await this.recoverRepo(watch, repoDid, transport, assertLease);
       } else {
         try {
-          await this.incrementalRepo(watch, state, transport, assertLease);
+          await this.incrementalRepo(
+            watch,
+            state,
+            transport,
+            assertLease,
+            options.deadline,
+          );
         } catch (error) {
-          if (error instanceof SyncLeaseLostError) throw error;
+          if (error instanceof SyncLeaseLostError ||
+            error instanceof SyncDeadlineExceededError) throw error;
           this.logger.warn(
             `[spaces] incremental sync fell back to recovery for ${spaceUri} ${repoDid}`,
             error,
@@ -386,21 +440,43 @@ export class SpacesSyncEngine {
     local: SpaceRepoState,
     transport: SpaceCredentialTransport,
     assertLease: () => Promise<void>,
+    deadline?: number,
   ): Promise<void> {
     const writerPds = await this.identities.resolvePds(local.repoDid);
     const state = RepoCommit.fromState(local.ltHash);
-    const events: IngestEvent[] = [];
+    const finalProjectionOps = new Map<string, { operation: RepoOp; order: number }>();
+    let operationCount = 0;
     let cursor: string | undefined;
     let commit: SignedCommit | undefined;
     do {
-      const page = await listRepoOps(transport, writerPds, {
-        space: watch.spaceUri,
-        repo: local.repoDid,
-        since: local.rev,
-        cursor,
-        limit: 1000,
-      });
+      const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
+      if (remainingMs !== undefined && remainingMs <= 0) {
+        throw new SyncDeadlineExceededError();
+      }
+      const signal = remainingMs === undefined
+        ? undefined
+        : AbortSignal.timeout(Math.max(1, remainingMs));
+      let page;
+      try {
+        page = await listRepoOps(transport, writerPds, {
+          space: watch.spaceUri,
+          repo: local.repoDid,
+          since: local.rev,
+          cursor,
+          limit: Math.min(
+            1000,
+            this.budget.maxIncrementalOperations - operationCount + 1,
+          ),
+        }, { signal });
+      } catch (error) {
+        if (signal?.aborted) throw new SyncDeadlineExceededError();
+        throw error;
+      }
       for (const operation of page.ops) {
+        operationCount++;
+        if (operationCount > this.budget.maxIncrementalOperations) {
+          throw new Error("Incremental sync exceeds the bounded operation limit");
+        }
         state.applyOp({
           collection: operation.collection,
           rkey: operation.rkey,
@@ -408,46 +484,17 @@ export class SpacesSyncEngine {
           prev: operation.prev ? parseCid(operation.prev) : null,
         });
         if (!collectionAllowed(this.config, watch, operation.collection)) continue;
-        if (operation.cid && operation.value === undefined) {
-          throw new Error("Incremental operation omitted its record value");
-        }
-        const observedAt = Date.now() * 1000;
-        events.push(createIngestEvent({
-          uri: formatSpaceRecordUri({
-            spaceUri: watch.spaceUri,
-            writerDid: local.repoDid,
-            collection: operation.collection,
-            rkey: operation.rkey,
-          }),
-          did: local.repoDid,
-          collection: operation.collection,
-          rkey: operation.rkey,
-          operation: operation.cid
-            ? operation.prev
-              ? "update"
-              : "create"
-            : "delete",
-          cid: operation.cid,
-          value: operation.value,
-          timeUs: recordTimeUs(
-            operation.value,
-            operation.collection,
-            this.config.projection,
-            observedAt,
-          ),
-          indexedAt: observedAt,
-          source: {
-            id: `space:${watch.spaceUri}:${watch.generation}`,
-            revision: operation.rev,
-            time_us: observedAt,
-          },
-        }));
-        if (events.length > (this.config.maxAtomicMutations ?? 10)) {
-          throw new Error("Incremental commit exceeds the bounded atomic mutation limit");
-        }
+        finalProjectionOps.set(
+          `${operation.collection}\0${operation.rkey}`,
+          { operation, order: operationCount },
+        );
       }
       cursor = page.cursor;
       if (page.commit) commit = asSignedCommit(page.commit);
+      // A cursor proves that at least one more whole-repo operation remains.
+      if (cursor && operationCount >= this.budget.maxIncrementalOperations) {
+        throw new Error("Incremental sync exceeds the bounded operation limit");
+      }
     } while (cursor);
     if (!commit) throw new Error("Incremental operation log did not reach a commit");
     const key = await this.identities.resolveSigningKey(local.repoDid);
@@ -468,8 +515,50 @@ export class SpacesSyncEngine {
         throw new Error("Incremental commit signature or LtHash verification failed");
       }
     }
-    if (events.length > (this.config.maxAtomicMutations ?? 10)) {
-      throw new Error("Incremental commit exceeds the bounded atomic mutation limit");
+
+    // A host can inline only values that are still current when it serves a
+    // page. Keep applying every operation to RepoCommit above, but project only
+    // the last operation for each path. Earlier value-less creates/updates are
+    // thereby omitted only after a later operation confirms they were stale.
+    const events: IngestEvent[] = [];
+    const operations = [...finalProjectionOps.values()]
+      .sort((left, right) => left.order - right.order)
+      .map(({ operation }) => operation);
+    for (const operation of operations) {
+      if (operation.cid && operation.value === undefined) {
+        throw new Error("Current incremental operation omitted its record value");
+      }
+      const observedAt = Date.now() * 1000;
+      events.push(createIngestEvent({
+        uri: formatSpaceRecordUri({
+          spaceUri: watch.spaceUri,
+          writerDid: local.repoDid,
+          collection: operation.collection,
+          rkey: operation.rkey,
+        }),
+        did: local.repoDid,
+        collection: operation.collection,
+        rkey: operation.rkey,
+        operation: operation.cid
+          ? operation.prev
+            ? "update"
+            : "create"
+          : "delete",
+        cid: operation.cid,
+        value: operation.value,
+        timeUs: recordTimeUs(
+          operation.value,
+          operation.collection,
+          this.config.projection,
+          observedAt,
+        ),
+        indexedAt: observedAt,
+        source: {
+          id: `space:${watch.spaceUri}:${watch.generation}`,
+          revision: operation.rev,
+          time_us: observedAt,
+        },
+      }));
     }
     await assertLease();
     const checkpoint = saveRepoStateStatement(this.db, {
@@ -562,7 +651,7 @@ export class SpacesSyncEngine {
     };
     await assertLease();
     await deleteIsolatedPartitionGeneration(this.db, this.config.projection, target);
-    const chunkSize = this.config.maxAtomicMutations ?? 10;
+    const chunkSize = this.budget.recoveryBatchSize;
     for (let offset = 0; offset < events.length; offset += chunkSize) {
       await assertLease();
       const chunk = events.slice(offset, offset + chunkSize);

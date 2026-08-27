@@ -279,9 +279,11 @@ async function credentialQuery<T>(
   service: string,
   method: string,
   params: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   return assertResponse<T>(await transport.fetch(xrpcUrl(service, method, params), {
     headers: { accept: "application/json" },
+    signal: options.signal,
   }));
 }
 
@@ -367,8 +369,15 @@ export function listRepoOps(
     limit?: number;
     cursor?: string;
   },
+  options: { signal?: AbortSignal } = {},
 ): Promise<ListRepoOpsOutput> {
-  return credentialQuery(transport, writerPds, "com.atproto.space.listRepoOps", input);
+  return credentialQuery(
+    transport,
+    writerPds,
+    "com.atproto.space.listRepoOps",
+    input,
+    options,
+  );
 }
 
 export async function getRepoCar(

@@ -54,6 +54,20 @@ A Cloudflare deployment needs:
 
 Credentials and DPoP private keys are AES-256-GCM encrypted with Space-generation-bound associated data. The D1 projection and backups still contain plaintext private records; this is access control, not end-to-end encryption.
 
+Incremental and recovery work are tuned independently:
+
+```ts
+createSpacesWorker({
+  // ...
+  syncBudget: {
+    maxIncrementalOperations: 10, // whole-repo operations, including excluded collections
+    recoveryBatchSize: 50, // in-scope records per staged ingest batch
+  },
+});
+```
+
+The operation endpoint has no collection filter, because metadata from every collection is required to verify the whole-repo commit. Contrail therefore requests only enough operations to enforce the incremental bound, but a PDS response can still include unused values from excluded collections.
+
 ## Deliberately deferred
 
 - blobs;
