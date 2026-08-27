@@ -3,6 +3,7 @@ export type { LexiconDoc } from "@atcute/lexicon-doc";
 export { Contrail } from "./contrail";
 export type { AppOptions, ContrailOptions } from "./contrail";
 export * from "./public-service";
+export * from "./service-auth-contract";
 
 // Configuration, storage, identity, and dialects.
 export * from "./core/types";
@@ -29,8 +30,10 @@ export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";
 export * from "./core/diagnostics";
+export * from "./core/service-auth";
 export * from "./core/validation";
 export * from "./core/search";
+export * from "./core/isolated-projection";
 export * from "./core/constellation";
 
 // Database.

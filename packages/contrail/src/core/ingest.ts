@@ -99,6 +99,21 @@ export function recordTimeUs(
   return microseconds > fallbackUs ? fallbackUs : microseconds;
 }
 
+export interface IngestProjection {
+  /** Select mutations newer than this projection's durable version state. */
+  selectCurrent(
+    db: Database,
+    events: IngestEvent[],
+  ): Promise<{ applied: IngestEvent[]; superseded: number }>;
+  /** Commit admitted mutations and any trailing checkpoint statements atomically. */
+  project(
+    db: Database,
+    events: IngestEvent[],
+    config: ContrailConfig,
+    options: IngestRecordsOptions & { sourceOrderingChecked: true },
+  ): Promise<{ applied: IngestEvent[]; superseded: number }>;
+}
+
 export interface IngestRecordsOptions {
   skipReplayDetection?: boolean;
   skipFeedFanout?: boolean;
@@ -111,6 +126,12 @@ export interface IngestRecordsOptions {
   knownDids?: ReadonlySet<string>;
   /** Statements committed after projection in the same database batch. */
   trailingStatements?: Statement[];
+  /** Optional isolated projection implementation. Admission and validation stay
+   * in this canonical path while storage/query namespaces remain extension-owned. */
+  projection?: IngestProjection;
+  /** Do not add this batch to the public ingest diagnostic counters. Private
+   * extensions should maintain operator-only diagnostics of their own. */
+  skipDiagnostics?: boolean;
   /** The source response is a current authoritative snapshot, so it supersedes
    * durable observations without a redundant version lookup. */
   authoritativeSourceObservation?: boolean;
@@ -281,7 +302,9 @@ export async function ingestRecords(
   // actors in this batch. The winning versions are persisted with projection.
   const ordered = options.authoritativeSourceObservation
     ? selectAuthoritativeMutations(accepted)
-    : await selectCurrentMutations(db, accepted);
+    : options.projection
+      ? await options.projection.selectCurrent(db, accepted)
+      : await selectCurrentMutations(db, accepted);
   dropped.superseded += ordered.superseded;
 
   const projectionExclusions = ordered.applied.filter((event) =>
@@ -345,7 +368,7 @@ export async function ingestRecords(
     unknown_subject: dropped.unknownSubject,
     superseded: dropped.superseded,
   };
-  const diagnostics = options.aggregateDiagnostics
+  const diagnostics = options.aggregateDiagnostics || options.skipDiagnostics
     ? null
     : ingestDiagnosticsStatement(db, diagnosticCounts);
   const trailingStatements = [
@@ -353,11 +376,21 @@ export async function ingestRecords(
     ...(options.trailingStatements ?? []),
   ];
   if (projectionEvents.length > 0) {
-    await projectEvents(db, projectionEvents, config, {
+    const projectionOptions = {
       ...options,
       trailingStatements,
-      sourceOrderingChecked: true,
-    });
+      sourceOrderingChecked: true as const,
+    };
+    if (options.projection) {
+      await options.projection.project(
+        db,
+        projectionEvents,
+        config,
+        projectionOptions,
+      );
+    } else {
+      await projectEvents(db, projectionEvents, config, projectionOptions);
+    }
   } else if (trailingStatements.length > 0) {
     await db.batch(trailingStatements);
   }

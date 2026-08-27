@@ -1,0 +1,4 @@
+OAUTH_PUBLIC_URL=http://127.0.0.1:5173
+COOKIE_SECRET=replace-with-at-least-32-random-characters
+CLIENT_ASSERTION_KEY={"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."}
+SPACES_CREDENTIAL_ENCRYPTION_KEY=replace-with-32-random-bytes-as-base64

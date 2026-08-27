@@ -1,0 +1,38 @@
+diff --git a/dist/server/index.d.mts b/dist/server/index.d.mts
+index 2fcf6f6433cbf471fc4c425ee568e3e8c3700eda..425681a93acfedc7703716b3e2942b5c530eee9e 100644
+--- a/dist/server/index.d.mts
++++ b/dist/server/index.d.mts
+@@ -21,6 +21,8 @@ interface AtprotoAuthConfig {
+    * Required outside dev.
+    */
+   origin?: string | undefined;
++  /** Override SvelteKit's build-time dev flag for a built loopback Worker. */
++  dev?: boolean;
+   /**
+    * HMAC secret for signed cookies. Required outside dev. In dev, falls
+    * back to a fixed dev string with a one-time warning.
+diff --git a/dist/server/index.mjs b/dist/server/index.mjs
+index 40942bd3edd80c8a3dce60ffdba49384ffc56d0f..3ef252c3f72775f4cc010c9a5fd35fcf628f7b92 100644
+--- a/dist/server/index.mjs
++++ b/dist/server/index.mjs
+@@ -30,9 +30,10 @@ function normalizeScope(s) {
+ }
+ let warnedDevSecret = false;
+ function resolveConfig(c) {
++	const resolvedDev = c.dev ?? dev;
+ 	let cookieSecret = c.cookieSecret;
+ 	if (!cookieSecret) {
+-		if (!dev) throw new Error("atproto-oauth: cookieSecret is required outside dev");
++		if (!resolvedDev) throw new Error("atproto-oauth: cookieSecret is required outside dev");
+ 		if (!warnedDevSecret) {
+ 			console.warn("[atproto-oauth] cookieSecret not set — using a known dev fallback. Set `cookieSecret` (e.g. via env) before deploying.");
+ 			warnedDevSecret = true;
+@@ -55,7 +56,7 @@ function resolveConfig(c) {
+ 		loginPath: c.loginPath ?? DEFAULT_LOGIN_PATH,
+ 		logoutPath: c.logoutPath ?? DEFAULT_LOGOUT_PATH,
+ 		doh: c.doh ?? DEFAULT_DOH,
+-		dev,
++		dev: resolvedDev,
+ 		devPort: c.devPort ?? DEFAULT_DEV_PORT,
+ 		cookieMaxAge: c.cookieMaxAge ?? DEFAULT_MAX_AGE,
+ 		scope,

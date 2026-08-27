@@ -1,0 +1,5 @@
+- lexicon publishing
+- local dev
+- different ways to allow access
+- [x] client side updates (check for non-cloudflare deployment)
+- public and private data mix

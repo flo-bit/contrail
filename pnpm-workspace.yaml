@@ -9,5 +9,9 @@ onlyBuiltDependencies:
   - '@tailwindcss/oxide'
   - '@sveltejs/kit'
 
+patchedDependencies:
+  '@atcute/multibase@1.2.5': patches/@atcute__multibase@1.2.5.patch
+  '@svelte-atproto/oauth@0.3.0': patches/@svelte-atproto__oauth@0.3.0.patch
+
 trustPolicyExclude:
   - chokidar@4.0.3
