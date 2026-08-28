@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.21.1
+
+### Patch Changes
+
+- de3f48a: Declare the byte-array helper used by Atcute's Lexicon CLI so `contrail dev` can resolve Lexicons in isolated `pnpx` installs.
+
 ## 0.21.0
 
 ### Minor Changes
