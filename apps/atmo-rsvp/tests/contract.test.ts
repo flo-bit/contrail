@@ -3,7 +3,11 @@ import { describePublicService } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createWorker } from "@atmo-dev/contrail/worker";
 import { lexicons } from "../lexicons/generated";
-import { config } from "../src/contrail.config";
+import { config, searchGenerationConfig } from "../src/contrail.config";
+import {
+  createAtmoMeilisearchRuntime,
+  type AtmoMeilisearchEnv,
+} from "../src/meilisearch";
 
 const EXPECTED_METHODS = [
   "rsvp.atmo.event.getRecord",
@@ -70,6 +74,23 @@ describe("api.atmo.rsvp public contract", () => {
         lexicons,
         publicService: { endpoint: "https://api.atmo.rsvp" },
       }),
+    ).not.toThrow();
+    expect(searchGenerationConfig.changes?.consumers.search).toEqual({
+      collections: ["community.lexicon.calendar.event"],
+      phases: ["historical", "live"],
+      initial: "current",
+      requiredForActivation: true,
+    });
+    const search = createAtmoMeilisearchRuntime();
+    expect(() =>
+      createWorker<AtmoMeilisearchEnv & Record<string, unknown>>(
+        searchGenerationConfig,
+        {
+          lexicons,
+          publicService: { endpoint: "https://api.atmo.rsvp" },
+          ...search,
+        },
+      ),
     ).not.toThrow();
   });
 

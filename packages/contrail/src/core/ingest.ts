@@ -4,6 +4,7 @@ import type {
   Database,
   IngestEvent,
   MutationSource,
+  ProjectionPhase,
   Statement,
 } from "./types";
 import {
@@ -11,9 +12,11 @@ import {
   resolveCollectionKey,
 } from "./types";
 import {
+  isProjectionConflictError,
+  lookupRecordVersions,
   projectEvents,
   selectAuthoritativeMutations,
-  selectCurrentMutations,
+  selectMutationWinners,
   type ExistingRecordInfo,
 } from "./db/records";
 import {
@@ -114,6 +117,9 @@ export interface IngestRecordsOptions {
   /** The source response is a current authoritative snapshot, so it supersedes
    * durable observations without a redundant version lookup. */
   authoritativeSourceObservation?: boolean;
+  /** Acquisition phase for optional durable consumers. Defaults to live for
+   * backwards-compatible direct ingestRecords() calls. */
+  phase?: ProjectionPhase;
   /** @internal Aggregate private diagnostics for one bulk run. The caller
    * flushes this bounded object once after concurrent page processing. */
   aggregateDiagnostics?: IngestDiagnosticCounts;
@@ -277,97 +283,131 @@ export async function ingestRecords(
     );
   }
 
-  // Reject duplicate/stale source observations before they can admit dependent
-  // actors in this batch. The winning versions are persisted with projection.
-  const ordered = options.authoritativeSourceObservation
-    ? selectAuthoritativeMutations(accepted)
-    : await selectCurrentMutations(db, accepted);
-  dropped.superseded += ordered.superseded;
-
-  const projectionExclusions = ordered.applied.filter((event) =>
-    policyExcluded.has(event),
-  );
-  const admitted = ordered.applied.filter((event) => !policyExcluded.has(event));
-
-  const effectiveKnownDids = options.knownDids
-    ? new Set(options.knownDids)
-    : undefined;
-  const discoveredDids: string[] = [];
-  if (effectiveKnownDids) {
-    for (const event of admitted) {
-      if (event.operation === "delete") continue;
-      const shortName = resolveCollectionKey(config, event.collection);
-      const collection = shortName ? config.collections[shortName] : undefined;
-      if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
-        continue;
-      }
-      effectiveKnownDids.add(event.did);
-      discoveredDids.push(event.did);
-    }
-  }
-
-  const actorFiltered: IngestEvent[] = [];
-  for (const event of admitted) {
-    if (event.operation === "delete" || !effectiveKnownDids) {
-      actorFiltered.push(event);
-      continue;
-    }
-    const shortName = resolveCollectionKey(config, event.collection);
-    const collection = shortName ? config.collections[shortName] : undefined;
-    if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
-      actorFiltered.push(event);
-      continue;
-    }
-    dropped.unknownActor++;
-  }
-
-  const subjectFiltered = await filterUnknownSubjects(
-    db,
-    config,
-    actorFiltered,
-    effectiveKnownDids,
-    dropped,
-  );
-
-  const projectionEvents = [
-    ...subjectFiltered,
-    ...projectionExclusions,
-  ];
-  const diagnosticCounts: IngestDiagnosticCounts = {
-    unknown_collection: dropped.unknownCollection,
-    invalid_json: dropped.invalidRecord,
-    lexicon_validation: dropped.lexiconValidation,
-    cid_mismatch: dropped.cidMismatch,
-    cid_encoding: dropped.cidEncoding,
-    missing_cid: dropped.missingCid,
-    record_filter: dropped.recordFilter,
-    unknown_actor: dropped.unknownActor,
-    unknown_subject: dropped.unknownSubject,
+  // Winner reads occur before db.batch on D1, so each projection carries the
+  // exact predecessor tokens it observed. A concurrent projector changes a
+  // token, the named transaction guard rolls everything back, and this loop
+  // repeats selection plus derived-state reads from fresh durable state.
+  const retryBase = {
+    unknownActor: dropped.unknownActor,
+    unknownSubject: dropped.unknownSubject,
     superseded: dropped.superseded,
   };
-  const diagnostics = options.aggregateDiagnostics
-    ? null
-    : ingestDiagnosticsStatement(db, diagnosticCounts);
-  const trailingStatements = [
-    ...(diagnostics ? [diagnostics] : []),
-    ...(options.trailingStatements ?? []),
-  ];
-  if (projectionEvents.length > 0) {
-    await projectEvents(db, projectionEvents, config, {
-      ...options,
-      trailingStatements,
-      sourceOrderingChecked: true,
-    });
-  } else if (trailingStatements.length > 0) {
-    await db.batch(trailingStatements);
-  }
-  // Aggregate only after the canonical projection/checkpoint transaction
-  // succeeds, so a rolled-back page cannot inflate private diagnostics.
-  if (options.aggregateDiagnostics) {
-    addIngestDiagnosticCounts(options.aggregateDiagnostics, diagnosticCounts);
+  const maximumAttempts = 5;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    const attemptDropped: IngestDropCounts = {
+      ...dropped,
+      unknownActor: retryBase.unknownActor,
+      unknownSubject: retryBase.unknownSubject,
+      superseded: retryBase.superseded,
+    };
+    const predecessors = await lookupRecordVersions(
+      db,
+      accepted.map((event) => event.uri),
+    );
+    const ordered = options.authoritativeSourceObservation
+      ? selectAuthoritativeMutations(accepted)
+      : selectMutationWinners(accepted, predecessors);
+    attemptDropped.superseded += ordered.superseded;
+
+    const projectionExclusions = ordered.applied.filter((event) =>
+      policyExcluded.has(event),
+    );
+    const admitted = ordered.applied.filter(
+      (event) => !policyExcluded.has(event),
+    );
+
+    const effectiveKnownDids = options.knownDids
+      ? new Set(options.knownDids)
+      : undefined;
+    const discoveredDids: string[] = [];
+    if (effectiveKnownDids) {
+      for (const event of admitted) {
+        if (event.operation === "delete") continue;
+        const shortName = resolveCollectionKey(config, event.collection);
+        const collection = shortName ? config.collections[shortName] : undefined;
+        if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
+          continue;
+        }
+        effectiveKnownDids.add(event.did);
+        discoveredDids.push(event.did);
+      }
+    }
+
+    const actorFiltered: IngestEvent[] = [];
+    for (const event of admitted) {
+      if (event.operation === "delete" || !effectiveKnownDids) {
+        actorFiltered.push(event);
+        continue;
+      }
+      const shortName = resolveCollectionKey(config, event.collection);
+      const collection = shortName ? config.collections[shortName] : undefined;
+      if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
+        actorFiltered.push(event);
+        continue;
+      }
+      attemptDropped.unknownActor++;
+    }
+
+    const subjectFiltered = await filterUnknownSubjects(
+      db,
+      config,
+      actorFiltered,
+      effectiveKnownDids,
+      attemptDropped,
+    );
+    const projectionEvents = [...subjectFiltered, ...projectionExclusions];
+    const diagnosticCounts: IngestDiagnosticCounts = {
+      unknown_collection: attemptDropped.unknownCollection,
+      invalid_json: attemptDropped.invalidRecord,
+      lexicon_validation: attemptDropped.lexiconValidation,
+      cid_mismatch: attemptDropped.cidMismatch,
+      cid_encoding: attemptDropped.cidEncoding,
+      missing_cid: attemptDropped.missingCid,
+      record_filter: attemptDropped.recordFilter,
+      unknown_actor: attemptDropped.unknownActor,
+      unknown_subject: attemptDropped.unknownSubject,
+      superseded: attemptDropped.superseded,
+    };
+    const diagnostics = options.aggregateDiagnostics
+      ? null
+      : ingestDiagnosticsStatement(db, diagnosticCounts);
+    const trailingStatements = [
+      ...(diagnostics ? [diagnostics] : []),
+      ...(options.trailingStatements ?? []),
+    ];
+
+    try {
+      if (projectionEvents.length > 0) {
+        await projectEvents(db, projectionEvents, config, {
+          ...options,
+          phase: options.phase ?? "live",
+          // A pre-fetched visible-row map is not safe after a conflict; the
+          // projector deliberately reloads it under this predecessor attempt.
+          existing: undefined,
+          trailingStatements,
+          sourceOrderingChecked: true,
+          predecessors,
+        });
+      } else if (trailingStatements.length > 0) {
+        await db.batch(trailingStatements);
+      }
+    } catch (error) {
+      if (isProjectionConflictError(error) && attempt < maximumAttempts) {
+        continue;
+      }
+      throw error;
+    }
+
+    Object.assign(dropped, attemptDropped);
+    // Aggregate only after the canonical projection/checkpoint transaction
+    // succeeds, so a rolled-back attempt cannot inflate private diagnostics.
+    if (options.aggregateDiagnostics) {
+      addIngestDiagnosticCounts(options.aggregateDiagnostics, diagnosticCounts);
+    }
+    return { accepted: subjectFiltered, dropped, discoveredDids };
   }
 
-  return { accepted: subjectFiltered, dropped, discoveredDids };
+  throw new Error("Projection conflict retry limit exhausted");
 }
 
 function incrementValidationDrop(

@@ -249,6 +249,28 @@ export interface OrderedSourceConfig {
   epoch: string;
 }
 
+/** How an accepted mutation entered the logical projection. */
+export type ProjectionPhase = "historical" | "live";
+
+export type ChangeConsumerInitialMode = "current" | "future" | "history";
+
+/** Static, secret-free definition for one durable change-log consumer. */
+export interface ChangeConsumerConfig {
+  /** Exact configured collection NSIDs. Short aliases are deliberately rejected. */
+  collections: string[];
+  /** Projection phases to observe. Defaults to both; `initial: "current"` requires both. */
+  phases?: ProjectionPhase[];
+  /** How the consumer establishes its first durable position. */
+  initial: ChangeConsumerInitialMode;
+  /** Whether deployment generation activation may require this consumer. */
+  requiredForActivation?: boolean;
+}
+
+export interface ChangeLogConfig {
+  /** Stable consumer IDs mapped to their static delivery policy. */
+  consumers: Record<string, ChangeConsumerConfig>;
+}
+
 export type AtprotoServiceAuthMethod = "getFeed" | "notifyOfUpdate";
 
 export interface AtprotoServiceAuthConfig {
@@ -284,6 +306,9 @@ export interface ContrailConfig {
    * cursor is persisted atomically with projected mutations and may be exposed
    * to clients as a cache invalidation coordinate. */
   orderedSource?: OrderedSourceConfig;
+  /** Optional transactional projection change log. Runtime handlers and
+   * destination credentials are bound separately and never belong here. */
+  changes?: ChangeLogConfig;
   feeds?: Record<string, FeedConfig>;
   logger?: Logger;
   /** Expose the notifyOfUpdate HTTP endpoint. Off by default.
@@ -655,6 +680,63 @@ function validateShortName(short: string): void {
   }
 }
 
+const CHANGE_CONSUMER_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const MAX_CHANGE_CONSUMERS = 32;
+const MAX_CHANGE_CONSUMER_COLLECTIONS = 64;
+const MAX_CHANGE_COVERAGE_PAIRS = 256;
+const MAX_CHANGE_DEFINITIONS_BYTES = 64 * 1_024;
+
+/** Locale-independent order for durable definitions compared across runtimes. */
+function compareCanonicalText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Whether this configuration requires the optional transactional change log. */
+export function changesEnabled(config: ContrailConfig): boolean {
+  return Object.keys(config.changes?.consumers ?? {}).length > 0;
+}
+
+/** Canonical phases for a consumer definition. */
+export function changeConsumerPhases(
+  consumer: ChangeConsumerConfig,
+): ProjectionPhase[] {
+  return consumer.phases ?? ["historical", "live"];
+}
+
+/** Canonical collection/phase pairs whose changes must be retained. */
+export function changeLogCoverage(
+  config: ContrailConfig,
+): Array<{ collection: string; phase: ProjectionPhase }> {
+  const pairs = new Map<string, { collection: string; phase: ProjectionPhase }>();
+  for (const consumer of Object.values(config.changes?.consumers ?? {})) {
+    for (const collection of consumer.collections) {
+      for (const phase of changeConsumerPhases(consumer)) {
+        pairs.set(`${collection}\0${phase}`, { collection, phase });
+      }
+    }
+  }
+  return [...pairs.values()].sort(
+    (left, right) =>
+      compareCanonicalText(left.collection, right.collection) ||
+      compareCanonicalText(left.phase, right.phase),
+  );
+}
+
+/** Stable secret-free representation used by schema/config compatibility checks. */
+export function canonicalChangeDefinitions(config: ContrailConfig): string {
+  return JSON.stringify(
+    Object.entries(config.changes?.consumers ?? {})
+      .sort(([left], [right]) => compareCanonicalText(left, right))
+      .map(([id, consumer]) => ({
+        id,
+        collections: [...consumer.collections].sort(),
+        phases: [...changeConsumerPhases(consumer)].sort(),
+        initial: consumer.initial,
+        requiredForActivation: consumer.requiredForActivation === true,
+      })),
+  );
+}
+
 export function validateConfig(config: ContrailConfig): void {
   const shortNames = new Set<string>();
   for (const [short, colConfig] of Object.entries(config.collections)) {
@@ -713,6 +795,72 @@ export function validateConfig(config: ContrailConfig): void {
         }
       }
     }
+  }
+
+  const consumers = Object.entries(config.changes?.consumers ?? {});
+  if (consumers.length > MAX_CHANGE_CONSUMERS) {
+    throw new Error(`changes supports at most ${MAX_CHANGE_CONSUMERS} consumers`);
+  }
+  const configuredNsids = new Set(getCollectionNsids(config));
+  for (const [id, consumer] of consumers) {
+    if (!CHANGE_CONSUMER_ID.test(id)) {
+      throw new Error(
+        `Invalid change consumer ID "${id}"; use 1-64 letters, digits, underscores, or hyphens`,
+      );
+    }
+    if (
+      !Array.isArray(consumer.collections) ||
+      consumer.collections.length === 0 ||
+      consumer.collections.length > MAX_CHANGE_CONSUMER_COLLECTIONS ||
+      new Set(consumer.collections).size !== consumer.collections.length
+    ) {
+      throw new Error(
+        `Change consumer "${id}" requires 1-${MAX_CHANGE_CONSUMER_COLLECTIONS} unique collection NSIDs`,
+      );
+    }
+    for (const collection of consumer.collections) {
+      if (!configuredNsids.has(collection)) {
+        throw new Error(
+          `Change consumer "${id}" references unconfigured collection NSID "${collection}"`,
+        );
+      }
+    }
+    const phases = changeConsumerPhases(consumer);
+    if (
+      phases.length === 0 ||
+      phases.length > 2 ||
+      new Set(phases).size !== phases.length ||
+      phases.some((phase) => phase !== "historical" && phase !== "live")
+    ) {
+      throw new Error(
+        `Change consumer "${id}" requires unique historical/live phases`,
+      );
+    }
+    if (
+      consumer.initial === "current" &&
+      !(phases.includes("historical") && phases.includes("live"))
+    ) {
+      throw new Error(
+        `Current-state change consumer "${id}" must observe both historical and live phases`,
+      );
+    }
+    if (!(["current", "future", "history"] as string[]).includes(consumer.initial)) {
+      throw new Error(`Change consumer "${id}" has an invalid initial mode`);
+    }
+  }
+  const coveragePairs = changeLogCoverage(config).length;
+  if (coveragePairs > MAX_CHANGE_COVERAGE_PAIRS) {
+    throw new Error(
+      `changes requires ${coveragePairs} collection/phase coverage pairs; maximum is ${MAX_CHANGE_COVERAGE_PAIRS}`,
+    );
+  }
+  const definitionBytes = new TextEncoder().encode(
+    canonicalChangeDefinitions(config),
+  ).byteLength;
+  if (definitionBytes > MAX_CHANGE_DEFINITIONS_BYTES) {
+    throw new Error(
+      `changes definitions contain ${definitionBytes} encoded bytes; maximum is ${MAX_CHANGE_DEFINITIONS_BYTES}`,
+    );
   }
 
 }
