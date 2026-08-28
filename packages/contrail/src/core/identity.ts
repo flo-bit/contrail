@@ -1,5 +1,5 @@
 import type { Did } from "@atcute/lexicons";
-import type { ContrailConfig, Database, Logger } from "./types";
+import type { ContrailConfig, Database, Logger, Statement } from "./types";
 import { isDid, isHandle } from "@atcute/lexicons/syntax";
 import { resolvePDS } from "./client";
 
@@ -134,15 +134,23 @@ export async function resolveActor(
  * partial rows confuse the rest of the pipeline). PDS column is left
  * untouched; it gets refreshed lazily via `getPDS` / next slingshot resolve.
  */
+export function applyIdentityEventStatement(
+  db: Database,
+  did: string,
+  handle: string,
+  updatedAt = Date.now(),
+): Statement {
+  return db
+    .prepare("UPDATE identities SET handle = ?, resolved_at = ? WHERE did = ?")
+    .bind(handle, updatedAt, did);
+}
+
 export async function applyIdentityEvent(
   db: Database,
   did: string,
   handle: string
 ): Promise<void> {
-  await db
-    .prepare("UPDATE identities SET handle = ?, resolved_at = ? WHERE did = ?")
-    .bind(handle, Date.now(), did)
-    .run();
+  await applyIdentityEventStatement(db, did, handle).run();
 }
 
 export async function refreshStaleIdentities(

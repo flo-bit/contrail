@@ -1,7 +1,8 @@
 import type { ContrailConfig, Database, IngestEvent, Statement } from "./types";
 import { recordTimeUs, createIngestEvent, ingestRecords } from "./ingest";
-import { getDependentNsids, recordsTableName } from "./types";
+import { getDependentNsids } from "./types";
 import {
+  loadKnownActorDids,
   rebuildDerivedProjections,
   saveCursorStatement,
   saveServingSourcePositionStatement,
@@ -511,25 +512,8 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     if (getDependentNsids(this.config).length === 0) return undefined;
     if (this.knownDidsLoaded) return this.knownDids ?? new Set();
     const known = this.knownDids ?? new Set<string>();
-    const identityRows = await this.db
-      .prepare("SELECT did FROM identities")
-      .all<{ did: string }>();
-    for (const row of identityRows.results ?? []) known.add(row.did);
-    // Relay discovery defines acquisition scope before concurrent PDS workers
-    // necessarily resolve every identity. Load it directly so a dependent
-    // collection arriving first is not mistaken for an unknown actor.
-    const backfillRows = await this.db
-      .prepare("SELECT DISTINCT did FROM backfills")
-      .all<{ did: string }>();
-    for (const row of backfillRows.results ?? []) known.add(row.did);
-    for (const [shortName, collection] of Object.entries(
-      this.config.collections,
-    )) {
-      if (collection.discover === false) continue;
-      const rows = await this.db
-        .prepare(`SELECT DISTINCT did FROM ${recordsTableName(shortName)}`)
-        .all<{ did: string }>();
-      for (const row of rows.results ?? []) known.add(row.did);
+    for (const did of await loadKnownActorDids(this.db, this.config)) {
+      known.add(did);
     }
     this.knownDids = known;
     this.knownDidsLoaded = true;

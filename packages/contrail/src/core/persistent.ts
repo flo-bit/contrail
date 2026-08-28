@@ -8,7 +8,7 @@ import {
   jetstreamUrlOption,
   resolveConfig,
 } from "./types";
-import { initSchema, getLastCursor, saveCursorStatement, saveOrderedSourcePositionStatement } from "./db";
+import { initSchema, getLastCursor, loadKnownActorDids, saveCursorStatement, saveOrderedSourcePositionStatement } from "./db";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
@@ -66,10 +66,7 @@ export async function runPersistent(
   const dependentCollections: Set<string> = new Set(getDependentNsids(config));
   let knownDids: Set<string> | undefined;
   if (dependentCollections.size > 0) {
-    const result = await db
-      .prepare("SELECT did FROM identities")
-      .all<{ did: string }>();
-    knownDids = new Set((result.results ?? []).map((r) => r.did));
+    knownDids = await loadKnownActorDids(db, config);
     state.cachedKnownDids = knownDids;
     log.log(`Loaded ${knownDids.size} known DIDs from database`);
   }

@@ -45,8 +45,10 @@ vi.mock("@atcute/jetstream", () => {
 
 import {
   getLastCursor,
+  initSchema,
   resolveConfig,
   runIngestCycle,
+  type Database,
   type Logger,
 } from "../src/index";
 import { createTestDb } from "./helpers";
@@ -194,6 +196,40 @@ describe("bounded scheduled ingest cycles", () => {
     expect(summaries[2]?.cursor_boundary_duplicates_dropped).toBe(2);
   });
 
+  it("restores actor scope from a projected record before replaying dependent siblings", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    const timeUs = 1_200_000;
+    source.events = [
+      commit(timeUs, "discover-actor"),
+      {
+        ...commit(timeUs, "dependent-sibling"),
+        commit: {
+          ...commit(timeUs, "dependent-sibling").commit,
+          collection: "app.bsky.graph.follow",
+        },
+      },
+    ];
+    const oneCandidate = { ...budget, maxCandidates: 1 };
+
+    await runIngestCycle(db, configured, oneCandidate);
+    expect(
+      await db.prepare("SELECT did FROM identities WHERE did = ?").bind("actor").first(),
+    ).toBeNull();
+    expect(
+      await db.prepare("SELECT rkey FROM records_event").first<{ rkey: string }>(),
+    ).toEqual({ rkey: "discover-actor" });
+
+    // runIngestCycle receives no shared IngestState, modeling a fresh scheduled
+    // isolate. The exact discovery event is dropped at the cursor boundary, so
+    // durable projection scope must still admit its dependent sibling.
+    await runIngestCycle(db, configured, oneCandidate);
+    expect(
+      await db.prepare("SELECT rkey FROM records_follow").first<{ rkey: string }>(),
+    ).toEqual({ rkey: "dependent-sibling" });
+  });
+
   it("persists Atcute's captured initial cursor after an empty first drain", async () => {
     const db = createTestDb();
     const output = logger();
@@ -233,6 +269,66 @@ describe("bounded scheduled ingest cycles", () => {
       "scheduled ingestion requires exactly one pinned Jetstream endpoint",
     );
     expect(source.requestedCursors).toHaveLength(0);
+  });
+
+  it("batches the independently capped identity updates", async () => {
+    const real = createTestDb();
+    const output = logger();
+    const configured = config(output.value);
+    await initSchema(real, configured);
+    await real
+      .prepare(
+        "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, NULL, NULL, 0), (?, NULL, NULL, 0)",
+      )
+      .bind("actor-a", "actor-b")
+      .run();
+
+    let batchCalls = 0;
+    const db: Database = {
+      ...real,
+      batch(statements) {
+        batchCalls++;
+        return real.batch(statements);
+      },
+    };
+    source.events = [
+      {
+        kind: "identity",
+        time_us: 1_000_001,
+        did: "actor-a",
+        identity: {
+          did: "actor-a",
+          handle: "a.test",
+          seq: 1,
+          time: "2026-04-01T10:00:00Z",
+        },
+      },
+      {
+        kind: "identity",
+        time_us: 1_000_002,
+        did: "actor-b",
+        identity: {
+          did: "actor-b",
+          handle: "b.test",
+          seq: 2,
+          time: "2026-04-01T10:00:00Z",
+        },
+      },
+    ] as unknown as typeof source.events;
+
+    await runIngestCycle(db, configured, {
+      ...budget,
+      maxIdentityUpdates: 2,
+    });
+
+    expect(batchCalls).toBe(2); // one identity batch, then one cursor batch
+    expect(
+      (await real.prepare("SELECT did, handle FROM identities ORDER BY did").all())
+        .results,
+    ).toEqual([
+      { did: "actor-a", handle: "a.test" },
+      { did: "actor-b", handle: "b.test" },
+    ]);
   });
 
   it("keeps admission diagnostics bounded as source volume grows", async () => {

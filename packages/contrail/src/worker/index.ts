@@ -43,7 +43,8 @@ export interface CreateWorkerOptions<Env extends WorkerEnv = WorkerEnv> {
   lexicons?: object[];
   /** Enable stable discovery and Lexicon routes for anonymous remote clients. */
   publicService?: PublicServiceOptions;
-  /** Count, byte, and drain-time limits for each scheduled Jetstream cycle. */
+  /** Record count, identity count, byte, and drain-time limits for each
+   * scheduled Jetstream cycle. */
   scheduledIngest?: ScheduledIngestOptions;
   /** Bounded pending-account retry slice after each scheduled ingest. Enabled
    *  by default; pass `false` to disable or options to tune its budget. */

@@ -70,11 +70,13 @@ function commitEvent(
 function budget(overrides: Partial<{
   maxDrainMs: number;
   maxCandidates: number;
+  maxIdentityUpdates: number;
   maxSerializedBytes: number;
 }> = {}) {
   return {
     maxDrainMs: 5_000,
     maxCandidates: 100,
+    maxIdentityUpdates: 100,
     maxSerializedBytes: 1024 * 1024,
     ...overrides,
   };
@@ -352,6 +354,9 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
       "maxCandidates must be a positive finite integer",
     );
     expect(() =>
+      resolveScheduledIngestBudget({ maxIdentityUpdates: 0 }),
+    ).toThrow("maxIdentityUpdates must be a positive finite integer");
+    expect(() =>
       resolveScheduledIngestBudget({ maxSerializedBytes: Number.NaN }),
     ).toThrow("maxSerializedBytes must be a positive finite integer");
     expect(() => resolveScheduledIngestBudget({ maxDrainMs: 1.5 })).toThrow(
@@ -389,6 +394,87 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
       lastAccountedCursor: 1_000_002,
       safeEndingCursor: 1_000_002,
     });
+  });
+
+  it("caps distinct identity updates without letting global identity traffic stop record progress", async () => {
+    let produced = 0;
+    jetstream.script = async function* (self) {
+      for (let index = 0; index < 5; index++) {
+        produced++;
+        self.cursor = 1_500_000 + index;
+        yield {
+          kind: "identity" as const,
+          time_us: self.cursor,
+          did: `did:plc:identity-${index}`,
+          identity: {
+            did: `did:plc:identity-${index}`,
+            handle: `identity-${index}.test`,
+            seq: index,
+            time: "2026-04-01T10:00:00Z",
+          },
+        };
+      }
+      self.cursor = 1_500_005;
+      produced++;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        self.cursor,
+        "after-identities",
+      );
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxIdentityUpdates: 3 }),
+    );
+
+    expect(result.identityUpdates.size).toBe(3);
+    expect(result.events.map((event) => event.rkey)).toEqual([
+      "after-identities",
+    ]);
+    expect(produced).toBe(6);
+    expect(result.stats).toMatchObject({
+      observedSourceItems: 6,
+      identityObservations: 5,
+      retainedIdentityUpdates: 3,
+      identityUpdatesOmitted: 2,
+      stopReason: "idle",
+      lastAccountedCursor: 1_500_005,
+      safeEndingCursor: 1_500_005,
+    });
+  });
+
+  it("coalesces repeated identity updates without spending the distinct-update cap", async () => {
+    jetstream.script = async function* (self) {
+      for (let index = 0; index < 3; index++) {
+        self.cursor = 1_600_000 + index;
+        yield {
+          kind: "identity" as const,
+          time_us: self.cursor,
+          did: "did:plc:identity",
+          identity: {
+            did: "did:plc:identity",
+            handle: `identity-${index}.test`,
+            seq: index,
+            time: "2026-04-01T10:00:00Z",
+          },
+        };
+      }
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxIdentityUpdates: 2 }),
+    );
+
+    expect(result.identityUpdates).toEqual(
+      new Map([["did:plc:identity", "identity-2.test"]]),
+    );
+    expect(result.stats.retainedIdentityUpdates).toBe(1);
+    expect(result.stats.stopReason).toBe("idle");
   });
 
   it("retains the byte-threshold-crossing candidate and does not split equal cursors", async () => {

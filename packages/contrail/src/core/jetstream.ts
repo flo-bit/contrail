@@ -11,7 +11,7 @@ import {
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, saveCursor, saveCursorStatement, getCursorObservations, saveCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { initSchema, getLastCursor, loadKnownActorDids, saveCursor, saveCursorStatement, getCursorObservations, saveCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
 import {
   createIngestEvent,
   ingestRecords,
@@ -19,7 +19,10 @@ import {
   type IngestDropCounts,
   type IngestWarningSamples,
 } from "./ingest";
-import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
+import {
+  refreshStaleIdentities,
+  applyIdentityEventStatement,
+} from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 
 const BATCH_SIZE = 50;
@@ -36,12 +39,14 @@ export const SCHEDULED_INGEST_METADATA_BYTES = 512;
 export const DEFAULT_SCHEDULED_INGEST_BUDGET = Object.freeze({
   maxDrainMs: 25_000,
   maxCandidates: 250,
+  maxIdentityUpdates: 250,
   maxSerializedBytes: 4 * 1024 * 1024,
 }) satisfies ScheduledIngestBudget;
 
 export interface ScheduledIngestBudget {
   maxDrainMs: number;
   maxCandidates: number;
+  maxIdentityUpdates: number;
   maxSerializedBytes: number;
 }
 
@@ -50,6 +55,8 @@ export interface ScheduledIngestOptions {
   maxDrainMs?: number;
   /** Maximum unique commit candidates retained by one drain. Default: 250. */
   maxCandidates?: number;
+  /** Maximum distinct handle updates retained by one drain. Default: 250. */
+  maxIdentityUpdates?: number;
   /** UTF-8 record bytes plus metadata allowances. Default: 4 MiB. */
   maxSerializedBytes?: number;
   /** @deprecated Compatibility alias for maxDrainMs. */
@@ -69,6 +76,8 @@ export interface ScheduledIngestCollectionStats {
   commitObservations: number;
   identityObservations: number;
   retainedCandidates: number;
+  retainedIdentityUpdates: number;
+  identityUpdatesOmitted: number;
   exactDuplicatesDropped: number;
   cursorBoundaryDuplicatesDropped: number;
   resumeOverlapDropped: number;
@@ -117,6 +126,11 @@ export function resolveScheduledIngestBudget(
     maxCandidates: positiveInteger(
       options.maxCandidates ?? DEFAULT_SCHEDULED_INGEST_BUDGET.maxCandidates,
       "maxCandidates",
+    ),
+    maxIdentityUpdates: positiveInteger(
+      options.maxIdentityUpdates ??
+        DEFAULT_SCHEDULED_INGEST_BUDGET.maxIdentityUpdates,
+      "maxIdentityUpdates",
     ),
     maxSerializedBytes: positiveInteger(
       options.maxSerializedBytes ??
@@ -415,6 +429,8 @@ export async function ingestEvents(
     commitObservations: 0,
     identityObservations: 0,
     retainedCandidates: 0,
+    retainedIdentityUpdates: 0,
+    identityUpdatesOmitted: 0,
     exactDuplicatesDropped: 0,
     cursorBoundaryDuplicatesDropped: 0,
     resumeOverlapDropped: 0,
@@ -603,7 +619,17 @@ export async function ingestEvents(
     } else if (event.kind === "identity") {
       stats.identityObservations++;
       if (await accountSourceItem(event, normalizedJson(event))) return;
-      identityUpdates.set(event.did, event.identity.handle);
+      if (
+        identityUpdates.has(event.did) ||
+        identityUpdates.size < budget.maxIdentityUpdates
+      ) {
+        identityUpdates.set(event.did, event.identity.handle);
+        stats.retainedIdentityUpdates = identityUpdates.size;
+      } else {
+        // Handle updates are best-effort and do not define record projection.
+        // Account overflow so global identity traffic cannot starve commits.
+        stats.identityUpdatesOmitted++;
+      }
     } else {
       await accountSourceItem(event, normalizedJson(event));
     }
@@ -768,10 +794,7 @@ export async function runIngestCycle(
     if (s.cachedKnownDids) {
       knownDids = s.cachedKnownDids;
     } else {
-      const result = await db
-        .prepare("SELECT did FROM identities")
-        .all<{ did: string }>();
-      knownDids = new Set((result.results ?? []).map((r) => r.did));
+      knownDids = await loadKnownActorDids(db, config);
       s.cachedKnownDids = knownDids;
     }
   }
@@ -840,17 +863,26 @@ export async function runIngestCycle(
     }
   }
 
-  // Apply handle changes from #identity events. UPDATE-only, so unknown DIDs
-  // are no-ops. Failures are sampled into the bounded cycle summary.
+  // Apply the independently capped handle changes in bounded database batches.
+  // UPDATE-only statements make unknown DIDs no-ops without spending one D1
+  // round-trip apiece. Failures are sampled into the bounded cycle summary.
   let identityUpdateFailures = 0;
-  for (const [did, handle] of identityUpdates) {
+  const identityEntries = [...identityUpdates];
+  for (let index = 0; index < identityEntries.length; index += BATCH_SIZE) {
+    const chunk = identityEntries.slice(index, index + BATCH_SIZE);
     try {
-      await applyIdentityEvent(db, did, handle);
+      const updatedAt = Date.now();
+      await db.batch(
+        chunk.map(([did, handle]) =>
+          applyIdentityEventStatement(db, did, handle, updatedAt),
+        ),
+      );
+      databaseSubBatchesCommitted++;
     } catch (error) {
-      identityUpdateFailures++;
+      identityUpdateFailures += chunk.length;
       if (warningSamples.samples.length < warningSamples.maxSamples) {
         warningSamples.samples.push(
-          `identity update failed for ${did}: ${String(error)}`.slice(
+          `identity update batch failed (${chunk.length}, first=${chunk[0]?.[0]}): ${String(error)}`.slice(
             0,
             MAX_DIAGNOSTIC_SAMPLE_LENGTH,
           ),
@@ -968,6 +1000,8 @@ export async function runIngestCycle(
     commit_observations: stats.commitObservations,
     identity_observations: stats.identityObservations,
     retained_candidates: stats.retainedCandidates,
+    retained_identity_updates: stats.retainedIdentityUpdates,
+    identity_updates_omitted: stats.identityUpdatesOmitted,
     exact_duplicates_dropped: stats.exactDuplicatesDropped,
     cursor_boundary_duplicates_dropped:
       stats.cursorBoundaryDuplicatesDropped,
@@ -978,6 +1012,7 @@ export async function runIngestCycle(
     source_inconsistencies: stats.sourceInconsistencies,
     serialized_candidate_bytes: stats.serializedCandidateBytes,
     max_candidates: budget.maxCandidates,
+    max_identity_updates: budget.maxIdentityUpdates,
     max_serialized_bytes: budget.maxSerializedBytes,
     max_drain_ms: budget.maxDrainMs,
     starting_cursor: cursor,

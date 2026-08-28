@@ -655,6 +655,30 @@ export async function getLastCursor(db: Database): Promise<number | null> {
   return row ? row.time_us : null;
 }
 
+/** Load durable actor-acquisition scope. Identity resolution is best-effort, so
+ * visible discoverable records and relay backfill rows are also authoritative
+ * evidence that an actor is known. This keeps dependent collection filtering
+ * stable across process restarts even when profile resolution failed. */
+export async function loadKnownActorDids(
+  db: Database,
+  config: ContrailConfig,
+): Promise<Set<string>> {
+  const known = new Set<string>();
+  const durableRows = await db
+    .prepare("SELECT did FROM identities UNION SELECT did FROM backfills")
+    .all<{ did: string }>();
+  for (const row of durableRows.results ?? []) known.add(row.did);
+
+  for (const [shortName, collection] of Object.entries(config.collections)) {
+    if (collection.discover === false) continue;
+    const rows = await db
+      .prepare(`SELECT DISTINCT did FROM ${recordsTableName(shortName)}`)
+      .all<{ did: string }>();
+    for (const row of rows.results ?? []) known.add(row.did);
+  }
+  return known;
+}
+
 export function saveCursorStatement(
   db: Database,
   timeUs: number,
