@@ -1,6 +1,6 @@
 {
   "name": "@atmo-dev/contrail",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Index AT Protocol records with typed XRPC endpoints. Cloudflare Workers + D1, SvelteKit, Node.js.",
   "type": "module",
   "sideEffects": false,
@@ -73,7 +73,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:built": "node tests/built-sqlite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs",
+    "test:built": "node tests/built-sqlite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs && node tests/built-changes.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

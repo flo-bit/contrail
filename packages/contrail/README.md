@@ -79,6 +79,89 @@ After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritativ
 
 Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Scheduled collection drops exact Jetstream observations before admission, counts UTF-8 record bodies plus a fixed 512-byte metadata allowance, and retains the threshold-crossing candidate before stopping. Identity and source-filtered observations consume neither candidate nor byte limits, but their yielded cursors remain accounted. Bounded exact-observation hashes at the current microsecond cursor let restarts replay one microsecond of overlap without skipping equal-cursor siblings or recounting earlier ones. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact accounted cursor in the same transaction. Scheduled mode requires one pinned Jetstream endpoint; use `runPersistent()` for an Atcute failover pool. Persistent ingestion retains its streaming batch lifecycle and does not inherit the scheduled count/byte defaults. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
 
+Projection winner selection is guarded again inside the write transaction. Overlapping cron, persistent, notify, or backfill writers cannot commit a stale canonical row, derived projection, tombstone, or source checkpoint; a changed predecessor rolls the complete attempt back and retries from fresh durable state.
+
+## Transactional change log (experimental)
+
+Fresh empty generations may opt into a compact transactional projection change log:
+
+```ts
+const config = {
+  // ...
+  changes: {
+    consumers: {
+      search: {
+        collections: ["community.lexicon.calendar.event"],
+        phases: ["historical", "live"],
+        initial: "current",
+        requiredForActivation: true,
+      },
+    },
+  },
+} satisfies ContrailConfig;
+```
+
+Static definitions contain no handlers, URLs, clients, credentials, or secrets. Contrail registers them with a random database-generation ID and collection/phase coverage ledger. A winning logical put/delete appends one compact URI/version reference in the same transaction as canonical and derived state plus the source checkpoint. Duplicate, stale, same-CID, absent-delete, rejected, and rolled-back mutations append nothing. Record bodies are hydrated from current state by the later delivery layer rather than copied into the log.
+
+Cloudflare Workers bind handlers and runtime-only secrets separately from static policy:
+
+```ts
+export default createWorker(config, {
+  deliveries: {
+    search: async (batch, { env, signal }) => {
+      await updateSearch(env.SEARCH_KEY, batch, signal);
+    },
+  },
+  changeBootstraps: {
+    search: {
+      snapshot: async (page, { env, signal }) => {
+        await writeCandidateIndex(env.SEARCH_KEY, page, signal);
+      },
+      activate: async (activation, { env, signal }) => {
+        await activateCandidateIdempotently(
+          env.SEARCH_KEY,
+          activation.bootstrapToken,
+          signal,
+        );
+      },
+    },
+  },
+});
+```
+
+Scheduled execution runs ingestion, due historical retries, then bounded fair delivery rounds. One consumer failure is persisted with backoff and does not stop ingestion or another consumer. A successful notify request schedules a best-effort one-round wake through `ExecutionContext`; projection success never depends on it. Persistent deployments run `contrail.runPersistentDeliveries()` alongside `runPersistent()`.
+
+Low-level delivery uses bounded leases and compare-and-swap acknowledgement:
+
+```ts
+const claim = await contrail.changes.claim("webhooks", {
+  maxBatches: 20,
+  maxChanges: 500,
+  maxBytes: 512_000,
+  leaseMs: 30_000,
+});
+if (claim) {
+  try {
+    const batch = await contrail.changes.hydrate(claim);
+    await deliverIdempotently(batch);
+    await contrail.changes.ack(claim);
+  } catch {
+    await contrail.changes.fail(claim, {
+      code: "destination_unavailable",
+      nextAttemptAt: Date.now() + 30_000,
+    });
+  }
+}
+```
+
+Claims coalesce repeated URIs, hydrate in set-oriented collection queries, and resolve delete/recreate races from newest canonical state. Consumers lease and progress independently; irrelevant position ranges advance without invoking a handler. Delivery is intentionally at least once—a destination success followed by an acknowledgement crash causes duplicate delivery. Handlers must be idempotent by stable record/document key.
+
+`initial: "current"` uses a durable snapshot-plus-tail coordinator and must observe both `historical` and `live` phases so every mutation racing the keyset scan is retained for reconciliation. Repeatedly claim and idempotently acknowledge `contrail.changes.claimSnapshotPage()`, then drain `claimBootstrapChanges()` through its fixed target using ordinary hydrate/ack. Snapshot and bootstrap-tail deliveries carry the candidate destination token; ordinary deliveries after activation do not. Finally claim the stable generation-scoped activation token with `claimActivation()`, perform an idempotent destination swap, and call `completeActivation()`. A crash replays the same URI page, tail range, or activation token. Records updated or deleted while the keyset scan races are corrected by the anchored tail.
+
+A consumer can be added to a populated log when all of its collection/phase pairs were already covered; its current/future anchor is the atomic current head, while history starts at the retained floor. Expanding coverage still fails closed without a fresh generation or explicit old-writer quiet boundary. `contrail changes status`, `retry`, `prune`, and explicitly confirmed `skip` expose private operations for SQLite or Wrangler D1 deployments. Status includes a conservative projection/head/batch/ack write plan. Pruning is bounded by the slowest durable consumer/bootstrap anchor. Skip records a bounded private audit reason and never occurs implicitly. Disabling or removing an existing log remains fail-closed. With no configured consumers, no change-log tables or append writes exist.
+
+Backups retain the database's change-log generation ID, positions, leases, bootstrap token, and consumer progress. Restoring that backup as the same generation is resumable and may redeliver an in-flight lease after expiry. Do not clone it as a new deployment generation while reusing destination cursors: build a fresh projection database and run current-state bootstrap. Restoring projection tables without the matching change tables is an unrecoverable delivery gap and must enter reset/bootstrap rather than silently continuing numeric positions.
+
 ## Local development
 
 A project containing only `contrail.config.ts` can start a complete local service:
@@ -217,7 +300,6 @@ The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` 
 
 Connect an independent consumer with `contrail connect <https-origin>`. The version-2 provider lock records the deployment and exact Lexicon bundle, but generated clients do not pin the provider's complete method set at runtime. Existing anonymous methods therefore continue working when a provider adds methods. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Version-1 locks must be removed and reconnected.
 
-See [Creating a public service](../../docs/public-services/creating.md), [Using a public service](../../docs/public-services/using.md), and [Example: api.atmo.rsvp](../../docs/public-services/api-atmo-rsvp.md) for complete provider and consumer walkthroughs.
 
 ## Runtime record validation
 

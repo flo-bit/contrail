@@ -133,19 +133,16 @@ import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 ```
 
-The runnable [`apps/sqlite`](apps/sqlite) example wires the standard backfill CLI to a local SQLite file, including the optional Alluvium base/archive path. See [Indexing](docs/01-indexing.md) for adapter setup and [Querying](docs/02-querying.md) for the query and hydration model.
+The runnable [`apps/sqlite`](apps/sqlite) example wires the standard backfill CLI to a local SQLite file, including the optional Alluvium base/archive path.
 
 ## Documentation
 
-- [Indexing](docs/01-indexing.md)
-- [Querying](docs/02-querying.md)
-- [Feeds](docs/04-feeds.md)
-- [Labels](docs/09-labels.md)
-- Public Contrail services:
-  - [Creating a service](docs/public-services/creating.md)
-  - [Using a service](docs/public-services/using.md)
-  - [Example: api.atmo.rsvp](docs/public-services/api-atmo-rsvp.md)
-- [SvelteKit + Cloudflare](docs/frameworks/sveltekit-cloudflare.md)
+1. [Get started locally](docs/00-getting-started.md)
+2. [Add the typed client](docs/01-client.md)
+3. [Configure and query](docs/02-configure-and-query.md)
+4. [Deploy to Cloudflare Workers](docs/03-deploy-cloudflare.md)
+
+See [advanced topics](docs/advanced/README.md) for other runtimes and features.
 
 ## Repository layout
 

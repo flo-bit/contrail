@@ -8,6 +8,7 @@ import type {
   RecordRow,
   RecordSource,
   OrderedSourceConfig,
+  ProjectionPhase,
 } from "../types";
 import {
   getNestedValue,
@@ -22,6 +23,7 @@ import {
   normalizeFeedTarget,
   feedTargetMaxItems,
   DEFAULT_FOLLOW_SHORT,
+  changesEnabled,
 } from "../types";
 import {
   getSearchableFields,
@@ -35,6 +37,7 @@ import {
   sqliteFtsContentExpression,
 } from "../dialect";
 import type { SourcePosition } from "../sources";
+import { appendChangeLogStatements } from "../change-log";
 
 // --- Counts ---
 
@@ -741,9 +744,13 @@ export interface RecordVersionInfo {
   source_time_us: number;
   source_cursor: string | null;
   indexed_at: number;
+  /** Opaque optimistic-concurrency token; not part of source ordering. */
+  projection_token: string;
 }
 
-function versionForEvent(event: IngestEvent): RecordVersionInfo {
+type ComparableRecordVersion = Omit<RecordVersionInfo, "projection_token">;
+
+function versionForEvent(event: IngestEvent): ComparableRecordVersion {
   const source = event.source;
   return {
     uri: event.uri,
@@ -783,8 +790,8 @@ function operationRank(operation: RecordVersionInfo["operation"]): number {
  * tie-breakers; notably a delete wins an exact tie so replay cannot resurrect it.
  */
 export function compareRecordVersions(
-  left: RecordVersionInfo,
-  right: RecordVersionInfo,
+  left: ComparableRecordVersion,
+  right: ComparableRecordVersion,
 ): number {
   if (
     left.source_revision !== null &&
@@ -834,7 +841,7 @@ export async function lookupRecordVersions(
     const placeholders = chunk.map(() => "?").join(",");
     const rows = await db
       .prepare(
-        `SELECT uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at FROM record_versions WHERE uri IN (${placeholders})`,
+        `SELECT uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at, projection_token FROM record_versions WHERE uri IN (${placeholders})`,
       )
       .bind(...chunk)
       .all<RecordVersionInfo>();
@@ -848,13 +855,13 @@ export interface MutationSelection {
   superseded: number;
 }
 
-function selectMutationWinners(
+export function selectMutationWinners(
   events: IngestEvent[],
   durable: ReadonlyMap<string, RecordVersionInfo>,
 ): MutationSelection {
   const winners = new Map<
     string,
-    { event: IngestEvent; version: RecordVersionInfo; index: number }
+    { event: IngestEvent; version: ComparableRecordVersion; index: number }
   >();
   let superseded = 0;
 
@@ -959,10 +966,11 @@ const RECORD_UPSERT_BINDINGS = 7;
 const RECORD_UPSERT_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_UPSERT_BINDINGS
 );
-const RECORD_VERSION_BINDINGS = 12;
+const RECORD_VERSION_BINDINGS = 13;
 const RECORD_VERSION_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_VERSION_BINDINGS,
 );
+const PROJECTION_GUARD_URIS = 40;
 
 interface StorageMutation {
   event: IngestEvent;
@@ -973,17 +981,18 @@ function buildRecordVersionStatements(
   db: Database,
   events: IngestEvent[],
   existing: Map<string, ExistingRecordInfo>,
+  projectionTokens: ReadonlyMap<string, string>,
 ): Statement[] {
   const statements: Statement[] = [];
   for (let index = 0; index < events.length; index += RECORD_VERSION_ROWS) {
     const chunk = events.slice(index, index + RECORD_VERSION_ROWS);
     const values = chunk
-      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .join(", ");
     statements.push(
       db
         .prepare(
-          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_epoch = excluded.source_epoch, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at`,
+          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at, projection_token) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_epoch = excluded.source_epoch, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at, projection_token = excluded.projection_token`,
         )
         .bind(
           ...chunk.flatMap((event) => {
@@ -1005,6 +1014,7 @@ function buildRecordVersionStatements(
               version.source_time_us,
               version.source_cursor,
               version.indexed_at,
+              projectionTokens.get(event.uri)!,
             ];
           }),
         ),
@@ -1065,6 +1075,71 @@ function buildRecordMutationStatements(
   return statements;
 }
 
+function buildProjectionGuardStatements(
+  db: Database,
+  events: IngestEvent[],
+  predecessors: ReadonlyMap<string, RecordVersionInfo>,
+): Statement[] {
+  const uris = [...new Set(events.map((event) => event.uri))];
+  const statements: Statement[] = [
+    db.prepare(
+      `INSERT INTO _contrail_projection_state (id, revision, guard)
+       VALUES (1, 0, 1) ON CONFLICT(id) DO NOTHING`,
+    ),
+    // PostgreSQL takes a row lock here. The following statement then receives a
+    // fresh READ COMMITTED snapshot after any earlier projector commits. SQLite
+    // and D1 already serialize the containing write batch.
+    db.prepare(
+      `UPDATE _contrail_projection_state
+       SET revision = revision + 1
+       WHERE id = 1`,
+    ),
+  ];
+  for (let index = 0; index < uris.length; index += PROJECTION_GUARD_URIS) {
+    const chunk = uris.slice(index, index + PROJECTION_GUARD_URIS);
+    const conditions: string[] = [];
+    const bindings: string[] = [];
+    for (const uri of chunk) {
+      const predecessor = predecessors.get(uri);
+      if (!predecessor) {
+        conditions.push(
+          "NOT EXISTS (SELECT 1 FROM record_versions WHERE uri = ?)",
+        );
+        bindings.push(uri);
+        continue;
+      }
+      if (!predecessor.projection_token) {
+        throw new Error(`Record version ${uri} has no projection token`);
+      }
+      conditions.push(
+        "EXISTS (SELECT 1 FROM record_versions WHERE uri = ? AND projection_token = ?)",
+      );
+      bindings.push(uri, predecessor.projection_token);
+    }
+    statements.push(
+      db
+        .prepare(
+          `UPDATE _contrail_projection_state
+           SET guard = CASE WHEN ${conditions.join(" AND ")} THEN 1 ELSE 0 END
+           WHERE id = 1`,
+        )
+        .bind(...bindings),
+    );
+  }
+  return statements;
+}
+
+/** Adapter-neutral classification for the named optimistic guard constraint. */
+export function isProjectionConflictError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; constraint?: unknown; message?: unknown };
+  return (
+    (candidate.code === "23514" &&
+      candidate.constraint === "projection_guard_valid") ||
+    /projection_guard_valid/i.test(String(candidate.message ?? ""))
+  );
+}
+
 export async function projectEvents(
   db: Database,
   events: IngestEvent[],
@@ -1074,19 +1149,26 @@ export async function projectEvents(
     skipFeedFanout?: boolean;
     /** Skip FTS and relation-count maintenance during canonical bulk loading. */
     skipDerivedProjections?: boolean;
-    /** Pre-fetched existing records — skips the internal lookup when provided */
+    /** @deprecated Existing rows are re-read for transaction conflict safety. */
     existing?: Map<string, ExistingRecordInfo>;
     /** Statements committed after projection in the same database batch. */
     trailingStatements?: Statement[];
     /** Internal: ingestRecords already checked durable source order. */
     sourceOrderingChecked?: boolean;
+    /** Durable versions observed while selecting source winners. */
+    predecessors?: ReadonlyMap<string, RecordVersionInfo>;
+    /** Acquisition phase persisted on an optional change batch. */
+    phase?: ProjectionPhase;
   },
 ): Promise<MutationSelection> {
   if (events.length === 0) return { applied: [], superseded: 0 };
 
+  const predecessors =
+    options?.predecessors ??
+    (await lookupRecordVersions(db, events.map((event) => event.uri)));
   const selection = options?.sourceOrderingChecked
     ? { applied: events, superseded: 0 }
-    : await selectCurrentMutations(db, events);
+    : selectMutationWinners(events, predecessors);
   events = selection.applied;
   if (events.length === 0) {
     if (options?.trailingStatements?.length) {
@@ -1103,17 +1185,19 @@ export async function projectEvents(
         (relation) => relation.count !== false
       )
     );
-  const needRecordContent = followCollections.length > 0 || hasCountingRelations;
+  const needRecordContent =
+    followCollections.length > 0 ||
+    hasCountingRelations ||
+    changesEnabled(config);
 
-  // Use pre-fetched data or look up existing records
-  let existingMap: Map<string, ExistingRecordInfo>;
-  if (options?.existing) {
-    existingMap = options.existing;
-  } else if (!options?.skipReplayDetection) {
-    existingMap = await lookupExistingRecords(db, events, needRecordContent, config);
-  } else {
-    existingMap = new Map();
-  }
+  // Existing state must be read after predecessor selection. A caller-provided
+  // map can predate that selection and would make derived changes incorrect
+  // even when the optimistic token guard itself succeeds.
+  const needExistingState =
+    !options?.skipReplayDetection || needRecordContent || changesEnabled(config);
+  const existingMap = needExistingState
+    ? await lookupExistingRecords(db, events, needRecordContent, config)
+    : new Map<string, ExistingRecordInfo>();
 
   const batch: Statement[] = [];
   // Keep only the final storage mutation for a URI within this atomic batch.
@@ -1163,15 +1247,36 @@ export async function projectEvents(
     }
   }
 
-  // Storage and durable version/tombstone metadata run first so FTS, feeds,
-  // and count statements in the same atomic batch observe the final records.
-  batch.unshift(
-    ...buildRecordMutationStatements(db, storageMutations.values()),
-    ...buildRecordVersionStatements(db, events, existingMap),
+  const projectionTokens = new Map(
+    events.map((event) => [event.uri, crypto.randomUUID()] as const),
   );
 
-  // Build deduplicated count statements — one UPDATE per unique target.
+  // Lock, verify the exact durable predecessors selected by the caller, then
+  // write storage and version metadata. Any changed token violates the named
+  // guard constraint and rolls the complete database batch back.
+  batch.unshift(
+    ...buildProjectionGuardStatements(db, events, predecessors),
+    ...buildRecordMutationStatements(db, storageMutations.values()),
+    ...buildRecordVersionStatements(
+      db,
+      events,
+      existingMap,
+      projectionTokens,
+    ),
+  );
+
+  // Build deduplicated count statements, then append the compact change batch.
+  // Caller-provided source checkpoints deliberately remain last.
   batch.push(...buildBatchCountStatements(db, config, countTargets));
+  batch.push(
+    ...appendChangeLogStatements(
+      db,
+      events,
+      existingMap,
+      config,
+      options?.phase ?? "live",
+    ),
+  );
   if (options?.trailingStatements?.length) {
     batch.push(...options.trailingStatements);
   }

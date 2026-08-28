@@ -12,13 +12,22 @@ import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
 import { initSchema } from "../src/index";
 import {
+  acknowledgeChanges,
+  acknowledgeCurrentSnapshotPage,
+  claimChanges,
+  claimCurrentActivation,
+  claimCurrentBootstrapChanges,
+  claimCurrentSnapshotPage,
+  completeCurrentActivation,
+  getChangesStatus,
+  hydrateChanges,
   ingestRecords,
   queryRecords,
   getLastCursor,
   saveCursor,
 } from "../src/index";
 import { resolveConfig } from "../src/index";
-import type { Database } from "../src/index";
+import type { Database, Statement } from "../src/index";
 import { resolveHydrates, resolveReferences } from "../src/index";
 import { makeEvent } from "./helpers";
 
@@ -55,6 +64,30 @@ const TEST_CONFIG = resolveConfig({
   },
 });
 
+const CHANGE_CONFIG = resolveConfig({
+  namespace: "com.example",
+  profiles: [],
+  collections: {
+    event: { collection: "community.lexicon.calendar.event" },
+  },
+  changes: {
+    consumers: {
+      search: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "history",
+      },
+      analytics: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "history",
+      },
+      cache: {
+        collections: ["community.lexicon.calendar.event"],
+        initial: "current",
+      },
+    },
+  },
+});
+
 const PG_URL = process.env.TEST_DATABASE_URL;
 if (!PG_URL) {
   describe.skip("PostgreSQL e2e (TEST_DATABASE_URL not set)", () => {
@@ -78,7 +111,7 @@ if (!PG_URL) {
     const tables = await pool.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public'
        AND (tablename LIKE 'records_%' OR tablename LIKE 'fts_%'
-            OR tablename IN ('_contrail_meta', 'backfills', 'backfill_state', 'discovery', 'cursor', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills'))`
+            OR tablename IN ('_contrail_meta', '_contrail_projection_state', 'backfills', 'backfill_state', 'discovery', 'cursor', 'source_position', 'bootstrap_state', 'bootstrap_snapshot_progress', 'identities', 'record_versions', 'ingest_diagnostics', 'feed_items', 'feed_prune_cursor', 'feed_backfills', 'change_log_state', 'change_batches', 'change_consumers', 'change_log_coverage', 'change_consumer_actions'))`
     );
     for (const { tablename } of tables.rows) {
       await pool.query(`DROP TABLE IF EXISTS ${tablename} CASCADE`);
@@ -169,6 +202,81 @@ if (!PG_URL) {
         collection: "community.lexicon.calendar.event",
       });
       expect(result.records).toHaveLength(0);
+    });
+
+    it("retries an overlapping stale projector after the transaction lock", async () => {
+      const uri = "at://did:plc:test/community.lexicon.calendar.event/concurrent";
+      let arrivals = 0;
+      let releaseBoth!: () => void;
+      const both = new Promise<void>((resolve) => {
+        releaseBoth = resolve;
+      });
+      let releaseNewer!: () => void;
+      const newerDone = new Promise<void>((resolve) => {
+        releaseNewer = resolve;
+      });
+
+      const overlap = (role: "older" | "newer"): Database => {
+        let writes = 0;
+        return {
+          prepare(sql: string): Statement {
+            return db.prepare(sql);
+          },
+          async batch(statements: Statement[]) {
+            writes++;
+            if (writes > 1) return db.batch(statements);
+            arrivals++;
+            if (arrivals === 2) releaseBoth();
+            await both;
+            if (role === "older") await newerDone;
+            try {
+              return await db.batch(statements);
+            } finally {
+              if (role === "newer") releaseNewer();
+            }
+          },
+          dialect: db.dialect,
+        };
+      };
+
+      const [older] = await Promise.all([
+        ingestRecords(
+          overlap("older"),
+          [
+            makeEvent({
+              uri,
+              rkey: "concurrent",
+              cid: "cid-old",
+              record: { name: "old", mode: "online" },
+              time_us: 100,
+              indexed_at: 100,
+            }),
+          ],
+          TEST_CONFIG,
+        ),
+        ingestRecords(
+          overlap("newer"),
+          [
+            makeEvent({
+              uri,
+              rkey: "concurrent",
+              cid: "cid-new",
+              record: { name: "new", mode: "online" },
+              time_us: 200,
+              indexed_at: 200,
+            }),
+          ],
+          TEST_CONFIG,
+        ),
+      ]);
+
+      expect(older.dropped.superseded).toBe(1);
+      const row = await pool.query(
+        "SELECT record, cid FROM records_community_lexicon_calendar_event WHERE uri = $1",
+        [uri],
+      );
+      expect(row.rows[0]).toMatchObject({ cid: "cid-new" });
+      expect(row.rows[0].record.name).toBe("new");
     });
 
     it("does nothing for empty events", async () => {
@@ -481,6 +589,72 @@ if (!PG_URL) {
         expect(refs[rsvp.uri]?.event).toBeDefined();
         expect(refs[rsvp.uri].event.uri).toBe(eventUri1);
       }
+    });
+  });
+
+  describe("durable change consumers", () => {
+    it("claims, hydrates, and acknowledges independently", async () => {
+      await initSchema(db, CHANGE_CONFIG);
+      await ingestRecords(
+        db,
+        [
+          makeEvent({
+            uri: "at://did:plc:test/community.lexicon.calendar.event/change",
+            rkey: "change",
+            cid: "cid-change",
+            record: { name: "Change", mode: "online" },
+            time_us: 100,
+            indexed_at: 100,
+          }),
+        ],
+        CHANGE_CONFIG,
+      );
+
+      const search = await claimChanges(db, "search", { now: 1_000 });
+      const analytics = await claimChanges(db, "analytics", { now: 1_000 });
+      expect(search?.through).toBe("1");
+      expect(analytics?.through).toBe("1");
+      const delivery = await hydrateChanges(db, CHANGE_CONFIG, search!);
+      expect(delivery.currentRecords[0]).toMatchObject({
+        cid: "cid-change",
+        value: { name: "Change", mode: "online" },
+      });
+      await acknowledgeChanges(db, search!, { now: 1_001 });
+      expect((await getChangesStatus(db)).consumers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "search", position: "1" }),
+          expect.objectContaining({ id: "analytics", position: "0" }),
+        ]),
+      );
+      await acknowledgeChanges(db, analytics!, { now: 1_001 });
+
+      const snapshot = await claimCurrentSnapshotPage(
+        db,
+        CHANGE_CONFIG,
+        "cache",
+        { now: 2_000 },
+      );
+      expect(snapshot?.records).toHaveLength(1);
+      await acknowledgeCurrentSnapshotPage(db, snapshot!, { now: 2_001 });
+      expect(
+        await claimCurrentSnapshotPage(db, CHANGE_CONFIG, "cache", {
+          now: 2_002,
+        }),
+      ).toBeNull();
+      const tail = await claimCurrentBootstrapChanges(db, "cache", {
+        now: 2_003,
+      });
+      expect(tail).toMatchObject({ from: "0", through: "1" });
+      await acknowledgeChanges(db, tail!, { now: 2_004 });
+      const activation = await claimCurrentActivation(db, "cache", {
+        now: 2_005,
+      });
+      await completeCurrentActivation(db, activation!, { now: 2_006 });
+      expect(
+        (await getChangesStatus(db)).consumers.find(
+          (consumer) => consumer.id === "cache",
+        ),
+      ).toMatchObject({ bootstrapState: "ready", position: "1" });
     });
   });
 

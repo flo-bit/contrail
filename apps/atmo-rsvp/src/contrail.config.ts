@@ -72,3 +72,20 @@ export const config: ContrailConfig = {
     },
   },
 };
+
+/** Candidate-generation configuration for the Meilisearch reference consumer.
+ * The active Worker keeps `config` until a fresh D1 + candidate index are built
+ * and activated together. */
+export const searchGenerationConfig: ContrailConfig = {
+  ...config,
+  changes: {
+    consumers: {
+      search: {
+        collections: ["community.lexicon.calendar.event"],
+        phases: ["historical", "live"],
+        initial: "current",
+        requiredForActivation: true,
+      },
+    },
+  },
+};

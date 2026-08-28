@@ -106,7 +106,9 @@ describe("ingestRecords", () => {
     const versionInserts = sql.filter((statement) =>
       statement.startsWith("INSERT INTO record_versions"),
     );
-    expect(versionInserts).toHaveLength(4);
+    // Thirteen bindings include the optimistic projection token, so seven
+    // versions fit under D1's 100-binding statement ceiling.
+    expect(versionInserts).toHaveLength(5);
     expect(
       versionInserts.every(
         (statement) => (statement.match(/\?/g) ?? []).length <= 100,

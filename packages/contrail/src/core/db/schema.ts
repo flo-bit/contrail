@@ -25,9 +25,19 @@ import {
   getSearchableFields,
 } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
+import {
+  assertFreshChangeLogGeneration,
+  buildChangeLogSchema,
+  initializeChangeLog,
+  probeChangeLogSchema,
+} from "../change-log";
+import {
+  canonicalChangeDefinitions,
+  changesEnabled,
+} from "../types";
 import { getMeta, setMeta } from "./meta";
 
-export const CONTRAIL_SCHEMA_VERSION = 11;
+export const CONTRAIL_SCHEMA_VERSION = 14;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
@@ -130,7 +140,8 @@ CREATE TABLE IF NOT EXISTS record_versions (
   source_revision TEXT,
   source_time_us ${dialect.bigintType} NOT NULL,
   source_cursor TEXT,
-  indexed_at ${dialect.bigintType} NOT NULL
+  indexed_at ${dialect.bigintType} NOT NULL,
+  projection_token TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_record_versions_collection ON record_versions(collection);
 CREATE INDEX IF NOT EXISTS idx_record_versions_did ON record_versions(did);
@@ -139,6 +150,12 @@ CREATE TABLE IF NOT EXISTS ingest_diagnostics (
   category TEXT PRIMARY KEY,
   total ${dialect.bigintType} NOT NULL,
   last_seen_at ${dialect.bigintType} NOT NULL
+);
+CREATE TABLE IF NOT EXISTS _contrail_projection_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  revision ${dialect.bigintType} NOT NULL DEFAULT 0,
+  guard INTEGER NOT NULL DEFAULT 1
+    CONSTRAINT projection_guard_valid CHECK (guard = 1)
 );
 `;
 }
@@ -577,6 +594,11 @@ const MIGRATIONS: MigrationOp[] = [
     columnDef: "TEXT",
   },
   {
+    table: "record_versions",
+    column: "projection_token",
+    columnDef: "TEXT",
+  },
+  {
     table: "discovery",
     column: "retries",
     columnDef: "INTEGER NOT NULL DEFAULT 0",
@@ -639,8 +661,8 @@ async function seedLegacyRecordVersions(
     const table = recordsTableName(shortName);
     await db
       .prepare(
-        `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at)
-         SELECT uri, did, ?, rkey, 'update', cid, 'legacy', NULL, NULL, indexed_at, NULL, indexed_at FROM ${table}
+        `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at, projection_token)
+         SELECT uri, did, ?, rkey, 'update', cid, 'legacy', NULL, NULL, indexed_at, NULL, indexed_at, uri FROM ${table}
          WHERE 1 = 1 ON CONFLICT(uri) DO NOTHING`,
       )
       .bind(collection.collection)
@@ -671,6 +693,7 @@ function schemaFingerprint(
     indexes: string[];
     feeds: string[];
     fts: string[];
+    changes: string[];
   },
 ): string {
   return hashStrings([
@@ -682,6 +705,8 @@ function schemaFingerprint(
     ...ddl.indexes,
     ...ddl.feeds,
     ...ddl.fts,
+    ...ddl.changes,
+    canonicalChangeDefinitions(config),
     ...buildCountColumns(config),
     ...(config.labels ? buildLabelsSchema(dialect) : []),
     JSON.stringify(MIGRATIONS),
@@ -702,12 +727,14 @@ export async function initSchema(
   const indexes = buildDynamicIndexes(config, dialect);
   const feeds = buildFeedTables(config, dialect);
   const fts = buildFtsTables(config, dialect);
+  const changes = buildChangeLogSchema(config, dialect);
   const baseFingerprint = schemaFingerprint(config, dialect, {
     base,
     collections,
     indexes,
     feeds,
     fts,
+    changes,
   });
   const fingerprint = `${baseFingerprint}:cursor-observations-v1`;
   const cursorObservationsDdl = `CREATE TABLE IF NOT EXISTS cursor_observations (
@@ -731,6 +758,13 @@ export async function initSchema(
     return;
   }
 
+  const priorChangeLog = await probeChangeLogSchema(db);
+  if (!changesEnabled(config) && priorChangeLog.exists) {
+    throw new Error(
+      "Durable change logging cannot be disabled or removed during ordinary initialization",
+    );
+  }
+
   for (const statement of [...base, ...collections, ...indexes, ...feeds]) {
     await runIdempotentDdl(db, statement);
   }
@@ -746,8 +780,45 @@ export async function initSchema(
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
   await runMigrations(db, hasFeeds);
+  await db
+    .prepare(
+      "UPDATE record_versions SET projection_token = uri WHERE projection_token IS NULL",
+    )
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO _contrail_projection_state (id, revision, guard)
+       VALUES (1, 0, 1) ON CONFLICT(id) DO NOTHING`,
+    )
+    .run();
   await applyCountColumns(db, config);
   await seedLegacyRecordVersions(db, config);
+
+  if (changesEnabled(config)) {
+    const concurrentChangeLog = await probeChangeLogSchema(db);
+    if (!priorChangeLog.state && !concurrentChangeLog.state) {
+      await assertFreshChangeLogGeneration(db);
+    }
+    for (const statement of changes) await runIdempotentDdl(db, statement);
+    await addColumnIfNotExists(
+      db,
+      "change_batches",
+      "encoded_bytes",
+      "INTEGER",
+    );
+    await addColumnIfNotExists(
+      db,
+      "change_consumers",
+      "lease_through_position",
+      dialect.bigintType,
+    );
+    await db
+      .prepare(
+        "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",
+      )
+      .run();
+    await initializeChangeLog(db, config);
+  }
 
   for (const apply of options.extraSchemas ?? []) await apply(db);
   await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);

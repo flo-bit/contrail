@@ -496,6 +496,7 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
   ): Promise<void> {
     const knownDids = await this.getKnownDids();
     const result = await ingestRecords(this.db, events, this.config, {
+      phase: "historical",
       knownDids,
       skipDerivedProjections: this.options.deferDerivedProjections === true,
       authoritativeSourceObservation,
