@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.21.0
+
+### Minor Changes
+
+- 2202c5e: Add `contrail init [directory]` to create a ready-to-run starter `contrail.config.ts` without overwriting an existing config.
+
 ## 0.20.1
 
 ### Patch Changes
