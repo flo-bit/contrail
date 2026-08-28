@@ -79,5 +79,3 @@ Every record has `uri`, `cid`, and its original record body in `value`. Hydrated
 Pass the returned opaque `cursor` into the same query to get the next page. `limit` defaults to 50 and may be 1–200.
 
 Full-text `search` works with D1 and PostgreSQL. The zero-config local SQLite AppView does not provide full-text search.
-
-Next: [deploy to Cloudflare Workers](./03-deploy-cloudflare.md).

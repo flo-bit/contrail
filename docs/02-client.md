@@ -31,4 +31,4 @@ for (const event of response.data.records) {
 
 The method name, parameters, and response are all typed from the Lexicons. Re-run `connect` when the AppView config changes.
 
-Next: [configure filters, sorting, and hydration](./02-configure-and-query.md). To use an existing deployed AppView, pass its HTTPS URL to `contrail connect` instead of a config path.
+Next: [configure filters, sorting, and hydration](./03-configure-and-query.md). To use an existing deployed AppView, pass its HTTPS URL to `contrail connect` instead of a config path.

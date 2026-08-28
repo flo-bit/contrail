@@ -19,7 +19,7 @@ Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite
 
 ## Documentation
 
-1. [Get started locally](docs/00-getting-started.md)
-2. [Add the typed client](docs/01-client.md)
-3. [Configure and query](docs/02-configure-and-query.md)
-4. [Deploy to Cloudflare Workers](docs/03-deploy-cloudflare.md)
+1. [Get started locally](docs/01-getting-started.md)
+2. [Add the typed client](docs/02-client.md)
+3. [Configure and query](docs/03-configure-and-query.md)
+4. [Deploy to Cloudflare Workers](docs/04-deploy-cloudflare.md)

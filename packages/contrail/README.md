@@ -166,11 +166,15 @@ Backups retain the database's change-log generation ID, positions, leases, boots
 
 ## Local development
 
-A project containing only `contrail.config.ts` can start a complete local service:
+Seed a new project with a basic `contrail.config.ts`, then start a complete local service:
 
 ```bash
+contrail init my-appview
+cd my-appview
 contrail dev
 ```
+
+Run `contrail init` without a directory to write the config in the current directory. The command refuses to replace a config in any standard auto-detected location.
 
 Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically. Useful SQLite options include:
 
