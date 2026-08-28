@@ -40,6 +40,7 @@ import {
   prepareDevLexicons,
 } from "../dev-lexicons.js";
 import { generateLexiconTypesWithAtcute } from "../atcute.js";
+import { confirmUnresolvedLexicons } from "../shared.js";
 
 const MAX_DISCOVERY_BYTES = 10 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -63,6 +64,7 @@ interface ConnectOptions {
   skipClient?: boolean;
   update?: boolean;
   allowInsecureHttp?: boolean;
+  yes?: boolean;
 }
 
 export interface ProviderDefinition {
@@ -482,6 +484,9 @@ export async function connectConfigSource(options: {
   out: string;
   lock?: string;
   endpoint?: string;
+  confirmUnresolvedLexicons?: (
+    nsids: readonly string[],
+  ) => boolean | Promise<boolean>;
 }): Promise<{
   manifest: PublicServiceManifest;
   definition: ProviderDefinition;
@@ -520,12 +525,13 @@ export async function connectConfigSource(options: {
   const outputRoot = resolveInsideRoot(projectRoot, options.out);
   const providerKey = "source";
   const providerRoot = resolveInsideRoot(outputRoot, providerKey);
-  const lexicons = prepareDevLexicons(
+  const lexicons = await prepareDevLexicons(
     sourceConfig,
     projectRoot,
     workspaceRoot,
     providerRoot,
     configProjectRoot(configPath),
+    { confirmUnresolved: options.confirmUnresolvedLexicons },
   );
   const description = await describePublicService(
     sourceConfig,
@@ -785,6 +791,10 @@ export function registerConnect(cli: CAC): void {
       "--no-generate",
       "Resolve the API without generating types or a client module",
     )
+    .option(
+      "--yes, -y",
+      "Continue when configured Lexicons cannot be resolved",
+    )
     .action(async (source: string, options: ConnectOptions) => {
       const endpoint = endpointSource(source);
       let api: ProviderDefinition;
@@ -815,6 +825,8 @@ export function registerConnect(cli: CAC): void {
           root: options.root,
           out: options.out,
           lock: options.lock,
+          confirmUnresolvedLexicons: (nsids) =>
+            confirmUnresolvedLexicons(nsids, options.yes === true),
         });
         api = result.definition;
         target = result.target;

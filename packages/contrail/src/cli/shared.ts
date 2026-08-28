@@ -81,3 +81,20 @@ export async function promptYesNo(
     rl.close();
   }
 }
+
+/** Warn before omitting unresolved documents from a temporary source bundle. */
+export async function confirmUnresolvedLexicons(
+  nsids: readonly string[],
+  autoYes: boolean,
+): Promise<boolean> {
+  console.warn("\nwarning: could not resolve these configured Lexicons:");
+  for (const nsid of nsids) console.warn(`  - ${nsid}`);
+  console.warn(
+    "Continuing omits them and schemas that depend on them from the local " +
+      "bundle. Directly affected record values will be generated as `unknown`.",
+  );
+  console.warn(
+    "Collections with `validate: true` still cannot start without their complete Lexicon closure.",
+  );
+  return promptYesNo("continue without these Lexicons?", false, autoYes);
+}

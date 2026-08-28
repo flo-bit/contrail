@@ -176,7 +176,11 @@ contrail dev
 
 Run `contrail init` without a directory to write the config in the current directory. The command refuses to replace a config in any standard auto-detected location.
 
-Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically. Useful SQLite options include:
+Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically.
+
+When a configured Lexicon does not exist yet or cannot be resolved, interactive `contrail dev` and config-backed `contrail connect` warn and ask whether to continue with an incomplete local bundle. Unresolved documents and schemas that depend on them are omitted, and directly affected record values are generated as `unknown`; collections using `validate: true` still require their complete Lexicon closure. The prompt defaults to no, and non-interactive use fails closed unless `--yes` is passed.
+
+Useful SQLite options include:
 
 ```bash
 contrail dev --fresh                          # reset local SQLite first
