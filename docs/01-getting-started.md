@@ -2,10 +2,16 @@
 
 Run a local AppView for a public AT Protocol collection with Node.js 22.13 or newer.
 
-Create an empty directory with one file:
+Create a project with the starter config:
+
+```bash
+pnpx @atmo-dev/contrail init my-appview
+cd my-appview
+```
+
+This creates `contrail.config.ts`:
 
 ```ts
-// contrail.config.ts
 export default {
   namespace: "com.example",
   collections: {
@@ -29,4 +35,4 @@ Contrail resolves the Lexicons, backfills existing records, follows new records,
 curl 'http://127.0.0.1:8787/xrpc/com.example.event.listRecords?limit=10'
 ```
 
-Replace the collection and fields with your own. Next: [add the typed client to your app](./01-client.md).
+Replace the collection and fields with your own. Next: [add the typed client to your app](./02-client.md).
