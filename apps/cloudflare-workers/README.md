@@ -71,4 +71,4 @@ This reports the durable state without exposing account DIDs or raw upstream err
 
 - **add a collection:** append to `collections` in `src/contrail.config.ts`; redeploy; `pnpm contrail backfill --remote` to backfill the new one.
 - **add full-text search:** `searchable: ["field1", "field2"]`, redeploy, no backfill needed (fts indexes repopulate on ingest).
-- **add relations / references:** see [indexing docs](../../docs/01-indexing.md).
+- **add relations / references:** see [configuration guide](../../docs/02-configure-and-query.md).

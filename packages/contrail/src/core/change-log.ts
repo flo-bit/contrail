@@ -163,6 +163,7 @@ export function buildChangeLogSchema(
       bootstrap_token TEXT,
       lease_owner TEXT,
       lease_expires_at ${bigint},
+      lease_through_position ${bigint},
       attempts INTEGER NOT NULL DEFAULT 0,
       next_attempt_at ${bigint},
       last_success_at ${bigint},

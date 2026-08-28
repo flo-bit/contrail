@@ -479,13 +479,18 @@ describe("transactional projection change log", () => {
     );
   });
 
-  it("upgrades retained pre-byte-count change batches without resetting consumers", async () => {
+  it("upgrades retained change-log columns without resetting consumers", async () => {
     const db = createSqliteDatabase(":memory:");
     const resolved = loggedConfig();
     await initSchema(db, resolved);
     await ingestRecords(db, [mutation({ sourceTime: 1 })], resolved);
     await db
       .prepare("ALTER TABLE change_batches DROP COLUMN encoded_bytes")
+      .run();
+    await db
+      .prepare(
+        "ALTER TABLE change_consumers DROP COLUMN lease_through_position",
+      )
       .run();
     await db
       .prepare(
@@ -500,6 +505,13 @@ describe("transactional projection change log", () => {
     expect(row?.encoded_bytes).toBe(
       new TextEncoder().encode(row!.changes_json).byteLength,
     );
+    expect(
+      (
+        await db
+          .prepare("PRAGMA table_info(change_consumers)")
+          .all<{ name: string }>()
+      ).results.map((column) => column.name),
+    ).toContain("lease_through_position");
     expect((await getChangeLogState(db))?.head).toBe("1");
   });
 

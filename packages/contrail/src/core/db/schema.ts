@@ -789,6 +789,12 @@ export async function initSchema(
       "encoded_bytes",
       "INTEGER",
     );
+    await addColumnIfNotExists(
+      db,
+      "change_consumers",
+      "lease_through_position",
+      dialect.bigintType,
+    );
     await db
       .prepare(
         "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",

@@ -92,5 +92,3 @@ pnpx @atmo-dev/contrail connect https://api.atmo.rsvp
 ```
 
 That verifies the anonymous and service-auth contracts, verifies the canonical contract and Lexicon digests, writes a provider lock, installs provider-owned Lexicons, and runs Atcute TypeScript generation. Reconnecting an existing project requires `--update`.
-
-See [Example: api.atmo.rsvp](../../docs/public-services/api-atmo-rsvp.md) for the complete method, authentication, acquisition, and deployment walkthrough.

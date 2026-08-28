@@ -142,7 +142,8 @@ async function release(
   await db
     .prepare(
       `UPDATE change_consumers
-       SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+       SET lease_owner = NULL, lease_expires_at = NULL,
+           lease_through_position = NULL, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ? AND lease_owner = ?`,
     )
     .bind(timestamp, consumerId, generation, owner)
@@ -224,7 +225,8 @@ export async function claimCurrentSnapshotPage(
              bootstrap_scan_cursor = CASE
                WHEN bootstrap_state = 'pending' THEN NULL
                ELSE bootstrap_scan_cursor END,
-             lease_owner = ?, lease_expires_at = ?, updated_at = ?
+             lease_owner = ?, lease_expires_at = ?,
+             lease_through_position = NULL, updated_at = ?
          WHERE consumer_id = ? AND initial_mode = 'current'
            AND bootstrap_state IN ('pending', 'scanning')
            AND generation_id = (
@@ -349,7 +351,8 @@ export async function claimCurrentSnapshotPage(
         .prepare(
           `UPDATE change_consumers
            SET bootstrap_scan_collection = ?, bootstrap_scan_cursor = NULL,
-               lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+               lease_owner = NULL, lease_expires_at = NULL,
+               lease_through_position = NULL, updated_at = ?
            WHERE consumer_id = ? AND generation_id = ?
              AND bootstrap_state = 'scanning' AND lease_owner = ?`,
         )
@@ -372,7 +375,8 @@ export async function claimCurrentSnapshotPage(
                SELECT head_position FROM change_log_state WHERE id = 1
              ),
              bootstrap_scan_collection = NULL, bootstrap_scan_cursor = NULL,
-             lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+             lease_owner = NULL, lease_expires_at = NULL,
+             lease_through_position = NULL, updated_at = ?
          WHERE consumer_id = ? AND generation_id = ?
            AND bootstrap_state = 'scanning' AND lease_owner = ?`,
       )
@@ -393,7 +397,8 @@ export async function acknowledgeCurrentSnapshotPage(
     .prepare(
       `UPDATE change_consumers
        SET bootstrap_scan_cursor = ?, lease_owner = NULL,
-           lease_expires_at = NULL, attempts = 0, next_attempt_at = NULL,
+           lease_expires_at = NULL, lease_through_position = NULL,
+           attempts = 0, next_attempt_at = NULL,
            last_success_at = ?, last_error_code = NULL, last_error_at = NULL,
            updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
@@ -449,6 +454,7 @@ async function failBootstrapLease(
     .prepare(
       `UPDATE change_consumers
        SET lease_owner = NULL, lease_expires_at = NULL,
+           lease_through_position = NULL,
            attempts = attempts + 1, next_attempt_at = ?,
            last_error_code = ?, last_error_at = ?, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
@@ -544,7 +550,8 @@ export async function claimCurrentActivation(
   const row = await db
     .prepare(
       `UPDATE change_consumers
-       SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+       SET lease_owner = ?, lease_expires_at = ?,
+           lease_through_position = NULL, updated_at = ?
        WHERE consumer_id = ? AND initial_mode = 'current'
          AND bootstrap_state = 'activating'
          AND generation_id = (
@@ -596,7 +603,8 @@ export async function completeCurrentActivation(
     .prepare(
       `UPDATE change_consumers
        SET bootstrap_state = 'ready', lease_owner = NULL,
-           lease_expires_at = NULL, attempts = 0, next_attempt_at = NULL,
+           lease_expires_at = NULL, lease_through_position = NULL,
+           attempts = 0, next_attempt_at = NULL,
            last_success_at = ?, last_error_code = NULL, last_error_at = NULL,
            updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?

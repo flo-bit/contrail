@@ -356,4 +356,44 @@ describe("consumer-aware change pruning", () => {
       (await getChangesStatus(db)).consumers.find((item) => item.id === "late"),
     ).toMatchObject({ position: "5", backlogBatches: 0 });
   });
+
+  it("keeps age-limited pruning to a contiguous retained prefix", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const resolved = config({
+      keeper: { collections: [EVENT], initial: "history" },
+    });
+    await initSchema(db, resolved);
+    for (let position = 1; position <= 3; position++) {
+      await apply(db, resolved, event({ rkey: String(position), time: position }));
+    }
+    const claim = await claimChanges(db, "keeper", { now: 100 });
+    await acknowledgeChanges(db, claim!, { now: 101 });
+
+    // Allocation order is serialized, but created_at is captured before that
+    // lock and can therefore be non-monotonic under overlapping projectors.
+    await db
+      .prepare(
+        `UPDATE change_batches SET created_at = CASE position
+           WHEN 1 THEN 100 WHEN 2 THEN 300 ELSE 100 END`,
+      )
+      .run();
+
+    const pruned = await pruneChanges(db, {
+      maxBatches: 10,
+      olderThan: 200,
+    });
+    expect(pruned).toEqual({
+      pruned: 1,
+      retainedFloor: "1",
+      safeThrough: "3",
+      done: true,
+    });
+    expect(
+      (
+        await db
+          .prepare("SELECT position FROM change_batches ORDER BY position")
+          .all<{ position: number }>()
+      ).results.map((row) => row.position),
+    ).toEqual([2, 3]);
+  });
 });

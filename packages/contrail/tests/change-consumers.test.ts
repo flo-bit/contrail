@@ -343,16 +343,34 @@ describe("durable change consumers", () => {
     expect(claim?.changes).toHaveLength(2);
   });
 
-  it("rejects forged generation cursors and never regresses a checkpoint", async () => {
+  it("rejects forged generation and range cursors without skipping delivery", async () => {
     const db = createSqliteDatabase(":memory:");
     const config = readyEventConsumer();
     await initSchema(db, config);
-    await apply(db, config, [mutation({ rkey: "one", sourceTime: 1 })]);
-    const claim = await claimChanges(db, "search", { now: 100 });
-    const forged: ChangeClaim = { ...claim!, generation: crypto.randomUUID() };
+    for (let position = 1; position <= 3; position++) {
+      await apply(db, config, [
+        mutation({ rkey: String(position), sourceTime: position }),
+      ]);
+    }
+    const claim = await claimChanges(db, "search", {
+      now: 100,
+      maxBatches: 1,
+    });
+    expect(claim?.through).toBe("1");
+
+    const wrongGeneration: ChangeClaim = {
+      ...claim!,
+      generation: crypto.randomUUID(),
+    };
     await expect(
-      acknowledgeChanges(db, forged, { now: 101 }),
+      acknowledgeChanges(db, wrongGeneration, { now: 101 }),
     ).rejects.toBeInstanceOf(ChangeLeaseLostError);
+
+    const beyondClaimedRange: ChangeClaim = { ...claim!, through: "3" };
+    await expect(
+      acknowledgeChanges(db, beyondClaimedRange, { now: 101 }),
+    ).rejects.toBeInstanceOf(ChangeLeaseLostError);
+
     await acknowledgeChanges(db, claim!, { now: 101 });
     expect((await getChangesStatus(db)).consumers[0].position).toBe("1");
   });

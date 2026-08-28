@@ -306,7 +306,8 @@ async function releaseLease(
   await db
     .prepare(
       `UPDATE change_consumers
-       SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+       SET lease_owner = NULL, lease_expires_at = NULL,
+           lease_through_position = NULL, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
          AND acknowledged_position = ? AND lease_owner = ?`,
     )
@@ -427,7 +428,8 @@ async function claimChangeRange(
     const leased = await db
       .prepare(
         `UPDATE change_consumers
-         SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+         SET lease_owner = ?, lease_expires_at = ?,
+             lease_through_position = NULL, updated_at = ?
          WHERE consumer_id = ?
            AND bootstrap_state = '${requiredState}'
            AND generation_id = (SELECT generation_id FROM change_log_state WHERE id = 1)
@@ -508,7 +510,8 @@ async function claimChangeRange(
           .prepare(
             `UPDATE change_consumers
              SET bootstrap_state = 'activating', lease_owner = NULL,
-                 lease_expires_at = NULL, updated_at = ?
+                 lease_expires_at = NULL, lease_through_position = NULL,
+                 updated_at = ?
              WHERE consumer_id = ? AND generation_id = ?
                AND bootstrap_state = 'catching-up'
                AND acknowledged_position = bootstrap_target_position
@@ -585,6 +588,33 @@ async function claimChangeRange(
     }
 
     const through = String(selected.at(-1)!.position);
+    // Persist the exact selected upper bound before exposing the lease. Ack,
+    // renew, and fail all compare it so a mutated claim cannot skip delivery.
+    const bounded = await db
+      .prepare(
+        `UPDATE change_consumers
+         SET lease_through_position = ?, updated_at = ?
+         WHERE consumer_id = ? AND generation_id = ?
+           AND acknowledged_position = ? AND lease_owner = ?
+           AND lease_expires_at > ?
+         RETURNING consumer_id`,
+      )
+      .bind(
+        through,
+        limits.now,
+        consumerId,
+        generation,
+        from,
+        owner,
+        limits.now,
+      )
+      .first<{ consumer_id: string }>();
+    if (!bounded) {
+      throw new ChangeLeaseLostError(
+        `Change claim for ${consumerId} expired while its range was being bound`,
+      );
+    }
+
     const rows = await db
       .prepare(
         `SELECT position, phase, change_count, encoded_bytes, changes_json
@@ -759,12 +789,13 @@ export async function acknowledgeChanges(
               AND ? = bootstrap_target_position THEN 'activating'
              ELSE bootstrap_state END,
            lease_owner = NULL, lease_expires_at = NULL,
+           lease_through_position = NULL,
            attempts = 0, next_attempt_at = NULL,
            last_success_at = ?, last_error_code = NULL, last_error_at = NULL,
            updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
          AND acknowledged_position = ? AND lease_owner = ?
-         AND lease_expires_at > ?
+         AND lease_expires_at > ? AND lease_through_position = ?
          AND ? > acknowledged_position
          AND ? <= (
            SELECT head_position FROM change_log_state
@@ -782,6 +813,7 @@ export async function acknowledgeChanges(
       claim.from,
       claim.leaseOwner,
       now,
+      claim.through,
       claim.through,
       claim.through,
       claim.generation,
@@ -814,7 +846,7 @@ export async function renewChangeClaim(
        SET lease_expires_at = ?, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
          AND acknowledged_position = ? AND lease_owner = ?
-         AND lease_expires_at > ?
+         AND lease_expires_at > ? AND lease_through_position = ?
        RETURNING consumer_id`,
     )
     .bind(
@@ -825,6 +857,7 @@ export async function renewChangeClaim(
       claim.from,
       claim.leaseOwner,
       now,
+      claim.through,
     )
     .first<{ consumer_id: string }>();
   if (!renewed) {
@@ -860,10 +893,12 @@ export async function failChanges(
     .prepare(
       `UPDATE change_consumers
        SET lease_owner = NULL, lease_expires_at = NULL,
+           lease_through_position = NULL,
            attempts = attempts + 1, next_attempt_at = ?,
            last_error_code = ?, last_error_at = ?, updated_at = ?
        WHERE consumer_id = ? AND generation_id = ?
          AND acknowledged_position = ? AND lease_owner = ?
+         AND lease_through_position = ?
        RETURNING attempts, next_attempt_at`,
     )
     .bind(
@@ -875,6 +910,7 @@ export async function failChanges(
       claim.generation,
       claim.from,
       claim.leaseOwner,
+      claim.through,
     )
     .first<{ attempts: number | string; next_attempt_at: number | string | null }>();
   if (!failed) {
@@ -1117,7 +1153,8 @@ export async function skipChangeConsumer(
       .prepare(
         `UPDATE change_consumers
          SET acknowledged_position = ?, lease_owner = NULL,
-             lease_expires_at = NULL, attempts = 0, next_attempt_at = NULL,
+             lease_expires_at = NULL, lease_through_position = NULL,
+             attempts = 0, next_attempt_at = NULL,
              last_error_code = ?, last_error_at = ?, updated_at = ?
          WHERE consumer_id = ? AND generation_id = ?
            AND acknowledged_position = ?
@@ -1230,25 +1267,63 @@ export async function pruneChanges(
     };
   }
 
+  // created_at is captured before serialized position allocation, so age and
+  // position order may differ under overlapping projectors. Inspect only the
+  // bounded leading range and stop at the first age blocker; deleting every
+  // independently old row would create holes that retainedFloor cannot express.
+  const candidates = await db
+    .prepare(
+      `SELECT position, created_at FROM change_batches
+       WHERE generation_id = ? AND position > ? AND position <= ?
+       ORDER BY position LIMIT ?`,
+    )
+    .bind(state.generation, state.retainedFloor, safeThrough, maxBatches)
+    .all<{ position: number | string; created_at: number | string }>();
+
+  let expected = BigInt(state.retainedFloor) + 1n;
+  let deleteThrough = state.retainedFloor;
+  for (const candidate of candidates.results) {
+    const position = BigInt(String(candidate.position));
+    if (position !== expected) {
+      throw new ChangeHistoryGapError(
+        `Change log has a gap after retained floor ${state.retainedFloor}`,
+      );
+    }
+    if (
+      options.olderThan !== undefined &&
+      Number(candidate.created_at) >= options.olderThan
+    ) {
+      break;
+    }
+    deleteThrough = String(candidate.position);
+    expected++;
+  }
+
+  if (deleteThrough === state.retainedFloor) {
+    return {
+      pruned: 0,
+      retainedFloor: state.retainedFloor,
+      safeThrough,
+      done: true,
+    };
+  }
+
   const results = await db.batch([
     db
       .prepare(
         `DELETE FROM change_batches
-         WHERE generation_id = ? AND position IN (
-           SELECT position FROM change_batches
-           WHERE generation_id = ? AND position > ? AND position <= ?
-             AND (? IS NULL OR created_at < ?)
-           ORDER BY position LIMIT ?
-         )`,
+         WHERE generation_id = ? AND position > ? AND position <= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM change_consumers
+             WHERE generation_id = ? AND acknowledged_position < ?
+           )`,
       )
       .bind(
         state.generation,
-        state.generation,
         state.retainedFloor,
-        safeThrough,
-        options.olderThan ?? null,
-        options.olderThan ?? null,
-        maxBatches,
+        deleteThrough,
+        state.generation,
+        deleteThrough,
       ),
     db
       .prepare(
