@@ -297,10 +297,11 @@ export interface ContrailConfig {
   /** Jetstream endpoints to ingest from (defaults to {@link DEFAULT_JETSTREAMS}).
    *  Prefer a single endpoint: one instance has no clock skew, so `@atcute` takes
    *  no cursor rollback (see {@link jetstreamUrlOption}) — important for the cron
-   *  model, which rebuilds the subscription every cycle. Use 2+ only for failover
-   *  across interchangeable endpoints, and ideally only with a persistent
-   *  connection (`runPersistent`), where the per-switch 10s skew rollback fires
-   *  about once rather than every cycle. */
+   *  model, which rebuilds the subscription every cycle. Scheduled ingestion
+   *  requires exactly one pinned endpoint because a pooled connection rolls its
+   *  timestamp cursor back on every new cycle and cannot make bounded progress
+   *  through a dense overlap. Use 2+ only with `runPersistent()`, where the
+   *  connection and its failover cursor remain long-lived. */
   jetstreams?: string[];
   /** Identity of the ordered source consumed by live ingestion. Its opaque
    * cursor is persisted atomically with projected mutations and may be exposed

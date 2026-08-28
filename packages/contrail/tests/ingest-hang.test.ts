@@ -27,7 +27,11 @@ vi.mock("@atcute/jetstream", () => {
   return { JetstreamSubscription: MockJetstreamSubscription };
 });
 
-import { ingestEvents } from "../src/index";
+import {
+  ingestEvents,
+  resolveScheduledIngestBudget,
+  SCHEDULED_INGEST_METADATA_BYTES,
+} from "../src/index";
 import { resolveConfig } from "../src/index";
 import type { ContrailConfig } from "../src/index";
 
@@ -38,19 +42,43 @@ function commitEvent(
   collection: string,
   time_us: number,
   rkey: string,
+  options: {
+    revision?: string;
+    record?: Record<string, unknown>;
+    cid?: string;
+  } = {},
 ) {
   return {
     kind: "commit" as const,
     time_us,
     did,
     commit: {
-      rev: String(time_us),
+      rev: options.revision ?? String(time_us),
       collection,
       operation: "create" as const,
       rkey,
-      cid: "bafy" + rkey,
-      record: { name: "Test Event", startsAt: "2026-04-01T10:00:00Z", mode: "online" },
+      cid: options.cid ?? "bafy" + rkey,
+      record: options.record ?? {
+        name: "Test Event",
+        startsAt: "2026-04-01T10:00:00Z",
+        mode: "online",
+      },
     },
+  };
+}
+
+function budget(overrides: Partial<{
+  maxDrainMs: number;
+  maxCandidates: number;
+  maxIdentityUpdates: number;
+  maxSerializedBytes: number;
+}> = {}) {
+  return {
+    maxDrainMs: 5_000,
+    maxCandidates: 100,
+    maxIdentityUpdates: 100,
+    maxSerializedBytes: 1024 * 1024,
+    ...overrides,
   };
 }
 
@@ -127,6 +155,7 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
     });
     // The replayed cursor must come back so the caller can persist it.
     expect(result.lastCursor).toBe(1_000_000);
+    expect(result.stats.stopReason).toBe("drain-time");
   });
 
   it("never checkpoints past the last yielded event when the subscription buffers ahead", async () => {
@@ -152,6 +181,7 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
 
     expect(result.events).toHaveLength(1);
     expect(result.lastCursor).toBe(1_000_000);
+    expect(result.stats.lastAccountedCursor).toBe(1_000_000);
   });
 
   it("returns by the safety timeout even when every arriving event is filtered out", async () => {
@@ -177,6 +207,8 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
       // ...but the cursor still advanced, so the caller persists forward progress.
       expect(result.lastCursor).not.toBeNull();
       expect(result.lastCursor).toBeGreaterThan(1_000_000);
+      expect(result.stats.stopReason).toBe("drain-time");
+      expect(result.stats.lastAccountedCursor).toBe(result.lastCursor);
     } finally {
       jetstream.abort = true;
     }
@@ -237,6 +269,7 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
 
     expect(result.events.map((e) => e.rkey)).toEqual(["hist", "live"]);
     expect(result.lastCursor).toBe(liveUs);
+    expect(result.stats.stopReason).toBe("head");
   });
 
   it("caught-up break fires even on a filtered live event, deferring a following kept event to the next cycle", async () => {
@@ -314,5 +347,329 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
 
     expect(result.identityUpdates.get("did:plc:author")).toBe("alice.test");
     expect(result.events).toHaveLength(0); // identity events are not record commits
+  });
+
+  it("validates every scheduled work threshold", () => {
+    expect(() => resolveScheduledIngestBudget({ maxCandidates: 0 })).toThrow(
+      "maxCandidates must be a positive finite integer",
+    );
+    expect(() =>
+      resolveScheduledIngestBudget({ maxIdentityUpdates: 0 }),
+    ).toThrow("maxIdentityUpdates must be a positive finite integer");
+    expect(() =>
+      resolveScheduledIngestBudget({ maxSerializedBytes: Number.NaN }),
+    ).toThrow("maxSerializedBytes must be a positive finite integer");
+    expect(() => resolveScheduledIngestBudget({ maxDrainMs: 1.5 })).toThrow(
+      "maxDrainMs must be a positive finite integer",
+    );
+  });
+
+  it("stops an infinite hot stream at exactly maxCandidates without another next()", async () => {
+    let produced = 0;
+    jetstream.script = async function* (self) {
+      for (let index = 0; !jetstream.abort; index++) {
+        produced++;
+        self.cursor = 1_000_000 + index;
+        yield commitEvent(
+          "did:plc:author",
+          "community.lexicon.calendar.event",
+          self.cursor,
+          `hot-${index}`,
+        );
+      }
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxCandidates: 3 }),
+    );
+
+    expect(result.events).toHaveLength(3);
+    expect(produced).toBe(3);
+    expect(result.stats).toMatchObject({
+      observedSourceItems: 3,
+      retainedCandidates: 3,
+      stopReason: "count",
+      lastAccountedCursor: 1_000_002,
+      safeEndingCursor: 1_000_002,
+    });
+  });
+
+  it("caps distinct identity updates without letting global identity traffic stop record progress", async () => {
+    let produced = 0;
+    jetstream.script = async function* (self) {
+      for (let index = 0; index < 5; index++) {
+        produced++;
+        self.cursor = 1_500_000 + index;
+        yield {
+          kind: "identity" as const,
+          time_us: self.cursor,
+          did: `did:plc:identity-${index}`,
+          identity: {
+            did: `did:plc:identity-${index}`,
+            handle: `identity-${index}.test`,
+            seq: index,
+            time: "2026-04-01T10:00:00Z",
+          },
+        };
+      }
+      self.cursor = 1_500_005;
+      produced++;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        self.cursor,
+        "after-identities",
+      );
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxIdentityUpdates: 3 }),
+    );
+
+    expect(result.identityUpdates.size).toBe(3);
+    expect(result.events.map((event) => event.rkey)).toEqual([
+      "after-identities",
+    ]);
+    expect(produced).toBe(6);
+    expect(result.stats).toMatchObject({
+      observedSourceItems: 6,
+      identityObservations: 5,
+      retainedIdentityUpdates: 3,
+      identityUpdatesOmitted: 2,
+      stopReason: "idle",
+      lastAccountedCursor: 1_500_005,
+      safeEndingCursor: 1_500_005,
+    });
+  });
+
+  it("coalesces repeated identity updates without spending the distinct-update cap", async () => {
+    jetstream.script = async function* (self) {
+      for (let index = 0; index < 3; index++) {
+        self.cursor = 1_600_000 + index;
+        yield {
+          kind: "identity" as const,
+          time_us: self.cursor,
+          did: "did:plc:identity",
+          identity: {
+            did: "did:plc:identity",
+            handle: `identity-${index}.test`,
+            seq: index,
+            time: "2026-04-01T10:00:00Z",
+          },
+        };
+      }
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxIdentityUpdates: 2 }),
+    );
+
+    expect(result.identityUpdates).toEqual(
+      new Map([["did:plc:identity", "identity-2.test"]]),
+    );
+    expect(result.stats.retainedIdentityUpdates).toBe(1);
+    expect(result.stats.stopReason).toBe("idle");
+  });
+
+  it("retains the byte-threshold-crossing candidate and does not split equal cursors", async () => {
+    const firstRecord = { value: "a" };
+    const secondRecord = { value: "bbbb" };
+    const encoder = new TextEncoder();
+    const firstBytes =
+      SCHEDULED_INGEST_METADATA_BYTES +
+      encoder.encode(JSON.stringify(firstRecord)).byteLength;
+    const secondBytes =
+      SCHEDULED_INGEST_METADATA_BYTES +
+      encoder.encode(JSON.stringify(secondRecord)).byteLength;
+    const byteThreshold = firstBytes + 1;
+    let produced = 0;
+    jetstream.script = async function* (self) {
+      self.cursor = 2_000_000;
+      produced++;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        2_000_000,
+        "same-cursor-1",
+        { record: firstRecord },
+      );
+      produced++;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        2_000_000,
+        "same-cursor-2",
+        { record: secondRecord },
+      );
+      produced++;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        2_000_001,
+        "not-requested",
+      );
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget({ maxSerializedBytes: byteThreshold }),
+    );
+
+    expect(result.events.map((event) => event.rkey)).toEqual([
+      "same-cursor-1",
+      "same-cursor-2",
+    ]);
+    expect(produced).toBe(2);
+    expect(result.stats.stopReason).toBe("bytes");
+    expect(result.stats.serializedCandidateBytes).toBe(firstBytes + secondBytes);
+    expect(result.stats.serializedCandidateBytes - byteThreshold).toBeLessThanOrEqual(
+      secondBytes,
+    );
+    expect(result.lastCursor).toBe(2_000_000);
+  });
+
+  it("drops only exact source observations and retains genuine revisions", async () => {
+    jetstream.script = async function* (self) {
+      self.cursor = 3_000_000;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        3_000_000,
+        "record",
+        { revision: "rev-1", record: { b: 2, a: 1 } },
+      );
+      // Same source slot and normalized payload, despite object key order.
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        3_000_000,
+        "record",
+        { revision: "rev-1", record: { a: 1, b: 2 } },
+      );
+      self.cursor = 3_000_001;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        3_000_001,
+        "record",
+        { revision: "rev-2", record: { a: 2, b: 2 } },
+      );
+    };
+
+    const result = await ingestEvents(
+      discoverableConfig(),
+      999_999,
+      budget(),
+    );
+
+    expect(result.events.map((event) => event.source?.revision)).toEqual([
+      "rev-1",
+      "rev-2",
+    ]);
+    expect(result.stats.exactDuplicatesDropped).toBe(1);
+    expect(result.stats.retainedCandidates).toBe(2);
+    expect(result.stats.lastAccountedCursor).toBe(3_000_001);
+  });
+
+  it("advances the accounted cursor through filtered and duplicate observations", async () => {
+    const knownDids = new Set<string>();
+    jetstream.script = async function* (self) {
+      self.cursor = 4_000_000;
+      const original = commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        4_000_000,
+        "kept",
+      );
+      yield original;
+      yield original;
+      self.cursor = 4_000_001;
+      yield commitEvent(
+        "did:plc:stranger",
+        "app.bsky.graph.follow",
+        4_000_001,
+        "filtered",
+      );
+    };
+
+    const result = await ingestEvents(
+      dependentConfig(),
+      999_999,
+      budget(),
+      knownDids,
+    );
+
+    expect(result.events).toHaveLength(1);
+    expect(result.stats.exactDuplicatesDropped).toBe(1);
+    expect(result.stats.sourceScopeFiltered).toBe(1);
+    expect(result.stats.observedSourceItems).toBe(3);
+    expect(result.lastCursor).toBe(4_000_001);
+  });
+
+  it("never regresses the safe cursor when a pooled transport replays older overlap", async () => {
+    const startingCursor = 6_000_000;
+    jetstream.script = async function* (self) {
+      self.cursor = startingCursor - 500;
+      yield commitEvent(
+        "did:plc:author",
+        "community.lexicon.calendar.event",
+        startingCursor - 500,
+        "rolled-back",
+      );
+    };
+    const config = {
+      ...discoverableConfig(),
+      jetstreams: ["wss://one.test", "wss://two.test"],
+    };
+
+    const result = await ingestEvents(
+      config,
+      startingCursor,
+      budget({ maxCandidates: 1 }),
+    );
+
+    expect(result.events).toHaveLength(1);
+    expect(result.stats.lastAccountedCursor).toBe(startingCursor - 500);
+    expect(result.lastCursor).toBe(startingCursor);
+    expect(result.stats.safeEndingCursor).toBe(startingCursor);
+  });
+
+  it("keeps source-inconsistency diagnostics and normal logs bounded", async () => {
+    const logs: unknown[][] = [];
+    const config = {
+      ...discoverableConfig(),
+      logger: {
+        log: (...args: unknown[]) => logs.push(args),
+        warn: (...args: unknown[]) => logs.push(args),
+        error: (...args: unknown[]) => logs.push(args),
+      },
+    };
+    jetstream.script = async function* (self) {
+      self.cursor = 5_000_000;
+      for (let index = 0; index < 50; index++) {
+        yield commitEvent(
+          "did:plc:author",
+          "community.lexicon.calendar.event",
+          5_000_000,
+          "inconsistent",
+          { revision: "same", record: { value: index } },
+        );
+      }
+    };
+
+    const result = await ingestEvents(config, 999_999, budget());
+
+    expect(result.events).toHaveLength(50);
+    expect(result.stats.sourceInconsistencies).toBe(49);
+    expect(result.stats.diagnosticSamples).toHaveLength(5);
+    expect(result.stats.diagnosticSamplesOmitted).toBe(44);
+    expect(logs).toHaveLength(0);
   });
 });

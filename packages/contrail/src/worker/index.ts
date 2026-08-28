@@ -18,6 +18,7 @@ import { Contrail } from "../contrail.js";
 import { createHandler } from "../server.js";
 import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillRetryOptions } from "../core/backfill.js";
+import type { ScheduledIngestOptions } from "../core/jetstream.js";
 import {
   runChangeDeliverySlice,
   validateDeliveryHandlers,
@@ -42,6 +43,9 @@ export interface CreateWorkerOptions<Env extends WorkerEnv = WorkerEnv> {
   lexicons?: object[];
   /** Enable stable discovery and Lexicon routes for anonymous remote clients. */
   publicService?: PublicServiceOptions;
+  /** Record count, identity count, byte, and drain-time limits for each
+   * scheduled Jetstream cycle. */
+  scheduledIngest?: ScheduledIngestOptions;
   /** Bounded pending-account retry slice after each scheduled ingest. Enabled
    *  by default; pass `false` to disable or options to tune its budget. */
   backfillRetries?: BackfillRetryOptions | false;
@@ -147,9 +151,11 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
       ctx.waitUntil(
         (async () => {
           try {
-            await contrail.ingest({}, db);
+            await contrail.ingest(options.scheduledIngest, db);
           } catch (error) {
-            contrail.config.logger?.error(`[ingest] scheduled cycle failed: ${error}`);
+            contrail.config.logger?.error(
+              `[ingest] scheduled cycle failed: ${error}`,
+            );
           }
           if (options.backfillRetries !== false) {
             try {
