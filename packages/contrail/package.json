@@ -89,6 +89,7 @@
     "@atcute/lexicons": "^2.0.3",
     "@atcute/oauth-types": "^1.0.1",
     "@atcute/tid": "1.1.4",
+    "@atcute/uint8array": "1.1.5",
     "@atcute/xrpc-server": "^2.0.2",
     "cac": "^7.0.0",
     "hono": "^4.13.0",
