@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.21.2
+
+### Patch Changes
+
+- 60e7b3a: Run Atcute's Lexicon CLI with an explicit module redirect for its byte-array helper so `contrail dev` works with pnpm's strictly isolated global package links.
+
 ## 0.21.1
 
 ### Patch Changes
