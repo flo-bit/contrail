@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "contrail dev",
     "deploy": "wrangler deploy",
-    "typecheck": "contrail lexicons check --no-atcute-config && tsc --noEmit"
+    "typecheck": "node ../../packages/contrail/dist/cli.js lexicons check --no-atcute-config && tsc --noEmit"
   },
   "dependencies": {
     "@atmo-dev/contrail": "workspace:*"

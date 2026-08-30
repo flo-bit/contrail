@@ -12,7 +12,7 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "pnpm generate:types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"typecheck": "contrail lexicons check --no-atcute-config && pnpm check",
+		"typecheck": "node ../../packages/contrail/dist/cli.js lexicons check --no-atcute-config && pnpm check",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint .",
