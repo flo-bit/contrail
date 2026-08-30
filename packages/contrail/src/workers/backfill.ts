@@ -106,11 +106,18 @@ export async function backfillAll(
   );
 }
 
+export const DEFAULT_ALLUVIUM_SOURCE_URL =
+  "wss://jetstream1.us-east.bsky.network";
+
 export interface AlluviumBootstrapOptions {
   /** Alluvium HTTP origin. */
   endpoint: string | URL;
   /** Logical source ID advertised by the selected manifests. */
   sourceId: string;
+  /** Exact legacy Jetstream v1 URL advertised by the manifests. This is
+   * independent of `config.jetstreams`, which selects the v2 live service.
+   * Default: {@link DEFAULT_ALLUVIUM_SOURCE_URL}. */
+  sourceUrl?: string;
   /** Operator-owned continuity epoch. Alluvium protocol v1 does not publish it. */
   sourceEpoch: string;
   /** Explicitly accept manifests that report historical omissions. */
@@ -171,7 +178,6 @@ async function runAlluviumBootstrap(
   db: Database,
   opts: AlluviumBootstrapOptions,
 ): Promise<AlluviumBootstrapResult> {
-  const jetstreams = contrail.config.jetstreams ?? [];
   if (
     contrail.config.orderedSource &&
     (contrail.config.orderedSource.source !== opts.sourceId ||
@@ -181,16 +187,14 @@ async function runAlluviumBootstrap(
       "Alluvium source ID/epoch must match the configured orderedSource",
     );
   }
-  if (jetstreams.length !== 1) {
-    throw new Error(
-      "Alluvium bootstrap requires exactly one configured Jetstream endpoint " +
-        "so scheduled ingestion resumes against the manifest's exact source.",
-    );
+  const sourceUrl = opts.sourceUrl ?? DEFAULT_ALLUVIUM_SOURCE_URL;
+  if (!sourceUrl.trim()) {
+    throw new TypeError("Alluvium source URL must not be empty");
   }
   const source = {
     id: opts.sourceId,
     epoch: opts.sourceEpoch,
-    url: jetstreams[0]!,
+    url: sourceUrl,
   };
   const target = new DatabaseBootstrapTarget(db, contrail.config, {
     deferDerivedProjections: true,

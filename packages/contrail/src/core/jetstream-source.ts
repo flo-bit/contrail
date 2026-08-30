@@ -141,9 +141,11 @@ function mutationFromEvent(
       };
 }
 
-/** Ordered replay adapter for Jetstream's microsecond cursor protocol.
+/** Legacy timestamp-coordinate adapter retained for existing PDS/Alluvium
+ * bootstrap orchestration. Runtime scheduled and persistent ingestion use the
+ * v2 seq adapter in `jetstream-live.ts`; archive-backed v2 bootstrap is deferred.
  *
- * Jetstream has no separate head endpoint. Marks therefore wait for a real
+ * The legacy stream has no separate head endpoint. Marks therefore wait for a real
  * event from the same filtered stream, and replay waits for an event strictly
  * beyond that mark. Quiet application collections can add a busy watermark
  * collection without projecting its records. This avoids claiming catch-up

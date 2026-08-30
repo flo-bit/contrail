@@ -1,14 +1,18 @@
-import type { JetstreamSubscription } from "@atcute/jetstream";
+import {
+  JetstreamLiveHistoryExpiredError,
+  JetstreamLiveSubscription,
+  type JetstreamLiveEvent,
+} from "./jetstream-live";
 import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailConfig } from "./types";
 import {
   getCollectionNsids,
   getDependentNsids,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
-  jetstreamUrlOption,
+  jetstreamService,
   resolveConfig,
 } from "./types";
-import { initSchema, getLastCursor, loadKnownActorDids, saveCursorStatement, saveOrderedSourcePositionStatement } from "./db";
+import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, loadKnownActorDids, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement } from "./db";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
@@ -25,12 +29,21 @@ import type { IngestState } from "./jetstream";
  *  the recycling cron isolate). */
 const FEED_SWEEP_INTERVAL_MS = 10_000;
 
+export interface PersistentJetstreamSubscription
+  extends AsyncIterable<JetstreamLiveEvent> {
+  /** Effective initial source coordinate, when the transport exposes one. */
+  cursor?: number | null;
+}
+
 export interface PersistentIngestOptions {
   batchSize?: number;
   flushIntervalMs?: number;
   signal?: AbortSignal;
-  /** Override subscription creation for testing */
-  createSubscription?: (cursor: number | null) => JetstreamSubscription;
+  /** Override subscription creation for testing or a custom transport. */
+  createSubscription?: (
+    cursor: number | null,
+    signal?: AbortSignal,
+  ) => PersistentJetstreamSubscription;
   logger?: Logger;
 }
 
@@ -55,12 +68,15 @@ export async function runPersistent(
   const flushIntervalMs = options?.flushIntervalMs ?? 5_000;
   const signal = options?.signal;
   const state = createIngestState();
+  const service = jetstreamService(config.jetstreams ?? []);
 
   // Init schema once
   if (!state.schemaInitialized) {
     await initSchema(db, config);
     state.schemaInitialized = true;
   }
+  await assertServingSourceCompatibility(db, config.orderedSource);
+  await assertJetstreamServiceCompatibility(db, service);
 
   // Load known DIDs for dependent collection filtering
   const dependentCollections: Set<string> = new Set(getDependentNsids(config));
@@ -88,11 +104,13 @@ export async function runPersistent(
         newlyKnownDids: new Set<string>(),
         state,
         log,
+        service,
         createSubscription: options?.createSubscription,
       });
       reconnectAttempts = 0;
     } catch (err) {
       if (signal?.aborted) break;
+      if (err instanceof JetstreamLiveHistoryExpiredError) throw err;
       log.error(`Jetstream connection error: ${err}`);
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30_000);
       reconnectAttempts++;
@@ -108,6 +126,7 @@ interface StreamOptions {
   batchSize: number;
   flushIntervalMs: number;
   signal?: AbortSignal;
+  service: string;
   collections: string[];
   knownDids?: Set<string>;
   /** DIDs that crossed from unknown→known during this stream's lifetime.
@@ -115,7 +134,7 @@ interface StreamOptions {
   newlyKnownDids?: Set<string>;
   state: IngestState;
   log: Logger;
-  createSubscription?: (cursor: number | null) => any;
+  createSubscription?: PersistentIngestOptions["createSubscription"];
 }
 
 async function streamAndFlush(
@@ -127,19 +146,47 @@ async function streamAndFlush(
   const { batchSize, flushIntervalMs, signal, collections, knownDids, state, log } = opts;
 
   const subscription = opts.createSubscription
-    ? opts.createSubscription(cursor)
-    : new (await import("@atcute/jetstream")).JetstreamSubscription({
-        // Single-instance config → string, so @atcute skips its array-only
-        // first-connect cursor rollback (see jetstreamUrlOption).
-        url: jetstreamUrlOption(config.jetstreams ?? []),
+    ? opts.createSubscription(cursor, signal)
+    : new JetstreamLiveSubscription({
+        url: opts.service,
         wantedCollections: collections,
         ...(cursor !== null ? { cursor } : {}),
-        onConnectionOpen() { log.log("Connected to Jetstream"); },
-        onConnectionClose(event: any) { log.log(`Disconnected: ${event.code} ${event.reason}`); },
-        onConnectionError(event: any) { log.error("Jetstream error:", event.error); },
+        signal,
+        onConnectionOpen() { log.log("Connected to Jetstream v2"); },
+        onConnectionClose(event) { log.log(`Disconnected: ${event.code ?? ""} ${event.reason ?? ""}`); },
+        onConnectionError(event) { log.error("Jetstream v2 error:", event.error); },
       });
 
+  // A fresh v2 subscription begins from a timestamp-domain overlap bridge.
+  // Persist that exact lower bound before the first pull so failed connection
+  // attempts cannot create progressively newer bridges and skip the outage.
+  const initialCursor = cursor === null ? subscription.cursor : null;
+  if (initialCursor !== null && initialCursor !== undefined) {
+    if (!Number.isSafeInteger(initialCursor) || initialCursor < 0) {
+      throw new TypeError(
+        "persistent Jetstream subscription cursor must be a non-negative safe integer",
+      );
+    }
+    await db.batch([
+      saveJetstreamCursorStatement(db, initialCursor),
+      ...(config.orderedSource
+        ? [
+            saveOrderedSourcePositionStatement(
+              db,
+              config.orderedSource,
+              initialCursor,
+            ),
+          ]
+        : []),
+      ...saveJetstreamCursorObservationStatements(db, initialCursor, []),
+    ]);
+  }
+
   const buffer: IngestEvent[] = [];
+  // Highest fully handled v2 seq not yet committed. This includes identity
+  // events, so a commit-quiet stream still advances and does not replay global
+  // identity traffic forever after restart.
+  let pendingCursor: number | null = null;
   // Guards against overlap between the periodic timer flush and a main-loop
   // batchSize-driven flush. The main loop only ever awaits flush() sequentially,
   // but the setInterval callback is a second entry point on another tick.
@@ -150,10 +197,13 @@ async function streamAndFlush(
     flushing = true;
 
     try {
+      const checkpoint = pendingCursor;
+      if (checkpoint !== null) pendingCursor = null;
       if (buffer.length > 0) {
         const batch = buffer.splice(0);
-        const lastTimeUs = Math.max(
-          ...batch.map((event) => event.source?.time_us ?? event.time_us),
+        const lastCursor = Math.max(
+          checkpoint ?? 0,
+          ...batch.map((event) => Number(event.source?.cursor)),
         );
         let ingestResult: Awaited<ReturnType<typeof ingestRecords>>;
         try {
@@ -161,22 +211,24 @@ async function streamAndFlush(
             phase: "live",
             knownDids,
             trailingStatements: [
-              saveCursorStatement(db, lastTimeUs),
+              saveJetstreamCursorStatement(db, lastCursor),
               ...(config.orderedSource
                 ? [
                     saveOrderedSourcePositionStatement(
                       db,
                       config.orderedSource,
-                      lastTimeUs,
+                      lastCursor,
                     ),
                   ]
                 : []),
+              ...saveJetstreamCursorObservationStatements(db, lastCursor, []),
             ],
           });
         } catch (error) {
           // The cursor transaction failed, so keep this exact batch at the front
           // for the timer's next attempt rather than losing it in memory.
           buffer.unshift(...batch);
+          pendingCursor = Math.max(pendingCursor ?? 0, lastCursor);
           throw error;
         }
         const { accepted, discoveredDids } = ingestResult;
@@ -224,8 +276,27 @@ async function streamAndFlush(
         await maybeOptimize(db, config, log);
 
         log.log(
-          `Flushed ${accepted.length}/${batch.length} records. Cursor: ${lastTimeUs}`,
+          `Flushed ${accepted.length}/${batch.length} records. Cursor: ${lastCursor}`,
         );
+      } else if (checkpoint !== null) {
+        try {
+          await db.batch([
+            saveJetstreamCursorStatement(db, checkpoint),
+            ...(config.orderedSource
+              ? [
+                  saveOrderedSourcePositionStatement(
+                    db,
+                    config.orderedSource,
+                    checkpoint,
+                  ),
+                ]
+              : []),
+            ...saveJetstreamCursorObservationStatements(db, checkpoint, []),
+          ]);
+        } catch (error) {
+          pendingCursor = Math.max(pendingCursor ?? 0, checkpoint);
+          throw error;
+        }
       }
 
       // Bounded, cursored feed prune (see sweepFeedItems / runFeedPruneSlice).
@@ -328,18 +399,23 @@ async function streamAndFlush(
                 : {}),
               time_us: event.time_us,
               revision: commit.rev,
-              cursor: String(event.time_us),
+              cursor: String(event.seq),
             },
           }),
         );
 
-      } else if (event.kind === "identity") {
+      } else if (
+        event.kind === "identity" &&
+        event.identity.handle !== undefined
+      ) {
         try {
           await applyIdentityEvent(db, event.did, event.identity.handle);
         } catch (err) {
           log.warn(`Identity update failed for ${event.did}: ${err}`);
         }
       }
+
+      pendingCursor = Math.max(pendingCursor ?? 0, event.seq);
 
       if (buffer.length >= batchSize) {
         await flush();

@@ -9,8 +9,8 @@ import type { ContrailConfig } from "../src/index";
 // commit without opening a real WebSocket. Everything else in the appview
 // ingest path runs for real, so this exercises the live-ingest refresh path
 // end-to-end (the smoking-gun call site `refreshStaleIdentities(db, dids)`).
-vi.mock("@atcute/jetstream", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@atcute/jetstream")>();
+vi.mock("../src/core/jetstream-live", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/jetstream-live")>();
   class MockJetstreamSubscription {
     cursor: number | null = null;
     constructor(_opts: unknown) {}
@@ -18,6 +18,7 @@ vi.mock("@atcute/jetstream", async (importOriginal) => {
       yield {
         kind: "commit",
         // A past time_us so the ingest loop doesn't treat it as "caught up".
+        seq: 1_000_000,
         time_us: 1_000_000,
         did: "did:plc:ingest",
         commit: {
@@ -30,7 +31,7 @@ vi.mock("@atcute/jetstream", async (importOriginal) => {
       };
     }
   }
-  return { ...actual, JetstreamSubscription: MockJetstreamSubscription };
+  return { ...actual, JetstreamLiveSubscription: MockJetstreamSubscription };
 });
 
 const silentLogger = { log() {}, warn() {}, error() {} };

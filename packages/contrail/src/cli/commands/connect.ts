@@ -498,7 +498,7 @@ export async function connectConfigSource(options: {
     notify: config.notify ?? true,
     orderedSource: config.orderedSource ?? {
       source: "jetstream",
-      epoch: "contrail-local-jetstream-v1",
+      epoch: "contrail-local-jetstream-v2",
     },
   };
   const endpoint = normalizePublicServiceEndpoint(

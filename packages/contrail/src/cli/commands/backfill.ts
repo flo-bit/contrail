@@ -4,6 +4,7 @@ import {
   backfillAll,
   bootstrapAlluvium,
   bootstrapAlluviumDatabase,
+  DEFAULT_ALLUVIUM_SOURCE_URL,
   labelsBackfillAll,
   labelsBackfillDatabase,
 } from "../../workers/backfill.js";
@@ -26,6 +27,7 @@ interface BackfillOpts {
   alluvium?: boolean;
   alluviumEndpoint: string;
   alluviumSourceId: string;
+  alluviumSourceUrl: string;
   alluviumEpoch?: string;
   alluviumRetentionHours: number;
   allowPartial?: boolean;
@@ -88,6 +90,11 @@ export function registerBackfill(cli: CAC): void {
       { default: "jetstream-us-east" },
     )
     .option(
+      "--alluvium-source-url <url>",
+      "Exact legacy Jetstream v1 URL advertised by Alluvium manifests",
+      { default: DEFAULT_ALLUVIUM_SOURCE_URL },
+    )
+    .option(
       "--alluvium-epoch <epoch>",
       "Operator-owned continuity epoch (required with --alluvium)",
     )
@@ -142,6 +149,7 @@ export function registerBackfill(cli: CAC): void {
         const alluvium = {
           endpoint: options.alluviumEndpoint,
           sourceId: options.alluviumSourceId,
+          sourceUrl: options.alluviumSourceUrl,
           sourceEpoch: options.alluviumEpoch,
           allowPartial: options.allowPartial === true,
           retentionUs: retentionHours * 60 * 60 * 1_000_000,

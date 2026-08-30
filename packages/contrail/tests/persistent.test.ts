@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { ContrailConfig, Database } from "../src/index";
+import type {
+  ContrailConfig,
+  Database,
+  PersistentJetstreamSubscription,
+} from "../src/index";
 import { resolveConfig } from "../src/index";
 import { createTestDb, createTestDbWithSchema, TEST_CONFIG } from "./helpers";
 import { runPersistent } from "../src/index";
+import { JetstreamLiveHistoryExpiredError } from "../src/core/jetstream-live";
 import {
   getLastCursor,
   getServingSourcePosition,
   queryRecords,
 } from "../src/index";
 import { initSchema } from "../src/index";
+import { saveJetstreamCursor } from "../src/core/db/records";
 
 const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/core/identity", async (importOriginal) => {
@@ -27,7 +33,14 @@ beforeEach(async () => {
 });
 
 // Helper: create a mock async iterable that yields events then hangs until aborted
-function mockSubscription(events: Array<{ kind: string; did: string; time_us: number; commit?: any }>) {
+function mockSubscription(
+  events: Array<{
+    kind: string;
+    did: string;
+    time_us: number;
+    commit?: any;
+  }>,
+): PersistentJetstreamSubscription {
   let aborted = false;
   return {
     cursor: 0,
@@ -37,7 +50,11 @@ function mockSubscription(events: Array<{ kind: string; did: string; time_us: nu
         next: async () => {
           if (aborted) return { value: undefined, done: true as const };
           if (i < events.length) {
-            return { value: events[i++], done: false as const };
+            const event = events[i++]!;
+            return {
+              value: { ...event, seq: event.time_us },
+              done: false as const,
+            };
           }
           // Hang until iterator is returned (abort)
           return new Promise<IteratorResult<any>>(() => {});
@@ -52,6 +69,73 @@ function mockSubscription(events: Array<{ kind: string; did: string; time_us: nu
 }
 
 describe("runPersistent", () => {
+  it("rejects a raw-entry ordered-source mismatch before opening the stream", async () => {
+    await saveJetstreamCursor(db, 42, {
+      source: "jetstream",
+      epoch: "original-epoch",
+    });
+    let subscriptionCreated = false;
+
+    await expect(
+      runPersistent(
+        db,
+        {
+          ...TEST_CONFIG,
+          orderedSource: { source: "jetstream", epoch: "changed-epoch" },
+        },
+        {
+          createSubscription: () => {
+            subscriptionCreated = true;
+            return mockSubscription([]);
+          },
+        },
+      ),
+    ).rejects.toThrow("does not match durable source position");
+    expect(subscriptionCreated).toBe(false);
+  });
+
+  it("persists the initial timestamp bridge before its first source pull", async () => {
+    const bridge = 1_788_008_906_865_272;
+    const controller = new AbortController();
+    let durableCursorDuringPull: number | null = null;
+
+    await runPersistent(db, TEST_CONFIG, {
+      signal: controller.signal,
+      createSubscription: (cursor) => {
+        expect(cursor).toBeNull();
+        return {
+          cursor: bridge,
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                durableCursorDuringPull = await getLastCursor(db);
+                controller.abort();
+                return { value: undefined, done: true as const };
+              },
+            };
+          },
+        };
+      },
+    });
+
+    expect(durableCursorDuringPull).toBe(bridge);
+    expect(await getLastCursor(db)).toBe(bridge);
+  });
+
+  it("fails instead of retrying forever when live retention has expired", async () => {
+    const expired = new JetstreamLiveHistoryExpiredError("cursor too old");
+    await expect(
+      runPersistent(db, TEST_CONFIG, {
+        createSubscription: () =>
+          ({
+            async *[Symbol.asyncIterator]() {
+              throw expired;
+            },
+          }) as any,
+      }),
+    ).rejects.toBe(expired);
+  });
+
   it("flushes records and the ordered source position atomically", async () => {
     const config = resolveConfig({
       ...TEST_CONFIG,
@@ -77,7 +161,10 @@ describe("runPersistent", () => {
       batchSize: 50,
       flushIntervalMs: 60_000, // high so only batch size triggers flush
       signal: controller.signal,
-      createSubscription: () => mockSubscription(events) as any,
+      createSubscription: (_cursor, subscriptionSignal) => {
+        expect(subscriptionSignal).toBe(controller.signal);
+        return mockSubscription(events);
+      },
     });
 
     // Wait for flush to complete
@@ -486,6 +573,33 @@ describe("runPersistent", () => {
       "did:plc:someone",
       "newhandle.test"
     );
+  });
+
+  it("checkpoints an identity-only v2 range", async () => {
+    const events = [
+      {
+        kind: "identity" as const,
+        did: "did:plc:identity-only",
+        time_us: 4_100,
+        identity: {
+          did: "did:plc:identity-only",
+          handle: "identity-only.test",
+          time: "2026-04-01T10:00:00Z",
+        },
+      },
+    ];
+    const controller = new AbortController();
+    const promise = runPersistent(db, TEST_CONFIG, {
+      batchSize: 100,
+      flushIntervalMs: 50,
+      signal: controller.signal,
+      createSubscription: () => mockSubscription(events) as any,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await getLastCursor(db)).toBe(4_100);
+    controller.abort();
+    await promise;
   });
 
   it("runs the recovery feed sweep on a fully idle stream", async () => {

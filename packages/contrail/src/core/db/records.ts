@@ -1,3 +1,7 @@
+import {
+  JETSTREAM_V2_SEQ_THRESHOLD,
+  isJetstreamTimestampCursor,
+} from "../jetstream-live";
 import type {
   ContrailConfig,
   ResolvedContrailConfig,
@@ -580,6 +584,48 @@ export function saveServingSourcePositionStatement(
     .bind(position.source, position.epoch, position.cursor, updatedAt);
 }
 
+export const JETSTREAM_V2_SERVICE_META_KEY = "jetstream_v2_service";
+
+/** Bind instance-local v2 seqs to one normalized service origin. A legacy
+ * timestamp bridge may acquire its binding before transition; an unbound seq
+ * cursor is rejected because its originating instance cannot be recovered. */
+export async function assertJetstreamServiceCompatibility(
+  db: Database,
+  service: string,
+): Promise<void> {
+  let existing = await db
+    .prepare("SELECT value FROM _contrail_meta WHERE key = ?")
+    .bind(JETSTREAM_V2_SERVICE_META_KEY)
+    .first<{ value: string }>();
+
+  if (!existing) {
+    const cursor = await getLastCursor(db);
+    if (cursor !== null && !isJetstreamTimestampCursor(cursor)) {
+      throw new Error(
+        `durable Jetstream v2 seq cursor ${cursor} has no pinned service identity; ` +
+          "rebuild or explicitly migrate the generation",
+      );
+    }
+    await db
+      .prepare(
+        "INSERT INTO _contrail_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+      )
+      .bind(JETSTREAM_V2_SERVICE_META_KEY, service)
+      .run();
+    existing = await db
+      .prepare("SELECT value FROM _contrail_meta WHERE key = ?")
+      .bind(JETSTREAM_V2_SERVICE_META_KEY)
+      .first<{ value: string }>();
+  }
+
+  if (existing?.value !== service) {
+    throw new Error(
+      `configured Jetstream v2 service ${service} does not match durable service ` +
+        `${existing?.value ?? "<missing>"}; seq cursors are instance-local`,
+    );
+  }
+}
+
 export async function assertServingSourceCompatibility(
   db: Database,
   orderedSource?: OrderedSourceConfig,
@@ -602,6 +648,15 @@ export async function assertServingSourceCompatibility(
     existing.position.source !== orderedSource.source ||
     existing.position.epoch !== orderedSource.epoch
   ) {
+    const sourcePositionCursor = Number(existing.position.cursor);
+    const liveCursor = await getLastCursor(db);
+    const pendingV2Transition =
+      existing.position.source === orderedSource.source &&
+      Number.isSafeInteger(sourcePositionCursor) &&
+      isJetstreamTimestampCursor(sourcePositionCursor) &&
+      liveCursor !== null &&
+      isJetstreamTimestampCursor(liveCursor);
+    if (pendingV2Transition) return;
     throw new Error(
       `configured ordered source ${orderedSource.source}/${orderedSource.epoch} ` +
         `does not match durable source position ` +
@@ -679,20 +734,54 @@ export async function loadKnownActorDids(
   return known;
 }
 
+/** Save a legacy timestamp cursor monotonically without allowing an old
+ * writer to move a database that has transitioned to the v2 seq domain back
+ * into the timestamp domain. */
 export function saveCursorStatement(
   db: Database,
   timeUs: number,
 ): Statement {
   return db
     .prepare(
-      "INSERT INTO cursor (id, time_us) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET time_us = CASE WHEN excluded.time_us > cursor.time_us THEN excluded.time_us ELSE cursor.time_us END",
+      `INSERT INTO cursor (id, time_us) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET time_us = CASE
+         WHEN cursor.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
+          AND excluded.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
+           THEN cursor.time_us
+         WHEN excluded.time_us > cursor.time_us THEN excluded.time_us
+         ELSE cursor.time_us
+       END`,
     )
     .bind(timeUs);
 }
 
-/** Exact source observations already accounted for at the current coarse
- * cursor. Scheduled Jetstream resumes one microsecond earlier and uses these
- * hashes to avoid both skipping same-cursor siblings and recounting prior ones. */
+/** Save a Jetstream v2 cursor monotonically while permitting the one-way
+ * legacy timestamp -> v2 seq transition. A stale timestamp-domain writer can
+ * never move an already-transitioned seq cursor back into the old domain. */
+export function saveJetstreamCursorStatement(
+  db: Database,
+  cursor: number,
+): Statement {
+  return db
+    .prepare(
+      `INSERT INTO cursor (id, time_us) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET time_us = CASE
+         WHEN cursor.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
+          AND excluded.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
+           THEN excluded.time_us
+         WHEN cursor.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
+          AND excluded.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
+           THEN cursor.time_us
+         WHEN excluded.time_us > cursor.time_us THEN excluded.time_us
+         ELSE cursor.time_us
+       END`,
+    )
+    .bind(cursor);
+}
+
+/** Legacy timestamp-domain observation hashes. V2 seqs are unique and live
+ * ingestion clears these rows when it next commits; the reader remains for
+ * schema/API compatibility during the transition. */
 export async function getCursorObservations(
   db: Database,
   timeUs: number,
@@ -729,6 +818,28 @@ export function saveCursorObservationStatements(
   ];
 }
 
+/** V2 may move once from a large timestamp cursor to a smaller seq. Retain
+ * observations only at the exact resulting cursor so timestamp-domain rows do
+ * not survive that numeric decrease indefinitely. */
+export function saveJetstreamCursorObservationStatements(
+  db: Database,
+  cursor: number,
+  observations: Iterable<string>,
+): Statement[] {
+  return [
+    db.prepare(
+      "DELETE FROM cursor_observations WHERE time_us <> (SELECT time_us FROM cursor WHERE id = 1)",
+    ),
+    ...[...new Set(observations)].map((observation) =>
+      db
+        .prepare(
+          "INSERT INTO cursor_observations (time_us, observation) SELECT ?, ? WHERE (SELECT time_us FROM cursor WHERE id = 1) = ? ON CONFLICT(time_us, observation) DO NOTHING",
+        )
+        .bind(cursor, observation, cursor),
+    ),
+  ];
+}
+
 export async function saveCursor(
   db: Database,
   timeUs: number,
@@ -742,6 +853,24 @@ export async function saveCursor(
     );
   }
   statements.push(...saveCursorObservationStatements(db, timeUs, observations));
+  await db.batch(statements);
+}
+
+export async function saveJetstreamCursor(
+  db: Database,
+  cursor: number,
+  orderedSource?: OrderedSourceConfig,
+  observations: Iterable<string> = [],
+): Promise<void> {
+  const statements = [saveJetstreamCursorStatement(db, cursor)];
+  if (orderedSource) {
+    statements.push(
+      saveOrderedSourcePositionStatement(db, orderedSource, cursor),
+    );
+  }
+  statements.push(
+    ...saveJetstreamCursorObservationStatements(db, cursor, observations),
+  );
   await db.batch(statements);
 }
 

@@ -199,11 +199,46 @@ export function deriveShortName(nsid: string): string {
 }
 
 export const DEFAULT_JETSTREAMS = [
-  "wss://jetstream1.us-east.bsky.network",
+  "https://jetstream.us-east.bsky.network",
 ];
 
+/** Canonical source identity used for both the v2 client and its durable
+ * service binding. The official client addresses XRPC at the origin, so path,
+ * query, credentials, and fragments are rejected instead of being discarded
+ * ambiguously. WebSocket and HTTP spellings of the same origin are equivalent. */
+export function normalizeJetstreamService(service: string): string {
+  const url = new URL(service);
+  if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol === "ws:") url.protocol = "http:";
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new TypeError("Jetstream v2 service must use HTTP(S) or WS(S)");
+  }
+  if (
+    url.username ||
+    url.password ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    url.search ||
+    url.hash
+  ) {
+    throw new TypeError("Jetstream v2 service must be an origin URL");
+  }
+  return url.origin;
+}
+
+/** Return the one pinned Jetstream v2 service used by live ingestion.
+ * Sequence cursors are instance-local and cannot fail over between services. */
+export function jetstreamService(jetstreams: string[]): string {
+  if (jetstreams.length !== 1 || !jetstreams[0]) {
+    throw new TypeError(
+      "Jetstream v2 ingestion requires exactly one pinned service",
+    );
+  }
+  return normalizeJetstreamService(jetstreams[0]);
+}
+
 /**
- * Shape a configured jetstream list for `@atcute/jetstream`'s `url` option.
+ * Shape a configured jetstream list for the legacy `@atcute/jetstream` adapter
+ * still used by v1 archive/bootstrap integrations.
  *
  * @atcute distinguishes a string url (one fixed instance) from an array url (a
  * pool it picks from at random each connect). For an array it seeds
@@ -294,14 +329,11 @@ export interface ContrailConfig {
   validation?: IngestValidationConfig;
   profiles?: (string | ProfileConfig)[];
   relays?: string[];
-  /** Jetstream endpoints to ingest from (defaults to {@link DEFAULT_JETSTREAMS}).
-   *  Prefer a single endpoint: one instance has no clock skew, so `@atcute` takes
-   *  no cursor rollback (see {@link jetstreamUrlOption}) — important for the cron
-   *  model, which rebuilds the subscription every cycle. Scheduled ingestion
-   *  requires exactly one pinned endpoint because a pooled connection rolls its
-   *  timestamp cursor back on every new cycle and cannot make bounded progress
-   *  through a dense overlap. Use 2+ only with `runPersistent()`, where the
-   *  connection and its failover cursor remain long-lived. */
+  /** Jetstream v2 service used for live ingestion (defaults to
+   * {@link DEFAULT_JETSTREAMS}). Exactly one service is required: v2 sequence
+   * cursors are instance-local and cannot fail over between servers. The array
+   * shape is retained for configuration compatibility and will be simplified in
+   * a later API cleanup. */
   jetstreams?: string[];
   /** Identity of the ordered source consumed by live ingestion. Its opaque
    * cursor is persisted atomically with projected mutations and may be exposed

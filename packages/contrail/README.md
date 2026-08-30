@@ -79,7 +79,9 @@ await contrail.runPersistent({
 
 After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. Only an authoritative not-found response deletes local state; rate limits, server errors, timeouts, malformed responses, and network failures leave it unchanged. Authentication and abuse controls for the public HTTP operation remain under design.
 
-Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Scheduled collection drops exact Jetstream observations before admission, counts UTF-8 record bodies plus a fixed 512-byte metadata allowance, and retains the threshold-crossing candidate before stopping. Identity updates have an independent retained-count limit, coalesce by DID, and commit in database batches; excess global identity traffic is accounted but omitted so it cannot starve record progress. Source-filtered observations consume neither candidate nor byte limits, but their yielded cursors remain accounted. Durable actor scope comes from identities, relay discovery, and visible discoverable records, so a failed identity refresh cannot make a restarted isolate filter equal-cursor dependent siblings. Bounded exact-observation hashes at the current microsecond cursor let restarts replay one microsecond of overlap without skipping equal-cursor siblings or recounting earlier ones. Durable tombstones reject stale resurrection, and live Jetstream projection commits its exact accounted cursor in the same transaction. Scheduled mode requires one pinned Jetstream endpoint; use `runPersistent()` for an Atcute failover pool. Persistent ingestion retains its streaming batch lifecycle and does not inherit the scheduled count/byte defaults. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
+Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Live ingestion speaks Jetstream v2 and checkpoints its unique monotonic `seq`; the RFC 3339 event time remains display/source metadata and is never used as the resume coordinate. Scheduled collection drops exact observations before admission, counts UTF-8 record bodies plus a fixed 512-byte metadata allowance, and retains the threshold-crossing candidate before stopping. Identity updates have an independent retained-count limit, coalesce by DID, and commit in database batches; excess global identity traffic is accounted but omitted so it cannot starve record progress. Source-filtered observations consume neither candidate nor byte limits, but their yielded seqs remain accounted. Durable actor scope comes from identities, relay discovery, and visible discoverable records. Existing v1 timestamp cursors cross a bounded overlap bridge and atomically transition once to the v2 seq domain. If either a timestamp or seq cursor has already fallen outside the hosted live-retention window, ingestion fails rather than accepting the server's timestamp clamp and silently skipping a gap; rebuild/backfill from a fresh boundary until archive replay is added. Durable tombstones reject stale resurrection, and live projection commits its exact accounted seq in the same transaction. Both scheduled and persistent modes require one pinned Jetstream v2 service because seqs are instance-local. Persistent ingestion retains its streaming batch lifecycle and does not inherit the scheduled count/byte defaults. Historical acquisition still uses the existing PDS or optional Alluvium paths; Jetstream v2 archive replay is not used yet. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
+
+When upgrading an existing database, point `jetstreams` at one v2 service and change `orderedSource.epoch` to identify the new continuity history. The normalized service origin is durably bound before the timestamp-to-seq transition because seqs are instance-local; changing it later is a hard error. Initialization permits the ordered-source epoch change only while the durable cursor is still in the legacy timestamp domain; the first fully handled v2 event then installs the seq domain one-way. Once a database is in the seq domain, an epoch mismatch remains a hard error. An already-seq-domain database with no durable service binding is also rejected because its originating instance cannot be inferred safely.
 
 Projection winner selection is guarded again inside the write transaction. Overlapping cron, persistent, notify, or backfill writers cannot commit a stale canonical row, derived projection, tombstone, or source checkpoint; a changed predecessor rolls the complete attempt back and retries from fresh durable state.
 
@@ -208,10 +210,11 @@ An optional experimental Alluvium adapter consumes existing version-1 collection
 ```bash
 contrail backfill --sqlite ./data/contrail.sqlite --alluvium \
   --alluvium-epoch my-source-continuity-epoch \
+  --alluvium-source-url wss://jetstream1.us-east.bsky.network \
   --allow-partial
 ```
 
-The epoch is deliberately required because Alluvium protocol v1 does not publish one. `--allow-partial` is needed only when selected manifests explicitly report historical omissions. The command rejects a populated database unless it is resuming durable Alluvium bootstrap state. The equivalent programmatic API is:
+The epoch is deliberately required because Alluvium protocol v1 does not publish one. `--alluvium-source-url` names the exact legacy v1 source advertised by the manifests and defaults to the hosted east source shown above; it is intentionally separate from `config.jetstreams`, which selects the v2 live service used after bootstrap. `--allow-partial` is needed only when selected manifests explicitly report historical omissions. The command rejects a populated database unless it is resuming durable Alluvium bootstrap state. The equivalent programmatic API is:
 
 ```ts
 import { DatabaseBootstrapTarget } from "@atmo-dev/contrail";
@@ -236,7 +239,7 @@ const source = createAlluviumBootstrapSources(config, {
 });
 const target = new DatabaseBootstrapTarget(db, config, {
   deferDerivedProjections: true,
-  // Commit the archived time_us as the ordinary cron ingestion cursor.
+  // Commit the archived v1 time_us as the one-time v2 live bridge cursor.
   liveCursor: createAlluviumLiveCursor(sourceIdentity),
 });
 
@@ -247,7 +250,7 @@ await bootstrapFreshProjection({
 });
 ```
 
-The offline call loads only the base plus published archive tail. It does not replay direct Jetstream to a newly marked head. The target atomically persists Alluvium's final archived `time_us` as the normal live cursor, so subsequent bounded cron invocations resume there and catch up over as many scheduled windows as necessary.
+The offline call loads only the base plus published archive tail. It does not replay direct Jetstream to a newly marked head. The target atomically persists Alluvium's final archived v1 `time_us`; the next v2 live observation transitions that bridge coordinate to the service's seq domain, after which bounded cron invocations resume by seq. The configured live v2 service and continuity epoch remain operator-owned because Alluvium protocol v1 cannot publish a v2 handoff coordinate.
 
 This first adapter is generation-only and deliberately strict: selected manifests must expose one shared base and archive boundary, source ID/URL must match configuration, known capture gaps fail, and partial historical coverage requires `allowPartial: true`. It buffers each bounded compressed object so checksum and byte length are verified before any rows are projected. Because version-1 manifests lack global multi-collection delivery steps, it also restores source order with a bounded 100,000-mutation tail buffer; larger tails require the planned bundle protocol. It does not silently fall back to PDS acquisition; omitted-account repair and dependent profile/follow enrichment remain separately accounted PDS work.
 
@@ -290,7 +293,7 @@ const config = {
 
 The service description advertises the base service DID, exact fragmented audience, canonical OAuth scope, and each protected query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; anonymous calls go directly to the configured endpoint, while protected calls lazily discover and validate all service-auth fields. Its exported `contrail.scope` contains one sorted `lxm` parameter per protected method, such as `rpc?aud=did:web:api.example.com%23contrail&lxm=<namespace>.getFeed&lxm=<namespace>.notifyOfUpdate`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the base DID resolves to the public endpoint's `/.well-known/did.json`, the Worker publishes a DID document whose service entry ID is the exact audience.
 
-Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Existing non-public deployments without one retain the legacy ingestion-time cursor response:
+Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Configure that continuity identity explicitly; non-public deployments without it expose only the unscoped numeric live cursor as `{ cursor }`:
 
 ```ts
 const config = {
@@ -302,7 +305,7 @@ const config = {
 };
 ```
 
-The returned cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
+The ordered-source cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
 
 Connect an independent consumer with `contrail connect <https-origin>`. The version-2 provider lock records the deployment and exact Lexicon bundle, but generated clients do not pin the provider's complete method set at runtime. Existing anonymous methods therefore continue working when a provider adds methods. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Version-1 locks must be removed and reconnected.
 
@@ -365,4 +368,4 @@ import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
 ```
 
-The SQLite adapter uses the built-in `node:sqlite` module and therefore requires Node.js 22.13 or newer. D1 implements Contrail's database interface directly.
+Contrail requires Node.js 22.15 or newer. The SQLite adapter uses the built-in `node:sqlite` module; D1 implements Contrail's database interface directly.

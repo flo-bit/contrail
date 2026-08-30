@@ -4,19 +4,13 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get the current ingestion observation time",
+      "description": "Get the current Jetstream live cursor",
       "output": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
           "properties": {
-            "time_us": {
-              "type": "integer"
-            },
-            "date": {
-              "type": "string"
-            },
-            "seconds_ago": {
+            "cursor": {
               "type": "integer"
             }
           }

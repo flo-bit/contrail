@@ -4,6 +4,7 @@ import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../
 import { getLastCursor, getServingSourcePosition } from "../db";
 import { getBackfillStatus } from "../status";
 import { getRequiredChangeConsumerReadiness } from "../changes";
+import { isJetstreamTimestampCursor } from "../jetstream-live";
 
 export interface CursorStatus {
   cursor: number | null;
@@ -23,6 +24,9 @@ export async function getCursorStatus(db: Database): Promise<CursorStatus> {
     return { cursor: null, date: null, seconds_ago: null };
   }
 
+  if (!isJetstreamTimestampCursor(cursor)) {
+    return { cursor, date: null, seconds_ago: null };
+  }
   const dateMs = Math.floor(cursor / 1000);
   return {
     cursor,
@@ -80,13 +84,9 @@ export function registerCursorRoute(
 
   app.get(`/xrpc/${ns}.getCursor`, async (c) => {
     if (!config.orderedSource) {
-      const legacy = await getCursorStatus(db);
-      if (legacy.cursor === null) return c.json({});
-      return c.json({
-        time_us: legacy.cursor,
-        date: legacy.date,
-        seconds_ago: legacy.seconds_ago,
-      });
+      const current = await getCursorStatus(db);
+      if (current.cursor === null) return c.json({});
+      return c.json({ cursor: current.cursor });
     }
 
     const current = await getServingSourcePosition(db);
