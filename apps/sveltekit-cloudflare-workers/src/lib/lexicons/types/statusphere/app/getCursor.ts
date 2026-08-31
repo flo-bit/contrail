@@ -9,9 +9,7 @@ const _mainSchema = /*#__PURE__*/ v.query(
 		"output": {
 			"type": "lex",
 			"schema": /*#__PURE__*/ v.object({
-				"date": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.string()),
-				"seconds_ago": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.integer()),
-				"time_us": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.integer()),
+				"cursor": /*#__PURE__*/ v.optional(/*#__PURE__*/ v.integer()),
 			}),
 		}
 	}

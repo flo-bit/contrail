@@ -387,7 +387,7 @@ describe("createWorker", () => {
     expect(response.status).toBe(404);
   });
 
-  it("preserves the legacy cursor response without an ordered source", async () => {
+  it("returns the unscoped v2 seq without an ordered source", async () => {
     const config: ContrailConfig = {
       ...MINIMAL_CONFIG,
       orderedSource: undefined,
@@ -402,10 +402,7 @@ describe("createWorker", () => {
       new Request("https://api.example.com/xrpc/com.example.getCursor"),
       env,
     );
-    expect(await response.json()).toMatchObject({
-      time_us: 1_234_000,
-      date: new Date(1234).toISOString(),
-    });
+    expect(await response.json()).toEqual({ cursor: 1_234_000 });
   });
 
   it("keeps profiles, feeds, custom queries, and configured notify routes", async () => {

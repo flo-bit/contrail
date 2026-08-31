@@ -35,10 +35,9 @@ const BACKFILL_RETRY_BASE_MS = 15 * 60_000;
 const BACKFILL_RETRY_MAX_MS = 48 * 60 * 60_000;
 const DEFAULT_SCHEDULED_MAX_ATTEMPTS = 10;
 const DERIVED_PROJECTIONS_DIRTY_KEY = "backfill_derived_projections_dirty";
-/** Legacy Jetstream v1 uses wall-clock microseconds as its replay coordinate.
- * Keep the same overlap Atcute uses for multi-endpoint clock skew. The future
- * source adapter replaces this compatibility marker with a source-owned epoch
- * and cursor. */
+/** Historical acquisition still captures a wall-clock boundary. Jetstream v2
+ * accepts it through its timestamp compatibility domain; the first delivered
+ * live event atomically replaces it with the service's seq cursor. */
 const INITIAL_CAPTURE_OVERLAP_US = 10_000_000;
 
 async function ensureInitialReplayBoundary(

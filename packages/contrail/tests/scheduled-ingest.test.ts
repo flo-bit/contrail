@@ -5,6 +5,7 @@ const source = vi.hoisted(() => ({
   requestedCursors: [] as Array<number | null>,
   events: [] as Array<{
     kind: "commit";
+    seq?: number;
     time_us: number;
     did: string;
     commit: {
@@ -18,7 +19,8 @@ const source = vi.hoisted(() => ({
   }>,
 }));
 
-vi.mock("@atcute/jetstream", () => {
+vi.mock("../src/core/jetstream-live", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/jetstream-live")>();
   class MockJetstreamSubscription {
     cursor: number | null;
     private readonly start: number | null;
@@ -31,16 +33,20 @@ vi.mock("@atcute/jetstream", () => {
 
     async *[Symbol.asyncIterator]() {
       for (const event of source.events) {
-        // Model the supported source's resume coordinate: only events after the
-        // committed cursor are delivered on the next scheduled connection.
-        if (this.start !== null && event.time_us <= this.start) continue;
-        this.cursor = event.time_us;
-        yield event;
+        const seq = (event as { seq?: number }).seq ?? event.time_us;
+        // V2 replay is inclusive at the server and de-duplicated by the client.
+        if (
+          this.start !== null &&
+          this.start < 1_000_000_000_000_000 &&
+          seq <= this.start
+        ) continue;
+        this.cursor = seq;
+        yield { ...event, seq };
       }
     }
   }
 
-  return { JetstreamSubscription: MockJetstreamSubscription };
+  return { ...actual, JetstreamLiveSubscription: MockJetstreamSubscription };
 });
 
 import {
@@ -51,13 +57,15 @@ import {
   type Database,
   type Logger,
 } from "../src/index";
+import { saveJetstreamCursor } from "../src/core/db/records";
 import { createTestDb } from "./helpers";
 
 const COLLECTION = "com.example.event";
 
-function commit(time_us: number, rkey: string) {
+function commit(time_us: number, rkey: string, seq = time_us) {
   return {
     kind: "commit" as const,
+    seq,
     time_us,
     did: "actor",
     commit: {
@@ -146,54 +154,26 @@ describe("bounded scheduled ingest cycles", () => {
     ).toEqual(["one", "two", "three"]);
   });
 
-  it("resumes before a capped coarse cursor without skipping or recounting siblings", async () => {
+  it("uses unique v2 seqs when display timestamps are equal", async () => {
     const db = createTestDb();
     const output = logger();
     const configured = config(output.value);
     source.events = [
-      commit(1_100_000, "same-cursor-a"),
-      commit(1_100_000, "same-cursor-b"),
-      commit(1_100_001, "after"),
+      commit(1_100_000, "same-time-a", 1_100_001),
+      commit(1_100_000, "same-time-b", 1_100_002),
+      commit(1_100_001, "after", 1_100_003),
     ];
     const oneCandidate = { ...budget, maxCandidates: 1 };
 
-    await runIngestCycle(db, configured, oneCandidate);
-    expect(await getLastCursor(db)).toBe(1_100_000);
+    for (const cursor of [1_100_001, 1_100_002, 1_100_003]) {
+      await runIngestCycle(db, configured, oneCandidate);
+      expect(await getLastCursor(db)).toBe(cursor);
+    }
     expect(
       (await db.prepare("SELECT rkey FROM records_event ORDER BY rkey").all<{ rkey: string }>())
         .results?.map((row) => row.rkey),
-    ).toEqual(["same-cursor-a"]);
-
-    await runIngestCycle(db, configured, oneCandidate);
-    expect(await getLastCursor(db)).toBe(1_100_000);
-    expect(
-      (await db.prepare("SELECT rkey FROM records_event ORDER BY rkey").all<{ rkey: string }>())
-        .results?.map((row) => row.rkey),
-    ).toEqual(["same-cursor-a", "same-cursor-b"]);
-
-    await runIngestCycle(db, configured, oneCandidate);
-    expect(await getLastCursor(db)).toBe(1_100_001);
-    expect(
-      (await db.prepare("SELECT rkey FROM records_event ORDER BY rkey").all<{ rkey: string }>())
-        .results?.map((row) => row.rkey),
-    ).toEqual(["after", "same-cursor-a", "same-cursor-b"]);
-    expect(source.requestedCursors).toEqual([0, 1_099_999, 1_099_999]);
-
-    const summaries = output.lines
-      .filter((line) => line.text.startsWith("[ingest] cycle summary "))
-      .map((line) =>
-        JSON.parse(line.text.slice("[ingest] cycle summary ".length)) as {
-          retained_candidates: number;
-          cursor_boundary_duplicates_dropped: number;
-        },
-      );
-    expect(summaries.map((summary) => summary.retained_candidates)).toEqual([
-      1,
-      1,
-      1,
-    ]);
-    expect(summaries[1]?.cursor_boundary_duplicates_dropped).toBe(1);
-    expect(summaries[2]?.cursor_boundary_duplicates_dropped).toBe(2);
+    ).toEqual(["after", "same-time-a", "same-time-b"]);
+    expect(source.requestedCursors).toEqual([0, 1_100_001, 1_100_002]);
   });
 
   it("restores actor scope from a projected record before replaying dependent siblings", async () => {
@@ -202,11 +182,11 @@ describe("bounded scheduled ingest cycles", () => {
     const configured = config(output.value, true);
     const timeUs = 1_200_000;
     source.events = [
-      commit(timeUs, "discover-actor"),
+      commit(timeUs, "discover-actor", 1_200_001),
       {
-        ...commit(timeUs, "dependent-sibling"),
+        ...commit(timeUs, "dependent-sibling", 1_200_002),
         commit: {
-          ...commit(timeUs, "dependent-sibling").commit,
+          ...commit(timeUs, "dependent-sibling", 1_200_002).commit,
           collection: "app.bsky.graph.follow",
         },
       },
@@ -230,31 +210,98 @@ describe("bounded scheduled ingest cycles", () => {
     ).toEqual({ rkey: "dependent-sibling" });
   });
 
-  it("persists Atcute's captured initial cursor after an empty first drain", async () => {
+  it("persists a timestamp bridge, then transitions to a v2 seq", async () => {
     const db = createTestDb();
     const output = logger();
-    source.initialCursor = 7_000_000;
+    const timestampCursor = 1_788_000_000_000_000;
+    source.initialCursor = timestampCursor;
 
     await runIngestCycle(db, config(output.value), budget);
 
-    expect(await getLastCursor(db)).toBe(7_000_000);
+    expect(await getLastCursor(db)).toBe(timestampCursor);
     const summary = output.lines.find((line) =>
       line.text.startsWith("[ingest] cycle summary "),
     );
     expect(summary?.text).toContain('"starting_cursor":null');
-    expect(summary?.text).toContain('"safe_ending_cursor":7000000');
+    expect(summary?.text).toContain(`"safe_ending_cursor":${timestampCursor}`);
 
-    // An event sharing the captured microsecond is not skipped by an exclusive
-    // resume API: the next cycle requests one microsecond earlier.
-    source.events = [commit(7_000_000, "between-empty-cycles")];
+    source.events = [commit(timestampCursor, "between-empty-cycles", 7_000_000)];
     await runIngestCycle(db, config(output.value), budget);
-    expect(source.requestedCursors).toEqual([7_000_000, 6_999_999]);
+    expect(source.requestedCursors).toEqual([timestampCursor, timestampCursor]);
+    expect(await getLastCursor(db)).toBe(7_000_000);
     expect(
       await db
         .prepare("SELECT rkey FROM records_event WHERE rkey = ?")
         .bind("between-empty-cycles")
         .first<{ rkey: string }>(),
     ).toEqual({ rkey: "between-empty-cycles" });
+  });
+
+  it("rejects a raw-entry ordered-source mismatch before opening the stream", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const original = {
+      ...config(output.value),
+      orderedSource: { source: "jetstream", epoch: "original-epoch" },
+    };
+    await initSchema(db, original);
+    await saveJetstreamCursor(db, 42, original.orderedSource);
+
+    await expect(
+      runIngestCycle(
+        db,
+        {
+          ...original,
+          orderedSource: { source: "jetstream", epoch: "changed-epoch" },
+        },
+        budget,
+      ),
+    ).rejects.toThrow("does not match durable source position");
+    expect(source.requestedCursors).toHaveLength(0);
+  });
+
+  it("rejects an existing seq cursor whose originating service was never bound", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value);
+    await initSchema(db, configured);
+    await saveJetstreamCursor(db, 42);
+
+    await expect(runIngestCycle(db, configured, budget)).rejects.toThrow(
+      "has no pinned service identity",
+    );
+    expect(source.requestedCursors).toHaveLength(0);
+  });
+
+  it("binds seq cursors to one normalized durable service origin", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const base = config(output.value);
+    source.initialCursor = 0;
+
+    await runIngestCycle(
+      db,
+      { ...base, jetstreams: ["https://pinned.example/"] },
+      budget,
+    );
+    expect(await getLastCursor(db)).toBe(0);
+
+    // WS(S) and HTTP(S) spellings normalize to the same client origin.
+    await runIngestCycle(
+      db,
+      { ...base, jetstreams: ["wss://pinned.example"] },
+      budget,
+    );
+    const opened = source.requestedCursors.length;
+
+    await expect(
+      runIngestCycle(
+        db,
+        { ...base, jetstreams: ["https://different.example"] },
+        budget,
+      ),
+    ).rejects.toThrow("does not match durable service");
+    expect(source.requestedCursors).toHaveLength(opened);
   });
 
   it("rejects endpoint pools for scheduled ingestion before rollback can starve the cap", async () => {
@@ -266,7 +313,7 @@ describe("bounded scheduled ingest cycles", () => {
     });
 
     await expect(runIngestCycle(db, configured, budget)).rejects.toThrow(
-      "scheduled ingestion requires exactly one pinned Jetstream endpoint",
+      "Jetstream v2 ingestion requires exactly one pinned service",
     );
     expect(source.requestedCursors).toHaveLength(0);
   });

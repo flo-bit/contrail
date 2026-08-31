@@ -1,17 +1,21 @@
-import { JetstreamSubscription } from "@atcute/jetstream";
+import {
+  JetstreamLiveSubscription,
+  advanceJetstreamCursor,
+  isJetstreamTimestampCursor,
+} from "./jetstream-live";
 import type { ContrailConfig, IngestEvent, Database, Logger } from "./types";
 import {
   DEFAULT_JETSTREAMS,
   getCollectionNsids,
   getDependentNsids,
-  jetstreamUrlOption,
+  jetstreamService,
   buildFeedTargetCaps,
   getFeedMutatingNsids,
   optimizeEnabled,
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { initSchema, getLastCursor, loadKnownActorDids, saveCursor, saveCursorStatement, getCursorObservations, saveCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, loadKnownActorDids, saveJetstreamCursor, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
 import {
   createIngestEvent,
   ingestRecords,
@@ -292,8 +296,8 @@ function nextWithDeadline<T>(
 ): Promise<IteratorResult<T> | typeof INGEST_TIMEOUT> {
   let timer: ReturnType<typeof setTimeout>;
   const next = iterator.next();
-  // The transport currently has no structural cancellation seam. If the timer
-  // wins, swallow a later rejection while the iterator is closed best-effort.
+  // If the timer wins, cancellation is triggered by ingestEvents' cleanup.
+  // Swallow that later abort rejection because this race has already settled.
   next.catch(() => {});
   const timeout = new Promise<typeof INGEST_TIMEOUT>((resolve) => {
     timer = setTimeout(() => resolve(INGEST_TIMEOUT), ms);
@@ -339,26 +343,6 @@ function normalizedJson(value: unknown): string {
   return `{${fields.join(",")}}`;
 }
 
-async function observationHash(value: string): Promise<string> {
-  const subtle = (
-    globalThis as typeof globalThis & {
-      crypto?: {
-        subtle?: {
-          digest(
-            algorithm: string,
-            data: Uint8Array,
-          ): Promise<ArrayBuffer>;
-        };
-      };
-    }
-  ).crypto?.subtle;
-  if (!subtle) throw new Error("Web Crypto SHA-256 is required for ingestion");
-  const digest = await subtle.digest("SHA-256", utf8.encode(value));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 interface JetstreamCommitObservation {
   /** One logical Jetstream source slot, before source ID/epoch prefixing. */
   key: string;
@@ -372,6 +356,7 @@ interface JetstreamCommitObservation {
 function jetstreamCommitObservation(
   event: {
     did: string;
+    seq: number;
     time_us: number;
     commit: {
       rev?: string;
@@ -386,8 +371,10 @@ function jetstreamCommitObservation(
   const { commit } = event;
   const uri = `at://${event.did}/${commit.collection}/${commit.rkey}`;
   return {
-    key: JSON.stringify([event.time_us, uri, commit.rev ?? null]),
+    key: String(event.seq),
     fingerprint: JSON.stringify([
+      uri,
+      commit.rev ?? null,
       commit.operation,
       commit.cid ?? null,
       commit.operation === "delete" ? null : normalizedJson(commit.record),
@@ -402,7 +389,6 @@ export async function ingestEvents(
   budgetInput: ScheduledIngestOptions | ScheduledIngestBudget | number =
     DEFAULT_SCHEDULED_INGEST_BUDGET,
   knownDids?: Set<string>,
-  startingCursorObservations: ReadonlySet<string> = new Set(),
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
@@ -411,7 +397,6 @@ export async function ingestEvents(
   stats: ScheduledIngestCollectionStats;
 }> {
   const budget = resolveScheduledIngestBudget(budgetInput);
-  const startTimeUs = Date.now() * 1000;
   const deadline = Date.now() + budget.maxDrainMs;
   const collected: IngestEvent[] = [];
 
@@ -448,19 +433,13 @@ export async function ingestEvents(
     diagnosticSamplesOmitted: 0,
   };
 
-  // A durable timestamp cursor is resumed one microsecond earlier. This works
-  // with inclusive and exclusive timestamp APIs: all observations at the
-  // coarse cursor are replayed, while persisted hashes suppress only the exact
-  // items already accounted for there. It also protects a captured empty-start
-  // cursor from a later item that happens to share its microsecond.
-  const requestedCursor =
-    cursor === null ? null : Math.max(0, cursor - 1);
-  const subscription = new JetstreamSubscription({
-    // A single-instance config is handed over as a string so @atcute skips its
-    // array-only first-connect cursor rollback (see jetstreamUrlOption).
-    url: jetstreamUrlOption(urls),
+  const requestedCursor = cursor;
+  const subscriptionAbort = new AbortController();
+  const subscription = new JetstreamLiveSubscription({
+    url: jetstreamService(urls),
     wantedCollections: collections,
     ...(requestedCursor !== null ? { cursor: requestedCursor } : {}),
+    signal: subscriptionAbort.signal,
     onConnectionOpen() {
       stats.connections++;
     },
@@ -473,65 +452,38 @@ export async function ingestEvents(
     },
   });
 
-  // Capture Atcute's constructor cursor before iteration can buffer frames and
-  // move it ahead. With no durable cursor this is the subscription's effective
-  // lower bound and must be persisted even when the first drain stays empty.
+  // Capture the adapter's effective lower bound before iteration can buffer
+  // frames and move it ahead. With no durable cursor this is a timestamp-domain
+  // bridge and must be persisted even when the first drain stays empty.
   const effectiveStartCursor = cursor ?? subscription.cursor ?? null;
   stats.safeEndingCursor = effectiveStartCursor;
-  let boundaryCursor = effectiveStartCursor;
-  let boundaryObservations = new Set(startingCursorObservations);
-  // Only hashes newly accounted for this cycle are returned for insertion. The
-  // database unions them with existing boundary rows, keeping each DB batch
-  // bounded even if many cycles share one coarse cursor.
-  let cursorObservations = new Set<string>();
-  const singleEndpoint = urls.length === 1;
+  // V2 seqs identify individual events, so there are no equal-cursor siblings
+  // to retain across cycles. Returning an empty set also retires any legacy
+  // timestamp-domain observation hashes when the cursor is next committed.
+  const cursorObservations = new Set<string>();
 
   const iterator = subscription[Symbol.asyncIterator]();
   type Ev = typeof subscription extends AsyncIterable<infer V> ? V : never;
 
-  const accountSourceItem = async (
-    event: Ev,
-    identity: string,
-  ): Promise<boolean> => {
-    // The scheduled path requires one pinned endpoint. Its one-microsecond
-    // boundary overlap is known-complete below the durable cursor and must not
-    // consume candidate/byte budgets on every restart.
+  const accountSourceItem = (event: Ev): boolean => {
+    // The v2 wire is inclusive. The official client normally removes this
+    // overlap itself; keep the boundary guard so custom/test transports cannot
+    // make the already-committed seq consume a scheduled work budget.
     if (
-      singleEndpoint &&
       effectiveStartCursor !== null &&
-      event.time_us < effectiveStartCursor
+      !isJetstreamTimestampCursor(effectiveStartCursor) &&
+      event.seq <= effectiveStartCursor
     ) {
       stats.resumeOverlapDropped++;
       return true;
     }
 
-    const hash = await observationHash(
-      JSON.stringify([sourceId, sourceEpoch, identity]),
-    );
-    if (boundaryCursor === null || event.time_us > boundaryCursor) {
-      boundaryCursor = event.time_us;
-      boundaryObservations = new Set([hash]);
-      cursorObservations = new Set([hash]);
-    } else if (event.time_us === boundaryCursor) {
-      const alreadyAccounted = boundaryObservations.has(hash);
-      boundaryObservations.add(hash);
-      if (!alreadyAccounted) cursorObservations.add(hash);
-    }
-
-    if (
-      effectiveStartCursor !== null &&
-      event.time_us === effectiveStartCursor &&
-      startingCursorObservations.has(hash)
-    ) {
-      stats.cursorBoundaryDuplicatesDropped++;
-      return true;
-    }
     return false;
   };
 
-  // Fully account for one yielded item before the loop considers any stop
-  // threshold. Exact boundary observations are suppressed before evolving
-  // source-scope policy; ordinary cheap filters still precede cycle dedupe.
+  // Fully account for one yielded seq before the loop considers any stop
+  // threshold. The resume overlap is suppressed before evolving source-scope
+  // policy; ordinary cheap filters still precede cycle-local dedupe.
   const handleEvent = async (event: Ev): Promise<void> => {
     if (event.kind === "commit") {
       const { commit } = event;
@@ -542,16 +494,7 @@ export async function ingestEvents(
         sourceEpoch,
         observation.key,
       ]);
-      if (
-        await accountSourceItem(
-          event,
-          JSON.stringify([
-            "commit",
-            observation.key,
-            observation.fingerprint,
-          ]),
-        )
-      ) {
+      if (accountSourceItem(event)) {
         return;
       }
 
@@ -580,7 +523,7 @@ export async function ingestEvents(
         stats.sourceInconsistencies++;
         addDiagnosticSample(
           stats,
-          `source slot changed payload: ${observation.uri} time_us=${event.time_us}`,
+          `source slot changed payload: ${observation.uri} seq=${event.seq}`,
         );
         fingerprints.add(observation.fingerprint);
       } else {
@@ -608,7 +551,7 @@ export async function ingestEvents(
           ...(sourceEpoch === null ? {} : { epoch: sourceEpoch }),
           time_us: event.time_us,
           revision: commit.rev,
-          cursor: String(event.time_us),
+          cursor: String(event.seq),
         },
       });
       collected.push(candidate);
@@ -618,7 +561,8 @@ export async function ingestEvents(
         (candidate.record === null ? 0 : utf8.encode(candidate.record).byteLength);
     } else if (event.kind === "identity") {
       stats.identityObservations++;
-      if (await accountSourceItem(event, normalizedJson(event))) return;
+      if (accountSourceItem(event)) return;
+      if (event.identity.handle === undefined) return;
       if (
         identityUpdates.has(event.did) ||
         identityUpdates.size < budget.maxIdentityUpdates
@@ -631,75 +575,68 @@ export async function ingestEvents(
         stats.identityUpdatesOmitted++;
       }
     } else {
-      await accountSourceItem(event, normalizedJson(event));
+      accountSourceItem(event);
     }
   };
 
-  for (;;) {
-    // Check the deadline before requesting another item. A hot iterator must not
-    // get one extra next() after any threshold has been reached.
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      stats.stopReason = "drain-time";
-      break;
-    }
+  try {
+    for (;;) {
+      // Check the deadline before requesting another item. A hot iterator must
+      // not get one extra next() after any threshold has been reached.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        stats.stopReason = "drain-time";
+        break;
+      }
 
-    const step = await nextWithDeadline(iterator, remainingMs);
-    if (step === INGEST_TIMEOUT) {
-      stats.stopReason = "drain-time";
-      break;
-    }
-    if (step.done) {
-      stats.stopReason = "idle";
-      break;
-    }
-    const event = step.value;
-    stats.observedSourceItems++;
+      const step = await nextWithDeadline(iterator, remainingMs);
+      if (step === INGEST_TIMEOUT) {
+        stats.stopReason = "drain-time";
+        break;
+      }
+      if (step.done) {
+        stats.stopReason = "idle";
+        break;
+      }
+      const event = step.value;
+      stats.observedSourceItems++;
 
-    await handleEvent(event);
-    // handleEvent either retained, filtered, deduplicated, or deliberately
-    // handled the item. Only now is its cursor safe to checkpoint. Keep the
-    // representable checkpoint monotonic across deliberate overlap replay.
-    stats.lastAccountedCursor = Math.max(
-      stats.lastAccountedCursor ?? event.time_us,
-      event.time_us,
-    );
+      await handleEvent(event);
+      // handleEvent either retained, filtered, deduplicated, or deliberately
+      // handled the item. Only now is its cursor safe to checkpoint. Keep the
+      // representable checkpoint monotonic across deliberate overlap replay.
+      stats.lastAccountedCursor = advanceJetstreamCursor(
+        stats.lastAccountedCursor,
+        event.seq,
+      );
 
-    if (stats.retainedCandidates >= budget.maxCandidates) {
-      stats.stopReason = "count";
-      break;
+      if (stats.retainedCandidates >= budget.maxCandidates) {
+        stats.stopReason = "count";
+        break;
+      }
+      if (stats.serializedCandidateBytes >= budget.maxSerializedBytes) {
+        stats.stopReason = "bytes";
+        break;
+      }
     }
-    if (stats.serializedCandidateBytes >= budget.maxSerializedBytes) {
-      stats.stopReason = "bytes";
-      break;
-    }
-    if (event.time_us >= startTimeUs) {
-      stats.stopReason = "head";
-      break;
-    }
+  } finally {
+    // Abort first so a pending async-generator pull and the transport's
+    // reconnect loop settle before return() is queued behind that pull.
+    subscriptionAbort.abort();
+    Promise.resolve(iterator.return?.()).catch(() => {});
   }
 
-  // Close the subscription's socket, but fire-and-forget: awaiting the
-  // iterator's return on a quiet stream could itself block (the hang we fix).
-  Promise.resolve(iterator.return?.()).catch(() => {});
-
-  // Never read Atcute's cursor again here: it may have moved when a frame was
-  // buffered but not yielded. The constructor cursor captured above and the
-  // maximum fully-accounted yielded cursor are the only safe positions.
+  // Never read the transport cursor again here: it may have moved when a frame
+  // was buffered but not yielded. The constructor cursor captured above and the
+  // maximum fully-accounted yielded seq are the only safe positions.
   const lastCursor =
-    effectiveStartCursor === null
-      ? stats.lastAccountedCursor
-      : Math.max(
+    stats.lastAccountedCursor === null
+      ? effectiveStartCursor
+      : advanceJetstreamCursor(
           effectiveStartCursor,
-          stats.lastAccountedCursor ?? effectiveStartCursor,
+          stats.lastAccountedCursor,
         );
   stats.safeEndingCursor = lastCursor;
-  if (lastCursor !== boundaryCursor) {
-    // This occurs only for an older deliberate overlap. Leave the durable
-    // boundary unchanged rather than attaching old hashes to a newer cursor.
-    cursorObservations = new Set();
-  }
-
   return {
     events: collected,
     lastCursor,
@@ -767,12 +704,7 @@ export async function runIngestCycle(
   const log = getLogger(config);
   const budget = resolveScheduledIngestBudget(budgetInput);
   const scheduledUrls = config.jetstreams ?? DEFAULT_JETSTREAMS;
-  if (scheduledUrls.length !== 1) {
-    throw new TypeError(
-      "scheduled ingestion requires exactly one pinned Jetstream endpoint; " +
-        "use runPersistent() for a failover pool",
-    );
-  }
+  const service = jetstreamService(scheduledUrls);
   const wallStartedAt = Date.now();
   const finishCpuUsage = runtimeCpuUsage();
   const s = state ?? createIngestState();
@@ -781,10 +713,10 @@ export async function runIngestCycle(
     await initSchema(db, config);
     s.schemaInitialized = true;
   }
+  await assertServingSourceCompatibility(db, config.orderedSource);
+  await assertJetstreamServiceCompatibility(db, service);
 
   const cursor = await getLastCursor(db);
-  const startingCursorObservations =
-    cursor === null ? new Set<string>() : await getCursorObservations(db, cursor);
 
   // Load known DIDs for filtering dependent collections
   const dependentCollections = getDependentNsids(config);
@@ -810,7 +742,6 @@ export async function runIngestCycle(
     cursor,
     budget,
     knownDids,
-    startingCursorObservations,
   );
 
   const accepted: IngestEvent[] = [];
@@ -834,7 +765,7 @@ export async function runIngestCycle(
       trailingStatements:
         isFinalBatch && lastCursor !== null
           ? [
-              saveCursorStatement(db, lastCursor),
+              saveJetstreamCursorStatement(db, lastCursor),
               ...(config.orderedSource
                 ? [
                     saveOrderedSourcePositionStatement(
@@ -844,7 +775,7 @@ export async function runIngestCycle(
                     ),
                   ]
                 : []),
-              ...saveCursorObservationStatements(
+              ...saveJetstreamCursorObservationStatements(
                 db,
                 lastCursor,
                 cursorObservations,
@@ -904,7 +835,7 @@ export async function runIngestCycle(
     // empty first drain so the next cron cannot silently start later.
     (stats.lastAccountedCursor !== null || cursor === null)
   ) {
-    await saveCursor(
+    await saveJetstreamCursor(
       db,
       lastCursor,
       config.orderedSource,

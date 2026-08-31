@@ -7,7 +7,7 @@
 	import { Button } from '@foxui/core';
 	import { GithubCorner, PopoverEmojiPicker } from '@foxui/social';
 	import { RelativeTime } from '@foxui/time';
-	import { JetstreamSubscription } from '@atcute/jetstream';
+	import { Jetstream } from '@bsky/jetstream';
 
 	import { createTID } from '$lib/atproto/methods';
 	import { putRecord } from '$lib/atproto/server/repo.remote';
@@ -51,34 +51,26 @@
 
 	let allStatuses = $derived([...localStatuses, ...liveStatuses, ...data.statuses]);
 
-	// Jetstream subscription
+	// Jetstream v2 live subscription
 	onMount(() => {
-		const subscription = new JetstreamSubscription({
-			url: 'wss://jetstream1.us-east.bsky.network',
-			wantedCollections: ['xyz.statusphere.status']
-		});
-
-		const iterator = subscription[Symbol.asyncIterator]();
+		const controller = new AbortController();
+		const jetstream = new Jetstream('https://jetstream.us-east.bsky.network');
 
 		(async () => {
 			try {
-				while (true) {
-					const { value: event, done } = await iterator.next();
-					if (done) break;
-
-					if (event.kind !== 'commit') continue;
-					if (event.commit.operation !== 'create') continue;
+				for await (const event of jetstream.live({
+					raw: true,
+					kinds: ['commit'],
+					collections: ['xyz.statusphere.status'],
+					signal: controller.signal
+				})) {
+					if (event.kind !== 'commit' || event.commit.operation !== 'create') continue;
 
 					const { did } = event;
 					const { rkey, record } = event.commit;
-					if (
-						record === null ||
-						typeof record !== 'object' ||
-						typeof record.status !== 'string' ||
-						typeof record.createdAt !== 'string'
-					) {
-						continue;
-					}
+					if (record === null || typeof record !== 'object' || Array.isArray(record)) continue;
+					const value = record as Record<string, unknown>;
+					if (typeof value.status !== 'string' || typeof value.createdAt !== 'string') continue;
 					const key = `${did}-${rkey}`;
 
 					if (seenKeys.has(key)) continue;
@@ -87,7 +79,7 @@
 					await fetchProfile(did);
 
 					liveStatuses = [
-						{ did, rkey, status: record.status, createdAt: record.createdAt },
+						{ did, rkey, status: value.status, createdAt: value.createdAt },
 						...liveStatuses
 					];
 				}
@@ -96,9 +88,7 @@
 			}
 		})();
 
-		return () => {
-			iterator.return!();
-		};
+		return () => controller.abort();
 	});
 </script>
 

@@ -25,6 +25,10 @@ export * from "./core/generations";
 export * from "./core/pds-snapshot";
 export * from "./core/jetstream-source";
 export * from "./core/jetstream";
+export {
+  JetstreamLiveHistoryExpiredError,
+} from "./core/jetstream-live";
+export type { JetstreamLiveEvent } from "./core/jetstream-live";
 export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";

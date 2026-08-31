@@ -14,7 +14,10 @@ import { getBackfillStatus } from "../../core/status.js";
 import type { ContrailConfig, Database } from "../../core/types.js";
 import { configProjectRoot } from "../../cli-config.js";
 import { createHandler } from "../../server.js";
-import { bootstrapAlluviumDatabase } from "../../workers/backfill.js";
+import {
+  bootstrapAlluviumDatabase,
+  DEFAULT_ALLUVIUM_SOURCE_URL,
+} from "../../workers/backfill.js";
 import {
   defaultConsumerLexiconRoot,
   prepareDevLexicons,
@@ -43,6 +46,7 @@ interface DevOpts {
   alluvium?: boolean;
   alluviumEndpoint: string;
   alluviumSourceId: string;
+  alluviumSourceUrl: string;
   alluviumEpoch?: string;
   alluviumRetentionHours: number;
   allowPartial?: boolean;
@@ -79,7 +83,7 @@ function devConfig(config: ContrailConfig, options: DevOpts): ContrailConfig {
             source: options.alluviumSourceId,
             epoch: options.alluviumEpoch ?? "contrail-local-alluvium-v1",
           }
-        : { source: "jetstream", epoch: "contrail-local-jetstream-v1" }),
+        : { source: "jetstream", epoch: "contrail-local-jetstream-v2" }),
   };
 }
 
@@ -278,6 +282,7 @@ async function runSqliteDev(
         lexicons,
         endpoint: options.alluviumEndpoint,
         sourceId: ordered.source,
+        sourceUrl: options.alluviumSourceUrl,
         sourceEpoch: ordered.epoch,
         retentionUs: retentionHours * 60 * 60 * 1_000_000,
         allowPartial: options.allowPartial === true,
@@ -406,6 +411,11 @@ export function registerDev(cli: CAC): void {
     .option("--alluvium-source-id <id>", "Alluvium manifest source ID", {
       default: "jetstream-us-east",
     })
+    .option(
+      "--alluvium-source-url <url>",
+      "Exact legacy Jetstream v1 URL advertised by Alluvium manifests",
+      { default: DEFAULT_ALLUVIUM_SOURCE_URL },
+    )
     .option("--alluvium-epoch <epoch>", "Operator-owned continuity epoch")
     .option(
       "--alluvium-retention-hours <hours>",

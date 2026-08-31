@@ -1,6 +1,6 @@
 # Get started locally
 
-Run a local AppView for a public AT Protocol collection with Node.js 22.13 or newer.
+Run a local AppView for a public AT Protocol collection with Node.js 22.15 or newer.
 
 Create a project with the starter config:
 

@@ -696,10 +696,8 @@ export function extractXrpcMethods(
 }
 
 function cursorLexicon(config: ContrailConfig): object {
-  const legacyProperties = {
-    time_us: { type: "integer" },
-    date: { type: "string" },
-    seconds_ago: { type: "integer" },
+  const unscopedProperties = {
+    cursor: { type: "integer" },
   };
   if (!config.orderedSource) {
     return {
@@ -708,10 +706,10 @@ function cursorLexicon(config: ContrailConfig): object {
       defs: {
         main: {
           type: "query",
-          description: "Get the current ingestion observation time",
+          description: "Get the current Jetstream live cursor",
           output: {
             encoding: "application/json",
-            schema: { type: "object", properties: legacyProperties },
+            schema: { type: "object", properties: unscopedProperties },
           },
         },
       },

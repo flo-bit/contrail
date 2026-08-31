@@ -22,7 +22,7 @@ const config: ContrailConfig = {
   namespace: "com.example",
   orderedSource: {
     source: "jetstream",
-    epoch: "my-appview-v1",
+    epoch: "my-appview-jetstream-v2",
   },
   collections: {
     // ...your existing collections

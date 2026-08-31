@@ -3,10 +3,10 @@ import type { ContrailConfig } from "@atmo-dev/contrail";
 export const config: ContrailConfig = {
   namespace: "rsvp.atmo",
   profiles: ["app.bsky.actor.profile"],
-  jetstreams: ["wss://jetstream1.us-east.bsky.network"],
+  jetstreams: ["https://jetstream.us-east.bsky.network"],
   orderedSource: {
     source: "jetstream",
-    epoch: "api-atmo-rsvp-primary-2026-08",
+    epoch: "api-atmo-rsvp-primary-v2-2026-08",
   },
   notify: true,
   serviceAuth: {

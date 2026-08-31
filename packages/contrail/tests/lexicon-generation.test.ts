@@ -185,7 +185,7 @@ describe("Contrail Lexicon generation", () => {
     expect(result.generated["example.public.profile.listRecords"]).toBeUndefined();
   });
 
-  it("keeps the legacy cursor contract without an ordered source", () => {
+  it("publishes an unscoped v2 seq cursor without an ordered source", () => {
     const { root, config } = fixture();
     delete config.orderedSource;
     const result = generateLexicons({
@@ -197,9 +197,7 @@ describe("Contrail Lexicon generation", () => {
     const cursor = result.generated["example.public.getCursor"] as any;
     expect(cursor.defs.sourcePosition).toBeUndefined();
     expect(cursor.defs.main.output.schema.properties).toEqual({
-      time_us: { type: "integer" },
-      date: { type: "string" },
-      seconds_ago: { type: "integer" },
+      cursor: { type: "integer" },
     });
   });
 
