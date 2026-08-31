@@ -77,6 +77,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:built": "node tests/built-sqlite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs && node tests/built-changes.mjs",
+    "test:workerd": "node tests/workerd-smoke.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
