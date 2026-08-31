@@ -104,14 +104,14 @@
   },
   "devDependencies": {
     "@atcute/crypto": "2.4.4",
-    "@cloudflare/workers-types": "^5.20260804.1",
+    "@cloudflare/workers-types": "5.20260815.1",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
     "pg": "^8.22.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
-    "wrangler": "^4.118.0"
+    "wrangler": "4.123.0"
   },
   "peerDependencies": {
     "pg": "^8.0.0",

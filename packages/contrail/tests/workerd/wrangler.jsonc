@@ -1,7 +1,7 @@
 {
   "name": "contrail-workerd-runtime-smoke",
   "main": "worker.mjs",
-  "compatibility_date": "2026-08-06",
+  "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [
     {
