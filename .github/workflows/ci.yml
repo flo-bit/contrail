@@ -47,5 +47,8 @@ jobs:
       - name: Test published adapters
         run: pnpm test:built
 
+      - name: Test built Worker in workerd
+        run: pnpm test:workerd
+
       - name: Test
         run: pnpm test

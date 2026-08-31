@@ -19,10 +19,18 @@ import { createTestDbWithSchema } from "./helpers";
 describe("Jetstream v2 live cursor semantics", () => {
   it("rejects a stale seq through HTTP before an opaque browser transport can retry", async () => {
     let transportStarted = false;
+    let fetchReceiver: unknown;
+    let requestInit: RequestInit | undefined;
     const subscription = new JetstreamLiveSubscription({
       url: "https://jetstream.example",
       cursor: 42,
-      fetchImpl: (async (input) => {
+      fetchImpl: (async function (
+        this: unknown,
+        input,
+        init,
+      ) {
+        fetchReceiver = this;
+        requestInit = init;
         expect(String(input)).toContain(
           "/xrpc/network.bsky.jetstream.subscribeEvents?cursor=42&kinds=commit",
         );
@@ -53,19 +61,58 @@ describe("Jetstream v2 live cursor semantics", () => {
     await expect(
       subscription[Symbol.asyncIterator]().next(),
     ).rejects.toBeInstanceOf(JetstreamLiveHistoryExpiredError);
+    expect(fetchReceiver).toBe(globalThis);
+    expect(requestInit).toMatchObject({
+      cache: "no-store",
+      redirect: "manual",
+    });
+    expect(transportStarted).toBe(false);
+  });
+
+  it("rejects a manual redirect instead of following or accepting it", async () => {
+    let transportStarted = false;
+    const subscription = new JetstreamLiveSubscription({
+      url: "https://jetstream.example",
+      cursor: 42,
+      fetchImpl: (async (_input, init) => {
+        expect(init?.redirect).toBe("manual");
+        return new Response("redirected", {
+          status: 302,
+          headers: { location: "https://elsewhere.example" },
+        });
+      }) as typeof fetch,
+      liveTransport: {
+        stream() {
+          transportStarted = true;
+          return (async function* () {
+            await new Promise(() => {});
+          })();
+        },
+      },
+    });
+
+    await expect(
+      subscription[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow("Jetstream live cursor preflight failed (302)");
     expect(transportStarted).toBe(false);
   });
 
   it("does not misclassify an unverified WebSocket 400 as expired history", async () => {
     const handshakeError = new Error("Unexpected server response: 400");
+    const fetchReceivers: unknown[] = [];
+    let preflightCalls = 0;
     const subscription = new JetstreamLiveSubscription({
       url: "https://jetstream.example",
       cursor: 42,
       // Both the initial probe and the post-failure probe prove only that the
       // cursor is accepted. The actual filtered WebSocket request may still be
       // rejected for an unrelated InvalidRequest.
-      fetchImpl: (async () =>
-        new Response("WebSocket upgrade required", { status: 426 })) as typeof fetch,
+      fetchImpl: (async function (this: unknown, _input, init) {
+        preflightCalls++;
+        fetchReceivers.push(this);
+        expect(init?.redirect).toBe("manual");
+        return new Response("WebSocket upgrade required", { status: 426 });
+      }) as typeof fetch,
       liveTransport: {
         stream() {
           return (async function* () {
@@ -80,6 +127,8 @@ describe("Jetstream v2 live cursor semantics", () => {
     );
     expect(error).toBe(handshakeError);
     expect(error).not.toBeInstanceOf(JetstreamLiveHistoryExpiredError);
+    expect(preflightCalls).toBe(2);
+    expect(fetchReceivers).toEqual([globalThis, globalThis]);
   });
 
   it("preserves microsecond precision from the v2 datetime", () => {
