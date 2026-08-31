@@ -23,6 +23,7 @@ import {
   prepareDevLexicons,
 } from "../dev-lexicons.js";
 import {
+  confirmUnresolvedLexicons,
   promptYesNo,
   resolveConfig,
   resolveValidationLexicons,
@@ -250,12 +251,16 @@ async function runSqliteDev(
     root,
     options.clientLexicons ?? defaultConsumerLexiconRoot(root),
   );
-  const lexicons = prepareDevLexicons(
+  const lexicons = await prepareDevLexicons(
     config,
     root,
     lexiconWorkspace,
     clientLexiconRoot,
     sourceRoot,
+    {
+      confirmUnresolved: (nsids) =>
+        confirmUnresolvedLexicons(nsids, options.yes === true),
+    },
   );
   const db = createSqliteDatabase(databasePath);
   const contrail = new Contrail({ ...config, db, lexicons });
@@ -403,7 +408,7 @@ export function registerDev(cli: CAC): void {
     .option("--concurrency <n>", "PDS backfill identity concurrency", {
       default: 100,
     })
-    .option("--yes, -y", "Accept Wrangler backfill prompts")
+    .option("--yes, -y", "Accept confirmation prompts")
     .option("--alluvium", "Use Alluvium base + archive for SQLite bootstrap")
     .option("--alluvium-endpoint <url>", "Alluvium HTTP origin", {
       default: "https://alluvium-v0.atmo.tools",

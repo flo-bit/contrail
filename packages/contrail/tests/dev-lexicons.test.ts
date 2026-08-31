@@ -32,7 +32,7 @@ function writeLexicon(root: string, nsid: string, document: object): void {
 }
 
 describe("contrail dev Lexicon preparation", () => {
-  it("reuses an unpublished source Lexicon from the stable Svelte consumer root", () => {
+  it("reuses an unpublished source Lexicon from the stable Svelte consumer root", async () => {
     const root = mkdtempSync(join(tmpdir(), "contrail-dev-lexicons-"));
     roots.push(root);
     const workspace = join(root, ".contrail");
@@ -62,7 +62,7 @@ describe("contrail dev Lexicon preparation", () => {
         review: { collection },
       },
     };
-    const lexicons = prepareDevLexicons(config, root, workspace);
+    const lexicons = await prepareDevLexicons(config, root, workspace);
     const ids = lexicons.map(
       (document) => (document as { id?: string }).id,
     );
@@ -70,5 +70,154 @@ describe("contrail dev Lexicon preparation", () => {
     expect(ids).toContain(collection);
     expect(ids).toContain("test.svelte.review.getRecord");
     expect(ids).toContain("test.svelte.review.listRecords");
+  });
+
+  it("can continue with an unresolved collection Lexicon and generate unknown values", async () => {
+    const root = mkdtempSync(join(tmpdir(), "contrail-dev-lexicons-"));
+    roots.push(root);
+    const workspace = join(root, ".contrail");
+    mkdirSync(workspace, { recursive: true });
+
+    const collection = "social.example.future.record";
+    const config: ContrailConfig = {
+      namespace: "test.future",
+      profiles: [],
+      collections: {
+        future: { collection },
+      },
+    };
+    const confirmed: string[][] = [];
+    const lexicons = await prepareDevLexicons(
+      config,
+      root,
+      workspace,
+      undefined,
+      undefined,
+      {
+        pullLexicons: () => {},
+        confirmUnresolved: (nsids) => {
+          confirmed.push([...nsids]);
+          return true;
+        },
+      },
+    );
+
+    expect(confirmed).toEqual([[collection]]);
+    expect(
+      lexicons.some(
+        (document) => (document as { id?: string }).id === collection,
+      ),
+    ).toBe(false);
+    const list = lexicons.find(
+      (document) =>
+        (document as { id?: string }).id === "test.future.future.listRecords",
+    ) as any;
+    expect(list.defs.record.properties.value).toEqual({ type: "unknown" });
+  });
+
+  it("drops schemas with unresolved dependencies before generating the incomplete bundle", async () => {
+    const root = mkdtempSync(join(tmpdir(), "contrail-dev-lexicons-"));
+    roots.push(root);
+    const workspace = join(root, ".contrail");
+    mkdirSync(workspace, { recursive: true });
+
+    const collection = "social.example.future.record";
+    const dependency = "social.example.future.defs";
+    const missing = "social.example.future.missing";
+    writeLexicon(root, collection, {
+      lexicon: 1,
+      id: collection,
+      defs: {
+        main: {
+          type: "record",
+          key: "tid",
+          record: {
+            type: "object",
+            properties: {
+              subject: { type: "ref", ref: `${dependency}#main` },
+            },
+          },
+        },
+      },
+    });
+    writeLexicon(root, dependency, {
+      lexicon: 1,
+      id: dependency,
+      defs: {
+        main: {
+          type: "object",
+          properties: {
+            nested: { type: "ref", ref: `${missing}#main` },
+          },
+        },
+      },
+    });
+    const confirmed: string[][] = [];
+    const lexicons = await prepareDevLexicons(
+      {
+        namespace: "test.future",
+        profiles: [],
+        collections: { future: { collection } },
+      },
+      root,
+      workspace,
+      undefined,
+      undefined,
+      {
+        pullLexicons: () => {},
+        confirmUnresolved: (nsids) => {
+          confirmed.push([...nsids]);
+          return true;
+        },
+      },
+    );
+
+    expect(confirmed).toEqual([[missing]]);
+    expect(
+      lexicons.some((document) => {
+        const id = (document as { id?: string }).id;
+        return id === collection || id === dependency;
+      }),
+    ).toBe(false);
+    const list = lexicons.find(
+      (document) =>
+        (document as { id?: string }).id === "test.future.future.listRecords",
+    ) as any;
+    expect(list.defs.record.properties.value).toEqual({ type: "unknown" });
+
+    const available = new Set(
+      lexicons.map((document) => (document as { id?: string }).id),
+    );
+    expect(
+      JSON.stringify(lexicons).includes(`\"ref\":\"${missing}#main\"`),
+    ).toBe(false);
+    expect(available.has(missing)).toBe(false);
+  });
+
+  it("still fails closed when continuation is declined", async () => {
+    const root = mkdtempSync(join(tmpdir(), "contrail-dev-lexicons-"));
+    roots.push(root);
+    const workspace = join(root, ".contrail");
+    mkdirSync(workspace, { recursive: true });
+
+    await expect(
+      prepareDevLexicons(
+        {
+          namespace: "test.future",
+          profiles: [],
+          collections: {
+            future: { collection: "social.example.future.record" },
+          },
+        },
+        root,
+        workspace,
+        undefined,
+        undefined,
+        {
+          pullLexicons: () => {},
+          confirmUnresolved: () => false,
+        },
+      ),
+    ).rejects.toThrow("Could not resolve configured development Lexicons");
   });
 });
