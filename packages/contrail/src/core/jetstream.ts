@@ -28,6 +28,10 @@ import {
   applyIdentityEventStatement,
 } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
+import {
+  runtimeCpuUsage,
+  type RuntimeCpuUsageProcess,
+} from "./runtime-telemetry";
 
 const BATCH_SIZE = 50;
 
@@ -674,25 +678,6 @@ function admissionFilteredCount(dropped: IngestDropCounts): number {
   );
 }
 
-function runtimeCpuUsage(): (() => number) | null {
-  const runtimeProcess = (
-    globalThis as typeof globalThis & {
-      process?: {
-        cpuUsage?: (previous?: { user: number; system: number }) => {
-          user: number;
-          system: number;
-        };
-      };
-    }
-  ).process;
-  if (!runtimeProcess?.cpuUsage) return null;
-  const start = runtimeProcess.cpuUsage();
-  return () => {
-    const elapsed = runtimeProcess.cpuUsage!(start);
-    return Math.round((elapsed.user + elapsed.system) / 100) / 10;
-  };
-}
-
 // Run a full ingest cycle: init schema, load cursor, ingest, apply, save cursor
 export async function runIngestCycle(
   db: Database,
@@ -706,7 +691,13 @@ export async function runIngestCycle(
   const scheduledUrls = config.jetstreams ?? DEFAULT_JETSTREAMS;
   const service = jetstreamService(scheduledUrls);
   const wallStartedAt = Date.now();
-  const finishCpuUsage = runtimeCpuUsage();
+  const finishCpuUsage = runtimeCpuUsage(
+    (
+      globalThis as typeof globalThis & {
+        process?: RuntimeCpuUsageProcess;
+      }
+    ).process,
+  );
   const s = state ?? createIngestState();
 
   if (!s.schemaInitialized) {

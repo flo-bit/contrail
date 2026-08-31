@@ -132,9 +132,11 @@ async function assertSeqCursorAvailable(options: {
   // validation is source-global; one valid kind is enough to reach it.
   url.searchParams.set("kinds", "commit");
 
-  const response = await options.fetchImpl(url, {
+  const response = await options.fetchImpl.call(globalThis, url, {
     cache: "no-store",
-    redirect: "error",
+    // Workerd does not implement `redirect: "error"`. Manual redirects remain
+    // fail-closed because only the expected 426 response is accepted below.
+    redirect: "manual",
     signal: options.signal,
   });
   const body = (await response.text()).slice(0, 2_000);
