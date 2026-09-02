@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.23.0
+
+### Minor Changes
+
+- e050b0b: Add verified Lexicon-prefix initialization with CID-pinned dependency bundles, automatic safe query fields, and optional reference/relation prompts.
+
 ## 0.22.1
 
 ### Patch Changes
