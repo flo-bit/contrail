@@ -17,6 +17,21 @@ It provides:
 
 Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite or PostgreSQL is also supported.
 
+## Quick start from a Lexicon prefix
+
+```bash
+pnpx @atmo-dev/contrail init my-appview \
+  --prefix community.lexicon.calendar. \
+  --namespace com.example.calendar
+cd my-appview
+pnpx @atmo-dev/contrail dev
+```
+
+`--prefix` selects the source record Lexicons to import; `--namespace` sets the
+separate XRPC namespace for the generated AppView methods. See the
+[prefix setup guide](docs/01-getting-started.md#initialize-from-your-lexicon-prefix)
+for choosing a prefix, generated files, and import options.
+
 ## Documentation
 
 1. [Get started locally](docs/01-getting-started.md)

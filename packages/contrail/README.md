@@ -176,14 +176,24 @@ cd my-appview
 contrail dev
 ```
 
-Prefix initialization uses `https://lex.atmo.tools` by default. It requires a
-stable, fully verified and indexed catalog snapshot, pins each root and
-transitive dependency by CID under `lexicons/pinned/`, writes provenance to
-`lexicons/pinned.lock`, and generates equality/range fields which are safe on
-all supported databases. Use `--lexicon-api` for a different registry,
-`--timeout` to change the 60-second readiness budget, or `--allow-partial` to
-explicitly accept incomplete prefix discovery. Missing required dependencies
-always fail.
+The prefix is matched literally against source Lexicon NSIDs. Include a trailing
+`.` to select a namespace boundary. `--namespace` is independent: it controls
+the generated AppView XRPC method IDs and defaults to `com.example`.
+
+| Init option | Purpose |
+|---|---|
+| `--prefix <prefix>` | Import verified record Lexicons matching an NSID prefix |
+| `--namespace <namespace>` | Set the generated AppView XRPC namespace |
+| `--lexicon-api <url>` | Select a registry (default: `https://lex.atmo.tools`) |
+| `--timeout <seconds>` | Set the readiness/dependency budget (default: `60`) |
+| `--allow-partial` | Explicitly accept incomplete prefix discovery |
+| `--no-interactive` | Leave ambiguous references unconfigured |
+
+Prefix initialization requires a stable, fully verified and indexed catalog
+snapshot, pins each root and transitive dependency by CID under
+`lexicons/pinned/`, writes provenance to `lexicons/pinned.lock`, and generates
+equality/range fields which are safe on all supported databases. Missing
+required dependencies always fail, including with `--allow-partial`.
 
 In an interactive terminal, reference-shaped fields can be connected to an
 imported target collection and optionally exposed as inverse relations. These
