@@ -168,15 +168,46 @@ Backups retain the database's change-log generation ID, positions, leases, boots
 
 ## Local development
 
-Seed a new project with a basic `contrail.config.ts`, then start a complete local service:
+Seed a project from proof-verified record Lexicons, then start a complete local service:
 
 ```bash
-contrail init my-appview
+contrail init my-appview \
+  --prefix community.lexicon.calendar. \
+  --namespace com.example.calendar
 cd my-appview
 contrail dev
 ```
 
-Run `contrail init` without a directory to write the config in the current directory. The command refuses to replace a config in any standard auto-detected location.
+The prefix is matched literally against source Lexicon NSIDs. Include a trailing
+`.` to select a namespace boundary. `--namespace` is independent: it controls
+the generated AppView XRPC method IDs and defaults to `com.example`.
+
+| Init option | Purpose |
+|---|---|
+| `--prefix <prefix>` | Import verified record Lexicons matching an NSID prefix |
+| `--namespace <namespace>` | Set the generated AppView XRPC namespace |
+| `--lexicon-api <url>` | Select a registry (default: `https://lex.atmo.tools`) |
+| `--timeout <seconds>` | Set the readiness/dependency budget (default: `60`) |
+| `--allow-partial` | Explicitly accept incomplete prefix discovery |
+| `--no-interactive` | Leave ambiguous references unconfigured |
+
+Prefix initialization requires a stable, fully verified and indexed catalog
+snapshot, pins each root and transitive dependency by CID under
+`lexicons/pinned/`, writes provenance to `lexicons/pinned.lock`, and generates
+equality/range fields which are safe on all supported databases. Missing
+required dependencies always fail, including with `--allow-partial`.
+
+In an interactive terminal, reference-shaped fields can be connected to an
+imported target collection and optionally exposed as inverse relations. These
+choices are never guessed from descriptions. `--no-interactive` leaves all
+ambiguous references unconfigured. strongRef hydration resolves the current
+indexed record by URI; it does not retrieve the historical version named by the
+embedded CID.
+
+Run `contrail init my-appview` without `--prefix` to create the original offline
+example config without a network request. Run either form without a directory to
+write into the current directory. The command refuses to replace a config or
+pinned import in any standard owned location.
 
 Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically.
 

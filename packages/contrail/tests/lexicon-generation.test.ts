@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -282,6 +283,41 @@ describe("Contrail Lexicon generation", () => {
         quiet: true,
       }),
     ).toThrow("lex.config.js");
+  });
+
+  it("bundles pinned sources without scheduling mutable pulls for them", () => {
+    const { root, config } = fixture();
+    const source = join(
+      root,
+      "lexicons",
+      "pulled",
+      "community",
+      "example",
+      "event.json",
+    );
+    const target = join(
+      root,
+      "lexicons",
+      "pinned",
+      "community",
+      "example",
+      "event.json",
+    );
+    mkdirSync(join(target, ".."), { recursive: true });
+    renameSync(source, target);
+
+    generateLexicons({ config, rootDir: root, quiet: true });
+    const bundle = readFileSync(
+      join(root, "lexicons", "generated", "index.ts"),
+      "utf8",
+    );
+    expect(bundle).toContain(
+      'import _0 from "../pinned/community/example/event.json";',
+    );
+    const atcute = readFileSync(join(root, "lex.config.js"), "utf8");
+    expect(atcute).toContain('"lexicons/pinned/**/*.json"');
+    expect(atcute).not.toContain('"community.example.event"');
+    expect(atcute).toContain('"community.example.rsvp"');
   });
 
   it("preserves user-owned Atcute configuration and supports opting out", () => {

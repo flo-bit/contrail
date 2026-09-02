@@ -108,6 +108,7 @@ export async function prepareDevLexicons(
   const localSourceDirs = [
     ...roots.flatMap((root) => [
       join(root, "lexicons", "custom"),
+      join(root, "lexicons", "pinned"),
       join(root, "lexicons", "pulled"),
     ]),
     // A prior source connection places the complete local bundle here. Reuse
