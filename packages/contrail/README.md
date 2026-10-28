@@ -401,6 +401,36 @@ For Workers, use `createWorker` from `@atmo-dev/contrail/worker`.
 ```ts
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
+import { createPgliteDatabase } from "@atmo-dev/contrail/pglite";
 ```
 
 Contrail requires Node.js 22.15 or newer. The SQLite adapter uses the built-in `node:sqlite` module; D1 implements Contrail's database interface directly.
+
+### PGlite
+
+Run embedded PostgreSQL without a server or containers. Install the optional peer dependency:
+
+```bash
+pnpm add @electric-sql/pglite@^0.5.11
+```
+
+```ts
+import { PGlite } from "@electric-sql/pglite";
+import { Contrail } from "@atmo-dev/contrail";
+import { createPgliteDatabase } from "@atmo-dev/contrail/pglite";
+
+const pglite = new PGlite("./data/contrail"); // omit the path for an in-memory database
+const contrail = new Contrail({
+  namespace: "com.example",
+  db: createPgliteDatabase(pglite),
+  collections: {
+    event: { collection: "community.lexicon.calendar.event" },
+  },
+});
+await contrail.init();
+
+// After stopping ingestion and finishing pending queries:
+await pglite.close();
+```
+
+PGlite uses the same PostgreSQL dialect, JSON handling, and full-text search as the Postgres adapter. Batches are atomic and PGlite serializes transactions on its single connection; it is not a multi-connection PostgreSQL server. The caller owns the PGlite instance and its storage lifecycle. This is a programmatic adapter; `contrail dev` still uses SQLite.

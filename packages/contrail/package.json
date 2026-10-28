@@ -38,6 +38,10 @@
       "types": "./dist/adapters/postgres.d.ts",
       "import": "./dist/adapters/postgres.js"
     },
+    "./pglite": {
+      "types": "./dist/adapters/pglite.d.ts",
+      "import": "./dist/adapters/pglite.js"
+    },
     "./alluvium": {
       "types": "./dist/adapters/alluvium.d.ts",
       "import": "./dist/adapters/alluvium.js"
@@ -81,7 +85,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:postgres": "CONTRAIL_TEST_DIALECT=postgres vitest run --testTimeout=60000 tests/moderation tests/account-lifecycle tests/label-backfill-policy tests/label-live-policy tests/profile-moderation tests/self-labels tests/labels",
-    "test:built": "node tests/built-sqlite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs && node tests/built-changes.mjs",
+    "test:built": "node tests/built-sqlite.mjs && node tests/built-pglite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs && node tests/built-changes.mjs",
     "test:workerd": "node tests/workerd-smoke.mjs",
     "test:watch": "vitest"
   },
@@ -121,10 +125,14 @@
   },
   "peerDependencies": {
     "pg": "^8.0.0",
+    "@electric-sql/pglite": "^0.5.11",
     "wrangler": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "pg": {
+      "optional": true
+    },
+    "@electric-sql/pglite": {
       "optional": true
     },
     "wrangler": {

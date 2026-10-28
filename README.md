@@ -8,14 +8,14 @@ It provides:
 
 - historical backfill from relays and PDSes;
 - current updates from Jetstream;
-- D1, SQLite, and PostgreSQL storage;
+- D1, SQLite, PostgreSQL, and embedded PGlite storage;
 - `getRecord` and `listRecords` HTTP endpoints;
 - filters, sorting, search, and pagination;
 - custom queries;
 - relationship counts and hydration; and
 - profile and label hydration.
 
-Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite or PostgreSQL is also supported.
+Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite, PostgreSQL, or [PGlite](packages/contrail/README.md#pglite) is also supported.
 
 ## Quick start from a Lexicon prefix
 

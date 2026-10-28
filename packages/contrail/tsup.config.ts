@@ -8,6 +8,7 @@ export default defineConfig({
     "src/moderation-client.ts",
     "src/adapters/sqlite.ts",
     "src/adapters/postgres.ts",
+    "src/adapters/pglite.ts",
     "src/adapters/alluvium.ts",
     "src/workers/backfill.ts",
     "src/worker/index.ts",
@@ -20,6 +21,6 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   tsconfig: "tsconfig.build.json",
-  external: ["node:sqlite", "pg", "wrangler"],
+  external: ["node:sqlite", "pg", "@electric-sql/pglite", "wrangler"],
   removeNodeProtocol: false,
 });

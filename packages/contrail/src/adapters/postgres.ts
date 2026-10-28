@@ -1,110 +1,17 @@
-import pg from "pg";
-import type { Database, Statement } from "../core/types";
-import { postgresDialect } from "../core/dialect";
-
-/** Internal interface for statements that can run on a specific client */
-interface PgStatement extends Statement {
-  /** Execute on a specific client (used by batch for transaction isolation) */
-  _runOn(client: pg.PoolClient): Promise<any>;
-}
-
-/** Column names known to be BIGINT — PostgreSQL returns these as strings */
-const BIGINT_COLUMNS = new Set([
-  "time_us",
-  "source_time_us",
-  "indexed_at",
-  "last_seen_at",
-  "resolved_at",
-  "total",
-  "revision",
-  "head_position",
-  "retained_floor_position",
-  "position",
-  "acknowledged_position",
-  "bootstrap_anchor_position",
-  "bootstrap_target_position",
-  "from_position",
-  "through_position",
-  "lease_expires_at",
-  "next_attempt_at",
-  "last_success_at",
-  "last_error_at",
-  "created_at",
-  "updated_at",
-  "cts",
-  "exp",
-]);
-
-function normalizeRow(row: any): any {
-  if (!row) return row;
-  if (typeof row.record === "object" && row.record !== null) {
-    row.record = JSON.stringify(row.record);
-  }
-  for (const col of BIGINT_COLUMNS) {
-    if (typeof row[col] === "string") row[col] = Number(row[col]);
-  }
-  return row;
-}
+import type pg from "pg";
+import type { Database } from "../core/types";
+import { createPostgresAdapter } from "./postgres-shared";
 
 export function createPostgresDatabase(pool: pg.Pool): Database {
-  function rewritePlaceholders(sql: string): string {
-    let idx = 0;
-    let inString = false;
-    let result = "";
-    for (let i = 0; i < sql.length; i++) {
-      const ch = sql[i];
-      if (ch === "'" && sql[i - 1] !== "\\") {
-        inString = !inString;
-        result += ch;
-      } else if (ch === "?" && !inString) {
-        result += `$${++idx}`;
-      } else {
-        result += ch;
-      }
-    }
-    return result;
-  }
-
-  function wrapStatement(sql: string, boundValues: any[] = []): PgStatement {
-    const pgSql = rewritePlaceholders(sql);
-
-    return {
-      bind(...values: any[]): PgStatement {
-        return wrapStatement(sql, values);
-      },
-      async run() {
-        const result = await pool.query(pgSql, boundValues);
-        return { changes: result.rowCount };
-      },
-      async _runOn(client: pg.PoolClient) {
-        const result = await client.query(pgSql, boundValues);
-        return { changes: result.rowCount };
-      },
-      async all<T>() {
-        const result = await pool.query(pgSql, boundValues);
-        return { results: result.rows.map(normalizeRow) as T[] };
-      },
-      async first<T>() {
-        const result = await pool.query(pgSql, boundValues);
-        return result.rows[0] ? (normalizeRow(result.rows[0]) as T) : null;
-      },
-    };
-  }
-
-  return {
-    prepare(sql: string): Statement {
-      return wrapStatement(sql);
-    },
-    async batch(stmts: Statement[]): Promise<any[]> {
+  return createPostgresAdapter({
+    query: (sql, values) => pool.query(sql, values),
+    async transaction(run) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const results: any[] = [];
-        for (const stmt of stmts) {
-          results.push(await (stmt as PgStatement)._runOn(client));
-        }
+        const result = await run((sql, values) => client.query(sql, values));
         await client.query("COMMIT");
-        return results;
+        return result;
       } catch (e) {
         await client.query("ROLLBACK");
         throw e;
@@ -112,6 +19,5 @@ export function createPostgresDatabase(pool: pg.Pool): Database {
         client.release();
       }
     },
-    dialect: postgresDialect,
-  };
+  });
 }
