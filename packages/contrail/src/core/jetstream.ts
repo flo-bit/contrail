@@ -8,6 +8,8 @@ import {
   DEFAULT_JETSTREAMS,
   getCollectionNsids,
   getDependentNsids,
+  getDiscoverableNsids,
+  repositoryAllowed,
   jetstreamService,
   buildFeedTargetCaps,
   optimizeEnabled,
@@ -445,6 +447,7 @@ export async function ingestEvents(
 
   const collections = getCollectionNsids(config);
   const dependentCollections = new Set(getDependentNsids(config));
+  const discoverableCollections = new Set(getDiscoverableNsids(config));
   const provisionalKnownDids = knownDids ? new Set(knownDids) : undefined;
   const urls = config.jetstreams ?? DEFAULT_JETSTREAMS;
   const sourceId = config.orderedSource?.source ?? "jetstream";
@@ -566,13 +569,17 @@ export async function ingestEvents(
         return;
       }
 
+      if (!repositoryAllowed(config, commit.collection, event.did)) {
+        stats.sourceScopeFiltered++;
+        return;
+      }
       if (commit.collection === MODERATION_ACTION_NSID && !config.moderation?.moderators.includes(event.did)) {
         stats.sourceScopeFiltered++;
         return;
       }
       if (
         provisionalKnownDids &&
-        !dependentCollections.has(commit.collection) &&
+        discoverableCollections.has(commit.collection) &&
         commit.collection !== MODERATION_ACTION_NSID &&
         commit.operation !== "delete"
       ) {

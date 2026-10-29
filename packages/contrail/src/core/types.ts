@@ -132,9 +132,14 @@ export interface CollectionConfig {
    *  the collection's map key is itself the full NSID (an "NSID-keyed" config);
    *  `resolveConfig` normalizes the omitted value to that key. */
   collection?: string;
-  /** Include this collection in Jetstream ingest / discovery (default true).
-   *  Set false for dependent collections (auto-fetched on demand). */
+  /** Discover publishing repositories (default true, or false for app.bsky.*).
+   * Set false for dependent collections acquired from already-known actors.
+   * Both modes receive live updates; mutually exclusive with repos. */
   discover?: boolean;
+  /** Exclusive publisher DID allowlist. Backfill only these repositories and
+   * admit their live records without requiring prior discovery. Mutually
+   * exclusive with discover; handles and empty lists are not supported. */
+  repos?: readonly string[];
   /** Validate creates/updates against this collection's pinned record Lexicon.
    *  The runtime bundle is supplied by `createWorker({ lexicons })`,
    *  `contrail dev`, or `new Contrail({ lexicons })`. Default: false unless
@@ -547,8 +552,18 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
   for (const [short, rawC] of Object.entries(config.collections)) {
     const c =
       rawC.collection === undefined ? { ...rawC, collection: short } : rawC;
+    if (c.repos !== undefined) {
+      if (c.discover !== undefined) {
+        throw new TypeError(`${short}: repos and discover are mutually exclusive`);
+      }
+      if (!Array.isArray(c.repos) || c.repos.length === 0 ||
+          Array.from(c.repos).some((did) => typeof did !== "string" || !isDid(did)) ||
+          new Set(c.repos).size !== c.repos.length) {
+        throw new TypeError(`${short}: repos requires a non-empty array of unique DIDs`);
+      }
+    }
     collections[short] =
-      c.discover === undefined && c.collection!.startsWith("app.bsky.")
+      c.repos === undefined && c.discover === undefined && c.collection!.startsWith("app.bsky.")
         ? { ...c, discover: false }
         : c;
   }
@@ -612,8 +627,18 @@ export function resolveConfig(config: ContrailConfig): ResolvedContrailConfig {
     if (collections[actionKey] && collections[actionKey].collection !== "tools.atmo.moderation.action") {
       throw new TypeError("moderationAction is reserved for moderator records");
     }
+    if (collections[actionKey]?.repos !== undefined) {
+      throw new TypeError("Moderation action repository scope is managed by moderation.moderators, not repos");
+    }
     collections[actionKey] = { collection: "tools.atmo.moderation.action", methods: [], discover: false };
   }
+  const scopedNsids = new Set(Object.values(collections).filter((c) => c.repos !== undefined).map((c) => c.collection));
+  for (const nsid of scopedNsids) {
+    if (Object.values(collections).filter((c) => c.collection === nsid).length > 1) {
+      throw new TypeError(`${nsid}: a repository-scoped collection cannot have multiple aliases`);
+    }
+  }
+
   const base = {
     ...config,
     labels,
@@ -999,15 +1024,34 @@ export function getCollectionNsids(config: ContrailConfig): string[] {
   return Object.entries(config.collections).map(([short, c]) => c.collection ?? short);
 }
 
+export type CollectionAcquisition =
+  | { mode: "discover" }
+  | { mode: "known" }
+  | { mode: "repos"; repos: readonly string[] };
+
+/** One acquisition policy shared by transport, admission and historical reads. */
+export function collectionAcquisition(collection: CollectionConfig): CollectionAcquisition {
+  if (collection.repos !== undefined) return { mode: "repos", repos: collection.repos };
+  return { mode: collection.discover === false ? "known" : "discover" };
+}
+
+/** Publisher scope, never a field such as a listitem's subject or list owner. */
+export function repositoryAllowed(config: ContrailConfig, nsid: string, did: string): boolean {
+  const key = resolveCollectionKey(config, nsid);
+  if (!key) return false;
+  const policy = collectionAcquisition(config.collections[key]);
+  return policy.mode !== "repos" || policy.repos.includes(did);
+}
+
 export function getDependentShortNames(config: ContrailConfig): string[] {
   return Object.entries(config.collections)
-    .filter(([, c]) => c.discover === false && c.collection !== "tools.atmo.moderation.action")
+    .filter(([, c]) => collectionAcquisition(c).mode === "known" && c.collection !== "tools.atmo.moderation.action")
     .map(([name]) => name);
 }
 
 export function getDiscoverableShortNames(config: ContrailConfig): string[] {
   return Object.entries(config.collections)
-    .filter(([, c]) => c.discover !== false)
+    .filter(([, c]) => collectionAcquisition(c).mode === "discover")
     .map(([name]) => name);
 }
 
@@ -1015,16 +1059,16 @@ export function getDiscoverableShortNames(config: ContrailConfig): string[] {
 export const getDependentCollections = getDependentShortNames;
 export const getDiscoverableCollections = getDiscoverableShortNames;
 
-/** Short names of collections the user declared with `discover !== false`, mapped to NSIDs. */
+/** Relay-discoverable collection NSIDs, excluding dependent and explicit scopes. */
 export function getDiscoverableNsids(config: ContrailConfig): string[] {
   return Object.entries(config.collections)
-    .filter(([, c]) => c.discover !== false)
+    .filter(([, c]) => collectionAcquisition(c).mode === "discover")
     .map(([short, c]) => c.collection ?? short);
 }
 
 export function getDependentNsids(config: ContrailConfig): string[] {
   return Object.entries(config.collections)
-    .filter(([, c]) => c.discover === false && c.collection !== "tools.atmo.moderation.action")
+    .filter(([, c]) => collectionAcquisition(c).mode === "known" && c.collection !== "tools.atmo.moderation.action")
     .map(([short, c]) => c.collection ?? short);
 }
 

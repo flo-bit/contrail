@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import type { Database, ContrailConfig, IngestEvent } from "../types";
 import type { ServiceAuthGate } from "../service-auth";
-import { shortNameForNsid } from "../types";
+import { shortNameForNsid, repositoryAllowed } from "../types";
 import { lookupExistingRecords } from "../db/records";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
 import { runGatedFeedPrune } from "../jetstream";
@@ -153,6 +153,10 @@ export async function processNotifyUris(
     // `parsed.collection` is an NSID; look up the matching short name.
     if (!shortNameForNsid(config, parsed.collection)) {
       errors.push(`collection not tracked: ${parsed.collection}`);
+      continue;
+    }
+    if (!repositoryAllowed(config, parsed.collection, parsed.did)) {
+      errors.push(`repository outside configured scope: ${parsed.did}/${parsed.collection}`);
       continue;
     }
     validUris.push({ uri, parsed });
