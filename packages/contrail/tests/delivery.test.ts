@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createIngestEvent,
   getChangesStatus,
@@ -350,35 +350,39 @@ describe("change delivery runtime", () => {
     const contrail = new Contrail({ ...resolved, db });
     await contrail.init();
     await append(db, resolved, "one", 1);
-    let aborted = false;
-    const result = await runChangeDeliverySlice({
-      changes: contrail.changes,
-      config: resolved,
-      db,
-      env: {},
-      deliveries: {
-        webhook: async (_batch, { signal }) => {
-          await new Promise<void>((resolve) => {
-            if (signal.aborted) {
-              aborted = true;
-              resolve();
-              return;
-            }
-            signal.addEventListener(
-              "abort",
-              () => {
-                aborted = true;
-                resolve();
-              },
-              { once: true },
-            );
-          });
-        },
-      },
-      runtime: { maxRounds: 1, maxDurationMs: 5 },
+    let started!: (signal: AbortSignal) => void;
+    const handlerStarted = new Promise<AbortSignal>((resolve) => {
+      started = resolve;
     });
-    expect(aborted).toBe(true);
-    expect(result.deadlineReached).toBe(true);
+    // Advance the timer and wall clock together: a real short timeout may fire
+    // before Date.now() reaches the deadline on CI.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const pending = runChangeDeliverySlice({
+        changes: contrail.changes,
+        config: resolved,
+        db,
+        env: {},
+        deliveries: {
+          webhook: async (_batch, { signal }) => {
+            await new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+              started(signal);
+            });
+          },
+        },
+        runtime: { maxRounds: 1, maxDurationMs: 1_000 },
+      });
+      const signal = await handlerStarted;
+      await vi.advanceTimersByTimeAsync(999);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
+      expect(signal.aborted).toBe(true);
+      expect(result.deadlineReached).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runs a persistent supervisor until cancellation", async () => {
