@@ -68,7 +68,9 @@ res.data.records  // typed response
 
 `pnpm generate:types` uses `@atcute/lex-cli` to turn the checked-in method and record Lexicons into TypeScript schemas that register with `@atcute/client`. The generated TypeScript is committed so editors and clean builds retain typed queries.
 
-**Scheduled ingestion** works around SvelteKit's lack of `scheduled` export support ([sveltejs/kit#4841](https://github.com/sveltejs/kit/issues/4841)) by appending a handler post-build that self-calls `/api/cron`.
+**Scheduled ingestion** works around SvelteKit's lack of `scheduled` export support ([sveltejs/kit#4841](https://github.com/sveltejs/kit/issues/4841)) by appending a handler post-build that self-calls `/api/cron`. The POST includes `Content-Type: application/json` and `X-Cron-Secret`; HTTP failures reject the scheduled `waitUntil` promise. Set `CRON_SECRET` as a Worker secret before enabling the trigger.
+
+After upgrading Contrail, rerun `pnpm build` before deploying. Running only `contrail append-scheduled` does not update an already-patched bundle.
 
 **OAuth** uses `@atcute/oauth-node-client` with KV-backed sessions and HMAC-signed cookies.
 
