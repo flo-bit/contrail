@@ -94,6 +94,7 @@ export * from "./core/router/helpers";
 
 // Moderation and account lifecycle.
 export * from "./core/moderation";
+export * from "./core/moderation-reports";
 export * from "./core/moderation-sync";
 export * from "./core/moderation-policy";
 export { moderationActionLexicon } from "./lexicons/moderation";
