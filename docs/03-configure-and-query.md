@@ -62,6 +62,57 @@ usually identify a reference's target collection or desired inverse relation;
 configure those semantics explicitly. Prefix initialization prompts for these
 choices on a TTY and otherwise leaves them unconfigured.
 
+## Repository-scoped collections
+
+Use `repos` to index a collection from an explicit set of publishing repositories:
+
+```ts
+collections: {
+  event: {
+    collection: "community.lexicon.calendar.event",
+  },
+  listItem: {
+    collection: "app.bsky.graph.listitem",
+    repos: ["did:plc:yourbot"],
+    queryable: { list: {}, subject: {} },
+  },
+}
+```
+
+There are three acquisition modes:
+
+| Config | Historical acquisition and live admission |
+|---|---|
+| Default | Discover repositories and admit their records. `app.bsky.*` collections default to `discover: false` instead. |
+| `discover: false` | Acquire dependent records from already-known repositories. |
+| `repos: [did, …]` | Backfill only these repository/collection pairs and admit only these publishers, without requiring prior discovery. |
+
+`repos` is an exclusive publisher allowlist, not a seed list. It requires a
+non-empty array of unique DIDs; handles and combining it with `discover` are
+rejected. A record referencing the bot's list is not enough: its publisher must
+also be allowed. Body-level `recordFilter` predicates still apply.
+
+Initialization queues the configured pairs in the existing backfill worklist.
+Run backfill or scheduled retries to load their history; normal ingestion keeps
+them current. Scope does not relay-discover this collection or enroll relay
+actors in it, and does not enqueue other dependent collections for these DIDs.
+Backfill progress, completion and retry state use the existing status tooling.
+Notify and actor read-through enforce the same scope before fetching records.
+Other sources, including snapshot/bootstrap imports, share canonical admission.
+
+The scope is durable projection policy. Reordering the same DIDs is harmless,
+and new empty scoped collections can be added to an existing AppView. Changing
+or removing an existing allowlist, or applying one to a populated unrestricted
+collection, requires rebuilding the projection database; initialization rejects
+these changes rather than leaving stale rows or incomplete history. Temporarily
+omitting a collection does not erase its registered scope.
+
+This bounds acquisition and persistence, not necessarily transport bandwidth:
+a shared Jetstream subscription can still receive other publishers' records
+before filtering. It also does not provide read-your-writes or certify a fresh,
+complete reconciliation source. Applications that mutate records based on the
+projection must separately handle initial backfill, indexing lag and recovery.
+
 ## Query from the client
 
 After changing the config, re-run `contrail connect` in your app. The generated Atcute client now knows the new parameters and response types:

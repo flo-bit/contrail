@@ -7,9 +7,13 @@ import type { ContrailConfig, Database, IngestEvent } from "./types";
 import {
   getDiscoverableNsids,
   getDependentNsids,
+  repositoryAllowed,
+  collectionAcquisition,
+  resolveCollectionKey,
   DEFAULT_RELAYS,
 } from "./types";
 import { getLastCursor, saveCursor } from "./db";
+import { seedRepositoryBackfills } from "./repository-scope";
 import { getMeta, setMeta } from "./db/meta";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
 import {
@@ -259,6 +263,11 @@ async function backfillUserAttempt(
   config: ContrailConfig,
   options?: BackfillOptions
 ): Promise<BackfillUserAttempt> {
+  if (!repositoryAllowed(config, collection, did)) {
+    // Retire stale/manual work rather than leaving it perpetually pending.
+    await db.prepare("DELETE FROM backfills WHERE did = ? AND collection = ?").bind(did, collection).run();
+    return { records: 0, completed: true, failed: false };
+  }
   if (Date.now() >= deadline) {
     return { records: 0, completed: false, failed: false };
   }
@@ -317,6 +326,13 @@ async function backfillUserAttempt(
       options?.exhaustAfterAttempts
     );
     return { records: 0, completed: false, failed: true };
+  }
+
+  // Scoped work can be seeded directly by initialization, without an earlier
+  // discovery/manual pass. Capture before its first PDS read as well as retries.
+  const collectionKey = resolveCollectionKey(config, collection)!;
+  if (collectionAcquisition(config.collections[collectionKey]).mode === "repos") {
+    await ensureInitialReplayBoundary(db, config);
   }
 
   let client = options?.client;
@@ -534,11 +550,14 @@ async function flushIngestDiagnostics(
   }
 }
 
-async function loadKnownBackfillDids(db: Database): Promise<Set<string>> {
+async function loadKnownBackfillDids(db: Database, config: ContrailConfig): Promise<Set<string>> {
   const rows = await db
-    .prepare("SELECT DISTINCT did FROM backfills")
-    .all<{ did: string }>();
-  return new Set((rows.results ?? []).map((row) => row.did));
+    .prepare("SELECT DISTINCT did, collection FROM backfills")
+    .all<{ did: string; collection: string }>();
+  return new Set((rows.results ?? []).filter((row) => {
+    const key = resolveCollectionKey(config, row.collection);
+    return !key || collectionAcquisition(config.collections[key]).mode !== "repos";
+  }).map((row) => row.did));
 }
 
 async function backfillPendingWork(
@@ -565,7 +584,7 @@ async function backfillPendingWork(
     DEFAULT_MAX_ATTEMPTS
   );
   let totalBackfilled = 0;
-  const knownDids = await loadKnownBackfillDids(db);
+  const knownDids = await loadKnownBackfillDids(db, config);
   const metrics = emptyBackfillMetrics();
   const aggregateDiagnostics: IngestDiagnosticCounts = {};
 
@@ -606,6 +625,10 @@ async function backfillPendingWork(
     };
     const byDid = new Map<string, CollectionWork[]>();
     for (const row of rows) {
+      if (!repositoryAllowed(config, row.collection, row.did)) {
+        await db.prepare("DELETE FROM backfills WHERE did = ? AND collection = ?").bind(row.did, row.collection).run();
+        continue;
+      }
       const collections = byDid.get(row.did) ?? [];
       collections.push({
         collection: row.collection,
@@ -818,7 +841,7 @@ export async function retryPendingBackfills(
       await heartbeatBackfillRun(db, runId);
     }
 
-    const knownDids = await loadKnownBackfillDids(db);
+    const knownDids = await loadKnownBackfillDids(db, config);
     const due = await db
       .prepare(
         "SELECT did FROM backfills WHERE completed = 0 AND retry_exhausted = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) GROUP BY did ORDER BY MIN(COALESCE(next_retry_at, 0)), did LIMIT ?"
@@ -835,7 +858,11 @@ export async function retryPendingBackfills(
         )
         .bind(did, Date.now())
         .all<{ collection: string }>();
-      const collections = (pending.results ?? []).map((row) => row.collection);
+      const collections: string[] = [];
+      for (const row of pending.results ?? []) {
+        if (repositoryAllowed(config, row.collection, did)) collections.push(row.collection);
+        else await db.prepare("DELETE FROM backfills WHERE did = ? AND collection = ?").bind(did, row.collection).run();
+      }
       if (collections.length === 0) continue;
 
       let client: Client;
@@ -1038,6 +1065,8 @@ async function ensureDiscoveryRows(
 }
 
 export interface DiscoverDIDsOptions {
+  /** Restrict discovery to requested collection NSIDs (used by snapshots). */
+  collections?: readonly string[];
   /** Legacy direct callers anchor the live cursor before discovery. A bootstrap
    * coordinator already owns a separate durable capture position. */
   captureReplayBoundary?: boolean;
@@ -1050,8 +1079,9 @@ export async function discoverDIDs(
   deadline: number,
   options: DiscoverDIDsOptions = {},
 ): Promise<string[]> {
-  const collections = getDiscoverableNsids(config);
+  const collections = getDiscoverableNsids(config).filter((nsid) => !options.collections || options.collections.includes(nsid));
   const relays = config.relays ?? DEFAULT_RELAYS;
+  await seedRepositoryBackfills(db, config);
   if (relays.length === 0 || collections.length === 0) return [];
 
   // Capture before relay discovery as well as before PDS crawling. Otherwise a
