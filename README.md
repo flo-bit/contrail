@@ -38,3 +38,6 @@ for choosing a prefix, generated files, and import options.
 2. [Add the typed client](docs/02-client.md)
 3. [Configure and query](docs/03-configure-and-query.md)
 4. [Deploy to Cloudflare Workers](docs/04-deploy-cloudflare.md)
+
+Experimental, workspace-private: [PDS-hosted Spaces and invitation operations](packages/contrail-spaces-alpha/README.md).
+Try the [local private-event prototype](apps/spaces-prototype/README.md) with two accounts on a Spaces-enabled alpha PDS.

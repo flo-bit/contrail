@@ -1,0 +1,56 @@
+{
+  "name": "@atmo-dev/contrail-spaces-alpha",
+  "version": "0.1.0-alpha.0",
+  "description": "Experimental AT Protocol Spaces synchronization and private projections for Contrail",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./invitations": {
+      "types": "./dist/invitations.d.ts",
+      "import": "./dist/invitations.js"
+    },
+    "./consumer": {
+      "types": "./dist/consumer.d.ts",
+      "import": "./dist/consumer.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:workerd": "node tests/workerd-smoke.mjs"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*",
+    "@atproto/common-web": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/crypto": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/identity": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/lex-data": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/lex-document": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/lex-json": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/lex-schema": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/space": "0.0.0-spaces-alpha-20261029171913",
+    "@atproto/syntax": "0.0.0-spaces-alpha-20261029171913"
+  },
+  "devDependencies": {
+    "@atcute/crypto": "2.4.4",
+    "@atcute/xrpc-server": "^2.0.2",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@types/node": "^26.1.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}

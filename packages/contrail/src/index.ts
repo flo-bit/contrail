@@ -33,6 +33,9 @@ export * from "./core/persistent";
 export * from "./core/backfill";
 export * from "./core/status";
 export * from "./core/diagnostics";
+export * from "./core/service-auth";
+export { formatServiceOAuthScope } from "./service-auth-contract";
+export * from "./core/isolated-projection";
 export {
   getChangeLogCostPlan,
   getChangeLogState,

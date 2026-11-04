@@ -1,0 +1,36 @@
+{
+  "name": "contrail-spaces-prototype",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host 127.0.0.1 --port 5177 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5177 --strictPort",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "prepare": "svelte-kit sync"
+  },
+  "dependencies": {
+    "@atmo-dev/contrail": "workspace:*",
+    "@atmo-dev/contrail-spaces-alpha": "workspace:*",
+    "@atcute/identity-resolver": "^2.0.1",
+    "@atcute/lexicons": "^2.0.3",
+    "@atcute/oauth-node-client": "2.0.1",
+    "@atcute/tid": "^1.1.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@sveltejs/adapter-node": "5.5.7",
+    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@types/node": "^26.1.2",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.7.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  }
+}

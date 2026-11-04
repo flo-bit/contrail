@@ -74,6 +74,20 @@ export interface ServiceAuthResult {
   response?: Response;
 }
 
+export interface ExactServiceAuthConfig {
+  audience: AtprotoAudience;
+  methods: readonly Nsid[];
+  maxTokenAgeSeconds?: number;
+  resolver?: DidDocumentResolver;
+}
+
+export interface ExactServiceAuthGate {
+  readonly serviceDid: AtprotoDid;
+  readonly audience: AtprotoAudience;
+  protects(method: Nsid): boolean;
+  authorize(request: Request, method: Nsid): Promise<ServiceAuthResult>;
+}
+
 export interface ServiceAuthGate {
   readonly serviceDid: AtprotoDid;
   readonly audience: AtprotoAudience;
@@ -94,8 +108,48 @@ function defaultResolver(): DidDocumentResolver {
   return DEFAULT_RESOLVER;
 }
 
-/** Create the shared verifier used by protected built-in routes. Tokens remain
- * bound to the exact service audience and XRPC method. */
+/** Create a verifier for arbitrary exact XRPC method IDs. This is the extension
+ * seam used by independently versioned private services; every token remains
+ * bound to both the fragmented audience and the method being invoked. */
+export function createExactServiceAuthGate(
+  serviceAuth: ExactServiceAuthConfig,
+): ExactServiceAuthGate {
+  const protectedMethods = new Set(serviceAuth.methods);
+  if (protectedMethods.size !== serviceAuth.methods.length) {
+    throw new TypeError("service auth methods must be unique");
+  }
+  const { serviceDid, audience } = parseServiceAudience(serviceAuth.audience);
+  const verifier = new ServiceJwtVerifier({
+    acceptAudiences: [audience],
+    resolver: serviceAuth.resolver ?? defaultResolver(),
+    maxAge: serviceAuth.maxTokenAgeSeconds,
+  });
+
+  return {
+    serviceDid,
+    audience,
+    protects(method) {
+      return protectedMethods.has(method);
+    },
+    async authorize(request, method) {
+      if (!protectedMethods.has(method)) {
+        throw new TypeError(`service auth method is not configured: ${method}`);
+      }
+      try {
+        const principal = await verifier.verifyRequest(request, {
+          lxm: method,
+          signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+        });
+        return { principal };
+      } catch (error) {
+        if (error instanceof XRPCError) return { response: error.toResponse() };
+        throw error;
+      }
+    },
+  };
+}
+
+/** Create the shared verifier used by protected built-in routes. */
 export function createServiceAuthGate(
   config: ContrailConfig,
 ): ServiceAuthGate | null {
@@ -116,6 +170,8 @@ export function createServiceAuthGate(
       return protectedMethods.has(method);
     },
     async authorize(request, method) {
+      // Built-in moderation also uses this verifier with its own fixed methods.
+      // Do not restrict it to namespace-prefixed public-service methods.
       try {
         const principal = await verifier.verifyRequest(request, {
           lxm: method,

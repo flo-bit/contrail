@@ -1,0 +1,13 @@
+{
+  "name": "contrail-spaces-local-smoke",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "spaces-local-test",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+}

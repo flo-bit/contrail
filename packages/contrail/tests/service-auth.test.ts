@@ -8,7 +8,10 @@ import { createServiceJwt } from "@atcute/xrpc-server/auth";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { createApp } from "../src/core/router";
-import { createCachedDidDocumentResolver } from "../src/core/service-auth";
+import {
+  createCachedDidDocumentResolver,
+  createExactServiceAuthGate,
+} from "../src/core/service-auth";
 import {
   initSchema,
   resolveConfig,
@@ -107,6 +110,25 @@ function authorized(url: string, jwt: string, init: RequestInit = {}) {
 }
 
 describe("AT Protocol service auth", () => {
+  it("verifies arbitrary configured extension method IDs", async () => {
+    const method = "garden.atmo.circle.note.listSpaceRecords" as Nsid;
+    const gate = createExactServiceAuthGate({
+      audience,
+      methods: [method],
+      resolver: config().serviceAuth!.resolver,
+    });
+    const request = authorized(
+      "https://api.example.com/xrpc/garden.atmo.circle.note.listSpaceRecords",
+      await token(method),
+    );
+    const result = await gate.authorize(request, method);
+    expect(result.response).toBeUndefined();
+    expect(result.principal?.issuer).toBe(issuer);
+    await expect(
+      gate.authorize(request, "garden.atmo.circle.syncSpace" as Nsid),
+    ).rejects.toThrow("not configured");
+  });
+
   it("requires exact audience and method-bound tokens", async () => {
     const { app } = await setup();
     const url = `https://api.example.com/xrpc/com.example.getFeed?feed=network&actor=${issuer}`;

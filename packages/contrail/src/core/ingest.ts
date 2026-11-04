@@ -104,6 +104,19 @@ export function recordTimeUs(
   return microseconds > fallbackUs ? fallbackUs : microseconds;
 }
 
+export interface IngestProjection {
+  selectCurrent(
+    db: Database,
+    events: IngestEvent[],
+  ): Promise<{ applied: IngestEvent[]; superseded: number }>;
+  project(
+    db: Database,
+    events: IngestEvent[],
+    config: ContrailConfig,
+    options: IngestRecordsOptions & { sourceOrderingChecked: true },
+  ): Promise<{ applied: IngestEvent[]; superseded: number }>;
+}
+
 export interface IngestWarningSamples {
   /** Fixed maximum number of warning strings retained by the caller. */
   maxSamples: number;
@@ -123,6 +136,9 @@ export interface IngestRecordsOptions {
   knownDids?: ReadonlySet<string>;
   /** Statements committed after projection in the same database batch. */
   trailingStatements?: Statement[];
+  /** Private extensions own their version state and must never touch public tables. */
+  projection?: IngestProjection;
+  skipDiagnostics?: boolean;
   /** The source response is a current authoritative snapshot, so it supersedes
    * durable observations without a redundant version lookup. */
   authoritativeSourceObservation?: boolean;
@@ -354,13 +370,17 @@ export async function ingestRecords(
       unknownSubject: retryBase.unknownSubject,
       superseded: retryBase.superseded,
     };
-    const predecessors = await lookupRecordVersions(
-      db,
-      accepted.map((event) => event.uri),
-    );
+    const predecessors = options.projection
+      ? new Map()
+      : await lookupRecordVersions(
+        db,
+        accepted.map((event) => event.uri),
+      );
     const ordered = options.authoritativeSourceObservation
       ? selectAuthoritativeMutations(accepted)
-      : selectMutationWinners(accepted, predecessors);
+      : options.projection
+        ? await options.projection.selectCurrent(db, accepted)
+        : selectMutationWinners(accepted, predecessors);
     attemptDropped.superseded += ordered.superseded;
 
     const projectionExclusions = ordered.applied.filter((event) =>
@@ -402,6 +422,9 @@ export async function ingestRecords(
       attemptDropped.unknownActor++;
     }
 
+    if (options.projection && projectionRequiresPublicSubjects(config)) {
+      throw new TypeError("Isolated projections cannot use public subject admission");
+    }
     const subjectFiltered = await filterUnknownSubjects(
       db,
       config,
@@ -422,9 +445,10 @@ export async function ingestRecords(
       unknown_subject: attemptDropped.unknownSubject,
       superseded: attemptDropped.superseded,
     };
-    const diagnostics = options.aggregateDiagnostics
-      ? null
-      : ingestDiagnosticsStatement(db, diagnosticCounts);
+    const diagnostics =
+      options.projection || options.skipDiagnostics || options.aggregateDiagnostics
+        ? null
+        : ingestDiagnosticsStatement(db, diagnosticCounts);
     const trailingStatements = [
       ...(diagnostics ? [diagnostics] : []),
       ...(options.trailingStatements ?? []),
@@ -432,7 +456,10 @@ export async function ingestRecords(
 
     try {
       if (projectionEvents.length > 0) {
-        await projectEvents(db, projectionEvents, config, {
+        const project = options.projection
+          ? options.projection.project.bind(options.projection)
+          : projectEvents;
+        await project(db, projectionEvents, config, {
           ...options,
           phase: options.phase ?? "live",
           // A pre-fetched visible-row map is not safe after a conflict; the
@@ -483,6 +510,12 @@ function asProjectionDelete(event: IngestEvent): IngestEvent {
     cid: event.cid,
     record: null,
   };
+}
+
+function projectionRequiresPublicSubjects(config: ContrailConfig): boolean {
+  return Object.values(config.collections).some(
+    (collection) => !!collection.subjectField,
+  );
 }
 
 async function filterUnknownSubjects(

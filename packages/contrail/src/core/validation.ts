@@ -18,8 +18,17 @@ export type RecordValidationFailure =
   | "cid_encoding"
   | "missing_cid";
 
+export type RecordValidationProvider = (input: {
+  collection: string;
+  rkey: string;
+  record: Record<string, unknown>;
+  strict: boolean;
+}) => boolean | Promise<boolean>;
+
 interface ValidationContext {
   validators: Map<string, RecordValidator>;
+  collections: ReadonlySet<string>;
+  provider?: RecordValidationProvider;
   strict: boolean;
   verifyCid: boolean;
   allowCidlessSources: ReadonlySet<string>;
@@ -28,6 +37,18 @@ interface ValidationContext {
 const DEFAULT_CIDLESS_SOURCES = ["local", "legacy-caller", "constellation"];
 const contexts = new WeakMap<ContrailConfig, ValidationContext>();
 const runtimeLexicons = new WeakMap<ContrailConfig, LexiconDoc[]>();
+const providers = new WeakMap<ContrailConfig, RecordValidationProvider>();
+
+/** Extensions may supply a protocol-version-specific schema validator. The
+ * canonical path still enforces record keys and checks the original bytes/CID.
+ * Public runtimes retain the default validator unless explicitly configured. */
+export function bindRecordValidationProvider(
+  config: ContrailConfig,
+  provider: RecordValidationProvider,
+): void {
+  providers.set(config, provider);
+  contexts.delete(config);
+}
 
 /** Bind the exact build/runtime Lexicon bundle used by collection-level
  * validation without making policy configuration import generated files. */
@@ -36,6 +57,7 @@ export function bindRecordValidationLexicons(
   lexicons: readonly object[],
 ): void {
   runtimeLexicons.set(config, [...lexicons] as LexiconDoc[]);
+  providers.delete(config);
   contexts.delete(config);
 }
 
@@ -101,26 +123,30 @@ export function prepareRecordValidation(
   const cached = contexts.get(config);
   if (cached) return cached;
   const validation = config.validation;
+  const provider = providers.get(config);
   const lexicons = runtimeLexicons.get(config);
-  if (!lexicons) {
+  if (!lexicons && !provider) {
     throw new Error(
       "validated collections require a runtime Lexicon bundle; pass generated `lexicons` to the runtime",
     );
   }
 
-  const documents = documentMap(lexicons);
-  requireReferencedDocuments(documents, collections);
-
   const validators = new Map<string, RecordValidator>();
-  for (const collection of collections) {
-    validators.set(
-      collection,
-      new RecordValidator(documents, collection as Nsid),
-    );
+  if (!provider) {
+    const documents = documentMap(lexicons!);
+    requireReferencedDocuments(documents, collections);
+    for (const collection of collections) {
+      validators.set(
+        collection,
+        new RecordValidator(documents, collection as Nsid),
+      );
+    }
   }
 
   const context: ValidationContext = {
     validators,
+    collections,
+    provider,
     strict: validation?.strict !== false,
     verifyCid: validation?.verifyCid !== false,
     allowCidlessSources: new Set(
@@ -141,14 +167,21 @@ export async function validateCanonicalRecord(
   if (!context) return null;
 
   const validator = context.validators.get(event.collection);
-  if (!validator) return null;
+  if (!context.collections.has(event.collection)) return null;
   if (!isRecordKey(event.rkey)) return "lexicon_validation";
   try {
-    const result = validator.try(
-      { key: event.rkey, object: record },
-      { strict: context.strict },
-    );
-    if (!result.ok) return "lexicon_validation";
+    const valid = context.provider
+      ? await context.provider({
+        collection: event.collection,
+        rkey: event.rkey,
+        record,
+        strict: context.strict,
+      })
+      : validator!.try(
+        { key: event.rkey, object: record },
+        { strict: context.strict },
+      ).ok;
+    if (!valid) return "lexicon_validation";
   } catch {
     return "lexicon_validation";
   }

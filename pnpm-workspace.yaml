@@ -9,5 +9,17 @@ onlyBuiltDependencies:
   - '@tailwindcss/oxide'
   - '@sveltejs/kit'
 
+# Keep the Spaces alpha graph off stable 0.0.0 placeholders published with
+# workspace:* dependencies. These overrides apply only to the alpha ranges.
+overrides:
+  '@atproto/car@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/common-web@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/crypto@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/syntax@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/lex-cbor@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/lex-data@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/lex-json@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+  '@atproto/lex-schema@^0.0.0-spaces-alpha-20261029171913': 0.0.0-spaces-alpha-20261029171913
+
 trustPolicyExclude:
   - chokidar@4.0.3

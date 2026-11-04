@@ -1,0 +1,28 @@
+{
+  "id": "community.lexicon.location.fsq",
+  "defs": {
+    "main": {
+      "type": "object",
+      "required": ["fsq_place_id"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the location."
+        },
+        "latitude": {
+          "type": "string"
+        },
+        "longitude": {
+          "type": "string"
+        },
+        "fsq_place_id": {
+          "type": "string",
+          "description": "The unique identifier of a Foursquare POI."
+        }
+      },
+      "description": "A physical location contained in the Foursquare Open Source Places dataset."
+    }
+  },
+  "$type": "com.atproto.lexicon.schema",
+  "lexicon": 1
+}
