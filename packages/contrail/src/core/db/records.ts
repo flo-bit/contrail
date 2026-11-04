@@ -16,6 +16,7 @@ import type {
 } from "../types";
 import {
   getNestedValue,
+  collectionAcquisition,
   getRelationField,
   countColumnName,
   groupedCountColumnName,
@@ -931,12 +932,18 @@ export async function loadKnownActorDids(
 ): Promise<Set<string>> {
   const known = new Set<string>();
   const durableRows = await db
-    .prepare("SELECT did FROM identities UNION SELECT did FROM backfills")
-    .all<{ did: string }>();
-  for (const row of durableRows.results ?? []) known.add(row.did);
+    .prepare("SELECT did, NULL AS collection FROM identities UNION SELECT did, collection FROM backfills")
+    .all<{ did: string; collection: string | null }>();
+  for (const row of durableRows.results ?? []) {
+    const key = row.collection ? resolveCollectionKey(config, row.collection) : null;
+    // Merely configuring an exact pair must not discover its publisher for
+    // unrelated dependent collections. Ordinary identity evidence still counts.
+    if (key && collectionAcquisition(config.collections[key]).mode === "repos") continue;
+    known.add(row.did);
+  }
 
   for (const [shortName, collection] of Object.entries(config.collections)) {
-    if (collection.discover === false) continue;
+    if (collectionAcquisition(collection).mode !== "discover") continue;
     const rows = await db
       .prepare(`SELECT DISTINCT did FROM ${recordsTableName(shortName)}`)
       .all<{ did: string }>();

@@ -1,5 +1,33 @@
 # @atmo-dev/contrail
 
+## 0.28.0
+
+### Minor Changes
+
+- 464f633: Add per-collection `repos` allowlists for indexing records from explicit publishing DIDs. Seed exact repository/collection backfill pairs without relay discovery, enforce publisher scope across live ingestion, backfill, snapshots and notify, and block out-of-scope record read-through. Persist registered scopes and require a projection rebuild before changing them. Existing collection defaults remain unchanged.
+
+## 0.27.1
+
+### Patch Changes
+
+- 1067918: Fix `contrail append-scheduled` forwarding through SvelteKit's production CSRF guard by sending `Content-Type: application/json` alongside the configured cron secret. Reject non-success HTTP responses in the `ctx.waitUntil()` promise so authentication and server failures are reported as scheduled failures rather than silent successes. Fetch exceptions continue to propagate.
+
+  Consumers must rerun their framework build before `append-scheduled`: previously patched bundles retain the idempotence marker and are not updated in place.
+
+## 0.27.0
+
+### Minor Changes
+
+- b7e0040: Expose server-only `createModerationReports` operations for embedded applications using their existing authenticated sessions. Share report validation, transaction-safe quotas, moderator authorization, private previews and resolution with the JWT-protected XRPC routes. Keep XRPC authentication unchanged; `moderation.reports: false` disables route exposure without disabling explicit server operations.
+
+  Persist bounded PDS profile misses (one day for authoritative absence, one hour for transient failures) so embedded apps do not repeatedly fetch absent profiles. Indexed/live profiles still take precedence. Update the CID dependency for compatibility with current Atcute CBOR releases.
+
+## 0.26.0
+
+### Minor Changes
+
+- Add the `@atmo-dev/contrail/pglite` adapter for caller-owned PGlite instances, including in-memory and persistent embedded PostgreSQL. Share SQL and row normalization with the Postgres adapter, report affected write counts correctly, and exercise the public adapter in PostgreSQL dialect tests.
+
 ## 0.25.0
 
 ### Minor Changes

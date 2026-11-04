@@ -262,6 +262,29 @@ describe("runPersistent", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps scoped publishers independent of known actors and checkpoints filtered traffic", async () => {
+    const items = "app.bsky.graph.listitem";
+    const config = resolveConfig({
+      namespace: "com.example", profiles: [], constellation: false,
+      collections: { item: { collection: items, repos: ["did:plc:bot"] } },
+    });
+    const localDb = createTestDb();
+    const events = ["did:plc:bot", "did:plc:other"].map((did, i) => ({
+      kind: "commit", did, time_us: 1000 + i,
+      commit: { collection: items, operation: "create", rkey: "one", cid: "cid-one", record: { subject: "did:plc:person" } },
+    }));
+    const controller = new AbortController();
+    const promise = runPersistent(localDb, config, {
+      batchSize: 10, flushIntervalMs: 60_000, signal: controller.signal,
+      createSubscription: () => mockSubscription(events),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controller.abort();
+    await promise;
+    expect((await queryRecords(localDb, config, { collection: "item" })).records.map((r) => r.did)).toEqual(["did:plc:bot"]);
+    expect(await getLastCursor(localDb)).toBe(1001);
+  });
+
   it("flushes on timer when buffer is not full", async () => {
     const events = Array.from({ length: 10 }, (_, i) => ({
       kind: "commit" as const,

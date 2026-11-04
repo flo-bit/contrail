@@ -123,6 +123,29 @@ describe("bounded scheduled ingest cycles", () => {
     source.events = [];
   });
 
+  it("filters repository-scoped traffic before candidate budgets without restricting other collections", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const items = "app.bsky.graph.listitem";
+    const configured = resolveConfig({
+      namespace: "com.example", profiles: [], constellation: false,
+      collections: { event: { collection: COLLECTION }, item: { collection: items, repos: ["did:plc:bot"] } },
+      logger: output.value,
+    });
+    await initSchema(db, configured);
+    await db.prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind("did:plc:bot", "bot.test", "https://pds.test", Date.now()).run();
+    source.events = [
+      { ...commit(1, "filtered"), did: "did:plc:other", commit: { ...commit(1, "filtered").commit, collection: items } },
+      { ...commit(2, "bot"), did: "did:plc:bot", commit: { ...commit(2, "bot").commit, collection: items } },
+      commit(3, "network"),
+    ];
+    await runIngestCycle(db, configured, budget);
+    expect(await getLastCursor(db)).toBe(3);
+    expect((await db.prepare("SELECT did FROM records_item").all()).results).toEqual([{ did: "did:plc:bot" }]);
+    expect((await db.prepare("SELECT rkey FROM records_event").all()).results).toEqual([{ rkey: "network" }]);
+  });
+
   it("commits a capped cycle cursor and converges after restart", async () => {
     const db = createTestDb();
     const output = logger();

@@ -38,6 +38,7 @@ import {
   changesEnabled,
 } from "../types";
 import { getMetaValues, setMeta } from "./meta";
+import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY } from "../repository-scope";
 
 export const CONTRAIL_SCHEMA_VERSION = 17;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
@@ -851,11 +852,17 @@ export async function initSchema(
   // One steady-state read covers the schema and moderation policy gates.
   const meta = await getMetaValues(db, [
     SCHEMA_FINGERPRINT_KEY,
+    REPOSITORY_SCOPES_KEY,
     ...MODERATION_POLICY_META_KEYS,
   ]);
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
+  const applyRepositoryScopes = async () => {
+    await ensureRepositoryScopes(db, config, meta.get(REPOSITORY_SCOPES_KEY));
+    await seedRepositoryBackfills(db, config);
+  };
 
   if (storedFingerprint === fingerprint) {
+    await applyRepositoryScopes();
     // Moderation policy has its own fingerprint: editing moderators or label
     // sources must not rerun DDL or rebuild FTS.
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
@@ -867,6 +874,7 @@ export async function initSchema(
     // deployment through the FTS rebuild path. Upgrade the prior fingerprint
     // directly after its idempotent DDL succeeds.
     await runIdempotentDdl(db, cursorObservationsDdl);
+    await applyRepositoryScopes();
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
@@ -886,6 +894,7 @@ export async function initSchema(
       await runIdempotentDdl(db, statement);
     }
     await retireSupersededQueryableIndexes(db, config);
+    await applyRepositoryScopes();
     await runIdempotentDdl(db, cursorObservationsDdl);
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
@@ -904,6 +913,7 @@ export async function initSchema(
     await runIdempotentDdl(db, statement);
   }
   await retireSupersededQueryableIndexes(db, config);
+  await applyRepositoryScopes();
 
   for (const statement of [...buildLabelsSchema(dialect), ...buildModerationSchema(dialect)]) {
     await runIdempotentDdl(db, statement);

@@ -291,6 +291,49 @@ projection database. Its private tables are additive and never erased by
 no automatic copy between arbitrary databases: moving existing reports requires
 an explicit migration of both `moderation_reports` and `moderation_report_limits`.
 
+### Embedded apps with session authentication
+
+An app hosting Contrail in the same server can use its existing authenticated
+session instead of minting service JWTs. Set `moderation.reports: false` to disable
+the report **XRPC routes**, then call the server-only operations directly:
+
+```ts
+import {
+  createModerationReports,
+  initModerationReports,
+} from "@atmo-dev/contrail";
+
+await initModerationReports(reportsDb);
+const reports = createModerationReports({
+  config: contrail.config,
+  projectionDb,
+  reportsDb, // required: stable instance storage
+});
+
+// The framework authenticates this DID from a server-side session, never input.
+const actor = session.did;
+await reports.create(actor, { subject, reasonType, reason });
+await reports.list(actor, { status: "open", limit: 50, cursor });
+await reports.resolve(actor, { id, resolution, actionUri });
+```
+
+The same validation, indexed-subject restrictions, transaction-safe quotas,
+moderator allowlist checks, private previews and idempotent resolution are used
+by these operations and the service-authenticated routes. No service audience,
+RPC OAuth permission or `getServiceAuth` call is needed for the embedded path.
+`ModerationReportError` exposes `status`, `error`, and optional `retryAfter`
+(seconds) for framework adapters. Storage failures are not converted to domain
+errors.
+
+**The embedding app owns authentication and transport security.** Require a valid
+session for every operation, derive `actor` from that session, protect mutations
+against CSRF, bound request bodies and mark private responses `Cache-Control:
+no-store`. Same-Worker placement alone is not authentication. Never expose an
+anonymous adapter or trust a DID supplied in JSON/headers. Publishing public
+moderation action records still requires the moderator's PDS repository write
+permission. Neither disabling XRPC reports nor using these operations changes
+moderation enforcement.
+
 ## Client helpers
 
 `@atmo-dev/contrail/moderation` exports `submitReport`, `listReports`,

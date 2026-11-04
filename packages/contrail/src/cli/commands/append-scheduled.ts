@@ -77,9 +77,17 @@ import ${workerBinding} from ${JSON.stringify("./" + basename(workerPath))};
 ${workerBinding}.scheduled = async function (event, env, ctx) {
 \tconst req = new Request(${JSON.stringify("http://localhost" + options.cronPath)}, {
 \t\tmethod: "POST",
-\t\theaders: { "X-Cron-Secret": env[${JSON.stringify(options.secretEnv)}] || "" }
+\t\theaders: {
+\t\t\t"Content-Type": "application/json",
+\t\t\t"X-Cron-Secret": env[${JSON.stringify(options.secretEnv)}] || ""
+\t\t}
 \t});
-\tctx.waitUntil(this.fetch(req, env, ctx));
+\tctx.waitUntil(this.fetch(req, env, ctx).then((response) => {
+\t\tif (!response.ok) {
+\t\t\tthrow new Error("Contrail scheduled request failed with HTTP " + response.status);
+\t\t}
+\t\treturn response;
+\t}));
 };
 `;
 

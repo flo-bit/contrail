@@ -12,6 +12,8 @@ import type {
 import {
   getNestedValue,
   resolveCollectionKey,
+  collectionAcquisition,
+  repositoryAllowed,
 } from "./types";
 import {
   isProjectionConflictError,
@@ -234,6 +236,15 @@ export async function ingestRecords(
       );
       continue;
     }
+    if (!repositoryAllowed(config, event.collection, event.did)) {
+      dropped.unknownActor++;
+      continue;
+    }
+    if (collectionAcquisition(config.collections[shortName]).mode === "repos" &&
+        event.uri !== `at://${event.did}/${event.collection}/${event.rkey}`) {
+      dropped.invalidRecord++;
+      continue;
+    }
     if (event.collection === MODERATION_ACTION_NSID && !config.moderation?.moderators.includes(event.did)) {
       dropped.unknownActor++;
       continue;
@@ -269,13 +280,13 @@ export async function ingestRecords(
   // below so a discoverable record can still admit a dependent sibling.
   const hasDiscoverableMutation = candidates.some(({ event, shortName }) => {
     const collection = config.collections[shortName];
-    return event.operation !== "delete" && collection?.discover !== false;
+    return event.operation !== "delete" && collection && collectionAcquisition(collection).mode === "discover";
   });
   if (options.knownDids && !hasDiscoverableMutation) {
     candidates = candidates.filter(({ event, shortName, record }) => {
       if (event.operation === "delete" || event.collection === MODERATION_ACTION_NSID) return true;
       const collection = config.collections[shortName];
-      if (collection?.discover !== false) return true;
+      if (!collection || collectionAcquisition(collection).mode !== "known") return true;
       if (!options.knownDids!.has(event.did)) {
         dropped.unknownActor++;
         return false;
@@ -399,7 +410,7 @@ export async function ingestRecords(
         if (event.operation === "delete") continue;
         const shortName = resolveCollectionKey(config, event.collection);
         const collection = shortName ? config.collections[shortName] : undefined;
-        if (collection?.discover === false || effectiveKnownDids.has(event.did)) {
+        if (!collection || collectionAcquisition(collection).mode !== "discover" || effectiveKnownDids.has(event.did)) {
           continue;
         }
         effectiveKnownDids.add(event.did);
@@ -415,7 +426,7 @@ export async function ingestRecords(
       }
       const shortName = resolveCollectionKey(config, event.collection);
       const collection = shortName ? config.collections[shortName] : undefined;
-      if (collection?.discover !== false || effectiveKnownDids.has(event.did)) {
+      if (!collection || collectionAcquisition(collection).mode !== "known" || effectiveKnownDids.has(event.did)) {
         actorFiltered.push(event);
         continue;
       }
@@ -533,7 +544,7 @@ async function filterUnknownSubjects(
     const shortName = resolveCollectionKey(config, event.collection);
     const collection = shortName ? config.collections[shortName] : undefined;
     const subjectField =
-      collection?.discover === false ? collection.subjectField : undefined;
+      collection && collectionAcquisition(collection).mode === "known" ? collection.subjectField : undefined;
     if (!subjectField) continue;
 
     const record = parseRecord(event.record);

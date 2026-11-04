@@ -1,4 +1,9 @@
-import type { Database, ContrailConfig, RecordRow, ProfileConfig } from "../types";
+import type {
+  Database,
+  ContrailConfig,
+  RecordRow,
+  ProfileConfig,
+} from "../types";
 import { recordsTableName, normalizeProfileConfig } from "../types";
 import { resolveIdentities } from "../identity";
 import { getPDS } from "../client";
@@ -24,21 +29,28 @@ export interface ProfileEntry {
 }
 
 function formatProfile(row: RecordRow): ProfileEntry {
-  const { did, uri, cid, value, collection, rkey, selfLabels } = formatRecord(row);
-  return { did, handle: null, uri, cid, value, collection, rkey,
-    ...(selfLabels?.length ? { selfLabels } : {}) };
+  const { did, uri, cid, value, collection, rkey, selfLabels } =
+    formatRecord(row);
+  return {
+    did,
+    handle: null,
+    uri,
+    cid,
+    value,
+    collection,
+    rkey,
+    ...(selfLabels?.length ? { selfLabels } : {}),
+  };
 }
 
 export function collectDids(
   records: RecordRow[],
-  hydrates: Record<string, Record<string, any[] | Record<string, any[]>>>
+  hydrates: Record<string, Record<string, any[] | Record<string, any[]>>>,
 ): string[] {
   const dids = new Set(records.map((r) => r.did));
   for (const rels of Object.values(hydrates)) {
     for (const value of Object.values(rels)) {
-      const items = Array.isArray(value)
-        ? value
-        : Object.values(value).flat();
+      const items = Array.isArray(value) ? value : Object.values(value).flat();
       for (const item of items) {
         if (item.did) dids.add(item.did);
       }
@@ -76,7 +88,7 @@ export async function hiddenProfileUris(
 export async function resolveProfiles(
   db: Database,
   config: ContrailConfig,
-  dids: string[]
+  dids: string[],
 ): Promise<Record<string, ProfileEntry[]>> {
   if (dids.length === 0 || !config.profiles || config.profiles.length === 0) {
     return {};
@@ -89,9 +101,12 @@ export async function resolveProfiles(
   const result: Record<string, ProfileEntry[]> = {};
   const indexedUris = new Set<string>();
   const hiddenUris = await hiddenProfileUris(db, config, dids);
-  dids = dids.filter((did) => !profileConfigs.every((p) =>
-    hiddenUris.has(`at://${did}/${p.collection}/${p.rkey ?? "self"}`),
-  ));
+  dids = dids.filter(
+    (did) =>
+      !profileConfigs.every((p) =>
+        hiddenUris.has(`at://${did}/${p.collection}/${p.rkey ?? "self"}`),
+      ),
+  );
   if (!dids.length) return {};
 
   // Batch-lookup profile records for each configured profile collection
@@ -105,7 +120,7 @@ export async function resolveProfiles(
       db,
       `SELECT uri, did, rkey, cid, record FROM ${table} r WHERE uri IN (__IN__) AND ${visibleRecordSql("r")}`,
       [],
-      uris
+      uris,
     );
 
     for (const row of rows) {
@@ -124,7 +139,9 @@ export async function resolveProfiles(
     profileConfigs.flatMap((profile) => {
       const rkey = profile.rkey ?? "self";
       const uri = `at://${did}/${profile.collection}/${rkey}`;
-      return indexedUris.has(uri) || hiddenUris.has(uri) ? [] : [{ did, profile }];
+      return indexedUris.has(uri) || hiddenUris.has(uri)
+        ? []
+        : [{ did, profile }];
     }),
   );
   if (missingProfiles.length > 0) {
@@ -136,12 +153,17 @@ export async function resolveProfiles(
   }
 
   // Recheck after network enrichment: moderation may have changed in flight.
-  for (const did of await hiddenSubjects(db, dids)) { hiddenDids.add(did); delete result[did]; }
+  for (const did of await hiddenSubjects(db, dids)) {
+    hiddenDids.add(did);
+    delete result[did];
+  }
   dids = dids.filter((did) => !hiddenDids.has(did));
   const currentHiddenUris = await hiddenProfileUris(db, config, dids);
   for (const did of dids) {
     if (result[did]) {
-      result[did] = result[did].filter((p) => !p.uri || !currentHiddenUris.has(p.uri));
+      result[did] = result[did].filter(
+        (p) => !p.uri || !currentHiddenUris.has(p.uri),
+      );
       if (!result[did].length) delete result[did];
     }
   }
@@ -154,9 +176,13 @@ export async function resolveProfiles(
       for (const entry of result[did]) {
         entry.handle = handle;
       }
-    } else if (!profileConfigs.some((p) =>
-      currentHiddenUris.has(`at://${did}/${p.collection}/${p.rkey ?? "self"}`),
-    )) {
+    } else if (
+      !profileConfigs.some((p) =>
+        currentHiddenUris.has(
+          `at://${did}/${p.collection}/${p.rkey ?? "self"}`,
+        ),
+      )
+    ) {
       // A genuinely absent profile may use an identity-only fallback, but a
       // hidden profile must stay absent (getProfile then returns 404).
       result[did] = [{ did, handle }];
@@ -176,29 +202,61 @@ async function fetchMissingProfiles(
   config: ContrailConfig,
   missing: Array<{ did: string; profile: ProfileConfig }>,
 ): Promise<Record<string, ProfileEntry[]>> {
+  // Persistent per-profile negative cache without new schema. Always look up
+  // indexed records first, so live ingestion bypasses an outstanding miss.
+  const missKey = (uri: string) => `profile-miss:${uri}`;
+  const keys = missing.map(({ did, profile }) =>
+    missKey(`at://${did}/${profile.collection}/${profile.rkey ?? "self"}`),
+  );
+  const cached = await batchedInQuery<{ key: string; value: string }>(
+    db,
+    "SELECT key, value FROM _contrail_meta WHERE key IN (__IN__)",
+    [],
+    keys,
+  );
+  const skip = new Set(
+    cached.filter((r) => Number(r.value) > Date.now()).map((r) => r.key),
+  );
+  const misses: Array<{ key: string; until: number }> = [];
   const fetched = await Promise.all(
     missing.map(async ({ did, profile }) => {
       const { collection, rkey: configRkey } = profile;
       const rkey = configRkey ?? "self";
       const uri = `at://${did}/${collection}/${rkey}`;
+      if (skip.has(missKey(uri))) return null;
+      const miss = (duration = 3_600_000) => {
+        misses.push({ key: missKey(uri), until: Date.now() + duration });
+        return null;
+      };
       try {
         const pds = await getPDS(did as Did, db, config);
-        if (!pds) return null;
+        if (!pds) return miss();
 
         const url = new URL("/xrpc/com.atproto.repo.getRecord", pds);
         url.searchParams.set("repo", did);
         url.searchParams.set("collection", collection);
         url.searchParams.set("rkey", rkey);
 
-        const response = await fetch(url.toString());
-        if (!response.ok) return null;
+        const response = await fetch(url.toString(), {
+          signal: AbortSignal.timeout(3_000),
+        });
+        if (!response.ok) {
+          // Only authoritative absence gets a day-long cache. Transient server
+          // errors, auth failures and unavailable accounts retry within an hour.
+          const failure = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          return miss(
+            failure?.error === "RecordNotFound" ? 86_400_000 : 3_600_000,
+          );
+        }
         const data = (await response.json()) as {
           uri?: string;
           value?: unknown;
           cid?: string;
         };
         if (!data.value || !data.cid || (data.uri && data.uri !== uri)) {
-          return null;
+          return miss();
         }
 
         const nowUs = Date.now() * 1000;
@@ -220,10 +278,21 @@ async function fetchMissingProfiles(
           },
         });
       } catch {
-        return null;
+        return miss();
       }
     }),
   );
+  if (misses.length) {
+    await db.batch(
+      misses.map(({ key, until }) =>
+        db
+          .prepare(
+            "INSERT INTO _contrail_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          )
+          .bind(key, String(until)),
+      ),
+    );
+  }
 
   const events = fetched.filter((event) => event !== null);
   if (events.length === 0) return {};
@@ -233,8 +302,19 @@ async function fetchMissingProfiles(
   const result: Record<string, ProfileEntry[]> = {};
   for (const event of accepted) {
     if (event.operation === "delete") continue;
-    const pc = (config.profiles ?? []).map(normalizeProfileConfig).find((p) => p.collection === event.collection);
-    if (!pc || !await db.prepare(`SELECT 1 FROM ${recordsTableName(pc.shortName ?? pc.collection)} r WHERE uri = ? AND ${visibleRecordSql("r")}`).bind(event.uri).first()) continue;
+    const pc = (config.profiles ?? [])
+      .map(normalizeProfileConfig)
+      .find((p) => p.collection === event.collection);
+    if (
+      !pc ||
+      !(await db
+        .prepare(
+          `SELECT 1 FROM ${recordsTableName(pc.shortName ?? pc.collection)} r WHERE uri = ? AND ${visibleRecordSql("r")}`,
+        )
+        .bind(event.uri)
+        .first())
+    )
+      continue;
     if (!result[event.did]) result[event.did] = [];
     result[event.did].push(formatProfile(event));
   }

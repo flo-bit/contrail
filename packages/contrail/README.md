@@ -44,6 +44,25 @@ await contrail.init();
 await contrail.backfillAll({ concurrency: 100 });
 ```
 
+## Repository-scoped collections
+
+Set `repos` on a collection to backfill and index only explicit publishing DIDs:
+
+```ts
+listItem: {
+  collection: "app.bsky.graph.listitem",
+  repos: ["did:plc:yourbot"],
+  queryable: { list: {}, subject: {} },
+}
+```
+
+Unlike `discover: false` (dependent records from known repositories), this is an
+exclusive publisher allowlist with its own exact backfill pairs. It requires
+unique DIDs, cannot be combined with `discover`, and applies across ingestion,
+backfill and notify. Changing a registered allowlist requires a projection
+rebuild. See [repository scope configuration](../../docs/03-configure-and-query.md#repository-scoped-collections)
+for lifecycle, transport and freshness guarantees.
+
 ## Query
 
 ```ts

@@ -16,7 +16,8 @@ export const BLUESKY_MODERATION_DID = "did:plc:ar7c4by46qjdydhdevvrndac";
 
 export interface ModerationConfig {
   moderators: string[];
-  /** Private reports require serviceAuth.audience. Defaults to true. */
+  /** Expose service-authenticated report XRPC routes (requires serviceAuth.audience).
+   * Defaults to true. Set false for session-backed createModerationReports calls. */
   reports?: boolean;
 }
 

@@ -10,6 +10,7 @@ import type { ContrailConfig, Database } from "./types";
 import {
   DEFAULT_RELAYS,
   getCollectionNsids,
+  repositoryAllowed,
   getDiscoverableNsids,
 } from "./types";
 import { discoverDIDs } from "./backfill";
@@ -325,6 +326,7 @@ export class PdsSnapshotSource implements SnapshotSource {
       try {
         await discoverDIDs(this.db, this.config, Infinity, {
           captureReplayBoundary: false,
+          collections: options.collections,
           signal: options.signal,
         });
       } catch (error) {
@@ -589,7 +591,7 @@ export class PdsSnapshotSource implements SnapshotSource {
           `Invalid discovered PDS partition ${row.did}/${row.collection}`,
         );
       }
-      valid.push(row);
+      if (repositoryAllowed(this.config, row.collection, row.did)) valid.push(row);
     }
     return valid;
   }

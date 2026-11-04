@@ -7,6 +7,7 @@ import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailCon
 import {
   getCollectionNsids,
   getDependentNsids,
+  repositoryAllowed,
   buildFeedTargetCaps,
   jetstreamService,
   resolveConfig,
@@ -408,7 +409,7 @@ async function streamAndFlush(
       if (result.done) break;
       const event = result.value;
 
-      if (event.kind === "commit") {
+      if (event.kind === "commit" && repositoryAllowed(config, event.commit.collection, event.did)) {
         const { commit } = event;
 
         buffer.push(
