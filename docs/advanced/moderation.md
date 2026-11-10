@@ -243,6 +243,14 @@ read-through and identity-only fallback entries; other visible profile
 collections may still be returned. CID-pinned hides match only the indexed
 profile version.
 
+Indexed profile hydration reads profile records, handles, current visibility and
+cached profile misses together: one database statement per 50 unique DIDs and
+configured profile collection (at most 100 bindings per statement for D1). Fully
+indexed results and unexpired negative-cache entries need no network enrichment
+or separate visibility round trips. Genuine misses still use read-through;
+after enrichment, hydration re-reads indexed state to enforce current moderation
+and avoid returning stale, deleted or unadmitted profile versions.
+
 ## Private reports
 
 Report routes always require a method-bound service JWT with the exact

@@ -84,9 +84,10 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:postgres": "CONTRAIL_TEST_DIALECT=postgres vitest run --testTimeout=60000 tests/moderation tests/account-lifecycle tests/label-backfill-policy tests/label-live-policy tests/profile-moderation tests/self-labels tests/labels",
+    "test:postgres": "CONTRAIL_TEST_DIALECT=postgres vitest run --testTimeout=60000 tests/moderation tests/account-lifecycle tests/label-backfill-policy tests/label-live-policy tests/profile-moderation tests/profile-read-cost tests/self-labels tests/labels",
     "test:built": "node tests/built-sqlite.mjs && node tests/built-pglite.mjs && node tests/built-alluvium.mjs && node tests/built-lexicons.mjs && node tests/built-client.mjs && node tests/built-changes.mjs",
-    "test:workerd": "node tests/workerd-smoke.mjs",
+    "test:workerd": "node tests/workerd-profiles.mjs && node tests/workerd-smoke.mjs",
+    "test:workerd:profiles": "node tests/workerd-profiles.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

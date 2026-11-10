@@ -35,6 +35,8 @@ Focused commands:
 ```bash
 pnpm --filter @atmo-dev/contrail build
 pnpm --filter @atmo-dev/contrail test
+# After building: local-only workerd/D1 profile hydration and query-count smoke.
+pnpm --filter @atmo-dev/contrail test:workerd:profiles
 pnpm --filter contrail-cloudflare-workers-example dev
 pnpm bench --config calendar.config.json --concurrency 100
 ```
