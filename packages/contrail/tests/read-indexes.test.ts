@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildDynamicIndexes, getMeta, ingestRecords, initSchema, queryRecords, resolveConfig,
+  buildDynamicIndexes, getMeta, hydrateLabels, ingestRecords, initSchema, queryRecords, resolveConfig,
   setMeta, sqliteDialect, postgresDialect,
 } from "../src/index";
 import type { Database, Statement } from "../src/index";
@@ -162,7 +162,10 @@ describe("bounded record read indexes", () => {
     await expectReadIndexes(db);
   });
 
-  it.each(["current", "without-cursor-observations", "interrupted"])("upgrades the real previous fingerprint without rewriting data: %s", async (variant) => {
+  it.each([
+    "current", "without-cursor-observations", "interrupted",
+    "missing-view", "missing-view-without-cursor-observations",
+  ])("upgrades the real previous fingerprint without rewriting data: %s", async (variant) => {
     const db = createTestDb();
     await initSchema(db, CONFIG);
     const posts = await seed(db);
@@ -176,15 +179,16 @@ describe("bounded record read indexes", () => {
     await db.prepare("INSERT INTO cursor_observations VALUES (123, 'preserve-me')").run();
     await db.prepare("INSERT INTO moderation_hidden (subject, kind) VALUES (?, 'label')").bind(posts[1]!.uri).run();
     await downgradeIndexes(db);
-    await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT + (variant === "without-cursor-observations" ? "" : ":cursor-observations-v1"));
-    if (variant === "without-cursor-observations") {
-      await db.prepare("DROP TABLE cursor_observations").run();
-    }
+    const hasObservations = !variant.endsWith("without-cursor-observations");
+    await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT + (hasObservations ? ":cursor-observations-v1" : ""));
+    if (!hasObservations) await db.prepare("DROP TABLE cursor_observations").run();
+    if (variant.startsWith("missing-view")) await db.prepare("DROP VIEW moderation_effective_labels").run();
     if (variant === "interrupted") {
       await db.prepare(buildDynamicIndexes(CONFIG, TEST_POSTGRES ? postgresDialect : sqliteDialect)[0]!).run();
       await db.prepare("DROP INDEX idx_post_category").run();
     }
-    await expectIndexOnlyUpgrade(db, variant !== "without-cursor-observations");
+    await expectIndexOnlyUpgrade(db, hasObservations);
+    expect((await hydrateLabels(db, [posts[0]!.uri], ["did:plc:labeler"]))[posts[0]!.uri]).toHaveLength(1);
     if (hasSearch) {
       const search = await queryRecords(db, CONFIG, { collection: "post", search: "sample", limit: 5 });
       expect(search.records).toHaveLength(5);

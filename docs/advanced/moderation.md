@@ -126,6 +126,13 @@ upgrading: old readers/writers use the previous timestamp unit. Already-discarde
 subsecond history cannot be reconstructed by the migration; replay label history
 if that needs to be recovered.
 
+Initialization checks that `moderation_effective_labels` exists alongside its
+schema fingerprint in one read. If only this derived view is missing, it is
+recreated without rebuilding search, resetting ingestion state or changing
+moderation policy. Healthy initialization runs no DDL. SQLite/D1 schema upgrades
+replace the view atomically, so a failed replacement leaves the old view intact.
+This is a targeted recovery check, not a general database integrity scan.
+
 ### Policy changes
 
 Moderators and label-source trust (`enforce`, `values`, `subjects`) have their

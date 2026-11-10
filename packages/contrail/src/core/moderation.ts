@@ -135,8 +135,8 @@ export interface ModerationWriteGuard {
   bindings: unknown[];
 }
 
-export function buildModerationSchema(d: SqlDialect): string[] {
-  const pg = isPostgresDialect(d);
+/** Shared by full schema upgrades and targeted recovery of a missing view. */
+export function buildEffectiveLabelsView(d: SqlDialect): string {
   const effectiveLabels = `moderation_effective_labels AS
       SELECT l.* FROM labels l
       WHERE NOT EXISTS (SELECT 1 FROM moderation_sources s WHERE s.did = l.src AND s.moderator = 1)
@@ -153,6 +153,10 @@ export function buildModerationSchema(d: SqlDialect): string[] {
       FROM moderation_actions a
       JOIN moderation_sources s ON s.did = a.src AND s.moderator = 1
       WHERE a.exp IS NULL OR a.exp > ${nowSql(d)}`;
+  return `${isPostgresDialect(d) ? "CREATE OR REPLACE VIEW" : "CREATE VIEW IF NOT EXISTS"} ${effectiveLabels}`;
+}
+
+export function buildModerationSchema(d: SqlDialect): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS account_state (
       did TEXT PRIMARY KEY, active INTEGER NOT NULL, status TEXT,
@@ -199,13 +203,9 @@ export function buildModerationSchema(d: SqlDialect): string[] {
       PRIMARY KEY (subject, due_at)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_moderation_recount_due ON moderation_recount_queue(due_at)`,
-    ...(pg
-      ? [`CREATE OR REPLACE VIEW ${effectiveLabels}`]
-      : [
-          // IF NOT EXISTS keeps concurrent initializers idempotent.
-          "DROP VIEW IF EXISTS moderation_effective_labels",
-          `CREATE VIEW IF NOT EXISTS ${effectiveLabels}`,
-        ]),
+    // SQLite replacement must execute DROP + CREATE in the same batch.
+    ...(!isPostgresDialect(d) ? ["DROP VIEW IF EXISTS moderation_effective_labels"] : []),
+    buildEffectiveLabelsView(d),
     `CREATE TABLE IF NOT EXISTS label_backfill_sources (src TEXT PRIMARY KEY, policy TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS label_backfill_queue (
       src TEXT NOT NULL, did TEXT NOT NULL, cursor TEXT, completed INTEGER NOT NULL DEFAULT 0,

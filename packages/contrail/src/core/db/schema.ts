@@ -9,6 +9,7 @@ import type { SqlDialect } from "../dialect";
 import {
   buildFtsSchema,
   getDialect,
+  isPostgresDialect,
   postgresDialect,
   sqliteFtsContentExpression,
 } from "../dialect";
@@ -25,7 +26,7 @@ import {
   getSearchableFields,
 } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
-import { buildModerationSchema, moderationLockStatements } from "../moderation";
+import { buildEffectiveLabelsView, buildModerationSchema, moderationLockStatements } from "../moderation";
 import { applyModerationPolicy, MODERATION_POLICY_META_KEYS } from "../moderation-policy";
 import {
   assertFreshChangeLogGeneration,
@@ -37,7 +38,7 @@ import {
   canonicalChangeDefinitions,
   changesEnabled,
 } from "../types";
-import { getMetaValues, setMeta } from "./meta";
+import { setMeta } from "./meta";
 import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY } from "../repository-scope";
 
 export const CONTRAIL_SCHEMA_VERSION = 17;
@@ -802,6 +803,37 @@ function schemaFingerprint(
   ]);
 }
 
+/** A saved fingerprint alone does not prove that required derived objects
+ * survived an interrupted initialization or database restore. Probe the view
+ * in the same metadata read, keeping healthy cold starts to one round-trip. */
+async function readSchemaState(db: Database, dialect: SqlDialect): Promise<{
+  meta: Map<string, string>;
+  effectiveLabelsViewExists: boolean;
+}> {
+  const keys = [SCHEMA_FINGERPRINT_KEY, REPOSITORY_SCOPES_KEY, ...MODERATION_POLICY_META_KEYS];
+  const viewExists = isPostgresDialect(dialect)
+    ? `EXISTS (SELECT 1 FROM pg_catalog.pg_class
+        WHERE oid = to_regclass('moderation_effective_labels') AND relkind = 'v')`
+    // The named pragma avoids a sqlite_master catalog scan on every cold
+    // start, which D1 bills as visited rows even when only one view is needed.
+    : `EXISTS (SELECT 1 FROM pragma_table_list('moderation_effective_labels')
+        WHERE schema = 'main' AND type = 'view')`;
+  try {
+    const rows = await db.prepare(
+      `SELECT key, value, CASE WHEN ${viewExists} THEN 1 ELSE 0 END AS effective_labels_view_exists
+       FROM _contrail_meta WHERE key IN (${keys.map(() => "?").join(", ")})`,
+    ).bind(...keys).all<{ key: string; value: string; effective_labels_view_exists: number }>();
+    return {
+      meta: new Map(rows.results.map((row) => [row.key, row.value])),
+      effectiveLabelsViewExists: rows.results[0]?.effective_labels_view_exists === 1,
+    };
+  } catch {
+    // A fresh database has no metadata table. As with other metadata reads,
+    // a failed probe must fall back to initialization, not skip required DDL.
+    return { meta: new Map(), effectiveLabelsViewExists: false };
+  }
+}
+
 /** Upgrade creation timestamps atomically and exactly once, including under
  * concurrent initializers. Expiry/visibility boundaries remain unix seconds.
  * The marker row lock gives PostgreSQL's following statements fresh snapshots;
@@ -849,19 +881,24 @@ export async function initSchema(
     observation TEXT NOT NULL,
     PRIMARY KEY (time_us, observation)
   )`;
-  // One steady-state read covers the schema and moderation policy gates.
-  const meta = await getMetaValues(db, [
-    SCHEMA_FINGERPRINT_KEY,
-    REPOSITORY_SCOPES_KEY,
-    ...MODERATION_POLICY_META_KEYS,
-  ]);
+  // One steady-state read covers schema health and the policy gates.
+  const { meta, effectiveLabelsViewExists } = await readSchemaState(db, dialect);
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
+  const repairEffectiveLabelsView = async () => {
+    if (!effectiveLabelsViewExists) {
+      // Restore only the derived view: do not rebuild FTS, reseed versions,
+      // recount relations or alter moderation policy. IF NOT EXISTS (SQLite)
+      // / OR REPLACE (PostgreSQL) also allows concurrent repair attempts.
+      await runIdempotentDdl(db, buildEffectiveLabelsView(dialect));
+    }
+  };
   const applyRepositoryScopes = async () => {
     await ensureRepositoryScopes(db, config, meta.get(REPOSITORY_SCOPES_KEY));
     await seedRepositoryBackfills(db, config);
   };
 
   if (storedFingerprint === fingerprint) {
+    await repairEffectiveLabelsView();
     await applyRepositoryScopes();
     // Moderation policy has its own fingerprint: editing moderators or label
     // sources must not rerun DDL or rebuild FTS.
@@ -870,6 +907,7 @@ export async function initSchema(
     return;
   }
   if (storedFingerprint === baseFingerprint) {
+    await repairEffectiveLabelsView();
     // This independent additive table must not force an otherwise-current
     // deployment through the FTS rebuild path. Upgrade the prior fingerprint
     // directly after its idempotent DDL succeeds.
@@ -888,6 +926,7 @@ export async function initSchema(
     fts, changes,
   });
   if (storedFingerprint === legacyFingerprint || storedFingerprint === `${legacyFingerprint}:cursor-observations-v1`) {
+    await repairEffectiveLabelsView();
     // Only the read indexes changed. Do not turn this upgrade into a corpus
     // rewrite (FTS rebuild, legacy version seeding or relation recount).
     for (const statement of [...indexes, ...feeds.filter((sql) => sql.startsWith("CREATE INDEX"))]) {
@@ -915,8 +954,20 @@ export async function initSchema(
   await retireSupersededQueryableIndexes(db, config);
   await applyRepositoryScopes();
 
+  const effectiveLabelsView = buildEffectiveLabelsView(dialect);
+  const dropEffectiveLabelsView = "DROP VIEW IF EXISTS moderation_effective_labels";
   for (const statement of [...buildLabelsSchema(dialect), ...buildModerationSchema(dialect)]) {
-    await runIdempotentDdl(db, statement);
+    if (statement === dropEffectiveLabelsView) continue;
+    if (!isPostgresDialect(dialect) && statement === effectiveLabelsView) {
+      // A failed CREATE must roll back its DROP. Readers must never observe
+      // a missing view between separately committed upgrade statements.
+      await db.batch([
+        db.prepare(dropEffectiveLabelsView),
+        db.prepare(effectiveLabelsView),
+      ]);
+    } else {
+      await runIdempotentDdl(db, statement);
+    }
   }
   // Existing queues need the generation column before policy jobs can reset
   // them. CREATE TABLE IF NOT EXISTS only covers fresh databases.

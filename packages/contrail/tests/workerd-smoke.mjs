@@ -147,6 +147,17 @@ try {
     `Expected workerd to expose a throwing process.cpuUsage stub, got ${JSON.stringify(initial.cpuUsage)}`,
   );
 
+  const repairResponse = await fetch(`${origin}/__contrail_workerd_schema_repair`, {
+    method: "POST",
+    signal: AbortSignal.timeout(15_000),
+  });
+  assert(repairResponse.ok, `D1 schema repair returned ${repairResponse.status}`);
+  const repair = await repairResponse.json();
+  assert(
+    repair.fingerprintUnchanged && repair.repairStatements === 2 && repair.healthyStatements === 1,
+    `Unexpected D1 schema recovery: ${JSON.stringify(repair)}`,
+  );
+
   const first = await advanceCursor(
     (value) => value.cursorDomain === "seq",
     "the timestamp bridge to commit a sequence cursor",
@@ -203,7 +214,7 @@ try {
 
   console.log(
     `workerd smoke passed: ${first.cursor} -> ${second.cursor}; ` +
-      "host fetch preflight succeeded and cpu_ms=null",
+      "D1 view recovery passed, host fetch preflight succeeded and cpu_ms=null",
   );
 } catch (error) {
   console.error(error);
