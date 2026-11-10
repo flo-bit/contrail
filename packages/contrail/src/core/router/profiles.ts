@@ -85,6 +85,91 @@ export async function hiddenProfileUris(
   return hidden;
 }
 
+const PROFILE_READ_BATCH_SIZE = 50;
+
+interface IndexedProfileRow extends Omit<RecordRow, "collection"> {
+  indexed_uri: string | null;
+  identity_did: string | null;
+  handle: string | null;
+  hidden: number;
+  miss_until: string | null;
+}
+
+/** Read profiles, handles, negative-cache entries and current visibility in one
+ * statement per chunk/collection. Two bindings per DID keep each statement
+ * within D1's 100-parameter limit. No network work happens in this helper. */
+async function readIndexedProfiles(
+  db: Database,
+  profileConfigs: ProfileConfig[],
+  dids: string[],
+) {
+  const result: Record<string, ProfileEntry[]> = {};
+  const missingIdentities = new Set<string>();
+  const missingProfiles: Array<{ did: string; profile: ProfileConfig }> = [];
+  const handles = new Map<string, string | null>();
+  const visibleDids = new Set<string>();
+  const hiddenDids = new Set<string>();
+  const now = Date.now();
+
+  for (const profile of profileConfigs) {
+    const { collection, shortName } = profile;
+    const rkey = profile.rkey ?? "self";
+    const table = recordsTableName(shortName ?? collection);
+    for (let i = 0; i < dids.length; i += PROFILE_READ_BATCH_SIZE) {
+      const chunk = dids.slice(i, i + PROFILE_READ_BATCH_SIZE);
+      const { results: rows } = await db
+        .prepare(
+          `WITH requested(did, uri) AS (VALUES ${chunk.map(() => "(?, ?)").join(", ")}),
+         candidates AS (
+           SELECT requested.did, requested.uri, r.uri AS indexed_uri,
+                  r.rkey, r.cid, r.record, r.time_us, r.indexed_at,
+                  i.did AS identity_did, i.handle, m.value AS miss_until
+           FROM requested
+           LEFT JOIN ${table} r ON r.uri = requested.uri
+           LEFT JOIN identities i ON i.did = requested.did
+           LEFT JOIN _contrail_meta m ON m.key = 'profile-miss:' || requested.uri
+         )
+         SELECT p.*, CASE WHEN ${visibleRecordSql("p")} THEN 0 ELSE 1 END AS hidden
+         FROM candidates p`,
+        )
+        .bind(
+          ...chunk.flatMap((did) => [did, `at://${did}/${collection}/${rkey}`]),
+        )
+        .all<IndexedProfileRow>();
+
+      for (const row of rows) {
+        // requested.uri remains available even when the record is absent, so
+        // unpinned profile hides suppress read-through and identity fallbacks.
+        // A CID pin matches only the currently indexed version (p.cid).
+        if (row.hidden) {
+          hiddenDids.add(row.did);
+          continue;
+        }
+        visibleDids.add(row.did);
+        handles.set(row.did, row.handle);
+        if (!row.identity_did) missingIdentities.add(row.did);
+        if (row.indexed_uri) {
+          (result[row.did] ??= []).push({
+            ...formatProfile({ ...row, collection }),
+            handle: row.handle,
+          });
+        } else if (!(Number(row.miss_until) > now)) {
+          missingProfiles.push({ did: row.did, profile });
+        }
+      }
+    }
+  }
+
+  for (const did of visibleDids) {
+    // A genuinely absent profile may use an identity-only fallback. If any
+    // configured profile is hidden, absence must not resurrect that fallback.
+    if (!result[did] && !hiddenDids.has(did)) {
+      result[did] = [{ did, handle: handles.get(did) ?? null }];
+    }
+  }
+  return { result, missingIdentities: [...missingIdentities], missingProfiles };
+}
+
 export async function resolveProfiles(
   db: Database,
   config: ContrailConfig,
@@ -94,102 +179,26 @@ export async function resolveProfiles(
     return {};
   }
 
-  const hiddenDids = await hiddenSubjects(db, dids);
-  dids = dids.filter((did) => !hiddenDids.has(did));
-  if (!dids.length) return {};
+  dids = [...new Set(dids)];
   const profileConfigs = config.profiles.map(normalizeProfileConfig);
-  const result: Record<string, ProfileEntry[]> = {};
-  const indexedUris = new Set<string>();
-  const hiddenUris = await hiddenProfileUris(db, config, dids);
-  dids = dids.filter(
-    (did) =>
-      !profileConfigs.every((p) =>
-        hiddenUris.has(`at://${did}/${p.collection}/${p.rkey ?? "self"}`),
-      ),
-  );
-  if (!dids.length) return {};
-
-  // Batch-lookup profile records for each configured profile collection
-  for (const pc of profileConfigs) {
-    const { collection, rkey: configRkey, shortName } = pc;
-    const rkey = configRkey ?? "self";
-    const table = recordsTableName(shortName ?? collection);
-    const uris = dids.map((did) => `at://${did}/${collection}/${rkey}`);
-
-    const rows = await batchedInQuery<Omit<RecordRow, "collection">>(
-      db,
-      `SELECT uri, did, rkey, cid, record FROM ${table} r WHERE uri IN (__IN__) AND ${visibleRecordSql("r")}`,
-      [],
-      uris,
-    );
-
-    for (const row of rows) {
-      indexedUris.add(row.uri);
-      if (!result[row.did]) result[row.did] = [];
-      result[row.did].push(formatProfile({ ...row, collection }));
-    }
+  const indexed = await readIndexedProfiles(db, profileConfigs, dids);
+  if (!indexed.missingIdentities.length && !indexed.missingProfiles.length) {
+    return indexed.result;
   }
 
-  // Resolve identities for all DIDs
-  const identities = await resolveIdentities(db, dids, config);
-
-  // Fetch each missing (DID, profile collection) independently. One cached
-  // profile collection must not make another configured collection look done.
-  const missingProfiles = dids.flatMap((did) =>
-    profileConfigs.flatMap((profile) => {
-      const rkey = profile.rkey ?? "self";
-      const uri = `at://${did}/${profile.collection}/${rkey}`;
-      return indexedUris.has(uri) || hiddenUris.has(uri)
-        ? []
-        : [{ did, profile }];
-    }),
-  );
-  if (missingProfiles.length > 0) {
-    const fetched = await fetchMissingProfiles(db, config, missingProfiles);
-    for (const [did, entries] of Object.entries(fetched)) {
-      if (!result[did]) result[did] = [];
-      result[did].push(...entries);
-    }
+  // Only genuinely missing identities need a second lookup or resolution;
+  // indexed handles and live negative-cache entries stay on the fast path.
+  if (indexed.missingIdentities.length) {
+    await resolveIdentities(db, indexed.missingIdentities, config);
+  }
+  if (indexed.missingProfiles.length) {
+    await fetchMissingProfiles(db, config, indexed.missingProfiles);
   }
 
-  // Recheck after network enrichment: moderation may have changed in flight.
-  for (const did of await hiddenSubjects(db, dids)) {
-    hiddenDids.add(did);
-    delete result[did];
-  }
-  dids = dids.filter((did) => !hiddenDids.has(did));
-  const currentHiddenUris = await hiddenProfileUris(db, config, dids);
-  for (const did of dids) {
-    if (result[did]) {
-      result[did] = result[did].filter(
-        (p) => !p.uri || !currentHiddenUris.has(p.uri),
-      );
-      if (!result[did].length) delete result[did];
-    }
-  }
-  // Fill in handles and create entries for DIDs without profile records
-  for (const did of dids) {
-    const identity = identities.get(did);
-    const handle = identity?.handle ?? null;
-
-    if (result[did]) {
-      for (const entry of result[did]) {
-        entry.handle = handle;
-      }
-    } else if (
-      !profileConfigs.some((p) =>
-        currentHiddenUris.has(
-          `at://${did}/${p.collection}/${p.rkey ?? "self"}`,
-        ),
-      )
-    ) {
-      // A genuinely absent profile may use an identity-only fallback, but a
-      // hidden profile must stay absent (getProfile then returns 404).
-      result[did] = [{ did, handle }];
-    }
-  }
-
-  return result;
+  // Network enrichment may overlap moderation changes, deletions, or a newer
+  // indexed version. Re-read durable state instead of merging stale snapshots
+  // or returning fetched records that ingestion did not admit.
+  return (await readIndexedProfiles(db, profileConfigs, dids)).result;
 }
 
 /**
@@ -201,7 +210,7 @@ async function fetchMissingProfiles(
   db: Database,
   config: ContrailConfig,
   missing: Array<{ did: string; profile: ProfileConfig }>,
-): Promise<Record<string, ProfileEntry[]>> {
+): Promise<void> {
   // Persistent per-profile negative cache without new schema. Always look up
   // indexed records first, so live ingestion bypasses an outstanding miss.
   const missKey = (uri: string) => `profile-miss:${uri}`;
@@ -295,28 +304,6 @@ async function fetchMissingProfiles(
   }
 
   const events = fetched.filter((event) => event !== null);
-  if (events.length === 0) return {};
-  const { accepted } = await ingestRecords(db, events, config, {
-    phase: "historical",
-  });
-  const result: Record<string, ProfileEntry[]> = {};
-  for (const event of accepted) {
-    if (event.operation === "delete") continue;
-    const pc = (config.profiles ?? [])
-      .map(normalizeProfileConfig)
-      .find((p) => p.collection === event.collection);
-    if (
-      !pc ||
-      !(await db
-        .prepare(
-          `SELECT 1 FROM ${recordsTableName(pc.shortName ?? pc.collection)} r WHERE uri = ? AND ${visibleRecordSql("r")}`,
-        )
-        .bind(event.uri)
-        .first())
-    )
-      continue;
-    if (!result[event.did]) result[event.did] = [];
-    result[event.did].push(formatProfile(event));
-  }
-  return result;
+  if (events.length === 0) return;
+  await ingestRecords(db, events, config, { phase: "historical" });
 }
