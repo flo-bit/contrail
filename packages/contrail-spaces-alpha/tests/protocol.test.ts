@@ -176,4 +176,56 @@ describe("Spaces alpha transport", () => {
     ).rejects.toMatchObject({ code: "RepoTooLarge" });
     expect(cancelled).toBe(true);
   });
+
+  it("times out a stalled STAR download per chunk, not per transfer", async () => {
+    const kem = await P256Keypair.create();
+    const input = {
+      space,
+      repo: "did:plc:alice",
+      kemDidKey: kem.did(),
+      stallTimeoutMs: 40,
+    };
+    const streaming = (gapsMs: number[], onCancel?: () => void) =>
+      ({
+        fetch: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              async start(controller) {
+                for (const gap of gapsMs) {
+                  await new Promise((resolve) => setTimeout(resolve, gap));
+                  controller.enqueue(Uint8Array.of(1));
+                }
+                if (Number.isFinite(gapsMs.at(-1))) controller.close();
+              },
+              cancel: onCancel,
+            }),
+            { headers: macHeaders },
+          ),
+      }) as unknown as SpaceCredentialTransport;
+    // Slower in total than the stall timeout, but never idle that long.
+    const slow = await getRepoStar(
+      streaming([25, 25, 25, 25]),
+      "https://pds.example",
+      input,
+    );
+    expect(slow.bytes).toHaveLength(4);
+    let cancelled = false;
+    await expect(
+      getRepoStar(
+        streaming([5, 2 ** 30], () => (cancelled = true)),
+        "https://pds.example",
+        input,
+      ),
+    ).rejects.toMatchObject({ code: "UpstreamTimeout" });
+    expect(cancelled).toBe(true);
+    await expect(
+      getRepoStar(
+        {
+          fetch: () => new Promise<Response>(() => {}),
+        } as unknown as SpaceCredentialTransport,
+        "https://pds.example",
+        input,
+      ),
+    ).rejects.toMatchObject({ code: "UpstreamTimeout" });
+  });
 });

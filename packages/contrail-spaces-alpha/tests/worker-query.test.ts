@@ -455,6 +455,108 @@ describe("Spaces Worker private query boundary", () => {
     expect((await call(await token(method))).status).toBe(500); // Authority denies callback failures.
   });
 
+  it("carries a write notification's space sequencing to the sync job and retries a busy writer", async () => {
+    const db = createSqliteDatabase(":memory:");
+    await initSpacesStorage(db, projection);
+    await ensureSpaceWatch(db, { spaceUri: space });
+    const worker = createSpacesWorker({
+      projection,
+      lexicons,
+      service: {
+        endpoint: "https://spaces.atmo.garden",
+        audience,
+        resolver: {
+          async resolve(did) {
+            return {
+              "@context": [],
+              id: did,
+              verificationMethod: [
+                {
+                  id: `${did}#atproto`,
+                  type: "Multikey",
+                  controller: did,
+                  publicKeyMultibase: await keypair.exportPublicKey("multikey"),
+                },
+              ],
+            };
+          },
+        },
+      },
+      spaceTypes: {
+        "garden.atmo.circle": {
+          collections: [collection],
+          policy: { $type: "com.atproto.memberspace.policy" },
+        },
+      },
+    });
+    const queued: Record<string, unknown>[] = [];
+    const env = {
+      DB: db,
+      SPACES_CREDENTIAL_ENCRYPTION_KEY:
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      SPACES_QUEUE: {
+        async send(message: Record<string, unknown>) {
+          queued.push(message);
+        },
+      },
+    };
+    const method = "com.atproto.space.notifyWrite";
+    const notify = async (body: Record<string, unknown>) =>
+      worker.fetch!(
+        new Request(`https://spaces.atmo.garden/xrpc/${method}`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${await token(method)}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }) as never,
+        env,
+        context(),
+      );
+    const notification = {
+      space,
+      repo: "did:plc:bob",
+      repoRev: "3mabcdefghi2a",
+      data: { $bytes: Buffer.alloc(32).toString("base64") },
+      spaceRev: "3mabcdefghi2c",
+      prevSpaceRev: "3mabcdefghi2b",
+    };
+    expect((await notify(notification)).status).toBe(202);
+    expect(queued).toMatchObject([
+      {
+        kind: "repo",
+        repo: "did:plc:bob",
+        rev: "3mabcdefghi2a",
+        spaceRev: "3mabcdefghi2c",
+        prevSpaceRev: "3mabcdefghi2b",
+      },
+    ]);
+    expect((await notify({ ...notification, prevSpaceRev: 7 })).status).toBe(
+      400,
+    );
+
+    // Another worker holds this writer's lease: the job is redelivered rather
+    // than acknowledged and lost.
+    await db
+      .prepare(
+        `INSERT INTO spaces_sync_leases
+           (space_uri, space_generation, repo_did, owner, expires_at)
+         VALUES (?, 1, 'did:plc:bob', 'other-worker', ?)`,
+      )
+      .bind(space, Date.now() + 60_000)
+      .run();
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await worker.queue!(
+      { messages: [{ body: queued[0], ack, retry }] } as never,
+      env,
+      context(),
+    );
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 5 });
+    expect(ack).not.toHaveBeenCalled();
+  });
+
   it("requires an application authorizer only for managing-app policies", () => {
     const base = {
       projection,

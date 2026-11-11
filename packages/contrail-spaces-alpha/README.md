@@ -4,9 +4,9 @@ Experimental PDS-hosted Spaces synchronization, isolated Contrail projections, a
 
 Compatibility tuple:
 
-- Contrail: workspace `0.25.x` (current main, including moderation and feed-pruning fixes)
+- Contrail: workspace `0.29.x`
 - Extension: `0.1.0-alpha.0`
-- ATProto Spaces: `0.0.0-spaces-alpha-20261029171913` (October 29 release, pinned exactly)
+- ATProto Spaces: `0.0.0-spaces-alpha-20261105160032` (November 5 release, pinned exactly). STAR archives from an October 29 host do not parse, and the reverse.
 
 This is an AppView extension, **not a PDS, Space authority, or OAuth session store**. The application owns user OAuth sessions. Public projections and anonymous routes never read private tables.
 
@@ -62,16 +62,53 @@ Cloudflare bindings:
 - optional `SPACES_QUEUE`: background reconciliation; `waitUntil` is the local fallback
 - optional `SPACE_SUBSCRIPTIONS`: Durable Object invalidation hub
 
-Forward the app's scheduled and Queue events to the Spaces handler and route its PDS callbacks through `fetch`. OAuth refresh tokens stay in the app. Credential tokens and their binding keys are encrypted at rest; the private projection and its backups contain plaintext. **Spaces are access-controlled, not end-to-end encrypted.**
+### Background sync credential
 
-Independent work bounds:
+A sync credential lives at most an hour. By default the Space pauses when it expires, until some user calls `authorizeSpace` again. To keep syncing while nobody is active, supply `renewCredential`:
 
 ```ts
-syncBudget: { maxIncrementalOperations: 10, recoveryBatchSize: 50 },
+renewCredential: async ({ space, viewerDid }, { env }) => {
+  const session = await restoreAppSession(viewerDid); // any user who can read the Space
+  return session
+    ? { userDid: session.did, delegation: await getDelegationToken(session, space) }
+    : null; // nobody can mint: the Space pauses
+},
+```
+
+It is called when the stored credential is missing or within five minutes of expiry. Returning `null` pauses the Space; throwing is treated as transient and retried with backoff. A refused renewal does not discard a credential that is still valid. Renewal never creates or extends a user's read lease.
+
+Forward the app's scheduled and Queue events to the Spaces handler and route its PDS callbacks through `fetch`. OAuth refresh tokens stay in the app. Credential tokens and their binding keys are encrypted at rest; the private projection and its backups contain plaintext. **Spaces are access-controlled, not end-to-end encrypted.**
+
+Independent work bounds (defaults shown):
+
+```ts
+syncBudget: { maxIncrementalOperations: 50, recoveryBatchSize: 50 },
 maxRepoStarBytes: 16 * 1024 * 1024,
 ```
 
-Synchronization authenticates each MAC-bearing response with a fresh P-256 KEM exchange, validates STAR archives completely, and checks whole-repo LtHash state before committing private records. Schema-invalid current records are excluded from the private projection: an authenticated invalid update retracts the previous visible value and its derived state while atomically retaining its source CID/revision and advancing the checkpoint. A failed replacement leaves the last verified writer generation visible. Missing writer entries do not prove deletion. Full listing reconciliation repairs missed notifications.
+A writer with more than `maxIncrementalOperations` (up to 1000) new operations is recovered from its full archive instead. Incremental operations and their checkpoint commit in one batch, so keep this near the default on runtimes with small transaction limits. An archive download is bounded by `maxRepoStarBytes` and by a 20-second wait for headers and for each chunk, not by a total duration.
+
+Synchronization authenticates each MAC-bearing response with a fresh P-256 KEM exchange, validates STAR archives completely, and checks whole-repo LtHash state before committing private records. Schema-invalid current records are excluded from the private projection: an authenticated invalid update retracts the previous visible value and its derived state while atomically retaining its source CID/revision and advancing the checkpoint. A failed replacement leaves the last verified writer generation visible. Missing writer entries do not prove deletion.
+
+### Failure handling
+
+A writer's host is authoritative for that writer's repo and nothing else.
+
+| Signal | From | Effect |
+| --- | --- | --- |
+| `SpaceDeleted`, `CredentialRevoked`, access refusal | the authority's host | Purge, drop the credential, or pause, as before |
+| the same | another writer's host | Checked with the authority first. If it does not agree, only that writer is marked failed |
+| `RepoTakendown` | a writer's host | That writer's records are hidden; restored by full recovery on reinstatement |
+| `RepoDeactivated`, unreachable host, oversized or unverifiable repo, missing KEM key | a writer's host | Verified records are kept; the writer is retried later |
+| `RepoTakendown` / `RepoDeactivated` | the authority's host | The Space is suspended, not deleted: data is kept and reconciliation backs off |
+
+A failed writer backs off from one minute, doubling to an hour, and never blocks the other writers in the Space. A Space whose reconciliation fails backs off on the same schedule. `syncRepo` resolves with `{ outcome, catchUp }` and throws only for Space-level failures.
+
+### Reconciliation and notifications
+
+Each pass lists only writers updated since the last processed space revision, plus writers on the retry list; a full listing runs when no checkpoint exists and then every `fullReconcileIntervalMs` (default one hour). The checkpoint advances page by page, so an interrupted pass resumes where it stopped and is due again immediately.
+
+Forwarded `notifyWrite` calls carry `spaceRev` and `prevSpaceRev`. A notification for a revision already applied costs one local read. One that directly follows the checkpoint advances it; a gap triggers a catch-up reconciliation. If a host has not caught up to its own notification, the writer is re-read after 0.3 and 1 seconds, then left on the retry list.
 
 ## Invitations
 

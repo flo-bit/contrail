@@ -105,7 +105,9 @@ export class SpaceIdentityResolver {
     this.cache.delete(did);
     if (this.cache.size >= 1024)
       this.cache.delete(this.cache.keys().next().value!);
-    this.cache.set(did, { document, expiresAt: Date.now() + 60_000 });
+    // Callers force a refresh after a failed request, so a moved host or
+    // rotated key is picked up without waiting for this to expire.
+    this.cache.set(did, { document, expiresAt: Date.now() + 5 * 60_000 });
     return document;
   }
   async resolvePds(did: string, forceRefresh = false): Promise<string> {
@@ -438,63 +440,96 @@ export async function listRepoOps(
 export async function getRepoStar(
   transport: SpaceCredentialTransport,
   writerPds: string,
-  input: { space: string; repo: string; kemDidKey: string; maxBytes?: number },
+  input: {
+    space: string;
+    repo: string;
+    kemDidKey: string;
+    maxBytes?: number;
+    /** Longest wait for response headers or for the next chunk. */
+    stallTimeoutMs?: number;
+  },
 ): Promise<{
   bytes: Uint8Array;
   sharedSecret: Uint8Array;
   mac: Uint8Array;
 }> {
   const { keyShare, sharedSecret } = await encapsulate(input.kemDidKey);
-  const response = await transport.fetch(
-    xrpcUrl(writerPds, "com.atproto.space.getRepo", {
-      space: input.space,
-      repo: input.repo,
-    }),
-    {
-      headers: {
-        accept: "application/octet-stream",
-        [WANT_MAC_HEADER]: formatWantMacHeader(COMMIT_MAC_TYPE, keyShare),
-      },
-    },
-    input.repo,
-  );
-  if (!response.ok) await assertResponse(response);
-  const mac = parseMacHeader(
-    response.headers.get(MAC_HEADER) ?? undefined,
-    COMMIT_MAC_TYPE,
-  );
-  const maximum = input.maxBytes ?? 16 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1)
-    throw new TypeError("maxBytes must be positive");
-  if (Number(response.headers.get("content-length")) > maximum) {
-    await response.body?.cancel();
-    throw new SpaceProtocolError(413, "RepoTooLarge");
-  }
-  const reader = response.body?.getReader();
-  if (!reader) throw new SpaceProtocolError(502, "InvalidResponse");
-  const chunks: Uint8Array[] = [];
-  let length = 0;
+  // An archive may legitimately take longer than one request timeout to
+  // download. Bound the wait for headers and for each chunk instead of the
+  // whole transfer; the byte limit below bounds the total.
+  const stallMs = input.stallTimeoutMs ?? 20_000;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onStall!: (error: SpaceProtocolError) => void;
+  const stall = new Promise<never>((_, reject) => (onStall = reject));
+  stall.catch(() => {});
+  const watchdog = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      onStall(
+        new SpaceProtocolError(504, "UpstreamTimeout", "Repo archive stalled"),
+      );
+      controller.abort();
+    }, stallMs);
+  };
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  watchdog();
   try {
+    const response = await Promise.race([
+      transport.fetch(
+        xrpcUrl(writerPds, "com.atproto.space.getRepo", {
+          space: input.space,
+          repo: input.repo,
+        }),
+        {
+          headers: {
+            accept: "application/octet-stream",
+            [WANT_MAC_HEADER]: formatWantMacHeader(COMMIT_MAC_TYPE, keyShare),
+          },
+          signal: controller.signal,
+        },
+        input.repo,
+      ),
+      stall,
+    ]);
+    if (!response.ok) await assertResponse(response);
+    const mac = parseMacHeader(
+      response.headers.get(MAC_HEADER) ?? undefined,
+      COMMIT_MAC_TYPE,
+    );
+    const maximum = input.maxBytes ?? 16 * 1024 * 1024;
+    if (!Number.isSafeInteger(maximum) || maximum < 1)
+      throw new TypeError("maxBytes must be positive");
+    if (Number(response.headers.get("content-length")) > maximum) {
+      await response.body?.cancel();
+      throw new SpaceProtocolError(413, "RepoTooLarge");
+    }
+    reader = response.body?.getReader();
+    if (!reader) throw new SpaceProtocolError(502, "InvalidResponse");
+    const chunks: Uint8Array[] = [];
+    let length = 0;
     while (true) {
-      const { done, value } = await reader.read();
+      watchdog();
+      const { done, value } = await Promise.race([reader.read(), stall]);
       if (done) break;
       length += value.length;
-      if (length > maximum) {
-        await reader.cancel();
-        throw new SpaceProtocolError(413, "RepoTooLarge");
-      }
+      if (length > maximum) throw new SpaceProtocolError(413, "RepoTooLarge");
       chunks.push(value);
     }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return { bytes, sharedSecret, mac };
+  } catch (error) {
+    // Stop the transfer on any failure, including a stall or the size limit.
+    void reader?.cancel().catch(() => {});
+    throw error;
   } finally {
-    reader.releaseLock();
+    clearTimeout(timer);
   }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return { bytes, sharedSecret, mac };
 }
 export async function registerNotify(
   transport: SpaceCredentialTransport,

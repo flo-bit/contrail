@@ -4,7 +4,7 @@ A local, single-process private-event app: sign in, create an event, share a lin
 
 ## Run locally
 
-From the `spaces-invitations` worktree root, with Node 24 and pnpm 10:
+From the worktree root, with Node 24 and pnpm 10:
 
 ```sh
 pnpm install
@@ -15,7 +15,7 @@ pnpm --filter contrail-spaces-prototype dev
 
 Open **http://127.0.0.1:5177**, not `localhost`. OAuth uses a loopback public client; no client keys, environment variables, deployment or public callback tunnel are needed. The app intentionally refuses other origins. Do not expose it to a network or run multiple processes.
 
-You need **two real accounts on a PDS running the October 29, 2026 Spaces alpha**, compatible with the extension's pinned `0.0.0-spaces-alpha-20261029171913` snapshot. A normal production Bluesky account/PDS is not sufficient. Accounts need published KEM keys for authenticated Spaces synchronization. This app does not provision a PDS, accounts or keys. The browser and Node process must run on the same computer for loopback OAuth.
+You need **two real accounts on a PDS running the November 5, 2026 Spaces alpha**, compatible with the extension's pinned `0.0.0-spaces-alpha-20261105160032` snapshot. A normal production Bluesky account/PDS is not sufficient. Accounts need published KEM keys for authenticated Spaces synchronization. This app does not provision a PDS, accounts or keys. The browser and Node process must run on the same computer for loopback OAuth.
 
 ## Try it
 

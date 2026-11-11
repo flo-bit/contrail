@@ -20,6 +20,11 @@ export interface SpaceWatch {
   nextReconcileAt: number;
   lastReconciledAt: number | null;
   lastError: string | null;
+  /** Last authority space revision whose writer updates were all processed. */
+  spaceRev: string | null;
+  /** Consecutive failed reconciliations, for Space-level backoff. */
+  consecutiveFailures: number;
+  lastFullReconcileAt: number | null;
 }
 
 export interface SpaceRepoState {
@@ -31,7 +36,16 @@ export interface SpaceRepoState {
   rev: string;
   ltHash: Uint8Array;
   commitHash: Uint8Array;
-  removalObservations: number;
+}
+
+/** A writer whose repo host could not be synchronized. This also serves as the
+ * retry list for incremental reconciliation, which no longer lists every
+ * writer on every pass. */
+export interface SpaceRepoFailure {
+  repoDid: string;
+  failures: number;
+  retryAfter: number;
+  lastError: string;
 }
 
 export async function initSpacesStorage(
@@ -55,6 +69,9 @@ export async function initSpacesStorage(
       next_reconcile_at ${bigint} NOT NULL,
       last_reconciled_at ${bigint},
       last_error TEXT,
+      space_rev TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_full_reconcile_at ${bigint},
       created_at ${bigint} NOT NULL,
       updated_at ${bigint} NOT NULL
     )`,
@@ -69,7 +86,16 @@ export async function initSpacesStorage(
       rev TEXT NOT NULL,
       lt_hash BLOB NOT NULL,
       commit_hash BLOB NOT NULL,
-      removal_observations INTEGER NOT NULL DEFAULT 0,
+      updated_at ${bigint} NOT NULL,
+      PRIMARY KEY (space_uri, space_generation, repo_did)
+    )`,
+    `CREATE TABLE IF NOT EXISTS spaces_repo_failures (
+      space_uri TEXT NOT NULL,
+      space_generation INTEGER NOT NULL,
+      repo_did TEXT NOT NULL,
+      failures INTEGER NOT NULL,
+      retry_after ${bigint} NOT NULL,
+      last_error TEXT NOT NULL,
       updated_at ${bigint} NOT NULL,
       PRIMARY KEY (space_uri, space_generation, repo_did)
     )`,
@@ -124,6 +150,12 @@ function rowToWatch(row: Record<string, unknown>): SpaceWatch {
     lastReconciledAt:
       row.last_reconciled_at === null ? null : Number(row.last_reconciled_at),
     lastError: row.last_error === null ? null : String(row.last_error),
+    spaceRev: row.space_rev == null ? null : String(row.space_rev),
+    consecutiveFailures: Number(row.consecutive_failures ?? 0),
+    lastFullReconcileAt:
+      row.last_full_reconcile_at == null
+        ? null
+        : Number(row.last_full_reconcile_at),
   };
 }
 
@@ -134,7 +166,8 @@ export async function getSpaceWatch(
   const row = await db
     .prepare(
       `SELECT space_uri, authority_did, space_type, generation, status,
-            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error
+            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error,
+            space_rev, consecutive_failures, last_full_reconcile_at
      FROM spaces_watches WHERE space_uri = ?`,
     )
     .bind(spaceUri)
@@ -198,7 +231,8 @@ export async function rediscoverSpace(
       `UPDATE spaces_watches SET
        authority_did = ?, space_type = ?, generation = ?, status = 'active',
        registration_expires_at = NULL, registration_pds_url = NULL, next_reconcile_at = ?,
-       last_reconciled_at = NULL, last_error = NULL, updated_at = ?
+       last_reconciled_at = NULL, last_error = NULL, space_rev = NULL,
+       consecutive_failures = 0, last_full_reconcile_at = NULL, updated_at = ?
      WHERE space_uri = ? AND generation = ? AND status = 'hidden'`,
     )
     .bind(
@@ -232,7 +266,8 @@ export async function listConnectedSpaceWatches(
   const rows = await db
     .prepare(
       `SELECT space_uri, authority_did, space_type, generation, status,
-            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error
+            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error,
+            space_rev, consecutive_failures, last_full_reconcile_at
      FROM spaces_watches watch
      WHERE watch.status = 'active' AND watch.space_uri > ?
        AND (
@@ -266,7 +301,8 @@ export async function listDueWatches(
   const rows = await db
     .prepare(
       `SELECT space_uri, authority_did, space_type, generation, status,
-            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error
+            registration_expires_at, registration_pds_url, next_reconcile_at, last_reconciled_at, last_error,
+            space_rev, consecutive_failures, last_full_reconcile_at
      FROM spaces_watches
      WHERE status = 'active' AND next_reconcile_at <= ?
      ORDER BY next_reconcile_at, space_uri LIMIT ?`,
@@ -286,6 +322,8 @@ export async function updateWatch(
     reconciledAt?: number;
     error?: string | null;
     status?: WatchStatus;
+    consecutiveFailures?: number;
+    fullReconciledAt?: number;
     /** Ignore stale work from a prior deletion/rediscovery generation. */
     expectedGeneration?: number;
     expectedStatus?: WatchStatus;
@@ -301,7 +339,8 @@ export async function updateWatch(
     .prepare(
       `UPDATE spaces_watches SET
       registration_expires_at = ?, registration_pds_url = ?, next_reconcile_at = ?,
-      last_reconciled_at = ?, last_error = ?, status = ?, updated_at = ?
+      last_reconciled_at = ?, last_error = ?, status = ?,
+      consecutive_failures = ?, last_full_reconcile_at = ?, updated_at = ?
      WHERE space_uri = ?${generationGuard}${statusGuard}`,
     )
     .bind(
@@ -317,6 +356,8 @@ export async function updateWatch(
         : input.reconciledAt,
       input.error === undefined ? current.lastError : input.error,
       input.status ?? current.status,
+      input.consecutiveFailures ?? current.consecutiveFailures,
+      input.fullReconciledAt ?? current.lastFullReconcileAt,
       Date.now(),
       spaceUri,
       ...(input.expectedGeneration === undefined
@@ -556,7 +597,6 @@ function rowToRepo(row: Record<string, unknown>): SpaceRepoState {
     rev: String(row.rev),
     ltHash: asBytes(row.lt_hash, "LtHash"),
     commitHash: asBytes(row.commit_hash, "commit hash"),
-    removalObservations: Number(row.removal_observations),
   };
 }
 
@@ -567,7 +607,7 @@ export async function listRepoStates(
   const rows = await db
     .prepare(
       `SELECT space_uri, space_generation, repo_did, pds_url,
-            visible_writer_generation, rev, lt_hash, commit_hash, removal_observations
+            visible_writer_generation, rev, lt_hash, commit_hash
      FROM spaces_repo_state WHERE space_uri = ? AND space_generation = ?`,
     )
     .bind(watch.spaceUri, watch.generation)
@@ -583,7 +623,7 @@ export async function getRepoState(
   const row = await db
     .prepare(
       `SELECT space_uri, space_generation, repo_did, pds_url,
-            visible_writer_generation, rev, lt_hash, commit_hash, removal_observations
+            visible_writer_generation, rev, lt_hash, commit_hash
      FROM spaces_repo_state
      WHERE space_uri = ? AND space_generation = ? AND repo_did = ?`,
     )
@@ -595,23 +635,19 @@ export async function getRepoState(
 /** Commit checkpoint metadata after projection statements in the same batch. */
 export function saveRepoStateStatement(
   db: Database,
-  state: Omit<SpaceRepoState, "removalObservations"> & {
-    removalObservations?: number;
-  },
+  state: SpaceRepoState,
 ): Statement {
   return db
     .prepare(
       `INSERT INTO spaces_repo_state
        (space_uri, space_generation, repo_did, pds_url,
-        visible_writer_generation, rev, lt_hash, commit_hash,
-        removal_observations, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        visible_writer_generation, rev, lt_hash, commit_hash, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(space_uri, space_generation, repo_did) DO UPDATE SET
        pds_url = excluded.pds_url,
        visible_writer_generation = excluded.visible_writer_generation,
        rev = excluded.rev, lt_hash = excluded.lt_hash,
        commit_hash = excluded.commit_hash,
-       removal_observations = excluded.removal_observations,
        updated_at = excluded.updated_at`,
     )
     .bind(
@@ -623,49 +659,147 @@ export function saveRepoStateStatement(
       state.rev,
       state.ltHash,
       state.commitHash,
-      state.removalObservations ?? 0,
       Date.now(),
     );
 }
 
-export async function noteRepoOmissions(
+export async function listRepoFailures(
   db: Database,
   watch: Pick<SpaceWatch, "spaceUri" | "generation">,
-  present: ReadonlySet<string>,
-): Promise<SpaceRepoState[]> {
-  const states = await listRepoStates(db, watch);
-  const confirmed: SpaceRepoState[] = [];
-  for (const state of states) {
-    if (present.has(state.repoDid)) {
-      if (state.removalObservations !== 0) {
-        await db
-          .prepare(
-            `UPDATE spaces_repo_state SET removal_observations = 0
-           WHERE space_uri = ? AND space_generation = ? AND repo_did = ?`,
-          )
-          .bind(watch.spaceUri, watch.generation, state.repoDid)
-          .run();
-      }
-      continue;
+): Promise<SpaceRepoFailure[]> {
+  const rows = await db
+    .prepare(
+      `SELECT repo_did, failures, retry_after, last_error FROM spaces_repo_failures
+     WHERE space_uri = ? AND space_generation = ?`,
+    )
+    .bind(watch.spaceUri, watch.generation)
+    .all<Record<string, unknown>>();
+  return (rows.results ?? []).map((row) => ({
+    repoDid: String(row.repo_did),
+    failures: Number(row.failures),
+    retryAfter: Number(row.retry_after),
+    lastError: String(row.last_error),
+  }));
+}
+
+export const REPO_FAILURE_MAX_BACKOFF_MS = 60 * 60_000;
+
+/** Record one more failure for a writer and back off exponentially (one
+ * minute doubling to an hour) unless the caller supplies a fixed delay. */
+export async function recordRepoFailure(
+  db: Database,
+  watch: Pick<SpaceWatch, "spaceUri" | "generation">,
+  repoDid: string,
+  input: { error: string; retryInMs?: number; now?: number },
+): Promise<SpaceRepoFailure> {
+  const now = input.now ?? Date.now();
+  const existing = await db
+    .prepare(
+      `SELECT failures FROM spaces_repo_failures
+     WHERE space_uri = ? AND space_generation = ? AND repo_did = ?`,
+    )
+    .bind(watch.spaceUri, watch.generation, repoDid)
+    .first<{ failures: number }>();
+  const failures = Number(existing?.failures ?? 0) + 1;
+  const retryAfter =
+    now +
+    (input.retryInMs ??
+      Math.min(
+        REPO_FAILURE_MAX_BACKOFF_MS,
+        60_000 * 2 ** Math.min(failures - 1, 10),
+      ));
+  const lastError = input.error.slice(0, 500);
+  await db
+    .prepare(
+      `INSERT INTO spaces_repo_failures
+       (space_uri, space_generation, repo_did, failures, retry_after, last_error, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(space_uri, space_generation, repo_did) DO UPDATE SET
+       failures = excluded.failures, retry_after = excluded.retry_after,
+       last_error = excluded.last_error, updated_at = excluded.updated_at`,
+    )
+    .bind(
+      watch.spaceUri,
+      watch.generation,
+      repoDid,
+      failures,
+      retryAfter,
+      lastError,
+      now,
+    )
+    .run();
+  return { repoDid, failures, retryAfter, lastError };
+}
+
+export async function clearRepoFailure(
+  db: Database,
+  watch: Pick<SpaceWatch, "spaceUri" | "generation">,
+  repoDid: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM spaces_repo_failures
+     WHERE space_uri = ? AND space_generation = ? AND repo_did = ?`,
+    )
+    .bind(watch.spaceUri, watch.generation, repoDid)
+    .run();
+}
+
+/** Move the processed-space-revision checkpoint forward, never backward.
+ * With `prevSpaceRev` this only succeeds when the notification directly
+ * follows the checkpoint; `false` means updates in between were missed and
+ * the caller must catch up from the authority's writer listing. Revisions are
+ * compared here rather than in SQL so database collation cannot reorder them. */
+export async function advanceSpaceRev(
+  db: Database,
+  watch: Pick<SpaceWatch, "spaceUri" | "generation">,
+  input: { spaceRev: string; prevSpaceRev?: string; contiguousOnly?: boolean },
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await db
+      .prepare(
+        `SELECT space_rev FROM spaces_watches WHERE space_uri = ? AND generation = ?`,
+      )
+      .bind(watch.spaceUri, watch.generation)
+      .first<{ space_rev: string | null }>();
+    if (!row) return true;
+    const current = row.space_rev ?? null;
+    if (current !== null && !revBefore(current, input.spaceRev)) return true;
+    if (input.contiguousOnly) {
+      // No checkpoint yet: only the first update ever made in a Space can
+      // establish one. Otherwise the next listing does.
+      if (current === null && input.prevSpaceRev !== undefined) return true;
+      if (
+        current !== null &&
+        (input.prevSpaceRev === undefined ||
+          revBefore(current, input.prevSpaceRev))
+      )
+        return false;
     }
-    const observations = state.removalObservations + 1;
+    // Compare-and-set on the value just read, so a concurrent advance wins.
     await db
       .prepare(
-        `UPDATE spaces_repo_state SET removal_observations = ?, updated_at = ?
-       WHERE space_uri = ? AND space_generation = ? AND repo_did = ?`,
+        `UPDATE spaces_watches SET space_rev = ?, updated_at = ?
+       WHERE space_uri = ? AND generation = ?
+         AND ${current === null ? "space_rev IS NULL" : "space_rev = ?"}`,
       )
       .bind(
-        observations,
+        input.spaceRev,
         Date.now(),
         watch.spaceUri,
         watch.generation,
-        state.repoDid,
+        ...(current === null ? [] : [current]),
       )
       .run();
-    if (observations >= 2)
-      confirmed.push({ ...state, removalObservations: observations });
   }
-  return confirmed;
+  return true;
+}
+
+/** Revisions are TIDs: equal-length strings that sort by time. */
+export function revBefore(left: string, right: string): boolean {
+  return left.length === right.length
+    ? left < right
+    : left.length < right.length;
 }
 
 export async function deleteRepoState(
@@ -847,6 +981,12 @@ export async function hideDeletedSpace(
     db
       .prepare(
         `DELETE FROM spaces_sync_leases
+       WHERE space_uri = ? AND space_generation = ?`,
+      )
+      .bind(watch.spaceUri, watch.generation),
+    db
+      .prepare(
+        `DELETE FROM spaces_repo_failures
        WHERE space_uri = ? AND space_generation = ?`,
       )
       .bind(watch.spaceUri, watch.generation),

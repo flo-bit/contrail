@@ -68,6 +68,9 @@ function watch(): SpaceWatch {
     nextReconcileAt: 0,
     lastReconciledAt: null,
     lastError: null,
+    spaceRev: null,
+    consecutiveFailures: 0,
+    lastFullReconcileAt: null,
   };
 }
 
@@ -81,7 +84,6 @@ function localState(): SpaceRepoState {
     rev: "1",
     ltHash: new RepoCommit().setHash.state(),
     commitHash: new Uint8Array(32),
-    removalObservations: 0,
   };
 }
 
@@ -855,7 +857,10 @@ describe("Space policy and authorization checks", () => {
           ? engine.syncRepo(SPACE, WRITER)
           : engine.reconcileSpace(SPACE),
       ).rejects.toMatchObject({ code: "CredentialRevoked" });
-      expect(fetchImpl).toHaveBeenCalledTimes(mode === "registration" ? 2 : 1);
+      // A writer's host reporting revocation is confirmed with the authority
+      // (one more request) before the credential is dropped.
+      const requests = mode === "reconcile" ? 1 : 2;
+      expect(fetchImpl).toHaveBeenCalledTimes(requests);
       expect((await getSpaceWatch(db, SPACE))?.status).toBe("paused");
       expect(
         await loadCredential(db, {
@@ -874,7 +879,7 @@ describe("Space policy and authorization checks", () => {
       const restarted = new SpacesSyncEngine(db, engine.config);
       await restarted.syncRepo(SPACE, WRITER);
       await restarted.reconcileSpace(SPACE);
-      expect(fetchImpl).toHaveBeenCalledTimes(mode === "registration" ? 2 : 1);
+      expect(fetchImpl).toHaveBeenCalledTimes(requests);
       expect(await getRepoState(db, watch(), WRITER)).toEqual(checkpoint);
       const result = await queryIsolatedRecords(db, projection, {
         scope: { kind: "isolated", key: spaceProjectionKey(SPACE, 1) },
@@ -1312,9 +1317,18 @@ describe("Spaces sync budget", () => {
       recoveryBatchSize: 50,
     });
     expect(resolveSpacesSyncBudget({ recoveryBatchSize: 20 })).toEqual({
-      maxIncrementalOperations: 10,
+      maxIncrementalOperations: 50,
       recoveryBatchSize: 20,
     });
+    expect(
+      resolveSpacesSyncBudget({ maxIncrementalOperations: 1000 })
+        .maxIncrementalOperations,
+    ).toBe(1000);
+    expect(() =>
+      resolveSpacesSyncBudget({ maxIncrementalOperations: 1001 }),
+    ).toThrow(
+      "syncBudget.maxIncrementalOperations must be an integer from 1 through 1000",
+    );
     expect(() => resolveSpacesSyncBudget({ recoveryBatchSize: 0 })).toThrow(
       "syncBudget.recoveryBatchSize must be an integer from 1 through 50",
     );
