@@ -453,6 +453,7 @@ export async function saveAccessLease(
     spaceUri: string;
     generation: number;
     expiresAt: number;
+    /** Opaque grant identity; use a fresh token for every authorization. */
     evidence?: string;
   },
 ): Promise<void> {
@@ -471,10 +472,38 @@ export async function saveAccessLease(
       input.spaceUri,
       input.generation,
       input.expiresAt,
-      input.evidence ?? "delegation",
+      input.evidence ?? crypto.randomUUID(),
       now,
     )
     .run();
+}
+
+/** Snapshot the current read grant before an authorization request. Its opaque
+ * evidence token lets a delayed denial preserve a concurrently replaced grant. */
+export async function loadAccessLease(
+  db: Database,
+  input: {
+    userDid: string;
+    spaceUri: string;
+    generation: number;
+    now?: number;
+  },
+): Promise<{ evidence: string; expiresAt: number } | null> {
+  const row = await db
+    .prepare(
+      `SELECT evidence, expires_at FROM spaces_access_leases
+     WHERE user_did = ? AND space_uri = ? AND space_generation = ? AND expires_at > ?`,
+    )
+    .bind(
+      input.userDid,
+      input.spaceUri,
+      input.generation,
+      input.now ?? Date.now(),
+    )
+    .first<{ evidence: string; expires_at: number }>();
+  return row
+    ? { evidence: row.evidence, expiresAt: Number(row.expires_at) }
+    : null;
 }
 
 export async function hasAccessLease(
@@ -486,19 +515,26 @@ export async function hasAccessLease(
     now?: number;
   },
 ): Promise<boolean> {
-  const row = await db
+  return (await loadAccessLease(db, input)) !== null;
+}
+
+/** Revoke only the exact grant observed by the failed authorization request. */
+export async function invalidateAccessLease(
+  db: Database,
+  input: {
+    userDid: string;
+    spaceUri: string;
+    generation: number;
+    evidence: string;
+  },
+): Promise<void> {
+  await db
     .prepare(
-      `SELECT 1 AS ok FROM spaces_access_leases
-     WHERE user_did = ? AND space_uri = ? AND space_generation = ? AND expires_at > ?`,
+      `DELETE FROM spaces_access_leases
+     WHERE user_did = ? AND space_uri = ? AND space_generation = ? AND evidence = ?`,
     )
-    .bind(
-      input.userDid,
-      input.spaceUri,
-      input.generation,
-      input.now ?? Date.now(),
-    )
-    .first<{ ok: number }>();
-  return row?.ok === 1;
+    .bind(input.userDid, input.spaceUri, input.generation, input.evidence)
+    .run();
 }
 
 function asBytes(value: unknown, name: string): Uint8Array {

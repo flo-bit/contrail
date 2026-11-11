@@ -16,6 +16,7 @@ import {
   ingestRecords,
   rebuildIsolatedCountsStatements,
   recordTimeUs,
+  validateCanonicalRecord,
   type ContrailConfig,
   type Database,
   type IngestEvent,
@@ -692,38 +693,58 @@ export class SpacesSyncEngine {
         }
       }
       const observedAt = Date.now() * 1000;
-      events.push(
-        createIngestEvent({
-          uri: formatSpaceRecordUri({
-            spaceUri: watch.spaceUri,
-            writerDid: local.repoDid,
-            collection: operation.collection,
-            rkey: operation.rkey,
-          }),
-          did: local.repoDid,
+      const value = operation.cid
+        ? (lexToJson(operation.value!) as Record<string, unknown>)
+        : undefined;
+      const event = createIngestEvent({
+        uri: formatSpaceRecordUri({
+          spaceUri: watch.spaceUri,
+          writerDid: local.repoDid,
           collection: operation.collection,
           rkey: operation.rkey,
-          operation: operation.cid
-            ? operation.prev
-              ? "update"
-              : "create"
-            : "delete",
-          cid: operation.cid,
-          value: operation.cid ? lexToJson(operation.value!) : undefined,
-          timeUs: recordTimeUs(
-            operation.value,
-            operation.collection,
-            this.config.projection,
-            observedAt,
-          ),
-          indexedAt: observedAt,
-          source: {
-            id: `space:${watch.spaceUri}:${watch.generation}`,
-            revision: operation.rev,
-            time_us: observedAt,
-          },
         }),
-      );
+        did: local.repoDid,
+        collection: operation.collection,
+        rkey: operation.rkey,
+        operation: operation.cid
+          ? operation.prev
+            ? "update"
+            : "create"
+          : "delete",
+        cid: operation.cid,
+        value,
+        timeUs: recordTimeUs(
+          operation.value,
+          operation.collection,
+          this.config.projection,
+          observedAt,
+        ),
+        indexedAt: observedAt,
+        source: {
+          id: `space:${watch.spaceUri}:${watch.generation}`,
+          revision: operation.rev,
+          time_us: observedAt,
+        },
+      });
+      if (value) {
+        const failure = await validateCanonicalRecord(
+          this.config.projection,
+          event,
+          value,
+        );
+        if (failure === "lexicon_validation") {
+          // MAC, whole-repo LtHash and this value's CID are already verified.
+          // Exclude an invalid current record instead of keeping its previous
+          // valid value. Preserve the source CID/revision in the tombstone so
+          // projection, derived state and checkpoint advance atomically.
+          events.push({ ...event, operation: "delete", record: null });
+          continue;
+        }
+        if (failure) {
+          throw new Error(`Incremental record validation failed: ${failure}`);
+        }
+      }
+      events.push(event);
     }
     await assertLease();
     const checkpoint = saveRepoStateStatement(this.db, {

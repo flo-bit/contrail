@@ -49,6 +49,8 @@ const { uri: space } = await createSpace(ownerSession, {
 
 Both public-access flags default to false. The runtime checks the authority's `com.atproto.space.policy/self` record with a fresh KEM exchange, record MAC, exact URI and CID verification. It never calls owner-only `getSpace` with a Space credential. Unpublished or mismatched policies fail closed; publishing the member list is not required.
 
+An explicit PDS access denial during credential exchange invalidates that viewer's previous exact-Space read lease. Other viewers, other Spaces/generations, and newer concurrent grants remain intact. Transient network/server failures do not revoke read leases; ambiguous authorization loss never purges verified records.
+
 For managed Spaces, configure `policy: { $type: 'com.atproto.managedspace.policy', managingApp: service.audience }` and supply `authorization.authorize` for **both** reads and writes. The owner must also enable `publishPolicy`. The callback is `com.atproto.managedspace.checkUserAccess`, including its exact service-auth `lxm`.
 
 Integrated deployment is the default. `standaloneUserApi: true` enables the optional exact-service-authenticated user API. PDS notification callbacks always require exact audience/method/issuer verification. A service audience includes its fragment; account audiences used in credential HTTP signatures are bare account DIDs.
@@ -69,7 +71,7 @@ syncBudget: { maxIncrementalOperations: 10, recoveryBatchSize: 50 },
 maxRepoStarBytes: 16 * 1024 * 1024,
 ```
 
-Synchronization authenticates each MAC-bearing response with a fresh P-256 KEM exchange, validates STAR archives completely, and checks whole-repo LtHash state before committing private records. A failed replacement leaves the last verified writer generation visible. Missing writer entries do not prove deletion. Full listing reconciliation repairs missed notifications.
+Synchronization authenticates each MAC-bearing response with a fresh P-256 KEM exchange, validates STAR archives completely, and checks whole-repo LtHash state before committing private records. Schema-invalid current records are excluded from the private projection: an authenticated invalid update retracts the previous visible value and its derived state while atomically retaining its source CID/revision and advancing the checkpoint. A failed replacement leaves the last verified writer generation visible. Missing writer entries do not prove deletion. Full listing reconciliation repairs missed notifications.
 
 ## Invitations
 

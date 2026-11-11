@@ -342,6 +342,142 @@ function opsTransport(ops: RepoOp[], commit: Commit): SpaceCredentialTransport {
 
 describe("Spaces incremental synchronization", () => {
   it.each([true, false])(
+    "retracts schema-invalid updates without losing the authenticated checkpoint (verifyCid=%s)",
+    async (verifyCid) => {
+      const config = await validatedProjection(verifyCid);
+      const { db, engine } = await engineFor(undefined, config);
+      const scope = {
+        kind: "isolated" as const,
+        key: spaceProjectionKey(SPACE, 1),
+      };
+      const before = await serializeRecord(COLLECTION, "one", {
+        $type: COLLECTION,
+        text: "before",
+      });
+      await recovery(engine)(
+        watch(),
+        WRITER,
+        starTransport(
+          RepoCommit.fromRecords([before]).toCommit({
+            space: SPACE,
+            repo: WRITER,
+            rev: "3",
+          }),
+          [before],
+        ),
+        async () => {},
+      );
+      const checkpoint = (await getRepoState(db, watch(), WRITER))!;
+      const invalidValue = { $type: COLLECTION, text: 123 };
+      const invalid = await serializeRecord(COLLECTION, "one", invalidValue);
+      const invalidCommit = RepoCommit.fromRecords([invalid]).toCommit({
+        space: SPACE,
+        repo: WRITER,
+        rev: "4",
+      });
+      await incremental(engine)(
+        watch(),
+        checkpoint,
+        opsTransport(
+          [
+            {
+              rev: "4",
+              collection: COLLECTION,
+              rkey: "one",
+              cid: invalid.cid.toString(),
+              prev: before.cid.toString(),
+              value: invalidValue,
+            },
+          ],
+          invalidCommit,
+        ),
+        async () => {},
+      );
+      expect(
+        (
+          await queryIsolatedRecords(db, config, {
+            scope,
+            collection: COLLECTION,
+          })
+        ).records,
+      ).toEqual([]);
+      const invalidCheckpoint = (await getRepoState(db, watch(), WRITER))!;
+      expect(invalidCheckpoint).toMatchObject({
+        rev: "4",
+        commitHash: invalidCommit.data,
+        visibleWriterGeneration: 1,
+      });
+      expect(
+        await db
+          .prepare(
+            "SELECT operation, cid, source_revision FROM isolated_record_versions WHERE uri = ?",
+          )
+          .bind(`${SPACE}/${WRITER}/${COLLECTION}/one`)
+          .first(),
+      ).toEqual({
+        operation: "delete",
+        cid: invalid.cid.toString(),
+        source_revision: "4",
+      });
+
+      // A fresh recovery of the same authenticated source must agree.
+      const fresh = await engineFor(undefined, config);
+      await recovery(fresh.engine)(
+        watch(),
+        WRITER,
+        starTransport(invalidCommit, [invalid]),
+        async () => {},
+      );
+      expect(
+        (
+          await queryIsolatedRecords(fresh.db, config, {
+            scope,
+            collection: COLLECTION,
+          })
+        ).records,
+      ).toEqual([]);
+      expect(
+        (await getRepoState(fresh.db, watch(), WRITER))?.commitHash,
+      ).toEqual(invalidCheckpoint.commitHash);
+
+      // Later valid writes start from the rejected record's real CID/LtHash.
+      const restoredValue = { $type: COLLECTION, text: "restored" };
+      const restored = await serializeRecord(COLLECTION, "one", restoredValue);
+      await incremental(engine)(
+        watch(),
+        invalidCheckpoint,
+        opsTransport(
+          [
+            {
+              rev: "5",
+              collection: COLLECTION,
+              rkey: "one",
+              cid: restored.cid.toString(),
+              prev: invalid.cid.toString(),
+              value: restoredValue,
+            },
+          ],
+          RepoCommit.fromRecords([restored]).toCommit({
+            space: SPACE,
+            repo: WRITER,
+            rev: "5",
+          }),
+        ),
+        async () => {},
+      );
+      expect(
+        (
+          await queryIsolatedRecords(db, config, {
+            scope,
+            collection: COLLECTION,
+          })
+        ).records.map((row) => JSON.parse(row.record!)),
+      ).toEqual([restoredValue]);
+      expect((await getRepoState(db, watch(), WRITER))?.rev).toBe("5");
+    },
+  );
+
+  it.each([true, false])(
     "rejects mismatched values before projection/checkpoint writes (verifyCid=%s)",
     async (verifyCid) => {
       const config = await validatedProjection(verifyCid);

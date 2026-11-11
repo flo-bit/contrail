@@ -16,7 +16,9 @@ import {
   hasAccessLease,
   hideDeletedSpace,
   initSpacesStorage,
+  invalidateAccessLease,
   listConnectedSpaceWatches,
+  loadAccessLease,
   purgeSpaceGeneration,
   rediscoverSpace,
   saveAccessLease,
@@ -1050,6 +1052,13 @@ export function createSpacesWorker<
             "Rediscovery is not allowed for this Space",
           );
         }
+        const existingLease = existingWatch
+          ? await loadAccessLease(db, {
+              userDid: input.userDid,
+              spaceUri: parsed.uri,
+              generation: existingWatch.generation,
+            })
+          : null;
         const authorityPds = await engine.identities.resolvePds(
           parsed.authorityDid,
         );
@@ -1070,6 +1079,20 @@ export function createSpacesWorker<
             await hideDeletedSpace(db, existingWatch);
             await purgeSpaceGeneration(db, projection, existingWatch);
             await invalidate(parsed.uri, env);
+          } else if (
+            error instanceof SpaceProtocolError &&
+            error.accessDenied &&
+            existingWatch &&
+            existingLease
+          ) {
+            // A confirmed refusal supersedes this viewer's old read grant,
+            // not other viewers' grants or a newer concurrent authorization.
+            await invalidateAccessLease(db, {
+              userDid: input.userDid,
+              spaceUri: parsed.uri,
+              generation: existingWatch.generation,
+              evidence: existingLease.evidence,
+            });
           }
           throw error;
         }
