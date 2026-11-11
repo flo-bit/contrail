@@ -1447,7 +1447,7 @@ export function createSpacesWorker<
         ...(providerLexicons.length
           ? { lexicons: new URL("/lexicons", options.service.endpoint).href }
           : {}),
-        spacesAlpha: "0.0.0-spaces-alpha-20261029171913",
+        spacesAlpha: "0.0.0-spaces-alpha-20261105160032",
       });
     }
 
