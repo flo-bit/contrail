@@ -35,7 +35,7 @@ import {
 } from "./sync";
 import { parseSpaceUri, spaceProjectionKey } from "./uri";
 import { createSpaceRecordValidation } from "./validation";
-import { isSyncedSpacePolicy } from "./policy";
+import { isAuthorityDecidedPolicy, isSyncedSpacePolicy } from "./policy";
 
 export const AUTHORIZE_SPACE_METHOD = "authorizeSpace";
 export const SYNC_SPACE_METHOD = "syncSpace";
@@ -785,6 +785,7 @@ export function createSpacesWorker<
   bindRecordValidationProvider(projection, validation.validate);
   prepareRecordValidation(projection);
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
+    if (isAuthorityDecidedPolicy(type.policy)) continue;
     if (!isSyncedSpacePolicy(type.policy)) {
       throw new TypeError(
         `Space type ${spaceType} requires an explicit supported policy`,

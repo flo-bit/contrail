@@ -15,6 +15,29 @@ export interface ManagedspacePolicy {
 }
 
 export type SyncedSpacePolicy = MemberspacePolicy | ManagedspacePolicy;
+
+/** Configuration-only marker for Space types whose authority host decides
+ * access by itself, such as a group host that is its own managing app. It is
+ * never sent to a PDS. The authority issuing a credential for a user's
+ * delegation is the only access assertion: no published policy is read, and
+ * this service is never asked `checkUserAccess`. Use it only for authorities
+ * the application trusts to enforce their own access rules. */
+export interface AuthorityDecidedPolicy {
+  $type: "authority";
+}
+
+export type SpaceTypePolicy = SyncedSpacePolicy | AuthorityDecidedPolicy;
+
+export function isAuthorityDecidedPolicy(
+  value: unknown,
+): value is AuthorityDecidedPolicy {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as Record<string, unknown>).$type === "authority" &&
+    Object.keys(value).length === 1
+  );
+}
 export type SpacePolicy =
   | { $type: "com.atproto.personalspace.policy" }
   | SyncedSpacePolicy;

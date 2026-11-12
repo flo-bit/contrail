@@ -53,6 +53,8 @@ An explicit PDS access denial during credential exchange invalidates that viewer
 
 For managed Spaces, configure `policy: { $type: 'com.atproto.managedspace.policy', managingApp: service.audience }` and supply `authorization.authorize` for **both** reads and writes. The owner must also enable `publishPolicy`. The callback is `com.atproto.managedspace.checkUserAccess`, including its exact service-auth `lxm`.
 
+For Spaces whose authority's own host decides access, such as groups on a group host that is its own managing app, configure `policy: { $type: 'authority' }`. No published policy is read and this service is never asked `checkUserAccess`: the authority issuing a credential for the user's delegation is the only access assertion, and each read still needs that user's own lease. Use it only for authorities the application trusts to enforce their own rules. Verified locally against `atproto-group-host` on the October 29 alpha; see `45-atmo-rooms`.
+
 Integrated deployment is the default. `standaloneUserApi: true` enables the optional exact-service-authenticated user API. PDS notification callbacks always require exact audience/method/issuer verification. A service audience includes its fragment; account audiences used in credential HTTP signatures are bare account DIDs.
 
 Cloudflare bindings:

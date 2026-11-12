@@ -65,14 +65,20 @@ import {
 } from "./storage";
 import { formatSpaceRecordUri, parseSpaceUri, spaceProjectionKey } from "./uri";
 
-import { isSyncedSpacePolicy, type SyncedSpacePolicy } from "./policy";
+import {
+  isAuthorityDecidedPolicy,
+  isSyncedSpacePolicy,
+  type SpaceTypePolicy,
+} from "./policy";
 
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
   /** Access configuration asserted against the authority's authenticated policy
-   * record. The owner must enable publishPolicy on the PDS. */
-  policy: SyncedSpacePolicy;
+   * record. The owner must enable publishPolicy on the PDS. An
+   * `{ $type: "authority" }` policy skips that check: the authority host
+   * decides access by itself. */
+  policy: SpaceTypePolicy;
 }
 
 export interface SpacesSyncBudget {
@@ -411,6 +417,9 @@ export class SpacesSyncEngine {
     if (type.skey !== undefined && parsed.skey !== type.skey) {
       throw new Error(`Unsupported Space key for ${parsed.type}`);
     }
+    // The authority host decides access by itself; it need not publish a
+    // policy, and the credential it issued is the assertion.
+    if (isAuthorityDecidedPolicy(type.policy)) return;
     const read = async (forceRefresh: boolean) => {
       const kemDidKey = await this.identities.resolveKemKey(
         parsed.authorityDid,
