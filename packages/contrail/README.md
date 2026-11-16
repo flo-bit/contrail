@@ -259,7 +259,7 @@ SQLite dev mode exposes configured protected methods only on loopback without in
 
 Jetstream generation replay requires an operator-owned continuity epoch and retention guarantee. It uses real stream events as marks, never wall clock or a quiet socket. Optional busy watermark collections can prove progress without being projected.
 
-An optional Alluvium adapter loads a fresh generation from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps every current record outside the Bluesky app and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
+An optional Alluvium adapter loads a fresh generation from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps a snapshot of every current record outside the Bluesky app, rebuilt about hourly, and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
 
 ```bash
 contrail backfill --sqlite ./data/contrail.sqlite --alluvium
@@ -289,11 +289,11 @@ await bootstrapFreshProjection({
 });
 ```
 
-The export holds current state, so nothing is replayed during bootstrap. The target persists a timestamp cursor five minutes before the export's head, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names; the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
+The export holds current state as of its snapshot, so nothing is replayed during bootstrap. The target persists a timestamp cursor five minutes before the snapshot's last event, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names: it replays the hour or so since the snapshot, and the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
 
 With `--sqlite`, the record tables' secondary indexes are dropped while the export loads and built once at the end, which is much cheaper than maintaining them per row; the dropped set is recorded first, so an interrupted run restores exactly those indexes when it completes. D1 keeps them, since one statement there cannot index a large table within its time limit.
 
-An interrupted export continues after the last record projected, within one run or after a restart. Three things make the adapter refuse instead of loading a wrong answer: a collection the service does not carry (it reports the namespaces it excludes, such as `app.bsky.*`), a service more than ten minutes behind the firehose, and malformed export lines. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
+An interrupted export continues after the last record projected, within one run or after a restart, even if the service has published a newer snapshot meanwhile. Three things make the adapter refuse instead of loading a wrong answer: a collection the service does not carry (it reports the namespaces it excludes, such as `app.bsky.*`), a snapshot more than six hours old (`maxAgeUs`; a Jetstream service only replays its last 36 hours), and malformed export lines. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 

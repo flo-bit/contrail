@@ -30,22 +30,17 @@ interface Row {
   timeUs?: number;
 }
 
+function uri(row: Row): string {
+  return `at://${DID}/${row.collection}/${row.rkey}`;
+}
+
 function line(row: Row, index: number): string {
   return JSON.stringify({
-    // The service splices the token in first; field order is not relied on.
-    resume: `token-${index}`,
-    did: DID,
-    cursor: 100 + index,
+    uri: uri(row),
+    cid: `bafy-${row.rkey}`,
+    rev: "3kabcdefghij2",
     time_us: row.timeUs ?? HEAD_US - 1_000_000 + index,
-    kind: "commit",
-    commit: {
-      operation: "create",
-      collection: row.collection,
-      rkey: row.rkey,
-      rev: "3kabcdefghij2",
-      cid: `bafy-${row.rkey}`,
-      record: { $type: row.collection, name: row.name },
-    },
+    record: { $type: row.collection, name: row.name },
   });
 }
 
@@ -56,27 +51,22 @@ interface ServiceOptions {
   cutAfter?: number;
   /** Replace export line N (0-based, within a response) with raw text. */
   corrupt?: { at: number; text: string };
-  /** Behave like a service without /alluvium/head. */
-  legacyHead?: boolean;
 }
 
-/** A fetch that behaves like the service's /collections and /export. */
+/** A fetch that behaves like the service's /alluvium/head and /export. */
 function service(options: ServiceOptions) {
   const requests: URL[] = [];
   let exports = 0;
   const fetchImpl: typeof fetch = async (input) => {
     const url = new URL(String(input));
     requests.push(url);
-    if (url.pathname === "/alluvium/head" && options.legacyHead) {
-      return new Response("not found", { status: 404 });
-    }
-    if (url.pathname === "/alluvium/head" || url.pathname === "/collections") {
+    if (url.pathname === "/alluvium/head") {
       return Response.json(
         options.head ?? {
           cursor: 1_000,
           time_us: HEAD_US,
           excludes: ["app.bsky.*", "chat.bsky.*"],
-          collections: [],
+          snapshot: "1000",
         },
       );
     }
@@ -84,7 +74,8 @@ function service(options: ServiceOptions) {
     exports += 1;
     const wanted = new Set(url.searchParams.getAll("collection"));
     const after = url.searchParams.get("after");
-    const start = after ? Number(after.replace("token-", "")) + 1 : 0;
+    // The rows are listed in export order; resume just past the one named.
+    const start = after ? options.rows.findIndex((row) => uri(row) === after) + 1 : 0;
     const selected = options.rows
       .map((row, index) => ({ row, index }))
       .filter(({ row, index }) => index >= start && wanted.has(row.collection));
@@ -92,7 +83,7 @@ function service(options: ServiceOptions) {
     if (options.corrupt) lines[options.corrupt.at] = options.corrupt.text;
     const cut = exports === 1 && options.cutAfter !== undefined;
     if (cut) lines = lines.slice(0, options.cutAfter);
-    else lines.push(JSON.stringify({ kind: "end", cursor: 1_000, time_us: HEAD_US, records: selected.length }));
+    else lines.push(JSON.stringify({ end: true, cursor: 1_000, time_us: HEAD_US, records: selected.length }));
     return new Response(lines.map((text) => `${text}\n`).join(""), {
       headers: { "content-type": "application/x-ndjson" },
     });
@@ -155,8 +146,8 @@ describe("Alluvium bootstrap source", () => {
       "e1", "e2", "e3", "r1", "r2",
     ]);
     expect(batches.map((batch) => batch.progress)).toEqual([
-      { partition: "export", cursor: "token-1", complete: false },
-      { partition: "export", cursor: "token-3", complete: false },
+      { partition: "export", cursor: uri(ROWS[1]!), complete: false },
+      { partition: "export", cursor: uri(ROWS[3]!), complete: false },
       { partition: "export", cursor: null, complete: true },
     ]);
     expect(batches.map((batch) => batch.done)).toEqual([false, false, true]);
@@ -176,7 +167,6 @@ describe("Alluvium bootstrap source", () => {
 
     const exportRequest = requests.find((url) => url.pathname === "/export")!;
     expect(exportRequest.searchParams.getAll("collection")).toEqual([EVENT, RSVP]);
-    expect(exportRequest.searchParams.get("resume")).toBe("1");
 
     // Live ingestion resumes a rewind before the pinned head, on a time
     // cursor, and the capture mark sits strictly before it.
@@ -194,16 +184,6 @@ describe("Alluvium bootstrap source", () => {
     ).toEqual([{ mutations: [], checkpoint: through, caughtUp: true }]);
   });
 
-  it("reads the small head endpoint and falls back to /collections", async () => {
-    for (const legacyHead of [false, true]) {
-      const { fetchImpl, requests } = service({ rows: ROWS, legacyHead });
-      const snapshot = await sources(fetchImpl).snapshotSource.prepare({ collections: [EVENT] });
-      expect(snapshot.collections).toEqual({ [EVENT]: { state: "complete" } });
-      const paths = requests.map((url) => url.pathname);
-      expect(paths).toEqual(legacyHead ? ["/alluvium/head", "/collections"] : ["/alluvium/head"]);
-    }
-  });
-
   it("continues an interrupted export after the last record it received", async () => {
     const { fetchImpl, requests } = service({ rows: ROWS, cutAfter: 3 });
     const source = sources(fetchImpl);
@@ -218,7 +198,7 @@ describe("Alluvium bootstrap source", () => {
     const exports = requests.filter((url) => url.pathname === "/export");
     expect(exports).toHaveLength(2);
     expect(exports[0]!.searchParams.get("after")).toBeNull();
-    expect(exports[1]!.searchParams.get("after")).toBe("token-2");
+    expect(exports[1]!.searchParams.get("after")).toBe(uri(ROWS[2]!));
   });
 
   it("resumes from durable progress after a restart", async () => {
@@ -229,11 +209,11 @@ describe("Alluvium bootstrap source", () => {
     const batches = await collect(
       source.snapshotSource.read({
         snapshot,
-        progress: [{ partition: "export", cursor: "token-2", complete: false }],
+        progress: [{ partition: "export", cursor: uri(ROWS[2]!), complete: false }],
       }),
     );
     expect(batches.flatMap((batch) => batch.records).map((record) => record.rkey)).toEqual(["r1", "r2"]);
-    expect(requests.find((url) => url.pathname === "/export")!.searchParams.get("after")).toBe("token-2");
+    expect(requests.find((url) => url.pathname === "/export")!.searchParams.get("after")).toBe(uri(ROWS[2]!));
 
     // A completed export reads nothing more.
     expect(
@@ -264,9 +244,12 @@ describe("Alluvium bootstrap source", () => {
   it("rejects malformed and unrequested records without retrying", async () => {
     for (const text of [
       "not json",
-      JSON.stringify({ kind: "commit", did: DID, time_us: 1, resume: "t", commit: { operation: "create", collection: "com.example.other", rkey: "x", cid: "c", record: {} } }),
-      JSON.stringify({ kind: "commit", did: "nope", time_us: 1, resume: "t", commit: { operation: "create", collection: EVENT, rkey: "x", cid: "c", record: {} } }),
-      JSON.stringify({ kind: "commit", did: DID, time_us: 1, commit: { operation: "create", collection: EVENT, rkey: "x", cid: "c", record: {} } }),
+      JSON.stringify({ uri: `at://${DID}/com.example.other/x`, cid: "c", time_us: 1, record: {} }),
+      JSON.stringify({ uri: `at://nope/${EVENT}/x`, cid: "c", time_us: 1, record: {} }),
+      JSON.stringify({ uri: `at://${DID}/${EVENT}/x/y`, cid: "c", time_us: 1, record: {} }),
+      JSON.stringify({ uri: `at://${DID}/${EVENT}/x`, time_us: 1, record: {} }),
+      JSON.stringify({ uri: `at://${DID}/${EVENT}/x`, cid: "c", record: {} }),
+      JSON.stringify({ uri: `at://${DID}/${EVENT}/x`, cid: "c", time_us: 1, record: null }),
     ]) {
       const { fetchImpl, requests } = service({ rows: ROWS, corrupt: { at: 1, text } });
       const source = sources(fetchImpl);
@@ -276,23 +259,25 @@ describe("Alluvium bootstrap source", () => {
     }
   });
 
-  it("refuses collections the service does not carry, a lagging service, and an old one", async () => {
+  it("refuses collections the service does not carry, a stale snapshot, and a head without a time", async () => {
     const carried = sources(service({ rows: [] }).fetchImpl);
     await expect(
       carried.snapshotSource.prepare({ collections: [EVENT, "app.bsky.feed.post"] }),
     ).rejects.toThrow("does not carry app.bsky.feed.post");
 
-    const lagging = sources(
-      service({
-        rows: [],
-        head: { cursor: 5, time_us: HEAD_US - 3_600_000_000, excludes: [], collections: [] },
-      }).fetchImpl,
+    // An hourly snapshot is a few hours old at most; a day-old one is not.
+    const recent = sources(
+      service({ rows: [], head: { cursor: 5, time_us: HEAD_US - 2 * 3_600_000_000, excludes: [] } }).fetchImpl,
     );
-    await expect(lagging.snapshotSource.prepare({ collections: [EVENT] })).rejects.toThrow(
-      "60 minutes behind the firehose",
+    await expect(recent.snapshotSource.prepare({ collections: [EVENT] })).resolves.toBeDefined();
+    const stale = sources(
+      service({ rows: [], head: { cursor: 5, time_us: HEAD_US - 24 * 3_600_000_000, excludes: [] } }).fetchImpl,
+    );
+    await expect(stale.snapshotSource.prepare({ collections: [EVENT] })).rejects.toThrow(
+      "serving a snapshot 1440 minutes old",
     );
 
-    const old = sources(service({ rows: [], head: { cursor: 5, collections: [] } }).fetchImpl);
+    const old = sources(service({ rows: [], head: { cursor: 5 } }).fetchImpl);
     await expect(old.snapshotSource.prepare({ collections: [EVENT] })).rejects.toThrow(
       "Alluvium head is unavailable",
     );
@@ -353,7 +338,7 @@ describe("Alluvium bootstrap source", () => {
     const { fetchImpl } = service({
       rows: ROWS.map((row) => ({ ...row, timeUs: Date.now() * 1_000 - 5_000_000 })),
       // The real clock decides lag here, so report a current head.
-      head: { cursor: 1_000, time_us: Date.now() * 1_000, excludes: ["app.bsky.*"], collections: [] },
+      head: { cursor: 1_000, time_us: Date.now() * 1_000, excludes: ["app.bsky.*"] },
     });
     const realFetch = globalThis.fetch;
     globalThis.fetch = fetchImpl;

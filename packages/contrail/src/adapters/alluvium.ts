@@ -17,14 +17,16 @@ import type { ContrailConfig } from "../core/types";
  * exported per collection. */
 export const DEFAULT_ALLUVIUM_ENDPOINT = "https://backfill.atmo.tools";
 
-/** How far before the export's head live ingestion starts. Alluvium and the
- * live Jetstream service witness events on separate clocks; the overlap is
- * replayed idempotently. */
+/** How far before the snapshot's time live ingestion starts. Alluvium and
+ * the live Jetstream service witness events on separate clocks; the overlap
+ * is replayed idempotently. */
 export const DEFAULT_ALLUVIUM_REWIND_US = 5 * 60 * 1_000_000;
 
-/** An export is refused when the service is further behind the firehose than
- * this, for example while it is still loading its own archive. */
-export const DEFAULT_ALLUVIUM_MAX_LAG_US = 10 * 60 * 1_000_000;
+/** An export is refused when the service's snapshot is older than this.
+ * Alluvium rebuilds its snapshot about hourly, and live ingestion replays
+ * everything since. That replay must stay well inside the 36 hours a
+ * Jetstream service keeps, so an old snapshot means a stalled service. */
+export const DEFAULT_ALLUVIUM_MAX_AGE_US = 6 * 60 * 60 * 1_000_000;
 
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_MAX_ATTEMPTS = 4;
@@ -62,8 +64,8 @@ export interface AlluviumBootstrapSourceOptions {
   token?: string;
   /** Default: {@link DEFAULT_ALLUVIUM_REWIND_US}. */
   rewindUs?: number;
-  /** Default: {@link DEFAULT_ALLUVIUM_MAX_LAG_US}. */
-  maxLagUs?: number;
+  /** Default: {@link DEFAULT_ALLUVIUM_MAX_AGE_US}. */
+  maxAgeUs?: number;
   transport?: AlluviumTransportOptions;
   fetch?: typeof fetch;
   /** Permit HTTP to a non-loopback host. Loopback endpoints never need it.
@@ -78,9 +80,10 @@ export interface AlluviumBootstrapSources {
   changeSource: AlluviumChangeSource;
 }
 
-/** What `GET /collections` reports about the service's head. */
+/** What `GET /alluvium/head` reports about the snapshot being served. */
 interface AlluviumHead {
-  /** Sequence number on the service's own Jetstream. */
+  /** Sequence number, on the service's own Jetstream, of the last event the
+   * snapshot includes. */
   cursor: number;
   /** When that event was witnessed, in unix microseconds. */
   timeUs: number;
@@ -89,7 +92,7 @@ interface AlluviumHead {
 }
 
 interface PinnedExport {
-  v: 2;
+  v: 3;
   endpoint: string;
   collections: string[];
   /** Service sequence number when the export was pinned; informational. */
@@ -230,7 +233,7 @@ class AlluviumAdapterBase {
   protected readonly fetchImpl: typeof fetch;
   protected readonly token: string | undefined;
   protected readonly rewindUs: number;
-  protected readonly maxLagUs: number;
+  protected readonly maxAgeUs: number;
   protected readonly maxAttempts: number;
   protected readonly requestTimeoutMs: number;
   protected readonly maxLineCharacters: number;
@@ -243,7 +246,7 @@ class AlluviumAdapterBase {
     this.fetchImpl = options.fetch ?? fetch;
     this.token = options.token;
     this.rewindUs = nonNegative(options.rewindUs, DEFAULT_ALLUVIUM_REWIND_US, "Alluvium rewindUs");
-    this.maxLagUs = positiveInteger(options.maxLagUs, DEFAULT_ALLUVIUM_MAX_LAG_US, "Alluvium maxLagUs");
+    this.maxAgeUs = positiveInteger(options.maxAgeUs, DEFAULT_ALLUVIUM_MAX_AGE_US, "Alluvium maxAgeUs");
     const transport = options.transport ?? {};
     this.maxAttempts = positiveInteger(transport.maxAttempts, DEFAULT_MAX_ATTEMPTS, "Alluvium maxAttempts");
     this.requestTimeoutMs = positiveInteger(
@@ -273,6 +276,9 @@ class AlluviumAdapterBase {
   /** Open a response, failing on anything but 200. The timeout covers the
    * wait for headers only; an export body streams for as long as it needs. */
   protected async open(url: URL, signal?: AbortSignal): Promise<Response> {
+    // The default Accept-Encoding stays: the service answers it with gzip.
+    // It can also send its zstd frames as stored, but Node's fetch (24.15)
+    // decodes only the first frame of such a stream.
     const headers = new Headers({ accept: "application/json, application/x-ndjson" });
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
     const timeout = new AbortController();
@@ -301,37 +307,24 @@ class AlluviumAdapterBase {
     return response;
   }
 
-  /** Read the service's current head, retrying transient failures. Uses
-   * the small head endpoint, falling back to the full collection list on a
-   * service that predates it. */
+  /** Read the service's current head, retrying transient failures. */
   protected async head(signal?: AbortSignal): Promise<AlluviumHead> {
-    let url = new URL("alluvium/head", this.endpoint);
+    const url = new URL("alluvium/head", this.endpoint);
     let lastError: unknown;
     for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
       if (attempt > 0) await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
       try {
         const body: unknown = await (await this.open(url, signal)).json();
         if (!object(body)) throw new TypeError("Alluvium head must be an object");
-        const timeUs = body.time_us;
-        if (timeUs === undefined) {
-          throw new Error(
-            "Alluvium service does not report its head time; it predates this adapter",
-          );
-        }
         const excludes = Array.isArray(body.excludes) ? body.excludes : [];
         return {
           cursor: safeInteger(body.cursor, "Alluvium head cursor"),
-          timeUs: safeInteger(timeUs, "Alluvium head time_us"),
+          timeUs: safeInteger(body.time_us, "Alluvium head time_us"),
           excludes: excludes.filter((item): item is string => typeof item === "string"),
         };
       } catch (error) {
         signal?.throwIfAborted();
         lastError = error;
-        if ((error as { status?: number }).status === 404 && url.pathname.endsWith("/alluvium/head")) {
-          url = new URL("collections", this.endpoint);
-          attempt -= 1;
-          continue;
-        }
         if ((error as { retryable?: boolean }).retryable === false) break;
       }
     }
@@ -353,7 +346,7 @@ function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
   if (
     snapshot.provider !== PROVIDER ||
     !object(data) ||
-    data.v !== 2 ||
+    data.v !== 3 ||
     typeof data.endpoint !== "string" ||
     !Array.isArray(data.collections) ||
     !data.collections.every((item) => typeof item === "string")
@@ -361,7 +354,7 @@ function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
     throw new Error(`Snapshot ${snapshot.id} was not prepared by this Alluvium adapter`);
   }
   return {
-    v: 2,
+    v: 3,
     endpoint: data.endpoint,
     collections: data.collections as string[],
     cursor: safeInteger(data.cursor, "Pinned Alluvium cursor"),
@@ -369,46 +362,42 @@ function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
   };
 }
 
-/** One line of an export: a Jetstream commit event for a record's creation,
- * carrying a resume token. */
+/** One line of an export: a record, with the time the service witnessed
+ * this version of it. Its URI is also the position to resume after. */
 function exportRecord(
   line: Record<string, unknown>,
   collections: ReadonlySet<string>,
-): { record: SnapshotRecord; timeUs: number; resume: string } {
-  const commit = line.commit;
-  if (line.kind !== "commit" || !object(commit) || commit.operation !== "create") {
+): { record: SnapshotRecord; timeUs: number } {
+  const { uri, cid, record } = line;
+  if (typeof uri !== "string" || !uri.startsWith("at://")) {
     throw new TypeError("Alluvium export line is not a record");
   }
-  const did = line.did;
-  const { collection, rkey, cid, record } = commit;
-  if (typeof did !== "string" || !isDid(did)) throw new TypeError("Alluvium record has an invalid DID");
-  if (typeof collection !== "string" || !collections.has(collection)) {
+  const [did, collection, rkey, ...extra] = uri.slice("at://".length).split("/");
+  if (!did || !isDid(did)) throw new TypeError("Alluvium record has an invalid DID");
+  if (!collection || !collections.has(collection)) {
     throw new TypeError(`Alluvium returned a record of an unrequested collection: ${String(collection)}`);
   }
-  if (typeof rkey !== "string" || !isRecordKey(rkey)) {
+  if (!rkey || extra.length > 0 || !isRecordKey(rkey)) {
     throw new TypeError("Alluvium record has an invalid record key");
   }
   if (typeof cid !== "string" || !cid) throw new TypeError("Alluvium record has no CID");
   if (!object(record)) throw new TypeError("Alluvium record value must be an object");
-  if (typeof line.resume !== "string" || !line.resume) {
-    throw new TypeError("Alluvium record has no resume token");
-  }
   return {
-    record: { uri: `at://${did}/${collection}/${rkey}`, did, collection, rkey, cid, value: record },
+    record: { uri, did, collection, rkey, cid, value: record },
     timeUs: safeInteger(line.time_us, "Alluvium record time_us"),
-    resume: line.resume,
   };
 }
 
 /**
  * Current-state snapshot from an Alluvium export.
  *
- * One request streams every live record of the selected collections. It is
- * resumable by record: a dropped connection or a restarted process continues
- * after the last record it projected. Records read after a resume come from
- * a later moment than those read before it; that is sound because live
- * ingestion then replays from before the export began, which brings every
- * record to the same final state.
+ * One request streams every record of the selected collections as of the
+ * service's latest snapshot. It is resumable by record: a dropped connection
+ * or a restarted process continues after the last record it projected.
+ * Records read after a resume may come from a newer snapshot than those read
+ * before it; that is sound because live ingestion then replays from before
+ * the first snapshot's time, which brings every record to the same final
+ * state.
  */
 export class AlluviumSnapshotSource extends AlluviumAdapterBase implements SnapshotSource {
   async prepare(options: {
@@ -424,14 +413,14 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
         );
       }
     }
-    const lagUs = this.now() * 1_000 - head.timeUs;
-    if (lagUs > this.maxLagUs) {
+    const ageUs = this.now() * 1_000 - head.timeUs;
+    if (ageUs > this.maxAgeUs) {
       throw new Error(
-        `Alluvium at ${this.endpoint.host} is ${Math.round(lagUs / 60_000_000)} minutes behind the firehose`,
+        `Alluvium at ${this.endpoint.host} is serving a snapshot ${Math.round(ageUs / 60_000_000)} minutes old`,
       );
     }
     const pinned: PinnedExport = {
-      v: 2,
+      v: 3,
       endpoint: this.endpoint.href,
       collections,
       cursor: head.cursor,
@@ -442,7 +431,7 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
     return {
       id: `alluvium:${this.endpoint.host}:${head.cursor}`,
       provider: PROVIDER,
-      // Each response is one consistent view, but a resumed export spans
+      // Each response is one snapshot, but a resumed export can span
       // several, and the live replay is what reconciles them.
       consistency: "sampled-current-state",
       collections: coverage,
@@ -473,7 +462,6 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
       if (attempt > 0) await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), options.signal);
       const url = new URL("export", this.endpoint);
       for (const collection of pinned.collections) url.searchParams.append("collection", collection);
-      url.searchParams.set("resume", "1");
       if (after) url.searchParams.set("after", after);
 
       let lines: AsyncGenerator<Record<string, unknown>>;
@@ -489,7 +477,7 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
       let received = 0;
       try {
         for await (const line of lines) {
-          if (line.kind === "end") {
+          if (line.end === true) {
             if (safeInteger(line.records, "Alluvium export record count") !== received) {
               throw new Error("Alluvium export ended with a different record count than it sent");
             }
@@ -507,7 +495,7 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
           // A batch is ordered against later changes by one time, so it
           // takes the oldest of its records': none may look newer than it is.
           batchTimeUs = Math.min(batchTimeUs, item.timeUs);
-          after = item.resume;
+          after = item.record.uri;
           if (records.length >= this.batchSize) {
             yield {
               records,
@@ -594,8 +582,8 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
 /**
  * Hand-off from an Alluvium export to live ingestion.
  *
- * The export already contains every change up to the moment it was taken,
- * so there is nothing to replay during bootstrap. This source only fixes the
+ * The export already contains every change up to its snapshot, so there is
+ * nothing to replay during bootstrap. This source only fixes the
  * two coordinates the coordinator needs: where capture began, and the
  * timestamp cursor live ingestion resumes from. Both are times, not sequence
  * numbers, so the live service can be any Jetstream instance.
