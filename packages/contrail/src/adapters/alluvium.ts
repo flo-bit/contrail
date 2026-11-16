@@ -295,14 +295,17 @@ class AlluviumAdapterBase {
       await response.body?.cancel().catch(() => {});
       const error = new Error(`Alluvium ${url.pathname} returned HTTP ${response.status}`);
       (error as Error & { retryable?: boolean }).retryable = retryableStatus(response.status);
+      (error as Error & { status?: number }).status = response.status;
       throw error;
     }
     return response;
   }
 
-  /** Read the service's current head, retrying transient failures. */
+  /** Read the service's current head, retrying transient failures. Uses
+   * the small head endpoint, falling back to the full collection list on a
+   * service that predates it. */
   protected async head(signal?: AbortSignal): Promise<AlluviumHead> {
-    const url = new URL("collections", this.endpoint);
+    let url = new URL("alluvium/head", this.endpoint);
     let lastError: unknown;
     for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
       if (attempt > 0) await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
@@ -324,6 +327,11 @@ class AlluviumAdapterBase {
       } catch (error) {
         signal?.throwIfAborted();
         lastError = error;
+        if ((error as { status?: number }).status === 404 && url.pathname.endsWith("/alluvium/head")) {
+          url = new URL("collections", this.endpoint);
+          attempt -= 1;
+          continue;
+        }
         if ((error as { retryable?: boolean }).retryable === false) break;
       }
     }

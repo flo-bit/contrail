@@ -1,6 +1,8 @@
 import type { ContrailConfig, Database, IngestEvent, Statement } from "./types";
 import { recordTimeUs, createIngestEvent, ingestRecords } from "./ingest";
-import { getDependentNsids } from "./types";
+import { getDependentNsids, recordsTableName } from "./types";
+import { getDialect, isPostgresDialect } from "./dialect";
+import { getMeta, setMeta } from "./db/meta";
 import {
   loadKnownActorDids,
   rebuildDerivedProjections,
@@ -63,9 +65,22 @@ interface BootstrapProgressRow {
   completed: number;
 }
 
+/** Secondary indexes dropped for the duration of a bootstrap load, as JSON
+ * `[{ name, sql }]`. Present only while they are missing. */
+export const BOOTSTRAP_DEFERRED_INDEXES_META_KEY = "bootstrap_deferred_indexes";
+
 export interface DatabaseBootstrapTargetOptions {
   /** Skip FTS/count maintenance while loading and rebuild it before complete. */
   deferDerivedProjections?: boolean;
+  /** Drop the secondary indexes of the record tables while the snapshot
+   * loads and build them once before completion. A bulk load otherwise
+   * updates every index for every row. The indexes are recorded durably
+   * before they are dropped, so an interrupted bootstrap restores exactly
+   * what it removed when it is resumed and completes. Only SQLite-family
+   * databases support this; elsewhere the option is ignored. It suits a
+   * database that can build an index over the loaded data in one statement:
+   * a local SQLite file, not a hosted D1 with a per-statement time limit. */
+  deferSecondaryIndexes?: boolean;
   /** Additional actors already known to be in acquisition scope. */
   knownDids?: ReadonlySet<string>;
   /** Map an opaque bootstrap checkpoint to the numeric cursor consumed by the
@@ -276,6 +291,57 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     if (state?.phase !== "snapshot" || !state.snapshot) {
       throw new Error("Could not pin the prepared bootstrap snapshot");
     }
+    await this.deferSecondaryIndexes();
+  }
+
+  /** Record, then drop, every plain secondary index on the tables a
+   * snapshot writes. Unique indexes stay: upserts resolve conflicts on
+   * them. A second call is a no-op while a recorded set is outstanding. */
+  private async deferSecondaryIndexes(): Promise<void> {
+    if (!this.options.deferSecondaryIndexes) return;
+    if (isPostgresDialect(getDialect(this.db))) return;
+    if (await getMeta(this.db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY)) return;
+    const tables = [
+      ...Object.keys(this.config.collections).map(recordsTableName),
+      "record_versions",
+    ];
+    const rows = await this.db
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'index' AND sql IS NOT NULL
+           AND tbl_name IN (${tables.map(() => "?").join(", ")})`,
+      )
+      .bind(...tables)
+      .all<{ name: string; sql: string }>();
+    const indexes = (rows.results ?? []).filter(
+      (row) => /^[A-Za-z0-9_]+$/.test(row.name) && !/^\s*CREATE\s+UNIQUE\b/i.test(row.sql),
+    );
+    if (indexes.length === 0) return;
+    // Durable before the first drop: from here on, completion can always
+    // put back exactly what is missing.
+    await setMeta(this.db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY, JSON.stringify(indexes));
+    for (const index of indexes) {
+      await this.db.prepare(`DROP INDEX IF EXISTS ${index.name}`).run();
+    }
+  }
+
+  /** Rebuild the indexes {@link deferSecondaryIndexes} dropped. */
+  private async restoreSecondaryIndexes(): Promise<void> {
+    const recorded = await getMeta(this.db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY);
+    if (!recorded) return;
+    const indexes = JSON.parse(recorded) as Array<{ name: string; sql: string }>;
+    for (const index of indexes) {
+      // The recorded statement is the engine's own text for the index. It
+      // may already exist if a previous completion was interrupted here.
+      const sql = /\bIF\s+NOT\s+EXISTS\b/i.test(index.sql)
+        ? index.sql
+        : index.sql.replace(/^\s*CREATE\s+INDEX\s+/i, "CREATE INDEX IF NOT EXISTS ");
+      await this.db.prepare(sql).run();
+    }
+    await this.db
+      .prepare("DELETE FROM _contrail_meta WHERE key = ?")
+      .bind(BOOTSTRAP_DEFERRED_INDEXES_META_KEY)
+      .run();
   }
 
   async applySnapshotBatch(
@@ -438,6 +504,8 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
     ) {
       throw new Error("Cannot complete bootstrap before catch-up reaches its target");
     }
+    // Rebuilding projections and verification both read through them.
+    await this.restoreSecondaryIndexes();
     if (this.options.deferDerivedProjections) {
       await rebuildDerivedProjections(this.db, this.config);
     }

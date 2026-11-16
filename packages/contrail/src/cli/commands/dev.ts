@@ -263,6 +263,7 @@ async function runSqliteDev(
         lexicons,
         endpoint: options.alluviumEndpoint,
         token: options.alluviumToken,
+        deferIndexes: true,
       });
       console.log(
         `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +

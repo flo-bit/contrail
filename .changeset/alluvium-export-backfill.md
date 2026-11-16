@@ -6,6 +6,8 @@ Replace the Alluvium bootstrap adapter with one for the new export service.
 
 `contrail backfill --alluvium` and `contrail dev --alluvium` now load a fresh generation from a single streamed export per bootstrap (default `https://backfill.atmo.tools`) and resume live ingestion from a timestamp cursor just before the export's head, on whichever Jetstream service is configured.
 
+The SQLite paths (`--sqlite`, `contrail dev`) also drop the record tables' secondary indexes while loading and build them once at the end; `DatabaseBootstrapTarget` exposes this as `deferSecondaryIndexes` and the bootstrap helpers as `deferIndexes`. It is off for D1, where one statement cannot index a large table within its time limit.
+
 Breaking, for the experimental `@atmo-dev/contrail/alluvium` entry point and CLI flags:
 
 - The version-1 manifest protocol (bases, archive tails, checksummed objects) is no longer supported. `AlluviumCollectionManifest` and the related types are gone.

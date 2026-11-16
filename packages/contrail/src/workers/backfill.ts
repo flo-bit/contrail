@@ -118,6 +118,10 @@ export interface AlluviumBootstrapOptions {
   /** How far before the export's head live ingestion resumes. */
   rewindUs?: number;
   transport?: AlluviumTransportOptions;
+  /** Build the record tables' secondary indexes once after the load
+   * instead of maintaining them per row. Use for a local SQLite file; leave
+   * off for D1, where one statement cannot index a large table in time. */
+  deferIndexes?: boolean;
 }
 
 export interface AlluviumBootstrapViaWranglerOptions
@@ -179,6 +183,7 @@ async function runAlluviumBootstrap(
   }
   const target = new DatabaseBootstrapTarget(db, contrail.config, {
     deferDerivedProjections: true,
+    deferSecondaryIndexes: opts.deferIndexes === true,
     liveCursor: createAlluviumLiveCursor(source),
   });
   const prior = await target.load();

@@ -56,6 +56,8 @@ interface ServiceOptions {
   cutAfter?: number;
   /** Replace export line N (0-based, within a response) with raw text. */
   corrupt?: { at: number; text: string };
+  /** Behave like a service without /alluvium/head. */
+  legacyHead?: boolean;
 }
 
 /** A fetch that behaves like the service's /collections and /export. */
@@ -65,7 +67,10 @@ function service(options: ServiceOptions) {
   const fetchImpl: typeof fetch = async (input) => {
     const url = new URL(String(input));
     requests.push(url);
-    if (url.pathname === "/collections") {
+    if (url.pathname === "/alluvium/head" && options.legacyHead) {
+      return new Response("not found", { status: 404 });
+    }
+    if (url.pathname === "/alluvium/head" || url.pathname === "/collections") {
       return Response.json(
         options.head ?? {
           cursor: 1_000,
@@ -189,6 +194,16 @@ describe("Alluvium bootstrap source", () => {
     ).toEqual([{ mutations: [], checkpoint: through, caughtUp: true }]);
   });
 
+  it("reads the small head endpoint and falls back to /collections", async () => {
+    for (const legacyHead of [false, true]) {
+      const { fetchImpl, requests } = service({ rows: ROWS, legacyHead });
+      const snapshot = await sources(fetchImpl).snapshotSource.prepare({ collections: [EVENT] });
+      expect(snapshot.collections).toEqual({ [EVENT]: { state: "complete" } });
+      const paths = requests.map((url) => url.pathname);
+      expect(paths).toEqual(legacyHead ? ["/alluvium/head", "/collections"] : ["/alluvium/head"]);
+    }
+  });
+
   it("continues an interrupted export after the last record it received", async () => {
     const { fetchImpl, requests } = service({ rows: ROWS, cutAfter: 3 });
     const source = sources(fetchImpl);
@@ -234,8 +249,8 @@ describe("Alluvium bootstrap source", () => {
   it("fails when the export keeps ending early", async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = new URL(String(input));
-      if (url.pathname === "/collections") {
-        return Response.json({ cursor: 1, time_us: HEAD_US, excludes: [], collections: [] });
+      if (url.pathname === "/alluvium/head") {
+        return Response.json({ cursor: 1, time_us: HEAD_US, excludes: [] });
       }
       return new Response("");
     };
@@ -285,6 +300,51 @@ describe("Alluvium bootstrap source", () => {
     expect(() =>
       createAlluviumBootstrapSources(config(), { endpoint: "http://alluvium.test", source: SOURCE }),
     ).toThrow("HTTPS");
+  });
+
+  it("drops secondary indexes during the load and restores exactly them", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    const indexes = async () =>
+      (
+        await db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
+          )
+          .all<{ name: string }>()
+      ).results.map((row) => row.name);
+    const { fetchImpl } = service({
+      rows: ROWS,
+      head: { cursor: 1_000, time_us: Date.now() * 1_000, excludes: [] },
+    });
+    // Watch the index set while records are being written.
+    let duringLoad: string[] | null = null;
+    const watching: typeof fetch = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (new URL(String(input)).pathname === "/export") duringLoad = await indexes();
+      return response;
+    };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = watching;
+    let before: string[];
+    try {
+      // Create the schema first so the full index set is known.
+      const { Contrail } = await import("../src/index");
+      await new Contrail(resolved).init(db);
+      before = await indexes();
+      await bootstrapAlluviumDatabase({ config: resolved, db, endpoint: ENDPOINT, deferIndexes: true });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(before.some((name) => name.startsWith("idx_event_"))).toBe(true);
+    expect(duringLoad!.some((name) => name.startsWith("idx_event_"))).toBe(false);
+    expect(await indexes()).toEqual(before);
+    const meta = await db
+      .prepare("SELECT value FROM _contrail_meta WHERE key = 'bootstrap_deferred_indexes'")
+      .first();
+    expect(meta).toBeNull();
+    const events = await queryRecords(db, resolved, { collection: EVENT });
+    expect(events.records).toHaveLength(3);
   });
 
   it("loads a fresh database and leaves live ingestion a timestamp cursor", async () => {

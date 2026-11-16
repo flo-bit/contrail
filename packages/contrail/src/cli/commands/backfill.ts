@@ -124,6 +124,8 @@ export function registerBackfill(cli: CAC): void {
               db: sqliteDb,
               lexicons,
               ...alluvium,
+              // A local file can index the loaded data in one pass.
+              deferIndexes: true,
             })
           : await bootstrapAlluvium({ ...wrangler, ...alluvium });
         console.log(
