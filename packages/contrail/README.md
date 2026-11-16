@@ -238,7 +238,7 @@ Useful SQLite options include:
 contrail dev --fresh                          # reset local SQLite first
 contrail dev --temporary                      # delete SQLite when stopped
 contrail dev --sqlite ./tmp/dev.sqlite        # explicit durable path
-contrail dev --alluvium --allow-partial       # fast base/archive bootstrap
+contrail dev --alluvium                       # fast bootstrap from an Alluvium export
 contrail dev --no-backfill                    # serve existing state only
 ```
 
@@ -259,16 +259,13 @@ SQLite dev mode exposes configured protected methods only on loopback without in
 
 Jetstream generation replay requires an operator-owned continuity epoch and retention guarantee. It uses real stream events as marks, never wall clock or a quiet socket. Optional busy watermark collections can prove progress without being projected.
 
-An optional experimental Alluvium adapter consumes existing version-1 collection manifests, verifies immutable compressed objects, and ends offline bootstrap exactly at the archived source boundary. The CLI supports either Wrangler/D1 or an explicit SQLite file:
+An optional Alluvium adapter loads a fresh generation from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps every current record outside the Bluesky app and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
 
 ```bash
-contrail backfill --sqlite ./data/contrail.sqlite --alluvium \
-  --alluvium-epoch my-source-continuity-epoch \
-  --alluvium-source-url wss://jetstream1.us-east.bsky.network \
-  --allow-partial
+contrail backfill --sqlite ./data/contrail.sqlite --alluvium
 ```
 
-The epoch is deliberately required because Alluvium protocol v1 does not publish one. `--alluvium-source-url` names the exact legacy v1 source advertised by the manifests and defaults to the hosted east source shown above; it is intentionally separate from `config.jetstreams`, which selects the v2 live service used after bootstrap. `--allow-partial` is needed only when selected manifests explicitly report historical omissions. The command rejects a populated database unless it is resuming durable Alluvium bootstrap state. The equivalent programmatic API is:
+`--alluvium-endpoint` selects another instance and `--alluvium-token` supplies a bearer token if it requires one. The command rejects a populated database unless it is resuming an interrupted Alluvium bootstrap. The equivalent programmatic API is:
 
 ```ts
 import { DatabaseBootstrapTarget } from "@atmo-dev/contrail";
@@ -277,36 +274,24 @@ import {
   createAlluviumLiveCursor,
 } from "@atmo-dev/contrail/alluvium";
 
-const sourceIdentity = {
-  id: "jetstream-us-east",
-  // Alluvium v1 does not publish an epoch yet; the operator owns this value.
-  epoch: "jetstream-us-east-2026-08",
-  url: "wss://jetstream1.us-east.bsky.network",
-};
-const source = createAlluviumBootstrapSources(config, {
-  endpoint: "https://alluvium-v0.atmo.tools",
-  source: sourceIdentity,
-  jetstream: {
-    retentionUs: 72 * 60 * 60 * 1_000_000,
-    watermarkCollections: ["app.bsky.feed.post"],
-  },
-});
+// The ordered source live ingestion uses after bootstrap.
+const source = { id: "jetstream", epoch: "my-app-v1" };
+const sources = createAlluviumBootstrapSources(config, { source });
 const target = new DatabaseBootstrapTarget(db, config, {
   deferDerivedProjections: true,
-  // Commit the archived v1 time_us as the one-time v2 live bridge cursor.
-  liveCursor: createAlluviumLiveCursor(sourceIdentity),
+  liveCursor: createAlluviumLiveCursor(source),
 });
 
 await bootstrapFreshProjection({
   collections: ["community.lexicon.calendar.event"],
-  ...source,
+  ...sources,
   target,
 });
 ```
 
-The offline call loads only the base plus published archive tail. It does not replay direct Jetstream to a newly marked head. The target atomically persists Alluvium's final archived v1 `time_us`; the next v2 live observation transitions that bridge coordinate to the service's seq domain, after which bounded cron invocations resume by seq. The configured live v2 service and continuity epoch remain operator-owned because Alluvium protocol v1 cannot publish a v2 handoff coordinate.
+The export holds current state, so nothing is replayed during bootstrap. The target persists a timestamp cursor five minutes before the export's head, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names; the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
 
-This first adapter is generation-only and deliberately strict: selected manifests must expose one shared base and archive boundary, source ID/URL must match configuration, known capture gaps fail, and partial historical coverage requires `allowPartial: true`. It buffers each bounded compressed object so checksum and byte length are verified before any rows are projected. Because version-1 manifests lack global multi-collection delivery steps, it also restores source order with a bounded 100,000-mutation tail buffer; larger tails require the planned bundle protocol. It does not silently fall back to PDS acquisition; omitted-account repair and dependent profile/follow enrichment remain separately accounted PDS work.
+An interrupted export continues after the last record projected, within one run or after a restart. Three things make the adapter refuse instead of loading a wrong answer: a collection the service does not carry (it reports the namespaces it excludes, such as `app.bsky.*`), a service more than ten minutes behind the firehose, and malformed export lines. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 

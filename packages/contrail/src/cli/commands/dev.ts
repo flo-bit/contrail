@@ -14,10 +14,8 @@ import { getBackfillStatus } from "../../core/status.js";
 import type { ContrailConfig, Database } from "../../core/types.js";
 import { configProjectRoot } from "../../cli-config.js";
 import { createHandler } from "../../server.js";
-import {
-  bootstrapAlluviumDatabase,
-  DEFAULT_ALLUVIUM_SOURCE_URL,
-} from "../../workers/backfill.js";
+import { bootstrapAlluviumDatabase } from "../../workers/backfill.js";
+import { DEFAULT_ALLUVIUM_ENDPOINT } from "../../adapters/alluvium.js";
 import {
   defaultConsumerLexiconRoot,
   prepareDevLexicons,
@@ -46,11 +44,7 @@ interface DevOpts {
   ingestTimeout: number;
   alluvium?: boolean;
   alluviumEndpoint: string;
-  alluviumSourceId: string;
-  alluviumSourceUrl: string;
-  alluviumEpoch?: string;
-  alluviumRetentionHours: number;
-  allowPartial?: boolean;
+  alluviumToken?: string;
   clientLexicons?: string;
 }
 
@@ -79,12 +73,7 @@ function devConfig(config: ContrailConfig, options: DevOpts): ContrailConfig {
     serviceAuth: undefined,
     orderedSource:
       config.orderedSource ??
-      (options.alluvium
-        ? {
-            source: options.alluviumSourceId,
-            epoch: options.alluviumEpoch ?? "contrail-local-alluvium-v1",
-          }
-        : { source: "jetstream", epoch: "contrail-local-jetstream-v2" }),
+      { source: "jetstream", epoch: "contrail-local-jetstream-v2" },
   };
 }
 
@@ -268,32 +257,15 @@ async function runSqliteDev(
 
   if (options.backfill !== false) {
     if (options.alluvium) {
-      const ordered = contrail.config.orderedSource!;
-      if (
-        ordered.source !== options.alluviumSourceId ||
-        (options.alluviumEpoch && ordered.epoch !== options.alluviumEpoch)
-      ) {
-        throw new Error(
-          "configured orderedSource must match --alluvium-source-id and --alluvium-epoch",
-        );
-      }
-      const retentionHours = positiveNumber(
-        options.alluviumRetentionHours,
-        "--alluvium-retention-hours",
-      );
       const result = await bootstrapAlluviumDatabase({
         config: contrail.config,
         db,
         lexicons,
         endpoint: options.alluviumEndpoint,
-        sourceId: ordered.source,
-        sourceUrl: options.alluviumSourceUrl,
-        sourceEpoch: ordered.epoch,
-        retentionUs: retentionHours * 60 * 60 * 1_000_000,
-        allowPartial: options.allowPartial === true,
+        token: options.alluviumToken,
       });
       console.log(
-        `alluvium: ${result.resumed ? "resumed" : "loaded"} base + archive in ` +
+        `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
           `${(result.elapsedMs / 1_000).toFixed(1)}s; ` +
           `live cursor=${result.liveCursor}`,
       );
@@ -409,25 +381,11 @@ export function registerDev(cli: CAC): void {
       default: 100,
     })
     .option("--yes, -y", "Accept confirmation prompts")
-    .option("--alluvium", "Use Alluvium base + archive for SQLite bootstrap")
+    .option("--alluvium", "Bootstrap SQLite from an Alluvium export instead of PDSes")
     .option("--alluvium-endpoint <url>", "Alluvium HTTP origin", {
-      default: "https://alluvium-v0.atmo.tools",
+      default: DEFAULT_ALLUVIUM_ENDPOINT,
     })
-    .option("--alluvium-source-id <id>", "Alluvium manifest source ID", {
-      default: "jetstream-us-east",
-    })
-    .option(
-      "--alluvium-source-url <url>",
-      "Exact legacy Jetstream v1 URL advertised by Alluvium manifests",
-      { default: DEFAULT_ALLUVIUM_SOURCE_URL },
-    )
-    .option("--alluvium-epoch <epoch>", "Operator-owned continuity epoch")
-    .option(
-      "--alluvium-retention-hours <hours>",
-      "Assert direct-source retention for this generation",
-      { default: 72 },
-    )
-    .option("--allow-partial", "Accept reported Alluvium historical omissions")
+    .option("--alluvium-token <token>", "Bearer token, when Alluvium requires one")
     .action(async (options: DevOpts) => {
       const resolved = await resolveConfig(options);
       const input = resolved.config;
