@@ -63,6 +63,16 @@ backfill and notify. Changing a registered allowlist requires a projection
 rebuild. See [repository scope configuration](../../docs/03-configure-and-query.md#repository-scoped-collections)
 for lifecycle, transport and freshness guarantees.
 
+## Record filters
+
+`recordFilter` drops creates and updates whose body fails a predicate. A
+rejection normally leaves a tombstone, so an older version that passes cannot be
+admitted later and an indexed record that stops matching is removed. On a
+high-volume collection where the filter rejects most records on fields that do
+not change, set `recordFilterTombstones: false`: a rejected record with no
+stored version then writes nothing at all. A rejected update to an indexed
+record is still removed.
+
 ## Query
 
 ```ts

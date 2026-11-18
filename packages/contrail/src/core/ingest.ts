@@ -315,35 +315,53 @@ export async function ingestRecords(
     ),
   );
 
+  // Run each filter once, so that rejections which may be dropped without a
+  // tombstone are known before their durable versions are read.
+  const rejected = new Set<number>();
+  const quietRejects: string[] = [];
   for (let index = 0; index < candidates.length; index++) {
     const { event, shortName, record } = candidates[index];
+    if (!record || validationFailures[index]) continue;
+    const collection = config.collections[shortName];
+    const filter = collection?.recordFilter;
+    if (!filter) continue;
+    let keep = false;
+    try {
+      keep = filter(record);
+    } catch (error) {
+      emitIngestWarning(
+        logger,
+        options.warningSamples,
+        `[ingest] recordFilter threw for ${event.uri}: ${error}`,
+      );
+    }
+    if (keep) continue;
+    rejected.add(index);
+    // A private projection owns its version state; it keeps tombstones.
+    if (collection.recordFilterTombstones === false && !options.projection) {
+      quietRejects.push(event.uri);
+    }
+  }
+  const quietVersions = quietRejects.length
+    ? await lookupRecordVersions(db, quietRejects)
+    : undefined;
+
+  for (let index = 0; index < candidates.length; index++) {
+    const { event } = candidates[index];
     const failure = validationFailures[index];
     if (failure) {
       incrementValidationDrop(dropped, failure);
       continue;
     }
 
-    if (record) {
-      const filter = config.collections[shortName]?.recordFilter;
-      if (filter) {
-        let keep = false;
-        try {
-          keep = filter(record);
-        } catch (error) {
-          emitIngestWarning(
-            logger,
-            options.warningSamples,
-            `[ingest] recordFilter threw for ${event.uri}: ${error}`,
-          );
-        }
-        if (!keep) {
-          dropped.recordFilter++;
-          const exclusion = asProjectionDelete(event);
-          accepted.push(exclusion);
-          policyExcluded.add(exclusion);
-          continue;
-        }
-      }
+    if (rejected.has(index)) {
+      dropped.recordFilter++;
+      // Never indexed and never rejected with a tombstone: nothing to retract.
+      if (quietVersions && !quietVersions.has(event.uri)) continue;
+      const exclusion = asProjectionDelete(event);
+      accepted.push(exclusion);
+      policyExcluded.add(exclusion);
+      continue;
     }
 
     accepted.push(event);
