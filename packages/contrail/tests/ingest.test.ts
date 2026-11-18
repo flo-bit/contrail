@@ -116,6 +116,10 @@ describe("ingestRecords", () => {
     expect(await versions()).toEqual([{ rkey: "kept", operation: "delete" }]);
     const stored = await queryRecords(quietDb, quiet, { collection: "event" });
     expect(stored.records).toEqual([]);
+
+    // A rejected update must also win against a put in the same batch.
+    await ingestRecords(quietDb, [event("mixed", true, 1), event("mixed", false, 2)], quiet);
+    expect((await queryRecords(quietDb, quiet, { collection: "event" })).records).toEqual([]);
   });
 
   it("packs record writes into statements within D1's binding limit", async () => {
