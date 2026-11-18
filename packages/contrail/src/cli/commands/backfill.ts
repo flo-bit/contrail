@@ -110,8 +110,9 @@ export function registerBackfill(cli: CAC): void {
         : null;
 
       if (options.alluvium) {
-        if (only !== undefined) {
-          console.error("--alluvium cannot be combined with --only");
+        // An export holds records only, so `--only records` changes nothing.
+        if (only === "labels") {
+          console.error("--alluvium loads records; it cannot be combined with --only labels");
           process.exit(1);
         }
         const alluvium = {
