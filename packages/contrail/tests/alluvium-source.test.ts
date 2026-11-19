@@ -11,6 +11,8 @@ import {
   queryRecords,
   resolveConfig,
 } from "../src/index";
+import { saveJetstreamCursor } from "../src/core/db/records";
+import { SourceHistoryExpiredError } from "../src/core/jetstream-source";
 import { bootstrapAlluviumDatabase } from "../src/workers/backfill";
 
 const EVENT = "community.lexicon.calendar.event";
@@ -51,6 +53,9 @@ interface ServiceOptions {
   cutAfter?: number;
   /** Replace export line N (0-based, within a response) with raw text. */
   corrupt?: { at: number; text: string };
+  /** The snapshot time /export reports, when it differs from the head's;
+   * null to send no snapshot headers at all. */
+  exportTimeUs?: number | null;
 }
 
 /** A fetch that behaves like the service's /alluvium/head and /export. */
@@ -84,8 +89,15 @@ function service(options: ServiceOptions) {
     const cut = exports === 1 && options.cutAfter !== undefined;
     if (cut) lines = lines.slice(0, options.cutAfter);
     else lines.push(JSON.stringify({ end: true, cursor: 1_000, time_us: HEAD_US, records: selected.length }));
+    const headTimeUs = typeof options.head?.time_us === "number" ? options.head.time_us : HEAD_US;
+    const servedUs = options.exportTimeUs === undefined ? headTimeUs : options.exportTimeUs;
     return new Response(lines.map((text) => `${text}\n`).join(""), {
-      headers: { "content-type": "application/x-ndjson" },
+      headers: {
+        "content-type": "application/x-ndjson",
+        ...(servedUs === null
+          ? {}
+          : { "alluvium-cursor": "1000", "alluvium-time-us": String(servedUs) }),
+      },
     });
   };
   return { fetchImpl, requests };
@@ -104,12 +116,12 @@ function config(orderedSource = true) {
   });
 }
 
-function sources(fetchImpl: typeof fetch, transport = {}) {
+function sources(fetchImpl: typeof fetch, transport = {}, nowMs = NOW_MS) {
   return createAlluviumBootstrapSources(config(), {
     endpoint: ENDPOINT,
     source: SOURCE,
     fetch: fetchImpl,
-    now: () => NOW_MS,
+    now: () => nowMs,
     transport: { batchSize: 2, maxAttempts: 2, ...transport },
   });
 }
@@ -232,7 +244,7 @@ describe("Alluvium bootstrap source", () => {
       if (url.pathname === "/alluvium/head") {
         return Response.json({ cursor: 1, time_us: HEAD_US, excludes: [] });
       }
-      return new Response("");
+      return new Response("", { headers: { "alluvium-time-us": String(HEAD_US) } });
     };
     const source = sources(fetchImpl);
     const snapshot = await source.snapshotSource.prepare({ collections: [EVENT] });
@@ -285,6 +297,69 @@ describe("Alluvium bootstrap source", () => {
     expect(() =>
       createAlluviumBootstrapSources(config(), { endpoint: "http://alluvium.test", source: SOURCE }),
     ).toThrow("HTTPS");
+  });
+
+  it("reads only exports that reach the snapshot it pinned", async () => {
+    const HOUR_US = 3_600_000_000;
+    const pin = async (options: Partial<ServiceOptions>) => {
+      const served = service({ rows: ROWS, ...options });
+      // Pin against the head; /export then answers for another snapshot.
+      const source = sources(served.fetchImpl, { maxAttempts: 1 });
+      const snapshot = await source.snapshotSource.prepare({ collections: [EVENT, RSVP] });
+      return { source, snapshot, requests: served.requests };
+    };
+
+    // A rollback or a replica that is behind: the live replay would start
+    // after changes this export does not hold. Nothing is projected.
+    const older = await pin({ exportTimeUs: HEAD_US - HOUR_US });
+    await expect(collect(older.source.snapshotSource.read({ snapshot: older.snapshot }))).rejects.toThrow(
+      "older than the snapshot this bootstrap pinned",
+    );
+    const unnamed = await pin({ exportTimeUs: null });
+    await expect(collect(unnamed.source.snapshotSource.read({ snapshot: unnamed.snapshot }))).rejects.toThrow(
+      "did not say which snapshot it serves",
+    );
+
+    // A newer snapshot, as after a resume across an hourly build, is read,
+    // and the handoff stays where it was pinned.
+    const newer = await pin({ exportTimeUs: HEAD_US + HOUR_US });
+    const batches = await collect(newer.source.snapshotSource.read({ snapshot: newer.snapshot }));
+    expect(batches.flatMap((batch) => batch.records)).toHaveLength(ROWS.length);
+    expect(
+      await newer.source.changeSource.mark({ collections: [EVENT, RSVP], snapshot: newer.snapshot }),
+    ).toEqual({
+      source: SOURCE.id,
+      epoch: SOURCE.epoch,
+      cursor: String(HEAD_US - DEFAULT_ALLUVIUM_REWIND_US),
+    });
+  });
+
+  it("refuses to finish a bootstrap whose replay window has passed", async () => {
+    const { fetchImpl, requests } = service({ rows: ROWS });
+    const snapshot = await sources(fetchImpl).snapshotSource.prepare({ collections: [EVENT, RSVP] });
+    const progress = [{ partition: "export", cursor: uri(ROWS[2]!), complete: false }];
+    const position = { source: SOURCE.id, epoch: SOURCE.epoch };
+    const after = { ...position, cursor: String(HEAD_US - DEFAULT_ALLUVIUM_REWIND_US - 1) };
+    const through = { ...position, cursor: String(HEAD_US - DEFAULT_ALLUVIUM_REWIND_US) };
+
+    // Twelve hours on, the same bootstrap still resumes.
+    const soon = sources(fetchImpl, {}, NOW_MS + 12 * 3_600_000);
+    expect(await collect(soon.snapshotSource.read({ snapshot, progress }))).not.toHaveLength(0);
+
+    // Two days on, live ingestion could no longer replay from its cursor:
+    // whether the export was half read or fully read, it does not complete.
+    const late = sources(fetchImpl, {}, NOW_MS + 48 * 3_600_000);
+    const before = requests.length;
+    await expect(collect(late.snapshotSource.read({ snapshot, progress }))).rejects.toThrow(
+      SourceHistoryExpiredError,
+    );
+    await expect(
+      late.changeSource.mark({ collections: [EVENT, RSVP], snapshot }),
+    ).rejects.toThrow("Start again with a fresh database");
+    await expect(
+      collect(late.changeSource.read({ collections: [EVENT, RSVP], snapshot, after, through })),
+    ).rejects.toThrow(SourceHistoryExpiredError);
+    expect(requests).toHaveLength(before);
   });
 
   it("drops secondary indexes during the load and restores exactly them", async () => {
@@ -362,11 +437,21 @@ describe("Alluvium bootstrap source", () => {
     const rsvps = await queryRecords(db, resolved, { collection: RSVP });
     expect(rsvps.records).toHaveLength(2);
 
-    // A populated database is not a fresh generation.
-    globalThis.fetch = fetchImpl;
+    // Running it again on the loaded database loads nothing.
+    const { fetchImpl: unused, requests } = service({ rows: ROWS });
+    globalThis.fetch = unused;
     try {
       const again = await bootstrapAlluviumDatabase({ config: resolved, db, endpoint: ENDPOINT });
-      expect(again.resumed).toBe(true);
+      expect(again).toMatchObject({ resumed: true, alreadyComplete: true, liveCursor: result.liveCursor });
+
+      // Live ingestion then takes the cursor over and replaces the timestamp
+      // with a sequence number. `contrail dev --alluvium` runs the bootstrap
+      // on every start, so it must still pass, and leave the cursor alone.
+      await saveJetstreamCursor(db, 57_624_562);
+      const later = await bootstrapAlluviumDatabase({ config: resolved, db, endpoint: ENDPOINT });
+      expect(later).toMatchObject({ alreadyComplete: true, liveCursor: 57_624_562 });
+      expect(await getLastCursor(db)).toBe(57_624_562);
+      expect(requests).toHaveLength(0);
     } finally {
       globalThis.fetch = realFetch;
     }

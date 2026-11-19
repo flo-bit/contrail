@@ -293,7 +293,15 @@ The export holds current state as of its snapshot, so nothing is replayed during
 
 With `--sqlite`, the record tables' secondary indexes are dropped while the export loads and built once at the end, which is much cheaper than maintaining them per row; the dropped set is recorded first, so an interrupted run restores exactly those indexes when it completes. D1 keeps them, since one statement there cannot index a large table within its time limit.
 
-An interrupted export continues after the last record projected, within one run or after a restart, even if the service has published a newer snapshot meanwhile. Three things make the adapter refuse instead of loading a wrong answer: a collection the service does not carry (it reports the namespaces it excludes, such as `app.bsky.*`), a snapshot more than six hours old (`maxAgeUs`; a Jetstream service only replays its last 36 hours), and malformed export lines. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
+An interrupted export continues after the last record projected, within one run or after a restart, even if the service has published a newer snapshot meanwhile; the live cursor stays the one fixed when the bootstrap began. Running the command again on a database it has finished loading does nothing, so `contrail dev --alluvium` can be restarted freely.
+
+The adapter refuses instead of loading a wrong answer when:
+
+- the service does not carry a collection (it reports the namespaces it excludes, such as `app.bsky.*`);
+- the service's snapshot is more than six hours old (`maxAgeUs`);
+- an export response is for an older snapshot than the one the bootstrap began with, or does not name its snapshot;
+- an unfinished bootstrap is resumed more than 24 hours after its snapshot (`replayWindowUs`). A Jetstream service only replays its last 36 hours, so the records already loaded could miss later updates and deletes; start again with a fresh database;
+- an export line is malformed. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
 
 A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 

@@ -117,6 +117,9 @@ export interface AlluviumBootstrapOptions {
   sourceEpoch?: string;
   /** How far before the export's head live ingestion resumes. */
   rewindUs?: number;
+  /** How old an unfinished bootstrap's snapshot may be before it is refused
+   * instead of resumed. Keep it inside the live service's retention. */
+  replayWindowUs?: number;
   transport?: AlluviumTransportOptions;
   /** Build the record tables' secondary indexes once after the load
    * instead of maintaining them per row. Use for a local SQLite file; leave
@@ -138,8 +141,12 @@ export interface AlluviumBootstrapResult {
   elapsedMs: number;
   /** Position live ingestion resumes from: a timestamp cursor. */
   handoff: SourcePosition;
+  /** The cursor live ingestion reads next. After a completed bootstrap has
+   * handed off, this is wherever live ingestion has got to. */
   liveCursor: number;
   resumed: boolean;
+  /** An earlier run had already completed this bootstrap; nothing was loaded. */
+  alreadyComplete: boolean;
 }
 
 async function assertFreshBootstrapDatabase(
@@ -194,6 +201,7 @@ async function runAlluviumBootstrap(
     token: opts.token,
     source,
     rewindUs: opts.rewindUs,
+    replayWindowUs: opts.replayWindowUs,
     transport: opts.transport,
   });
   const started = performance.now();
@@ -206,7 +214,10 @@ async function runAlluviumBootstrap(
     target,
   });
   const liveCursor = await getLastCursor(db);
-  if (liveCursor === null || liveCursor !== Number(result.through.cursor)) {
+  // A bootstrap completed by an earlier run has handed off already: live
+  // ingestion owns the cursor and has moved it on, to a sequence number.
+  const handedOff = prior?.phase === "complete";
+  if (liveCursor === null || (!handedOff && liveCursor !== Number(result.through.cursor))) {
     throw new Error("Alluvium bootstrap did not persist its live cursor");
   }
   return {
@@ -214,6 +225,7 @@ async function runAlluviumBootstrap(
     handoff: result.through,
     liveCursor,
     resumed: prior !== null,
+    alreadyComplete: handedOff,
   };
 }
 

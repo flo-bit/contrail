@@ -11,6 +11,7 @@ import type {
   SourcePosition,
   SourceSemantics,
 } from "../core/sources";
+import { SourceHistoryExpiredError } from "../core/jetstream-source";
 import type { ContrailConfig } from "../core/types";
 
 /** Hosted Alluvium service: every current record outside the Bluesky app,
@@ -27,6 +28,12 @@ export const DEFAULT_ALLUVIUM_REWIND_US = 5 * 60 * 1_000_000;
  * everything since. That replay must stay well inside the 36 hours a
  * Jetstream service keeps, so an old snapshot means a stalled service. */
 export const DEFAULT_ALLUVIUM_MAX_AGE_US = 6 * 60 * 60 * 1_000_000;
+
+/** An unfinished bootstrap is refused once its snapshot is older than this.
+ * Its live cursor was fixed when the export was pinned, and a Jetstream
+ * service asked to replay from before its retention (36 hours on the public
+ * ones) cannot deliver the updates and deletes since. */
+export const DEFAULT_ALLUVIUM_REPLAY_WINDOW_US = 24 * 60 * 60 * 1_000_000;
 
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_MAX_ATTEMPTS = 4;
@@ -66,6 +73,8 @@ export interface AlluviumBootstrapSourceOptions {
   rewindUs?: number;
   /** Default: {@link DEFAULT_ALLUVIUM_MAX_AGE_US}. */
   maxAgeUs?: number;
+  /** Default: {@link DEFAULT_ALLUVIUM_REPLAY_WINDOW_US}. */
+  replayWindowUs?: number;
   transport?: AlluviumTransportOptions;
   fetch?: typeof fetch;
   /** Permit HTTP to a non-loopback host. Loopback endpoints never need it.
@@ -92,11 +101,14 @@ interface AlluviumHead {
 }
 
 interface PinnedExport {
-  v: 3;
+  v: 4;
   endpoint: string;
   collections: string[];
   /** Service sequence number when the export was pinned; informational. */
   cursor: number;
+  /** When the pinned snapshot's last event was witnessed. Every export read
+   * for this bootstrap must reach at least this far. */
+  timeUs: number;
   /** Timestamp cursor live ingestion resumes from. */
   liveCursorUs: number;
 }
@@ -234,6 +246,7 @@ class AlluviumAdapterBase {
   protected readonly token: string | undefined;
   protected readonly rewindUs: number;
   protected readonly maxAgeUs: number;
+  protected readonly replayWindowUs: number;
   protected readonly maxAttempts: number;
   protected readonly requestTimeoutMs: number;
   protected readonly maxLineCharacters: number;
@@ -247,6 +260,11 @@ class AlluviumAdapterBase {
     this.token = options.token;
     this.rewindUs = nonNegative(options.rewindUs, DEFAULT_ALLUVIUM_REWIND_US, "Alluvium rewindUs");
     this.maxAgeUs = positiveInteger(options.maxAgeUs, DEFAULT_ALLUVIUM_MAX_AGE_US, "Alluvium maxAgeUs");
+    this.replayWindowUs = positiveInteger(
+      options.replayWindowUs,
+      DEFAULT_ALLUVIUM_REPLAY_WINDOW_US,
+      "Alluvium replayWindowUs",
+    );
     const transport = options.transport ?? {};
     this.maxAttempts = positiveInteger(transport.maxAttempts, DEFAULT_MAX_ATTEMPTS, "Alluvium maxAttempts");
     this.requestTimeoutMs = positiveInteger(
@@ -270,6 +288,19 @@ class AlluviumAdapterBase {
   protected assertOwnPosition(position: SourcePosition, label: string): void {
     if (position.source !== this.source.id || position.epoch !== this.source.epoch) {
       throw new Error(`${label} does not belong to ${this.source.id}/${this.source.epoch}`);
+    }
+  }
+
+  /** Refuse to continue a bootstrap whose live cursor may have left the live
+   * service's retention. Records already loaded would then miss the updates
+   * and deletes since, so the only sound continuation is a fresh load. */
+  protected assertReplayable(pinned: PinnedExport): void {
+    const ageUs = this.now() * 1_000 - pinned.timeUs;
+    if (ageUs > this.replayWindowUs) {
+      throw new SourceHistoryExpiredError(
+        `This Alluvium bootstrap was pinned ${Math.round(ageUs / 3_600_000_000)} hours ago; ` +
+          "live ingestion can no longer replay from it. Start again with a fresh database.",
+      );
     }
   }
 
@@ -346,7 +377,7 @@ function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
   if (
     snapshot.provider !== PROVIDER ||
     !object(data) ||
-    data.v !== 3 ||
+    data.v !== 4 ||
     typeof data.endpoint !== "string" ||
     !Array.isArray(data.collections) ||
     !data.collections.every((item) => typeof item === "string")
@@ -354,10 +385,11 @@ function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
     throw new Error(`Snapshot ${snapshot.id} was not prepared by this Alluvium adapter`);
   }
   return {
-    v: 3,
+    v: 4,
     endpoint: data.endpoint,
     collections: data.collections as string[],
     cursor: safeInteger(data.cursor, "Pinned Alluvium cursor"),
+    timeUs: safeInteger(data.timeUs, "Pinned Alluvium time"),
     liveCursorUs: safeInteger(data.liveCursorUs, "Pinned Alluvium live cursor"),
   };
 }
@@ -420,10 +452,11 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
       );
     }
     const pinned: PinnedExport = {
-      v: 3,
+      v: 4,
       endpoint: this.endpoint.href,
       collections,
       cursor: head.cursor,
+      timeUs: head.timeUs,
       liveCursorUs: this.liveCursorUs(head),
     };
     const coverage: Record<string, CollectionCoverage> = {};
@@ -451,6 +484,7 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
     }
     const prior = options.progress?.find((item) => item.partition === EXPORT_PARTITION);
     if (prior?.complete) return;
+    this.assertReplayable(pinned);
     const collections = new Set(pinned.collections);
 
     let after = prior?.cursor ?? null;
@@ -466,7 +500,22 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
 
       let lines: AsyncGenerator<Record<string, unknown>>;
       try {
-        lines = this.lines(await this.open(url, options.signal), options.signal);
+        const response = await this.open(url, options.signal);
+        // Before any row is projected: live ingestion replays from the
+        // pinned snapshot's time, so an export of an older snapshot (a
+        // rollback, a replica that is behind) would leave a gap. A newer
+        // one is fine, and the pinned handoff stays as it is.
+        const header = response.headers.get("alluvium-time-us");
+        const servedUs = header && /^\d+$/.test(header) ? Number(header) : null;
+        if (servedUs === null || !Number.isSafeInteger(servedUs) || servedUs < pinned.timeUs) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error(
+            servedUs === null
+              ? "Alluvium export did not say which snapshot it serves"
+              : "Alluvium served an export older than the snapshot this bootstrap pinned",
+          );
+        }
+        lines = this.lines(response, options.signal);
       } catch (error) {
         options.signal?.throwIfAborted();
         lastError = error;
@@ -521,7 +570,8 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
         // points past them, so the next attempt continues from there.
       }
     }
-    throw new Error("Alluvium export did not complete", { cause: lastError });
+    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+    throw new Error(`Alluvium export did not complete${reason}`, { cause: lastError });
   }
 
   /** Split a response body into parsed JSON lines. */
@@ -601,7 +651,9 @@ export class AlluviumChangeSource extends AlluviumAdapterBase implements ChangeS
     signal?: AbortSignal;
   }): Promise<SourcePosition> {
     if (options.snapshot) {
-      return this.position(parsePinned(options.snapshot).liveCursorUs);
+      const pinned = parsePinned(options.snapshot);
+      this.assertReplayable(pinned);
+      return this.position(pinned.liveCursorUs);
     }
     // Strictly before any snapshot pinned afterwards, whose live cursor is
     // computed from a head at least as new as this one.
@@ -617,6 +669,8 @@ export class AlluviumChangeSource extends AlluviumAdapterBase implements ChangeS
   }): AsyncIterable<MutationBatch> {
     this.assertOwnPosition(options.after, "Alluvium catch-up cursor");
     this.assertOwnPosition(options.through, "Alluvium catch-up target");
+    // The last step before the handoff is persisted as the live cursor.
+    if (options.snapshot) this.assertReplayable(parsePinned(options.snapshot));
     yield { mutations: [], checkpoint: options.through, caughtUp: true };
   }
 }

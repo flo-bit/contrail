@@ -266,9 +266,11 @@ async function runSqliteDev(
         deferIndexes: true,
       });
       console.log(
-        `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
-          `${(result.elapsedMs / 1_000).toFixed(1)}s; ` +
-          `live cursor=${result.liveCursor}`,
+        result.alreadyComplete
+          ? "alluvium: already loaded; continuing live ingestion"
+          : `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
+              `${(result.elapsedMs / 1_000).toFixed(1)}s; ` +
+              `live cursor=${result.liveCursor}`,
       );
     } else {
       const status = await getBackfillStatus(db, contrail.config);

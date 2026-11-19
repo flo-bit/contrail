@@ -130,12 +130,12 @@ export function registerBackfill(cli: CAC): void {
             })
           : await bootstrapAlluvium({ ...wrangler, ...alluvium });
         console.log(
-          `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
-            `${(result.elapsedMs / 1000).toFixed(1)}s; ` +
-            `live cursor=${result.liveCursor}`,
-        );
-        console.log(
-          "alluvium: bootstrap complete; scheduled ingestion resumes from just before the export",
+          result.alreadyComplete
+            ? "alluvium: this database is already loaded; nothing to do"
+            : `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
+                `${(result.elapsedMs / 1000).toFixed(1)}s; ` +
+                `live cursor=${result.liveCursor}\n` +
+                "alluvium: bootstrap complete; scheduled ingestion resumes from just before the export",
         );
         return;
       }
