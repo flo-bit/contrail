@@ -262,7 +262,7 @@ async function runSqliteDev(
         db,
         lexicons,
         endpoint: options.alluviumEndpoint,
-        token: options.alluviumToken,
+        token: options.alluviumToken ?? process.env.ALLUVIUM_TOKEN,
         deferIndexes: true,
       });
       console.log(
@@ -388,7 +388,7 @@ export function registerDev(cli: CAC): void {
     .option("--alluvium-endpoint <url>", "Alluvium HTTP origin", {
       default: DEFAULT_ALLUVIUM_ENDPOINT,
     })
-    .option("--alluvium-token <token>", "Bearer token, when Alluvium requires one")
+    .option("--alluvium-token <token>", "Bearer token, when Alluvium requires one (or set ALLUVIUM_TOKEN)")
     .action(async (options: DevOpts) => {
       const resolved = await resolveConfig(options);
       const input = resolved.config;

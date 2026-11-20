@@ -366,7 +366,9 @@ export class DatabaseBootstrapTarget implements BootstrapTarget {
           item.value,
           item.collection,
           this.config,
-          observedAtUs,
+          item.timeUs === undefined
+            ? observedAtUs
+            : sourceTimeUs(item.timeUs, `Snapshot record ${item.uri} timeUs`),
         ),
         indexedAt,
         source: {

@@ -117,6 +117,10 @@ export interface AlluviumBootstrapOptions {
   sourceEpoch?: string;
   /** How far before the export's head live ingestion resumes. */
   rewindUs?: number;
+  /** How old the service's snapshot may be before the export is refused. */
+  maxAgeUs?: number;
+  /** Permit HTTP to a non-loopback endpoint. Default: false. */
+  allowInsecureHttp?: boolean;
   /** How old an unfinished bootstrap's snapshot may be before it is refused
    * instead of resumed. Keep it inside the live service's retention. */
   replayWindowUs?: number;
@@ -201,6 +205,8 @@ async function runAlluviumBootstrap(
     token: opts.token,
     source,
     rewindUs: opts.rewindUs,
+    maxAgeUs: opts.maxAgeUs,
+    allowInsecureHttp: opts.allowInsecureHttp,
     replayWindowUs: opts.replayWindowUs,
     transport: opts.transport,
   });

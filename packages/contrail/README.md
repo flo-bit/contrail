@@ -265,7 +265,7 @@ An optional Alluvium adapter loads a fresh generation from a hosted export inste
 contrail backfill --sqlite ./data/contrail.sqlite --alluvium
 ```
 
-`--alluvium-endpoint` selects another instance and `--alluvium-token` supplies a bearer token if it requires one. The command rejects a populated database unless it is resuming an interrupted Alluvium bootstrap. The equivalent programmatic API is:
+`--alluvium-endpoint` selects another instance and `--alluvium-token` (or the `ALLUVIUM_TOKEN` environment variable) supplies a bearer token if it requires one. The command rejects a populated database unless it is resuming an interrupted Alluvium bootstrap. With `--sqlite` the record tables have no secondary indexes until the bootstrap completes, so finish or discard an interrupted one before serving from that file. The equivalent programmatic API is:
 
 ```ts
 import { DatabaseBootstrapTarget } from "@atmo-dev/contrail";

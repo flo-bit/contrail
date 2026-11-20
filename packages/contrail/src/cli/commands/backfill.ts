@@ -82,7 +82,7 @@ export function registerBackfill(cli: CAC): void {
     )
     .option(
       "--alluvium-token <token>",
-      "Bearer token, when the Alluvium service requires one",
+      "Bearer token, when the Alluvium service requires one (or set ALLUVIUM_TOKEN)",
     )
     .action(async (options: BackfillOpts) => {
       const only = options.only;
@@ -117,7 +117,7 @@ export function registerBackfill(cli: CAC): void {
         }
         const alluvium = {
           endpoint: options.alluviumEndpoint,
-          token: options.alluviumToken,
+          token: options.alluviumToken ?? process.env.ALLUVIUM_TOKEN,
         };
         const result = sqliteDb
           ? await bootstrapAlluviumDatabase({

@@ -53,6 +53,8 @@ interface ServiceOptions {
   cutAfter?: number;
   /** Replace export line N (0-based, within a response) with raw text. */
   corrupt?: { at: number; text: string };
+  /** Added to the record count the end line reports. */
+  miscount?: number;
   /** The snapshot time /export reports, when it differs from the head's;
    * null to send no snapshot headers at all. */
   exportTimeUs?: number | null;
@@ -88,7 +90,7 @@ function service(options: ServiceOptions) {
     if (options.corrupt) lines[options.corrupt.at] = options.corrupt.text;
     const cut = exports === 1 && options.cutAfter !== undefined;
     if (cut) lines = lines.slice(0, options.cutAfter);
-    else lines.push(JSON.stringify({ end: true, cursor: 1_000, time_us: HEAD_US, records: selected.length }));
+    else lines.push(JSON.stringify({ end: true, cursor: 1_000, time_us: HEAD_US, records: selected.length + (options.miscount ?? 0) }));
     const headTimeUs = typeof options.head?.time_us === "number" ? options.head.time_us : HEAD_US;
     const servedUs = options.exportTimeUs === undefined ? headTimeUs : options.exportTimeUs;
     return new Response(lines.map((text) => `${text}\n`).join(""), {
@@ -170,6 +172,7 @@ describe("Alluvium bootstrap source", () => {
       rkey: "e1",
       cid: "bafy-e1",
       value: { $type: EVENT, name: "one" },
+      timeUs: HEAD_US - 1_000_000,
     });
     // A batch is ordered against later changes by one time. It is never
     // later than the live cursor, so everything the live replay delivers
@@ -253,6 +256,16 @@ describe("Alluvium bootstrap source", () => {
     );
   });
 
+  it("fails at once when the end line disagrees with the records sent", async () => {
+    const { fetchImpl, requests } = service({ rows: ROWS, miscount: 1 });
+    const source = sources(fetchImpl);
+    const snapshot = await source.snapshotSource.prepare({ collections: [EVENT, RSVP] });
+    await expect(collect(source.snapshotSource.read({ snapshot }))).rejects.toThrow(
+      "different record count",
+    );
+    expect(requests.filter((url) => url.pathname === "/export")).toHaveLength(1);
+  });
+
   it("rejects malformed and unrequested records without retrying", async () => {
     for (const text of [
       "not json",
@@ -291,7 +304,7 @@ describe("Alluvium bootstrap source", () => {
 
     const old = sources(service({ rows: [], head: { cursor: 5 } }).fetchImpl);
     await expect(old.snapshotSource.prepare({ collections: [EVENT] })).rejects.toThrow(
-      "Alluvium head is unavailable",
+      "Alluvium head is unavailable: Alluvium head time_us must be",
     );
 
     expect(() =>
@@ -410,8 +423,10 @@ describe("Alluvium bootstrap source", () => {
   it("loads a fresh database and leaves live ingestion a timestamp cursor", async () => {
     const resolved = config();
     const db = createSqliteDatabase(":memory:");
+    const recentUs = Date.now() * 1_000 - 5_000_000;
+    const oldUs = recentUs - 300 * 86_400_000_000;
     const { fetchImpl } = service({
-      rows: ROWS.map((row) => ({ ...row, timeUs: Date.now() * 1_000 - 5_000_000 })),
+      rows: ROWS.map((row) => ({ ...row, timeUs: row.rkey === "r1" ? oldUs : recentUs })),
       // The real clock decides lag here, so report a current head.
       head: { cursor: 1_000, time_us: Date.now() * 1_000, excludes: ["app.bsky.*"] },
     });
@@ -436,6 +451,11 @@ describe("Alluvium bootstrap source", () => {
     expect(events.records.map((record) => record.rkey).sort()).toEqual(["e1", "e2", "e3"]);
     const rsvps = await queryRecords(db, resolved, { collection: RSVP });
     expect(rsvps.records).toHaveLength(2);
+    // Each record keeps the time it was written, whatever shares its batch.
+    expect(Object.fromEntries(rsvps.records.map((record) => [record.rkey, Number(record.time_us)]))).toEqual({
+      r1: oldUs,
+      r2: recentUs,
+    });
 
     // Running it again on the loaded database loads nothing.
     const { fetchImpl: unused, requests } = service({ rows: ROWS });

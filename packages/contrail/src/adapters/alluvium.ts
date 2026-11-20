@@ -238,6 +238,15 @@ class AlluviumExportInterruptedError extends Error {
   }
 }
 
+/** Thrown when an export contradicts itself. Reading the rest again would
+ * only hide it. */
+class AlluviumExportInvalidError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlluviumExportInvalidError";
+  }
+}
+
 class AlluviumAdapterBase {
   readonly id = PROVIDER;
   protected readonly endpoint: URL;
@@ -323,6 +332,9 @@ class AlluviumAdapterBase {
     let response: Response;
     try {
       response = await this.fetchImpl(url, { headers, signal: timeout.signal });
+    } catch (error) {
+      signal?.removeEventListener("abort", onAbort);
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -359,7 +371,8 @@ class AlluviumAdapterBase {
         if ((error as { retryable?: boolean }).retryable === false) break;
       }
     }
-    throw new Error("Alluvium head is unavailable", { cause: lastError });
+    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+    throw new Error(`Alluvium head is unavailable${reason}`, { cause: lastError });
   }
 
   /** The timestamp cursor that replays everything a head could have missed. */
@@ -414,9 +427,10 @@ function exportRecord(
   }
   if (typeof cid !== "string" || !cid) throw new TypeError("Alluvium record has no CID");
   if (!object(record)) throw new TypeError("Alluvium record value must be an object");
+  const timeUs = safeInteger(line.time_us, "Alluvium record time_us");
   return {
-    record: { uri, did, collection, rkey, cid, value: record },
-    timeUs: safeInteger(line.time_us, "Alluvium record time_us"),
+    record: { uri, did, collection, rkey, cid, value: record, timeUs },
+    timeUs,
   };
 }
 
@@ -528,7 +542,9 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
         for await (const line of lines) {
           if (line.end === true) {
             if (safeInteger(line.records, "Alluvium export record count") !== received) {
-              throw new Error("Alluvium export ended with a different record count than it sent");
+              throw new AlluviumExportInvalidError(
+                "Alluvium export ended with a different record count than it sent",
+              );
             }
             yield {
               records,
@@ -543,6 +559,7 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
           records.push(item.record);
           // A batch is ordered against later changes by one time, so it
           // takes the oldest of its records': none may look newer than it is.
+          // Each record keeps its own time for its place in query order.
           batchTimeUs = Math.min(batchTimeUs, item.timeUs);
           after = item.record.uri;
           if (records.length >= this.batchSize) {
@@ -561,7 +578,10 @@ export class AlluviumSnapshotSource extends AlluviumAdapterBase implements Snaps
         throw new AlluviumExportInterruptedError("Alluvium export ended before its closing line");
       } catch (error) {
         options.signal?.throwIfAborted();
-        if (!(error instanceof AlluviumExportInterruptedError) && error instanceof TypeError) {
+        if (
+          error instanceof AlluviumExportInvalidError ||
+          (!(error instanceof AlluviumExportInterruptedError) && error instanceof TypeError)
+        ) {
           // Malformed data will not improve on retry.
           throw error;
         }
