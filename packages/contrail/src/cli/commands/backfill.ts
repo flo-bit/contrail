@@ -4,10 +4,10 @@ import {
   backfillAll,
   bootstrapAlluvium,
   bootstrapAlluviumDatabase,
-  DEFAULT_ALLUVIUM_SOURCE_URL,
   labelsBackfillAll,
   labelsBackfillDatabase,
 } from "../../workers/backfill.js";
+import { DEFAULT_ALLUVIUM_ENDPOINT } from "../../adapters/alluvium.js";
 import {
   resolveAndLoadConfig,
   resolveValidationLexicons,
@@ -26,11 +26,7 @@ interface BackfillOpts {
   only?: string;
   alluvium?: boolean;
   alluviumEndpoint: string;
-  alluviumSourceId: string;
-  alluviumSourceUrl: string;
-  alluviumEpoch?: string;
-  alluviumRetentionHours: number;
-  allowPartial?: boolean;
+  alluviumToken?: string;
 }
 
 const VALID_ONLY = ["records", "labels"] as const;
@@ -39,7 +35,7 @@ export function registerBackfill(cli: CAC): void {
   cli
     .command(
       "backfill",
-      "Resumable bulk load from PDS by default, or a fresh Alluvium generation with --alluvium."
+      "Resumable bulk load from PDS by default, or a fresh generation from an Alluvium export with --alluvium."
     )
     .option("--config <path>", "Path to Contrail config file (TS or JS)")
     .option("--root <path>", "Project root for auto-detection (default: CWD)")
@@ -77,35 +73,16 @@ export function registerBackfill(cli: CAC): void {
     )
     .option(
       "--alluvium",
-      "Bootstrap a fresh generation from Alluvium base + archive data",
+      "Bootstrap a fresh generation from an Alluvium export instead of PDSes",
     )
     .option(
       "--alluvium-endpoint <url>",
       "Alluvium HTTP origin",
-      { default: "https://alluvium-v0.atmo.tools" },
+      { default: DEFAULT_ALLUVIUM_ENDPOINT },
     )
     .option(
-      "--alluvium-source-id <id>",
-      "Logical source ID expected in Alluvium manifests",
-      { default: "jetstream-us-east" },
-    )
-    .option(
-      "--alluvium-source-url <url>",
-      "Exact legacy Jetstream v1 URL advertised by Alluvium manifests",
-      { default: DEFAULT_ALLUVIUM_SOURCE_URL },
-    )
-    .option(
-      "--alluvium-epoch <epoch>",
-      "Operator-owned continuity epoch (required with --alluvium)",
-    )
-    .option(
-      "--alluvium-retention-hours <hours>",
-      "Assert direct-source retention for this generation",
-      { default: 72 },
-    )
-    .option(
-      "--allow-partial",
-      "Accept explicitly reported historical omissions",
+      "--alluvium-token <token>",
+      "Bearer token, when the Alluvium service requires one (or set ALLUVIUM_TOKEN)",
     )
     .action(async (options: BackfillOpts) => {
       const only = options.only;
@@ -133,26 +110,14 @@ export function registerBackfill(cli: CAC): void {
         : null;
 
       if (options.alluvium) {
-        if (only !== undefined) {
-          console.error("--alluvium cannot be combined with --only");
-          process.exit(1);
-        }
-        if (!options.alluviumEpoch?.trim()) {
-          console.error("--alluvium requires --alluvium-epoch <epoch>");
-          process.exit(1);
-        }
-        const retentionHours = Number(options.alluviumRetentionHours);
-        if (!Number.isFinite(retentionHours) || retentionHours <= 0) {
-          console.error("--alluvium-retention-hours must be a positive number");
+        // An export holds records only, so `--only records` changes nothing.
+        if (only === "labels") {
+          console.error("--alluvium loads records; it cannot be combined with --only labels");
           process.exit(1);
         }
         const alluvium = {
           endpoint: options.alluviumEndpoint,
-          sourceId: options.alluviumSourceId,
-          sourceUrl: options.alluviumSourceUrl,
-          sourceEpoch: options.alluviumEpoch,
-          allowPartial: options.allowPartial === true,
-          retentionUs: retentionHours * 60 * 60 * 1_000_000,
+          token: options.alluviumToken ?? process.env.ALLUVIUM_TOKEN,
         };
         const result = sqliteDb
           ? await bootstrapAlluviumDatabase({
@@ -160,15 +125,17 @@ export function registerBackfill(cli: CAC): void {
               db: sqliteDb,
               lexicons,
               ...alluvium,
+              // A local file can index the loaded data in one pass.
+              deferIndexes: true,
             })
           : await bootstrapAlluvium({ ...wrangler, ...alluvium });
         console.log(
-          `alluvium: ${result.resumed ? "resumed" : "loaded"} base + archive in ` +
-            `${(result.elapsedMs / 1000).toFixed(1)}s; ` +
-            `live cursor=${result.liveCursor}`,
-        );
-        console.log(
-          "alluvium: offline bootstrap complete; scheduled ingestion owns post-archive catch-up",
+          result.alreadyComplete
+            ? "alluvium: this database is already loaded; nothing to do"
+            : `alluvium: ${result.resumed ? "resumed" : "loaded"} export in ` +
+                `${(result.elapsedMs / 1000).toFixed(1)}s; ` +
+                `live cursor=${result.liveCursor}\n` +
+                "alluvium: bootstrap complete; scheduled ingestion resumes from just before the export",
         );
         return;
       }

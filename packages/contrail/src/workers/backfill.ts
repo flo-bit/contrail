@@ -106,27 +106,29 @@ export async function backfillAll(
   );
 }
 
-export const DEFAULT_ALLUVIUM_SOURCE_URL =
-  "wss://jetstream1.us-east.bsky.network";
-
 export interface AlluviumBootstrapOptions {
-  /** Alluvium HTTP origin. */
-  endpoint: string | URL;
-  /** Logical source ID advertised by the selected manifests. */
-  sourceId: string;
-  /** Exact legacy Jetstream v1 URL advertised by the manifests. This is
-   * independent of `config.jetstreams`, which selects the v2 live service.
-   * Default: {@link DEFAULT_ALLUVIUM_SOURCE_URL}. */
-  sourceUrl?: string;
-  /** Operator-owned continuity epoch. Alluvium protocol v1 does not publish it. */
-  sourceEpoch: string;
-  /** Explicitly accept manifests that report historical omissions. */
-  allowPartial?: boolean;
-  /** Direct-source retention asserted by the operator. Default: 72 hours. */
-  retentionUs?: number;
-  /** Busy collections used only to obtain the preliminary source mark. */
-  watermarkCollections?: string[];
+  /** Alluvium HTTP origin. Default: {@link DEFAULT_ALLUVIUM_ENDPOINT}. */
+  endpoint?: string | URL;
+  /** Bearer token, when the service requires one. */
+  token?: string;
+  /** Ordered source the projection is served from after bootstrap. Default:
+   * `config.orderedSource`, or `jetstream` / `alluvium-export` without one. */
+  sourceId?: string;
+  sourceEpoch?: string;
+  /** How far before the export's head live ingestion resumes. */
+  rewindUs?: number;
+  /** How old the service's snapshot may be before the export is refused. */
+  maxAgeUs?: number;
+  /** Permit HTTP to a non-loopback endpoint. Default: false. */
+  allowInsecureHttp?: boolean;
+  /** How old an unfinished bootstrap's snapshot may be before it is refused
+   * instead of resumed. Keep it inside the live service's retention. */
+  replayWindowUs?: number;
   transport?: AlluviumTransportOptions;
+  /** Build the record tables' secondary indexes once after the load
+   * instead of maintaining them per row. Use for a local SQLite file; leave
+   * off for D1, where one statement cannot index a large table in time. */
+  deferIndexes?: boolean;
 }
 
 export interface AlluviumBootstrapViaWranglerOptions
@@ -141,13 +143,15 @@ export interface AlluviumBootstrapDatabaseOptions extends AlluviumBootstrapOptio
 
 export interface AlluviumBootstrapResult {
   elapsedMs: number;
-  archiveBoundary: SourcePosition;
+  /** Position live ingestion resumes from: a timestamp cursor. */
+  handoff: SourcePosition;
+  /** The cursor live ingestion reads next. After a completed bootstrap has
+   * handed off, this is wherever live ingestion has got to. */
   liveCursor: number;
   resumed: boolean;
+  /** An earlier run had already completed this bootstrap; nothing was loaded. */
+  alreadyComplete: boolean;
 }
-
-/** @deprecated Use {@link AlluviumBootstrapResult}. */
-export type AlluviumBootstrapViaWranglerResult = AlluviumBootstrapResult;
 
 async function assertFreshBootstrapDatabase(
   db: Database,
@@ -178,26 +182,19 @@ async function runAlluviumBootstrap(
   db: Database,
   opts: AlluviumBootstrapOptions,
 ): Promise<AlluviumBootstrapResult> {
-  if (
-    contrail.config.orderedSource &&
-    (contrail.config.orderedSource.source !== opts.sourceId ||
-      contrail.config.orderedSource.epoch !== opts.sourceEpoch)
-  ) {
+  const ordered = contrail.config.orderedSource;
+  const source = {
+    id: opts.sourceId ?? ordered?.source ?? "jetstream",
+    epoch: opts.sourceEpoch ?? ordered?.epoch ?? "alluvium-export",
+  };
+  if (ordered && (ordered.source !== source.id || ordered.epoch !== source.epoch)) {
     throw new Error(
       "Alluvium source ID/epoch must match the configured orderedSource",
     );
   }
-  const sourceUrl = opts.sourceUrl ?? DEFAULT_ALLUVIUM_SOURCE_URL;
-  if (!sourceUrl.trim()) {
-    throw new TypeError("Alluvium source URL must not be empty");
-  }
-  const source = {
-    id: opts.sourceId,
-    epoch: opts.sourceEpoch,
-    url: sourceUrl,
-  };
   const target = new DatabaseBootstrapTarget(db, contrail.config, {
     deferDerivedProjections: true,
+    deferSecondaryIndexes: opts.deferIndexes === true,
     liveCursor: createAlluviumLiveCursor(source),
   });
   const prior = await target.load();
@@ -205,38 +202,41 @@ async function runAlluviumBootstrap(
 
   const sources = createAlluviumBootstrapSources(contrail.config, {
     endpoint: opts.endpoint,
+    token: opts.token,
     source,
-    jetstream: {
-      retentionUs: opts.retentionUs ?? 72 * 60 * 60 * 1_000_000,
-      watermarkCollections: opts.watermarkCollections ?? ["app.bsky.feed.post"],
-    },
+    rewindUs: opts.rewindUs,
+    maxAgeUs: opts.maxAgeUs,
+    allowInsecureHttp: opts.allowInsecureHttp,
+    replayWindowUs: opts.replayWindowUs,
     transport: opts.transport,
   });
   const started = performance.now();
   const result = await bootstrapFreshProjection({
     // Profiles, follows, and other dependent collections remain separately
     // accounted PDS enrichment rather than being misrepresented as Alluvium
-    // historical coverage.
+    // coverage.
     collections: getDiscoverableNsids(contrail.config),
     ...sources,
     target,
-    allowPartial: opts.allowPartial,
   });
   const liveCursor = await getLastCursor(db);
-  const archiveCursor = Number(result.through.cursor);
-  if (liveCursor === null || !Number.isSafeInteger(archiveCursor) || liveCursor < archiveCursor) {
-    throw new Error("Alluvium bootstrap did not persist its live archive cursor");
+  // A bootstrap completed by an earlier run has handed off already: live
+  // ingestion owns the cursor and has moved it on, to a sequence number.
+  const handedOff = prior?.phase === "complete";
+  if (liveCursor === null || (!handedOff && liveCursor !== Number(result.through.cursor))) {
+    throw new Error("Alluvium bootstrap did not persist its live cursor");
   }
   return {
     elapsedMs: Math.round(performance.now() - started),
-    archiveBoundary: result.through,
+    handoff: result.through,
     liveCursor,
     resumed: prior !== null,
+    alreadyComplete: handedOff,
   };
 }
 
-/** Load a fresh database from Alluvium base/archive data and seed the ordinary
- * scheduled-ingestion cursor at the exact archive boundary. */
+/** Load a fresh database from an Alluvium export and seed the ordinary
+ * scheduled-ingestion cursor just before the export's head. */
 export async function bootstrapAlluviumDatabase(
   opts: AlluviumBootstrapDatabaseOptions,
 ): Promise<AlluviumBootstrapResult> {

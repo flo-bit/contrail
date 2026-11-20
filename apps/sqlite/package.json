@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "contrail": "node contrail.mjs",
-    "dev": "node contrail.mjs dev --alluvium --allow-partial --no-connect",
+    "dev": "node contrail.mjs dev --alluvium --no-connect",
     "ingest": "tsx ingest.ts",
     "status": "tsx status.ts",
     "typecheck": "tsc --noEmit"

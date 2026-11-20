@@ -30,6 +30,10 @@ export interface SnapshotRecord {
   rkey: string;
   cid: string;
   value: unknown;
+  /** When the source witnessed this version of the record. It caps the
+   * record's own time field and stands in for a missing one. Default: the
+   * batch's `sourceTimeUs`. */
+  timeUs?: number;
 }
 
 export interface PreparedSnapshot {

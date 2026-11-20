@@ -12,20 +12,17 @@ pnpm dev
 
 This creates or resumes `data/contrail.sqlite`, resolves any missing source Lexicons, bootstraps it from Alluvium, catches up from Jetstream in bounded 15-second cycles, and serves the complete public Contrail API and Lexicon bundle at `http://127.0.0.1:8787`. Try `/status` or `/.well-known/contrail`; stop it with Ctrl-C.
 
-The package script opts into Alluvium and its currently reported partial calendar coverage. A project containing only `contrail.config.ts` can instead run plain `contrail dev`; without a Wrangler config it uses `.contrail/dev.sqlite` and PDS backfill by default. Add `--alluvium --allow-partial` when that config's discoverable collections are available from Alluvium.
+The package script opts into Alluvium. A project containing only `contrail.config.ts` can instead run plain `contrail dev`; without a Wrangler config it uses `.contrail/dev.sqlite` and PDS backfill by default. Add `--alluvium` when that config's discoverable collections are outside the Bluesky app, which is what Alluvium carries.
 
 ## Alluvium bootstrap only
 
 From this directory:
 
 ```bash
-pnpm contrail backfill \
-  --alluvium \
-  --alluvium-epoch jetstream-us-east-alluvium-v1 \
-  --allow-partial
+pnpm contrail backfill --alluvium
 ```
 
-The current public calendar manifest reports known historical omissions, hence the explicit `--allow-partial`. The command loads and verifies only the Alluvium base plus archive tail, then stores the archive boundary as the normal live cursor.
+The command loads the export and stores a timestamp cursor just before its head as the normal live cursor.
 
 Inspect the result:
 

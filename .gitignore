@@ -11,3 +11,6 @@ packages/contrail/src/core/queryable.generated.ts
 apps/*/src/lexicon-types/
 
 stuff/
+
+# contrail dev workspace (local database, resolved Lexicons)
+.contrail/
