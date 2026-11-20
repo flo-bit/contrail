@@ -16,7 +16,7 @@ import {
   optimizeIntervalMs,
   optimizeAnalysisLimit,
 } from "./types";
-import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, loadKnownActorDids, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, pruneGrownFeeds, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
+import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, lookupKnownActorDids, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement, sweepFeedItems, pruneGrownFeeds, getFeedPruneCursor, saveFeedPruneCursor, getMetaNumber, setMeta, optimizeDatabase } from "./db";
 import {
   createIngestEvent,
   ingestRecords,
@@ -54,6 +54,11 @@ export const DEFAULT_SCHEDULED_INGEST_BUDGET = Object.freeze({
   maxAccountUpdates: 500,
   maxSerializedBytes: 4 * 1024 * 1024,
 }) satisfies ScheduledIngestBudget;
+
+/** Unconfirmed actors resolved by one lookup during a scheduled drain. */
+const ACTOR_LOOKUP_BATCH = 100;
+/** Most source items held back while a lookup window fills. */
+const MAX_HELD_EVENTS = 500;
 
 export interface ScheduledIngestBudget {
   maxDrainMs: number;
@@ -291,6 +296,8 @@ export async function runGatedFeedPrune(
 
 /** Mutable state that persists across ingest cycles within the same process. */
 export interface IngestState {
+  /** Known actors. Persistent ingestion loads the complete set once; scheduled
+   * ingestion only keeps the actors it has confirmed so far. */
   cachedKnownDids?: Set<string>;
   schemaInitialized: boolean;
   /** Wall-clock of the last feed sweep slice — used only by the long-lived
@@ -433,6 +440,11 @@ export async function ingestEvents(
    * set, network-wide account traffic for unknown actors is dropped before it
    * spends the `maxAccountUpdates` budget. */
   knownAccounts?: (dids: string[]) => Promise<Set<string>>,
+  /** Resolves which authors of dependent-collection events are known. When
+   * set, `knownDids` only needs to hold the actors confirmed so far; the rest
+   * are looked up in batches during the drain, before they can spend the
+   * candidate budget. */
+  knownActors?: (dids: string[]) => Promise<Set<string>>,
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
@@ -448,7 +460,13 @@ export async function ingestEvents(
   const collections = getCollectionNsids(config);
   const dependentCollections = new Set(getDependentNsids(config));
   const discoverableCollections = new Set(getDiscoverableNsids(config));
-  const provisionalKnownDids = knownDids ? new Set(knownDids) : undefined;
+  const provisionalKnownDids = knownDids
+    ? new Set(knownDids)
+    : knownActors
+      ? new Set<string>()
+      : undefined;
+  // Actors the lookup did not find this drain.
+  const unknownActors = new Set<string>();
   const urls = config.jetstreams ?? DEFAULT_JETSTREAMS;
   const sourceId = config.orderedSource?.source ?? "jetstream";
   const sourceEpoch = config.orderedSource?.epoch ?? null;
@@ -673,6 +691,63 @@ export async function ingestEvents(
     }
   };
 
+  // Fully handle one item, then report whether a work threshold was reached.
+  const accountEvent = async (event: Ev): Promise<boolean> => {
+    stats.observedSourceItems++;
+    await handleEvent(event);
+    // handleEvent either retained, filtered, deduplicated, or deliberately
+    // handled the item. Only now is its cursor safe to checkpoint. Keep the
+    // representable checkpoint monotonic across deliberate overlap replay.
+    stats.lastAccountedCursor = advanceJetstreamCursor(
+      stats.lastAccountedCursor,
+      event.seq,
+    );
+
+    if (
+      stats.retainedCandidates >= budget.maxCandidates ||
+      accountUpdates.size >= budget.maxAccountUpdates
+    ) {
+      stats.stopReason = "count";
+      return true;
+    }
+    if (stats.serializedCandidateBytes >= budget.maxSerializedBytes) {
+      stats.stopReason = "bytes";
+      return true;
+    }
+    return false;
+  };
+
+  // A dependent event from an unconfirmed actor waits here, with everything
+  // after it so source order is kept, until one lookup resolves the window.
+  const heldEvents: Ev[] = [];
+  const heldActors = new Set<string>();
+  const needsActorLookup = (event: Ev): boolean =>
+    knownActors !== undefined &&
+    event.kind === "commit" &&
+    dependentCollections.has(event.commit.collection) &&
+    !provisionalKnownDids!.has(event.did) &&
+    !unknownActors.has(event.did);
+  /** Resolve and handle the held window. Items after a reached threshold are
+   * left unaccounted, so the next cycle replays them. */
+  const releaseHeld = async (): Promise<boolean> => {
+    if (heldEvents.length === 0) return false;
+    const actors = [...heldActors];
+    heldActors.clear();
+    const events = heldEvents.splice(0);
+    if (actors.length > 0) {
+      const known = await knownActors!(actors);
+      for (const did of actors) {
+        if (known.has(did)) provisionalKnownDids!.add(did);
+        else unknownActors.add(did);
+      }
+    }
+    for (const event of events) {
+      if (await accountEvent(event)) return true;
+    }
+    return false;
+  };
+  let thresholdReached = false;
+
   try {
     for (;;) {
       // Check the deadline before requesting another item. A hot iterator must
@@ -693,28 +768,21 @@ export async function ingestEvents(
         break;
       }
       const event = step.value;
-      stats.observedSourceItems++;
-
-      await handleEvent(event);
-      // handleEvent either retained, filtered, deduplicated, or deliberately
-      // handled the item. Only now is its cursor safe to checkpoint. Keep the
-      // representable checkpoint monotonic across deliberate overlap replay.
-      stats.lastAccountedCursor = advanceJetstreamCursor(
-        stats.lastAccountedCursor,
-        event.seq,
-      );
-
-      if (
-        stats.retainedCandidates >= budget.maxCandidates ||
-        accountUpdates.size >= budget.maxAccountUpdates
-      ) {
-        stats.stopReason = "count";
-        break;
+      const lookup = needsActorLookup(event);
+      if (lookup || heldEvents.length > 0) {
+        heldEvents.push(event);
+        if (lookup) heldActors.add(event.did);
+        if (
+          heldActors.size >= ACTOR_LOOKUP_BATCH ||
+          heldEvents.length >= MAX_HELD_EVENTS
+        ) {
+          thresholdReached = await releaseHeld();
+          if (thresholdReached) break;
+        }
+        continue;
       }
-      if (stats.serializedCandidateBytes >= budget.maxSerializedBytes) {
-        stats.stopReason = "bytes";
-        break;
-      }
+      thresholdReached = await accountEvent(event);
+      if (thresholdReached) break;
     }
   } finally {
     // Abort first so a pending async-generator pull and the transport's
@@ -722,6 +790,8 @@ export async function ingestEvents(
     subscriptionAbort.abort();
     Promise.resolve(iterator.return?.()).catch(() => {});
   }
+  // The stream went idle or ran out of time with a window still held.
+  if (!thresholdReached) await releaseHeld();
   // Every accounted seq's account event is either retained or known to be a
   // no-op before the drain's cursor can be saved.
   await resolveAccounts();
@@ -806,18 +876,24 @@ export async function runIngestCycle(
 
   const cursor = await getLastCursor(db);
 
-  // Load known DIDs for filtering dependent collections
+  // Known actors for filtering dependent collections
   const dependentCollections = getDependentNsids(config);
   let knownDids: Set<string> | undefined;
 
   if (dependentCollections.length > 0) {
-    if (s.cachedKnownDids) {
-      knownDids = s.cachedKnownDids;
-    } else {
-      knownDids = await loadKnownActorDids(db, config);
-      s.cachedKnownDids = knownDids;
-    }
+    // Scheduled isolates are recycled nearly every run, so loading the whole
+    // actor set here would scan the index each time. Only the actors a cycle
+    // meets are looked up; confirmed ones stay cached while the isolate lives.
+    knownDids = s.cachedKnownDids ??= new Set<string>();
   }
+  const confirmed = knownDids;
+  const knownActors = confirmed
+    ? async (dids: string[]) => {
+        const known = await lookupKnownActorDids(db, config, dids);
+        for (const did of known) confirmed.add(did);
+        return known;
+      }
+    : undefined;
 
   const {
     events,
@@ -832,6 +908,7 @@ export async function runIngestCycle(
     budget,
     knownDids,
     (dids) => knownAccountDids(db, config, dids),
+    knownActors,
   );
 
   const accepted: IngestEvent[] = [];
@@ -848,7 +925,7 @@ export async function runIngestCycle(
     const isFinalBatch = i + BATCH_SIZE >= events.length;
     const result = await ingestRecords(db, batch, config, {
       phase: "live",
-      knownDids,
+      knownActorCache: knownDids,
       warningSamples,
       // Earlier batches may commit without moving the cursor. A crash replays
       // them safely; the final batch atomically commits the exact source cursor.
