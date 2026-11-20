@@ -634,6 +634,58 @@ describe("scheduled known-actor lookup", () => {
         .text.replace(/^.*cycle summary /, ""),
     );
     expect(summary.retained_candidates).toBe(3);
+    // 151 unconfirmed authors, one query.
+    expect(summary.actor_lookups).toBe(1);
+  });
+
+  it("stops at the lookup cap and continues from there on the next cycle", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    await initSchema(db, configured);
+    await seedEvent(db, "did:plc:known", "seed");
+    source.events = [
+      ...Array.from({ length: 600 }, (_, index) =>
+        follow(1_000 + index, `did:plc:stranger${index}`),
+      ),
+      follow(1_600, "did:plc:known", "after"),
+    ];
+    const capped = { ...budget, maxCandidates: 50, maxActorLookups: 1 };
+    const summaries = () =>
+      output.lines
+        .filter((line) => line.text.includes("[ingest] cycle summary"))
+        .map((line) => JSON.parse(line.text.replace(/^.*cycle summary /, "")));
+
+    await runIngestCycle(db, configured, capped);
+    expect(summaries()[0]).toMatchObject({
+      stop_reason: "actor-lookups",
+      actor_lookups: 1,
+      max_actor_lookups: 1,
+    });
+    // The first 500 authors were resolved; the 501st event is not accounted.
+    expect(await getLastCursor(db)).toBe(1_499);
+    expect(await followers(db)).toEqual([]);
+
+    await runIngestCycle(db, configured, capped);
+    expect(summaries()[1]).toMatchObject({ stop_reason: "idle", actor_lookups: 1 });
+    expect(await getLastCursor(db)).toBe(1_600);
+    expect(await followers(db)).toEqual([{ did: "did:plc:known", rkey: "after" }]);
+  });
+
+  it("makes no lookup when no dependent event arrives", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    source.events = [commit(2_000, "plain")];
+
+    await runIngestCycle(db, configured, { ...budget, maxActorLookups: 1 });
+    const summary = JSON.parse(
+      output.lines
+        .find((line) => line.text.includes("[ingest] cycle summary"))!
+        .text.replace(/^.*cycle summary /, ""),
+    );
+    expect(summary.actor_lookups).toBe(0);
+    expect(summary.stop_reason).toBe("idle");
   });
 
   it("replays what a held window could not fit under the candidate cap", async () => {

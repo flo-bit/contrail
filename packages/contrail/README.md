@@ -81,7 +81,8 @@ HTTP routes expose the same pipeline, including relationship/reference hydration
 await contrail.ingest(); // bounded Jetstream cycle
 
 // Optional per-cycle overrides (defaults: 25s, 250 candidates,
-// 250 distinct identity updates, and 4 MiB).
+// 250 distinct identity updates, and 4 MiB). `maxActorLookups` (default 20)
+// caps the known-account queries made for profile/follow-type collections.
 await contrail.ingest({
   maxDrainMs: 20_000,
   maxCandidates: 200,

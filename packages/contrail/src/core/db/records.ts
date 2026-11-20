@@ -952,6 +952,8 @@ export async function loadKnownActorDids(
   return known;
 }
 
+const KNOWN_ACTOR_LOOKUP_CHUNK = 500;
+
 /** The subset of `dids` that `loadKnownActorDids` would contain, found with
  * one index probe per actor and source. Scheduled ingestion uses this so its
  * read cost follows the actors in a batch, not the size of the index: a
@@ -1001,8 +1003,6 @@ export async function lookupKnownActorDids(
   }
   return known;
 }
-
-const KNOWN_ACTOR_LOOKUP_CHUNK = 500;
 
 /** Save a legacy timestamp cursor monotonically without allowing an old
  * writer to move a database that has transitioned to the v2 seq domain back

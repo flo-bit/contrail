@@ -375,6 +375,10 @@ describe("ingestEvents — bounded by the safety timeout (om-dua7)", () => {
     expect(() =>
       resolveScheduledIngestBudget({ maxSerializedBytes: Number.NaN }),
     ).toThrow("maxSerializedBytes must be a positive finite integer");
+    expect(() => resolveScheduledIngestBudget({ maxActorLookups: 0 })).toThrow(
+      "maxActorLookups must be a positive finite integer",
+    );
+    expect(resolveScheduledIngestBudget().maxActorLookups).toBe(20);
     expect(() => resolveScheduledIngestBudget({ maxDrainMs: 1.5 })).toThrow(
       "maxDrainMs must be a positive finite integer",
     );

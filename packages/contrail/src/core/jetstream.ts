@@ -52,12 +52,16 @@ export const DEFAULT_SCHEDULED_INGEST_BUDGET = Object.freeze({
   maxCandidates: 250,
   maxIdentityUpdates: 250,
   maxAccountUpdates: 500,
+  maxActorLookups: 20,
   maxSerializedBytes: 4 * 1024 * 1024,
 }) satisfies ScheduledIngestBudget;
 
-/** Unconfirmed actors resolved by one lookup during a scheduled drain. */
-const ACTOR_LOOKUP_BATCH = 100;
-/** Most source items held back while a lookup window fills. */
+/** Unconfirmed actors resolved by one lookup during a scheduled drain: one
+ * query, since the lookup takes the whole batch as a single parameter. */
+const ACTOR_LOOKUP_BATCH = 500;
+/** Most source items held back while a lookup window fills. Held items are
+ * not yet candidates, so this count (not `maxSerializedBytes`) bounds the
+ * memory they use. */
 const MAX_HELD_EVENTS = 500;
 
 export interface ScheduledIngestBudget {
@@ -65,6 +69,7 @@ export interface ScheduledIngestBudget {
   maxCandidates: number;
   maxIdentityUpdates: number;
   maxAccountUpdates: number;
+  maxActorLookups: number;
   maxSerializedBytes: number;
 }
 
@@ -78,6 +83,10 @@ export interface ScheduledIngestOptions {
   /** Maximum distinct-actor account events retained by one drain; reaching
    * it ends the drain so no lifecycle event is skipped. Default: 500. */
   maxAccountUpdates?: number;
+  /** Maximum known-account lookups (one query each, up to 500 accounts) made
+   * while draining collections that only keep records from known accounts.
+   * Reaching it ends the drain; the rest replays next cycle. Default: 20. */
+  maxActorLookups?: number;
   /** UTF-8 record bytes plus metadata allowances. Default: 4 MiB. */
   maxSerializedBytes?: number;
   /** @deprecated Compatibility alias for maxDrainMs. */
@@ -89,6 +98,7 @@ export type ScheduledIngestStopReason =
   | "idle"
   | "count"
   | "bytes"
+  | "actor-lookups"
   | "drain-time"
   | "cancelled";
 
@@ -101,6 +111,8 @@ export interface ScheduledIngestCollectionStats {
   identityUpdatesOmitted: number;
   /** Account events for actors this instance holds no data for. */
   accountUpdatesFiltered: number;
+  /** Known-account lookups made for dependent collections. */
+  actorLookups: number;
   exactDuplicatesDropped: number;
   cursorBoundaryDuplicatesDropped: number;
   resumeOverlapDropped: number;
@@ -159,6 +171,11 @@ export function resolveScheduledIngestBudget(
       options.maxAccountUpdates ??
         DEFAULT_SCHEDULED_INGEST_BUDGET.maxAccountUpdates,
       "maxAccountUpdates",
+    ),
+    maxActorLookups: positiveInteger(
+      options.maxActorLookups ??
+        DEFAULT_SCHEDULED_INGEST_BUDGET.maxActorLookups,
+      "maxActorLookups",
     ),
     maxSerializedBytes: positiveInteger(
       options.maxSerializedBytes ??
@@ -505,6 +522,7 @@ export async function ingestEvents(
     retainedIdentityUpdates: 0,
     identityUpdatesOmitted: 0,
     accountUpdatesFiltered: 0,
+    actorLookups: 0,
     exactDuplicatesDropped: 0,
     cursorBoundaryDuplicatesDropped: 0,
     resumeOverlapDropped: 0,
@@ -554,15 +572,16 @@ export async function ingestEvents(
   const iterator = subscription[Symbol.asyncIterator]();
   type Ev = typeof subscription extends AsyncIterable<infer V> ? V : never;
 
+  const isResumeOverlap = (event: Ev): boolean =>
+    effectiveStartCursor !== null &&
+    !isJetstreamTimestampCursor(effectiveStartCursor) &&
+    event.seq <= effectiveStartCursor;
+
   const accountSourceItem = (event: Ev): boolean => {
     // The v2 wire is inclusive. The official client normally removes this
     // overlap itself; keep the boundary guard so custom/test transports cannot
     // make the already-committed seq consume a scheduled work budget.
-    if (
-      effectiveStartCursor !== null &&
-      !isJetstreamTimestampCursor(effectiveStartCursor) &&
-      event.seq <= effectiveStartCursor
-    ) {
+    if (isResumeOverlap(event)) {
       stats.resumeOverlapDropped++;
       return true;
     }
@@ -721,20 +740,26 @@ export async function ingestEvents(
   // after it so source order is kept, until one lookup resolves the window.
   const heldEvents: Ev[] = [];
   const heldActors = new Set<string>();
+  // Events that are dropped whoever wrote them never cost a lookup.
   const needsActorLookup = (event: Ev): boolean =>
     knownActors !== undefined &&
     event.kind === "commit" &&
     dependentCollections.has(event.commit.collection) &&
     !provisionalKnownDids!.has(event.did) &&
-    !unknownActors.has(event.did);
-  /** Resolve and handle the held window. Items after a reached threshold are
-   * left unaccounted, so the next cycle replays them. */
+    !unknownActors.has(event.did) &&
+    !isResumeOverlap(event) &&
+    repositoryAllowed(config, event.commit.collection, event.did);
+  /** Resolve and handle the held window with one lookup. A window is only
+   * opened while a lookup is left in the budget, so this always may run, also
+   * after the drain deadline. Items after a reached threshold are left
+   * unaccounted, so the next cycle replays them. */
   const releaseHeld = async (): Promise<boolean> => {
     if (heldEvents.length === 0) return false;
     const actors = [...heldActors];
     heldActors.clear();
     const events = heldEvents.splice(0);
     if (actors.length > 0) {
+      stats.actorLookups++;
       const known = await knownActors!(actors);
       for (const did of actors) {
         if (known.has(did)) provisionalKnownDids!.add(did);
@@ -769,6 +794,16 @@ export async function ingestEvents(
       }
       const event = step.value;
       const lookup = needsActorLookup(event);
+      if (
+        lookup &&
+        heldEvents.length === 0 &&
+        stats.actorLookups >= budget.maxActorLookups
+      ) {
+        // Leave this item unaccounted: the next cycle resumes from it.
+        stats.stopReason = "actor-lookups";
+        thresholdReached = true;
+        break;
+      }
       if (lookup || heldEvents.length > 0) {
         heldEvents.push(event);
         if (lookup) heldActors.add(event.did);
@@ -1112,6 +1147,8 @@ export async function runIngestCycle(
     max_candidates: budget.maxCandidates,
     max_identity_updates: budget.maxIdentityUpdates,
     max_account_updates: budget.maxAccountUpdates,
+    actor_lookups: stats.actorLookups,
+    max_actor_lookups: budget.maxActorLookups,
     max_serialized_bytes: budget.maxSerializedBytes,
     max_drain_ms: budget.maxDrainMs,
     starting_cursor: cursor,
