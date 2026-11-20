@@ -14,7 +14,7 @@ import {
   tryStartBackfillRun
 } from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
-import { TEST_CONFIG, createTestDb, createTestDbWithSchema, ingestRecords, makeEvent } from "./helpers";
+import { TEST_CONFIG, TEST_POSTGRES, createTestDb, createTestDbWithSchema, ingestRecords, makeEvent } from "./helpers";
 
 const DID = "did:plc:backfilltest";
 const EVENT = "community.lexicon.calendar.event";
@@ -516,6 +516,42 @@ describe("scheduled backfill retries", () => {
       await retryPendingBackfills(db, TEST_CONFIG, { maxAccounts: 1 })
     ).toMatchObject({ attempted: 0, skipped: false });
     expect((await getBackfillStatus(db, TEST_CONFIG)).state).toBe("complete");
+  });
+
+  it("reads only pending rows, and no account list, when nothing is due", async () => {
+    const db = await createTestDbWithSchema();
+    for (let i = 0; i < 200; i++) {
+      await db
+        .prepare("INSERT INTO backfills (did, collection, completed) VALUES (?, ?, 1)")
+        .bind(`did:plc:done${i}`, EVENT)
+        .run();
+    }
+    const prepare = db.prepare.bind(db);
+    const statements: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      statements.push(sql);
+      return prepare(sql);
+    });
+    try {
+      expect(
+        await retryPendingBackfills(db, TEST_CONFIG, { maxAccounts: 5 })
+      ).toMatchObject({ attempted: 0, skipped: false });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(statements.filter((sql) => /SELECT DISTINCT did, collection FROM backfills/.test(sql))).toEqual([]);
+    const due = statements.find((sql) => /^SELECT did FROM backfills WHERE completed = 0/.test(sql))!;
+    expect(due).toBeTruthy();
+    if (!TEST_POSTGRES) {
+      const plan = await db
+        .prepare(`EXPLAIN QUERY PLAN ${due}`)
+        .bind(Date.now(), 5)
+        .all<{ detail: string }>();
+      const details = plan.results.map((row) => row.detail).join(" | ");
+      expect(details).toContain("idx_backfills_pending");
+      expect(details).not.toMatch(/SCAN backfills(?! USING)/);
+    }
   });
 
   it("waits for persisted backoff and then completes a due account", async () => {

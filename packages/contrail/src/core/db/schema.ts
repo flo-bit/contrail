@@ -375,6 +375,12 @@ function isConcurrentCreateError(error: unknown): boolean {
   );
 }
 
+/** Covers only unfinished backfill work, so a scheduled retry reads the rows
+ * still pending and not every account ever backfilled. Kept out of the base
+ * schema: adding it there would send existing databases through a rebuild. */
+const BACKFILLS_PENDING_INDEX_DDL =
+  "CREATE INDEX IF NOT EXISTS idx_backfills_pending ON backfills(did, next_retry_at) WHERE completed = 0 AND retry_exhausted = 0";
+
 async function runIdempotentDdl(db: Database, statement: string): Promise<void> {
   try {
     await db.prepare(statement).run();
@@ -843,7 +849,8 @@ export async function initSchema(
     fts,
     changes,
   });
-  const fingerprint = `${baseFingerprint}:cursor-observations-v1`;
+  const cursorObservationsFingerprint = `${baseFingerprint}:cursor-observations-v1`;
+  const fingerprint = `${cursorObservationsFingerprint}:backfills-pending-v1`;
   const cursorObservationsDdl = `CREATE TABLE IF NOT EXISTS cursor_observations (
     time_us ${dialect.bigintType} NOT NULL,
     observation TEXT NOT NULL,
@@ -869,11 +876,15 @@ export async function initSchema(
     for (const apply of options.extraSchemas ?? []) await apply(db);
     return;
   }
-  if (storedFingerprint === baseFingerprint) {
-    // This independent additive table must not force an otherwise-current
+  if (
+    storedFingerprint === baseFingerprint ||
+    storedFingerprint === cursorObservationsFingerprint
+  ) {
+    // These independent additive objects must not force an otherwise-current
     // deployment through the FTS rebuild path. Upgrade the prior fingerprint
-    // directly after its idempotent DDL succeeds.
+    // directly after their idempotent DDL succeeds.
     await runIdempotentDdl(db, cursorObservationsDdl);
+    await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyRepositoryScopes();
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
@@ -896,6 +907,7 @@ export async function initSchema(
     await retireSupersededQueryableIndexes(db, config);
     await applyRepositoryScopes();
     await runIdempotentDdl(db, cursorObservationsDdl);
+    await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
@@ -929,6 +941,8 @@ export async function initSchema(
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
   await runMigrations(db, hasFeeds);
+  // After the migrations: older databases gain `retry_exhausted` there.
+  await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
   await db
     .prepare(
       "UPDATE record_versions SET projection_token = uri WHERE projection_token IS NULL",

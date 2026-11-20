@@ -841,13 +841,16 @@ export async function retryPendingBackfills(
       await heartbeatBackfillRun(db, runId);
     }
 
-    const knownDids = await loadKnownBackfillDids(db, config);
     const due = await db
       .prepare(
         "SELECT did FROM backfills WHERE completed = 0 AND retry_exhausted = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?) GROUP BY did ORDER BY MIN(COALESCE(next_retry_at, 0)), did LIMIT ?"
       )
       .bind(Date.now(), maxAccounts)
       .all<{ did: string }>();
+    // Most scheduled runs find nothing due: do not load every account for them.
+    const knownDids = due.results?.length
+      ? await loadKnownBackfillDids(db, config)
+      : undefined;
 
     for (const { did } of due.results ?? []) {
       if (Date.now() >= deadline) break;
