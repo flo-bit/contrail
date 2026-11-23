@@ -1,8 +1,19 @@
 import { describe, it, expect } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema, getMeta, setMeta } from "../src/index";
+import {
+  initSchema,
+  ingestRecords,
+  queryRecords,
+  getMeta,
+  setMeta,
+  saveCursor,
+  getLastCursor,
+  FTS_FINGERPRINTS_KEY,
+  LEGACY_MIGRATIONS_KEY,
+} from "../src/index";
 import { resolveConfig } from "../src/index";
 import type { Database, Statement } from "../src/index";
+import { makeEvent } from "./helpers";
 
 // initSchema replays ~40 DDL statements serially on every call; on recycled
 // Workers isolates that's hundreds of ms of cold-start round-trips. The
@@ -132,5 +143,347 @@ describe("schema fingerprint gate", () => {
     await initSchema(rec.db, CONFIG);
     expect(rec.prepares.length).toBeGreaterThan(10);
     expect(await getMeta(real, "schema_fingerprint")).toBeTruthy();
+    expect(await getMeta(real, LEGACY_MIGRATIONS_KEY)).toBeTruthy();
+    expect(await getMeta(real, FTS_FINGERPRINTS_KEY)).toBe("{}");
+  });
+
+  it("does not rebuild FTS or re-run legacy migrations when dropping feeds on a populated DB", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const withFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          queryable: { mode: {} },
+          searchable: ["name"],
+        },
+        rsvp: {
+          collection: "community.lexicon.calendar.rsvp",
+          queryable: { status: {} },
+        },
+      },
+      feeds: {
+        following: { targets: ["event"], maxItems: 50 },
+      },
+    });
+    await initSchema(real, withFeeds);
+
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "Berlin Meetup", mode: "in-person" },
+          time_us: 10_000,
+        }),
+        makeEvent({
+          uri: "at://did:plc:bob/community.lexicon.calendar.rsvp/r1",
+          did: "did:plc:bob",
+          collection: "community.lexicon.calendar.rsvp",
+          rkey: "r1",
+          record: { status: "going" },
+          time_us: 11_000,
+        }),
+      ],
+      withFeeds,
+    );
+    await saveCursor(real, 42_000);
+
+    // Drop `feeds` completely without touching `event.searchable`.
+    const withoutFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          queryable: { mode: {} },
+          searchable: ["name"],
+        },
+        rsvp: {
+          collection: "community.lexicon.calendar.rsvp",
+          queryable: { status: {} },
+        },
+      },
+    });
+
+    const upgraded = recordingDb(real);
+    await initSchema(upgraded.db, withoutFeeds);
+
+    const sqlLog = upgraded.prepares.join("\n");
+    expect(sqlLog).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(sqlLog).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+    expect(sqlLog).not.toMatch(/UPDATE labels SET cts/i);
+
+    // Records, search, and cursor remain intact.
+    expect(await getLastCursor(real)).toBe(42_000);
+    const found = await queryRecords(real, withoutFeeds, {
+      collection: "event",
+      search: "Berlin",
+    });
+    expect(found.records).toHaveLength(1);
+    expect(found.records[0]!.uri).toBe(
+      "at://did:plc:alice/community.lexicon.calendar.event/e1",
+    );
+
+    // Next cold start returns to the 1-query steady state.
+    const steady = recordingDb(real);
+    await initSchema(steady.db, withoutFeeds);
+    expect(steady.prepares).toHaveLength(1);
+  });
+
+  it("rebuilds FTS only for the collection whose searchable fields changed", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const initial = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+        note: {
+          collection: "com.example.note",
+          searchable: ["title"],
+        },
+      },
+    });
+    await initSchema(real, initial);
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "Conf", description: "GraphQL deep dive" },
+          time_us: 1000,
+        }),
+        makeEvent({
+          uri: "at://did:plc:alice/com.example.note/n1",
+          did: "did:plc:alice",
+          collection: "com.example.note",
+          rkey: "n1",
+          record: { title: "UnchangedNote" },
+          time_us: 1100,
+        }),
+      ],
+      initial,
+    );
+
+    const updated = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name", "description"],
+        },
+        note: {
+          collection: "com.example.note",
+          searchable: ["title"],
+        },
+      },
+    });
+
+    const recorded = recordingDb(real);
+    await initSchema(recorded.db, updated);
+
+    const sqlLog = recorded.prepares.join("\n");
+    expect(sqlLog).toMatch(/DELETE FROM fts_event/i);
+    expect(sqlLog).not.toMatch(/DELETE FROM fts_note|INSERT INTO fts_note/i);
+    expect(sqlLog).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+
+    expect(
+      (await queryRecords(real, updated, { collection: "event", search: "GraphQL" })).records,
+    ).toHaveLength(1);
+    expect(
+      (await queryRecords(real, updated, { collection: "note", search: "UnchangedNote" })).records,
+    ).toHaveLength(1);
+  });
+
+  it("propagates real database errors during virtual FTS table creation instead of swallowing them", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const searchConfig = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+    });
+    const failingDb: Database = {
+      dialect: real.dialect,
+      batch: (stmts) => real.batch(stmts),
+      prepare(sql) {
+        if (/CREATE VIRTUAL TABLE.*USING fts5/i.test(sql)) {
+          return {
+            bind() {
+              return this;
+            },
+            async all() {
+              throw new Error("D1_ERROR: exceeded CPU time limit");
+            },
+            async first() {
+              throw new Error("D1_ERROR: exceeded CPU time limit");
+            },
+            async run() {
+              throw new Error("D1_ERROR: exceeded CPU time limit");
+            },
+          };
+        }
+        return real.prepare(sql);
+      },
+    };
+
+    await expect(initSchema(failingDb, searchConfig)).rejects.toThrow(
+      /D1_ERROR: exceeded CPU time limit/,
+    );
+  });
+
+  it("stamps FTS and legacy markers during fast upgrade paths so a follow-up feed removal skips rebuilds", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const withFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+      feeds: {
+        following: { targets: ["event"], maxItems: 50 },
+      },
+    });
+    await initSchema(real, withFeeds);
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "FastPathEvent" },
+          time_us: 1000,
+        }),
+      ],
+      withFeeds,
+    );
+
+    // Simulate a pre-marker DB on the prior fast-path fingerprint (e.g. 0.31/0.32).
+    const current = (await getMeta(real, "schema_fingerprint"))!;
+    const previous = current.replace(/:backfills-pending-v1$/, "");
+    await setMeta(real, "schema_fingerprint", previous);
+    await real
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
+
+    // Step 1: upgrade via fast path — must stamp FTS and legacy markers without rebuild.
+    const fastUpgrade = recordingDb(real);
+    await initSchema(fastUpgrade.db, withFeeds);
+    expect(fastUpgrade.prepares.join("\n")).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(await getMeta(real, FTS_FINGERPRINTS_KEY)).toBeTruthy();
+    expect(await getMeta(real, LEGACY_MIGRATIONS_KEY)).toBeTruthy();
+
+    // Step 2: drop feeds — must still skip FTS rebuild and legacy version seeding.
+    const withoutFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+    });
+    const dropFeeds = recordingDb(real);
+    await initSchema(dropFeeds.db, withoutFeeds);
+    const dropSql = dropFeeds.prepares.join("\n");
+    expect(dropSql).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(dropSql).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+    expect(
+      (await queryRecords(real, withoutFeeds, { collection: "event", search: "FastPathEvent" }))
+        .records,
+    ).toHaveLength(1);
+  });
+
+  it("stamps decoupled markers on the steady path for pre-existing marker-less databases", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const withFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+      feeds: {
+        following: { targets: ["event"], maxItems: 50 },
+      },
+    });
+    await initSchema(real, withFeeds);
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "PreExistingEvent" },
+          time_us: 1000,
+        }),
+      ],
+      withFeeds,
+    );
+
+    // Simulate a database created by 0.32.1 (current schema_fingerprint, no markers yet).
+    await real
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
+
+    // First init on the steady path stamps both markers once without rebuilding.
+    const firstSteady = recordingDb(real);
+    await initSchema(firstSteady.db, withFeeds);
+    expect(firstSteady.prepares.join("\n")).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_|UPDATE record_versions/i);
+    expect(await getMeta(real, FTS_FINGERPRINTS_KEY)).toBeTruthy();
+    expect(await getMeta(real, LEGACY_MIGRATIONS_KEY)).toBeTruthy();
+
+    // Subsequent steady-state init is back to a single read.
+    const secondSteady = recordingDb(real);
+    await initSchema(secondSteady.db, withFeeds);
+    expect(secondSteady.prepares).toHaveLength(1);
+
+    // Dropping feeds now skips both FTS rebuild and legacy record_versions seeding.
+    const withoutFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+    });
+    const dropped = recordingDb(real);
+    await initSchema(dropped.db, withoutFeeds);
+    const dropSql = dropped.prepares.join("\n");
+    expect(dropSql).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(dropSql).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+    expect(
+      (await queryRecords(real, withoutFeeds, { collection: "event", search: "PreExistingEvent" }))
+        .records,
+    ).toHaveLength(1);
   });
 });

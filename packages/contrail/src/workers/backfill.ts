@@ -18,19 +18,29 @@ import {
 import type { BackfillAllOptions } from "../core/backfill.js";
 import type { BackfillStatus } from "../core/status.js";
 import {
+  DEFAULT_D1_BATCH_SIZE,
+  DEFAULT_REBUILD_CHUNK_SIZE,
   loadAlluviumExport,
+  type AlluviumProgress,
   type AlluviumTransportOptions,
 } from "../adapters/alluvium.js";
+import { openWranglerD1 } from "./wrangler.js";
 
 interface WranglerCommon {
   config: ContrailConfig;
   /** Exact generated/pinned bundle for collections with `validate: true`. */
   lexicons?: object[];
-  /** Use production D1 bindings. Equivalent to
-   *  `getPlatformProxy({ environment: "production" })`. */
+  /** Connect to the remote Cloudflare D1 database for `binding` (fails closed
+   * if the remote binding cannot be established). */
   remote?: boolean;
   /** Name of the D1 binding in wrangler.jsonc. Default: `"DB"`. */
   binding?: string;
+  /** Optional Wrangler environment name (e.g. `"staging"`). */
+  env?: string;
+  /** Optional explicit path to `wrangler.jsonc` / `wrangler.json` / `wrangler.toml`. */
+  wranglerConfig?: string;
+  /** Optional project root directory used to locate wrangler config when `wranglerConfig` is omitted. */
+  root?: string;
 }
 
 export interface BackfillAllViaWranglerOptions extends WranglerCommon {
@@ -50,33 +60,24 @@ async function withWrangler<T>(
   opts: WranglerCommon,
   fn: (contrail: Contrail, db: Database) => Promise<T>
 ): Promise<T> {
-  // Dynamic import so wrangler is only required when these helpers are
-  // actually called — keeps the main package usable in runtimes without it.
-  const { getPlatformProxy } = await import("wrangler");
-  const binding = opts.binding ?? "DB";
-
-  const { env, dispose } = await getPlatformProxy({
-    environment: opts.remote ? "production" : undefined,
+  const opened = await openWranglerD1({
+    remote: opts.remote,
+    binding: opts.binding,
+    env: opts.env,
+    wranglerConfig: opts.wranglerConfig,
+    root: opts.root,
+    logger: opts.config.logger,
   });
-
-  const db = (env as Record<string, unknown>)[binding] as Database | undefined;
-  if (!db) {
-    await dispose();
-    throw new Error(
-      `No binding named "${binding}" in wrangler env. Add a d1_databases ` +
-        `entry to wrangler.jsonc, or pass { binding: "..." }.`
-    );
-  }
 
   try {
     const contrail = new Contrail({
       ...opts.config,
       lexicons: opts.lexicons,
     });
-    await contrail.init(db);
-    return await fn(contrail, db);
+    await contrail.init(opened.db);
+    return await fn(contrail, opened.db);
   } finally {
-    await dispose();
+    await opened.dispose();
   }
 }
 
@@ -124,6 +125,11 @@ export interface AlluviumBootstrapOptions {
    * instead of maintaining them per row. Use for a local SQLite file; leave
    * off for D1, where one statement cannot index a large table in time. */
   deferIndexes?: boolean;
+  /** Override chunk size for derived-projection rebuilds (default: 500 when
+   * `deferIndexes` is false, bulk when `deferIndexes` is true). */
+  rebuildChunkSize?: number;
+  /** Optional progress callback invoked during loading and projection rebuild. */
+  onProgress?: (progress: AlluviumProgress) => void;
 }
 
 export interface AlluviumBootstrapViaWranglerOptions
@@ -172,6 +178,8 @@ async function runAlluviumBootstrap(
     replayWindowUs: opts.replayWindowUs,
     transport: opts.transport,
     deferIndexes: opts.deferIndexes === true,
+    rebuildChunkSize: opts.rebuildChunkSize,
+    onProgress: opts.onProgress,
   });
   return {
     elapsedMs: Math.round(performance.now() - started),
@@ -195,12 +203,24 @@ export async function bootstrapAlluviumDatabase(
   return runAlluviumBootstrap(contrail, opts.db, opts);
 }
 
-/** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. */
+/** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. Defaults to
+ * D1-safe batching (250 records) and chunked derived-projection rebuilds (500
+ * rows) unless explicitly overridden. */
 export async function bootstrapAlluvium(
   opts: AlluviumBootstrapViaWranglerOptions,
 ): Promise<AlluviumBootstrapResult> {
+  const d1Defaults: AlluviumBootstrapOptions = opts.deferIndexes
+    ? opts
+    : {
+        ...opts,
+        transport: {
+          ...opts.transport,
+          batchSize: opts.transport?.batchSize ?? DEFAULT_D1_BATCH_SIZE,
+        },
+        rebuildChunkSize: opts.rebuildChunkSize ?? DEFAULT_REBUILD_CHUNK_SIZE,
+      };
   return withWrangler(opts, (contrail, db) =>
-    runAlluviumBootstrap(contrail, db, opts),
+    runAlluviumBootstrap(contrail, db, d1Defaults),
   );
 }
 

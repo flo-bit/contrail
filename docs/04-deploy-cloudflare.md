@@ -109,3 +109,4 @@ For long-lived Node servers, use `createHandler(contrail)` with `contrail.runPer
 - [Labels](./advanced/labels.md) — labeler subscriptions and author self-labels
 - [Moderation](./advanced/moderation.md) — hides, takedowns, account lifecycle, and private reports
 - [Outbox](./advanced/outbox.md) — transactional change delivery to search/webhooks
+- [Remote D1](./advanced/remote-d1.md) — remote D1 backfill, Alluvium cutover, and safe config upgrades
