@@ -13,7 +13,7 @@ import {
   nsidForShortName,
   recordsTableName,
 } from "../types";
-import { batchedInQuery, formatRecord } from "./helpers";
+import { batchedInQuery, capitalize, formatRecord } from "./helpers";
 
 export function parseHydrateParams(
   params: URLSearchParams,
@@ -22,8 +22,6 @@ export function parseHydrateParams(
 ): { relations: Record<string, number>; references: Set<string> } {
   const relationHydrates: Record<string, number> = {};
   const referenceHydrates = new Set<string>();
-  const capitalize = (value: string): string =>
-    value.charAt(0).toUpperCase() + value.slice(1);
 
   for (const relationName of Object.keys(relations)) {
     const value = params.get(`hydrate${capitalize(relationName)}`);

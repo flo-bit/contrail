@@ -4,7 +4,7 @@ import type { ServiceAuthGate } from "../service-auth";
 import { shortNameForNsid, repositoryAllowed } from "../types";
 import { lookupExistingRecords } from "../db/records";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
-import { runGatedFeedPrune } from "../jetstream";
+import { runGatedFeedPrune } from "../maintenance";
 import { getPDS } from "../client";
 import type { Did, Nsid } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";

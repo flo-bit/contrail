@@ -13,18 +13,28 @@ import {
   jetstreamService,
   resolveConfig,
 } from "./types";
-import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, loadKnownActorDids, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement } from "./db";
-import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
-import { refreshStaleIdentities, applyIdentityEventStatement } from "./identity";
-import { backfillFollowersFromConstellation } from "./constellation";
 import {
-  createIngestState,
-  runFeedPruneSlice,
-  runGrownFeedPrune,
+  assertJetstreamServiceCompatibility,
+  assertServingSourceCompatibility,
+  initSchema,
+  getLastCursor,
+  loadKnownActorDids,
+} from "./db";
+import { ingestRecords } from "./ingest";
+import { refreshStaleIdentities } from "./identity";
+import { backfillFollowersFromConstellation } from "./constellation";
+import { createIngestState, type IngestState } from "./jetstream";
+import {
   FEED_PRUNE_RECOVERY_INTERVAL_MS,
   maybeOptimize,
-} from "./jetstream";
-import type { IngestState } from "./jetstream";
+  runFeedPruneSlice,
+  runGrownFeedPrune,
+} from "./maintenance";
+import {
+  commitToIngestEvent,
+  flushIdentityUpdates,
+  jetstreamCheckpointStatements,
+} from "./live-ingest";
 import {
   accountUpdateStatements,
   knownAccountDids,
@@ -176,19 +186,7 @@ async function streamAndFlush(
         "persistent Jetstream subscription cursor must be a non-negative safe integer",
       );
     }
-    await db.batch([
-      saveJetstreamCursorStatement(db, initialCursor),
-      ...(config.orderedSource
-        ? [
-            saveOrderedSourcePositionStatement(
-              db,
-              config.orderedSource,
-              initialCursor,
-            ),
-          ]
-        : []),
-      ...saveJetstreamCursorObservationStatements(db, initialCursor, []),
-    ]);
+    await db.batch(jetstreamCheckpointStatements(db, config, initialCursor));
   }
 
   const dependentCollections = new Set(getDependentNsids(config));
@@ -235,19 +233,9 @@ async function streamAndFlush(
   let flushPending: Promise<void> = Promise.resolve();
 
   const flushIdentities = async (entries: Array<[string, string]>) => {
-    for (let i = 0; i < entries.length; i += batchSize) {
-      const chunk = entries.slice(i, i + batchSize);
-      try {
-        const updatedAt = Date.now();
-        await db.batch(
-          chunk.map(([did, handle]) =>
-            applyIdentityEventStatement(db, did, handle, updatedAt),
-          ),
-        );
-      } catch (err) {
-        log.warn(`Identity update batch failed (${chunk.length}): ${err}`);
-      }
-    }
+    await flushIdentityUpdates(db, entries, batchSize, (chunk, err) => {
+      log.warn(`Identity update batch failed (${chunk.length}): ${err}`);
+    });
   };
 
   const flushWork = async () => {
@@ -276,17 +264,7 @@ async function streamAndFlush(
           knownDids,
           trailingStatements: [
             ...accountUpdateStatements(db, accounts, config),
-            saveJetstreamCursorStatement(db, lastCursor),
-            ...(config.orderedSource
-              ? [
-                  saveOrderedSourcePositionStatement(
-                    db,
-                    config.orderedSource,
-                    lastCursor,
-                  ),
-                ]
-              : []),
-            ...saveJetstreamCursorObservationStatements(db, lastCursor, []),
+            ...jetstreamCheckpointStatements(db, config, lastCursor),
           ],
         });
       } catch (error) {
@@ -373,19 +351,7 @@ async function streamAndFlush(
       }
       if (checkpoint !== null) {
         try {
-          await db.batch([
-            saveJetstreamCursorStatement(db, checkpoint),
-            ...(config.orderedSource
-              ? [
-                  saveOrderedSourcePositionStatement(
-                    db,
-                    config.orderedSource,
-                    checkpoint,
-                  ),
-                ]
-              : []),
-            ...saveJetstreamCursorObservationStatements(db, checkpoint, []),
-          ]);
+          await db.batch(jetstreamCheckpointStatements(db, config, checkpoint));
         } catch (error) {
           pendingCursor = Math.max(pendingCursor ?? 0, checkpoint);
           throw error;
@@ -501,32 +467,12 @@ async function streamAndFlush(
         }
 
         buffer.push(
-          createIngestEvent({
-            did: event.did,
-            timeUs:
-              commit.operation === "delete"
-                ? event.time_us
-                : recordTimeUs(
-                    commit.record,
-                    commit.collection,
-                    config,
-                    event.time_us,
-                  ),
-            collection: commit.collection,
-            operation: commit.operation,
-            rkey: commit.rkey,
-            cid: commit.operation === "delete" ? null : commit.cid,
-            value: commit.operation === "delete" ? undefined : commit.record,
-            source: {
-              id: config.orderedSource?.source ?? "jetstream",
-              ...(config.orderedSource
-                ? { epoch: config.orderedSource.epoch }
-                : {}),
-              time_us: event.time_us,
-              revision: commit.rev,
-              cursor: String(event.seq),
-            },
-          }),
+          commitToIngestEvent(
+            event,
+            config,
+            config.orderedSource?.source ?? "jetstream",
+            config.orderedSource?.epoch ?? null,
+          ),
         );
       } else if (event.kind === "account") {
         bufferAccount({
