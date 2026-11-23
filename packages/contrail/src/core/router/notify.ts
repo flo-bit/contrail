@@ -8,6 +8,7 @@ import { runGatedFeedPrune } from "../jetstream";
 import { getPDS } from "../client";
 import type { Did, Nsid } from "@atcute/lexicons";
 import { parseCanonicalResourceUri } from "@atcute/lexicons/syntax";
+import { resolveRequestDb, type DatabaseResolver } from "./index";
 
 /** Parse a canonical (DID-authority) record AT-URI into its components, or null
  *  if it isn't a valid full record URI. Backed by atcute's validator, which
@@ -162,104 +163,136 @@ export async function processNotifyUris(
     validUris.push({ uri, parsed });
   }
 
-  // Single batch lookup for all existing records (cid + record in one query)
+  // Single batch lookup for existing CIDs (record JSON is not needed here;
+  // ingestRecords reloads authoritative predecessor state inside its retry loop).
   const existing = await lookupExistingRecords(
     db,
     validUris.map(({ uri, parsed }) => ({ uri, collection: parsed.collection })),
-    true,
+    false,
     config
   );
 
-  for (const { uri, parsed } of validUris) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(new Error("notify deadline exceeded")),
-      NOTIFY_FETCH_TIMEOUT_MS,
-    );
-    let result: RecordFetchResult;
-    try {
-      const pds = await abortable(
-        getPDS(parsed.did as Did, db, config),
-        controller.signal,
+  // Fetch up to 5 URIs concurrently while preserving input order for outcomes.
+  const NOTIFY_CONCURRENCY = 5;
+  type FetchOutcome =
+    | { kind: "event"; event: IngestEvent }
+    | { kind: "error"; message: string }
+    | { kind: "unchanged" };
+  const outcomes = new Array<FetchOutcome>(validUris.length);
+  let nextIndex = 0;
+  const runWorker = async () => {
+    while (nextIndex < validUris.length) {
+      const index = nextIndex++;
+      const { uri, parsed } = validUris[index]!;
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(new Error("notify deadline exceeded")),
+        NOTIFY_FETCH_TIMEOUT_MS,
       );
-      if (!pds) {
-        errors.push(`${uri}: could not resolve PDS for ${parsed.did}`);
+      let result: RecordFetchResult;
+      try {
+        const pds = await abortable(
+          getPDS(parsed.did as Did, db, config, controller.signal),
+          controller.signal,
+        );
+        if (!pds) {
+          outcomes[index] = {
+            kind: "error",
+            message: `${uri}: could not resolve PDS for ${parsed.did}`,
+          };
+          continue;
+        }
+        result = await abortable(
+          fetchRecordFromPDS(
+            pds,
+            parsed.did,
+            parsed.collection,
+            parsed.rkey,
+            controller.signal,
+          ),
+          controller.signal,
+        );
+      } catch (error) {
+        outcomes[index] = {
+          kind: "error",
+          message: controller.signal.aborted
+            ? `${uri}: PDS request timed out after ${NOTIFY_FETCH_TIMEOUT_MS}ms`
+            : `${uri}: could not resolve or fetch from PDS: ${String(error)}`,
+        };
+        continue;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const existingInfo = existing.get(uri);
+      if (result.kind === "error") {
+        outcomes[index] = { kind: "error", message: `${uri}: ${result.message}` };
         continue;
       }
-      result = await abortable(
-        fetchRecordFromPDS(
-          pds,
-          parsed.did,
-          parsed.collection,
-          parsed.rkey,
-          controller.signal,
-        ),
-        controller.signal,
-      );
-    } catch (error) {
-      errors.push(
-        controller.signal.aborted
-          ? `${uri}: PDS request timed out after ${NOTIFY_FETCH_TIMEOUT_MS}ms`
-          : `${uri}: could not resolve or fetch from PDS: ${String(error)}`,
-      );
-      continue;
-    } finally {
-      clearTimeout(timeout);
-    }
 
-    const existingInfo = existing.get(uri);
-    if (result.kind === "error") {
-      errors.push(`${uri}: ${result.message}`);
-      continue;
+      const now = Date.now() * 1000;
+      if (result.kind === "found") {
+        if (existingInfo?.cid === result.cid) {
+          outcomes[index] = { kind: "unchanged" };
+          continue;
+        }
+        outcomes[index] = {
+          kind: "event",
+          event: createIngestEvent({
+            uri,
+            did: parsed.did,
+            collection: parsed.collection,
+            rkey: parsed.rkey,
+            operation: existingInfo ? "update" : "create",
+            cid: result.cid,
+            value: result.value,
+            timeUs: recordTimeUs(result.value, parsed.collection, config, now),
+            indexedAt: now,
+            source: {
+              id: "pds-notify",
+              time_us: now,
+              revision: null,
+              cursor: null,
+            },
+          }),
+        };
+      } else {
+        // An authoritative absence is versioned even when no visible row exists;
+        // that tombstone prevents an older relay create from resurrecting it.
+        outcomes[index] = {
+          kind: "event",
+          event: createIngestEvent({
+            uri,
+            did: parsed.did,
+            collection: parsed.collection,
+            rkey: parsed.rkey,
+            operation: "delete",
+            timeUs: now,
+            indexedAt: now,
+            source: {
+              id: "pds-notify",
+              time_us: now,
+              revision: null,
+              cursor: null,
+            },
+          }),
+        };
+      }
     }
-
-    const now = Date.now() * 1000;
-    if (result.kind === "found") {
-      if (existingInfo?.cid === result.cid) continue;
-      events.push(
-        createIngestEvent({
-          uri,
-          did: parsed.did,
-          collection: parsed.collection,
-          rkey: parsed.rkey,
-          operation: existingInfo ? "update" : "create",
-          cid: result.cid,
-          value: result.value,
-          timeUs: recordTimeUs(result.value, parsed.collection, config, now),
-          indexedAt: now,
-          source: {
-            id: "pds-notify",
-            time_us: now,
-            revision: null,
-            cursor: null,
-          },
-        }),
-      );
-    } else {
-      // An authoritative absence is versioned even when no visible row exists;
-      // that tombstone prevents an older relay create from resurrecting it.
-      events.push(
-        createIngestEvent({
-          uri,
-          did: parsed.did,
-          collection: parsed.collection,
-          rkey: parsed.rkey,
-          operation: "delete",
-          timeUs: now,
-          indexedAt: now,
-          source: {
-            id: "pds-notify",
-            time_us: now,
-            revision: null,
-            cursor: null,
-          },
-        }),
-      );
-    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(NOTIFY_CONCURRENCY, validUris.length) },
+      () => runWorker(),
+    ),
+  );
+  for (const outcome of outcomes) {
+    if (outcome.kind === "event") events.push(outcome.event);
+    else if (outcome.kind === "error") errors.push(outcome.message);
   }
 
   const appliedEvents = events.length > 0
-    ? (await ingestRecords(db, events, config, { existing, phase: "live" })).accepted
+    ? (await ingestRecords(db, events, config, { phase: "live" })).accepted
     : [];
 
   // The shared ingest path fans these records into feed_items exactly like the cron and
@@ -286,7 +319,7 @@ export async function processNotifyUris(
 
 export function registerNotifyRoute(
   app: Hono,
-  db: Database,
+  db: DatabaseResolver,
   config: ContrailConfig,
   serviceAuth?: ServiceAuthGate | null
 ) {
@@ -336,7 +369,7 @@ export function registerNotifyRoute(
       }
     }
 
-    const result = await processNotifyUris(db, config, uris);
+    const result = await processNotifyUris(resolveRequestDb(db, c), config, uris);
     return c.json(result);
   });
 }

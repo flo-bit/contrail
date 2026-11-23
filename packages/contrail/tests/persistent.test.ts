@@ -28,13 +28,11 @@ import {
 import { initSchema } from "../src/index";
 import { saveJetstreamCursor } from "../src/core/db/records";
 
-const applyIdentityEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/core/identity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/core/identity")>();
   return {
     ...actual,
     refreshStaleIdentities: vi.fn().mockResolvedValue(undefined),
-    applyIdentityEvent: (...args: unknown[]) => applyIdentityEventMock(...args),
   };
 });
 
@@ -561,7 +559,12 @@ describe("runPersistent", () => {
   });
 
   it("skips non-commit events", async () => {
-    applyIdentityEventMock.mockClear();
+    await db
+      .prepare(
+        "INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)",
+      )
+      .bind("did:plc:someone", "oldhandle.test", "https://pds.test", 1)
+      .run();
     const events = [
       {
         kind: "identity" as const,
@@ -601,13 +604,13 @@ describe("runPersistent", () => {
       limit: 100,
     });
     expect(result.records.length).toBe(1);
-    // Identity events update the identities table even though they don't
+    // Identity events batch-update the identities table even though they don't
     // produce records.
-    expect(applyIdentityEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      "did:plc:someone",
-      "newhandle.test"
-    );
+    const row = await db
+      .prepare("SELECT handle FROM identities WHERE did = ?")
+      .bind("did:plc:someone")
+      .first<{ handle: string }>();
+    expect(row?.handle).toBe("newhandle.test");
   });
 
   it("checkpoints an identity-only v2 range", async () => {

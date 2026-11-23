@@ -117,7 +117,21 @@ async function runOneLabelerForever(
       const delay = Math.min(1_000 * 2 ** attempts, 30_000);
       attempts++;
       log.log(`[labels] ${source.did} reconnecting in ${delay}ms (attempt ${attempts})`);
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
     }
   }
 }

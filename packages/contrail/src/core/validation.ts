@@ -56,6 +56,15 @@ export function bindRecordValidationLexicons(
   config: ContrailConfig,
   lexicons: readonly object[],
 ): void {
+  const existing = runtimeLexicons.get(config);
+  if (
+    existing &&
+    !providers.has(config) &&
+    existing.length === lexicons.length &&
+    existing.every((doc, index) => doc === lexicons[index])
+  ) {
+    return;
+  }
   runtimeLexicons.set(config, [...lexicons] as LexiconDoc[]);
   providers.delete(config);
   contexts.delete(config);

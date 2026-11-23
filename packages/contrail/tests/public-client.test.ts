@@ -1,4 +1,4 @@
-import type {} from "@atcute/atproto";
+import { ComAtprotoRepoCreateRecord } from "@atcute/atproto";
 import { Client } from "@atcute/client";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -576,6 +576,43 @@ describe("public service client", () => {
       (client as any).get(method),
     ).rejects.toThrow("service DID mismatch");
     expect(pds.handler).not.toHaveBeenCalled();
+  });
+
+  it("notifies Contrail after PDS writes performed via client.call()", async () => {
+    const repoDid = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const pdsHandler = vi.fn(async (pathname: string) => {
+      const url = new URL(pathname, "https://pds.example.com");
+      if (url.pathname === "/xrpc/com.atproto.repo.createRecord") {
+        return Response.json({
+          uri: `at://${repoDid}/${collection}/3viaCall`,
+          cid: "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+        });
+      }
+      throw new Error(`unexpected PDS call: ${url.pathname}`);
+    });
+    const notified: string[] = [];
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      notified.push(...(body.uris ?? []));
+      return Response.json({ indexed: 1, deleted: 0 });
+    });
+    const client = createPublicServiceClient({
+      endpoint,
+      serviceMethods: [],
+      collections: [collection],
+      notifyMethod,
+      fetch: fetcher,
+    }).authenticated(new Client({ handler: pdsHandler }));
+
+    const res = await (client as any).call(ComAtprotoRepoCreateRecord, {
+      input: {
+        repo: repoDid,
+        collection,
+        record: { $type: collection, name: "Via call()" },
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(notified).toEqual([`at://${repoDid}/${collection}/3viaCall`]);
   });
 
 });

@@ -9,7 +9,7 @@ import type { SqlDialect } from "../dialect";
 import {
   buildFtsSchema,
   getDialect,
-  postgresDialect,
+  isPostgresDialect,
   sqliteFtsContentExpression,
 } from "../dialect";
 import {
@@ -335,7 +335,7 @@ export async function addColumnIfNotExists(
   column: string,
   columnDef: string,
 ): Promise<void> {
-  if (getDialect(db) === postgresDialect) {
+  if (isPostgresDialect(getDialect(db))) {
     await db
       .prepare(
         `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${columnDef}`,

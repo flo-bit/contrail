@@ -1,10 +1,11 @@
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { ContrailConfig, Database } from "../types";
 import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../types";
 import { getLastCursor, getServingSourcePosition } from "../db";
 import { getBackfillStatus } from "../status";
 import { getRequiredChangeConsumerReadiness } from "../changes";
 import { isJetstreamTimestampCursor } from "../jetstream-live";
+import { resolveRequestDb, type DatabaseResolver } from "./index";
 
 export interface CursorStatus {
   cursor: number | null;
@@ -77,19 +78,20 @@ export async function getStatusOverview(db: Database, config: ContrailConfig) {
 
 export function registerCursorRoute(
   app: Hono,
-  db: Database,
+  db: DatabaseResolver,
   config: ContrailConfig
 ): void {
   const ns = config.namespace;
 
   app.get(`/xrpc/${ns}.getCursor`, async (c) => {
+    const resolvedDb = resolveRequestDb(db, c);
     if (!config.orderedSource) {
-      const current = await getCursorStatus(db);
+      const current = await getCursorStatus(resolvedDb);
       if (current.cursor === null) return c.json({});
       return c.json({ cursor: current.cursor });
     }
 
-    const current = await getServingSourcePosition(db);
+    const current = await getServingSourcePosition(resolvedDb);
     if (!current) return c.json({});
     return c.json({
       position: current.position,

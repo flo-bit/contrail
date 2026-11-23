@@ -1,5 +1,5 @@
 import type { Database } from "../types";
-import { getDialect, postgresDialect } from "../dialect";
+import { getDialect, isPostgresDialect } from "../dialect";
 
 /**
  * Refresh the query planner's statistics so multi-predicate queries pick the
@@ -22,7 +22,7 @@ export async function optimizeDatabase(
   db: Database,
   analysisLimit = 400
 ): Promise<void> {
-  if (getDialect(db) === postgresDialect) return;
+  if (isPostgresDialect(getDialect(db))) return;
 
   try {
     await db

@@ -102,6 +102,7 @@ async function fetchBacklinksPage(
   try {
     const res = await fetch(u.toString(), {
       headers: { "user-agent": userAgent, accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return null;
     return (await res.json()) as BacklinksPage;

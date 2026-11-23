@@ -248,9 +248,12 @@ function visibleChildCountSql(
   const bindings = filters.map((f) => f.value);
   const columns = filters.map((_, i) => `p.v${i}`).join(", ");
   if (countDistinct) {
+    const distinctExpr = ["uri", "did", "rkey"].includes(countDistinct)
+      ? `mc.${countDistinct}`
+      : getDialect(db).jsonExtract("mc.record", countDistinct);
     const anyHidden = `EXISTS (SELECT 1 FROM moderation_hidden h WHERE ${activeHiddenSql("h")})`;
     return {
-      sql: `(SELECT (SELECT COUNT(DISTINCT mc.${countDistinct}) FROM ${childTable} mc
+      sql: `(SELECT (SELECT COUNT(DISTINCT ${distinctExpr}) FROM ${childTable} mc
         WHERE ${where("mc")} AND (NOT ${anyHidden} OR ${visibleRecordSql("mc")}))
         FROM (SELECT ${columns} FROM ${params}) q)`,
       bindings,

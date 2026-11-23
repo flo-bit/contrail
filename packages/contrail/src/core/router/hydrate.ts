@@ -69,17 +69,26 @@ export async function resolveHydrates(
         : records.map((record) => record.uri);
     if (matchValues.length === 0) continue;
 
-    const groupCount = relation.groupBy ? 10 : 1;
-    const maxRows = matchValues.length * hydrateLimit * groupCount;
+    const dialect = getDialect(db);
+    const matchExpr = dialect.jsonExtract("r.record", field);
+    const partitionExpr = relation.groupBy
+      ? `${matchExpr}, ${dialect.jsonExtract("r.record", relation.groupBy)}`
+      : matchExpr;
+    // Partition per parent (and group when grouped) so one popular parent
+    // cannot starve the remaining parents in the same IN chunk.
     const relatedRows = await batchedInQuery<
       Omit<RecordRow, "collection">
     >(
       db,
       `SELECT uri, did, rkey, cid, record, time_us
-       FROM ${recordsTableName(relation.collection)} r
-       WHERE ${getDialect(db).jsonExtract("record", field)} IN (__IN__) AND ${visibleRecordSql("r")}
-       ORDER BY time_us DESC
-       LIMIT ${maxRows}`,
+       FROM (
+         SELECT uri, did, rkey, cid, record, time_us,
+                ROW_NUMBER() OVER (PARTITION BY ${partitionExpr} ORDER BY time_us DESC) AS _rn
+         FROM ${recordsTableName(relation.collection)} r
+         WHERE ${matchExpr} IN (__IN__) AND ${visibleRecordSql("r")}
+       ) ranked
+       WHERE _rn <= ${hydrateLimit}
+       ORDER BY time_us DESC`,
       [],
       matchValues,
     );

@@ -57,7 +57,7 @@ import {
   runPersistentLabels as runPersistentLabelsImpl,
   type PersistentLabelsOptions,
 } from "./core/labels/subscribe";
-import { createApp, type CreateAppOptions } from "./core/router";
+import { createApp, createRouterApp, type CreateAppOptions } from "./core/router";
 import {
   runModerationCycle,
   runPersistentModeration,
@@ -365,6 +365,21 @@ export class Contrail {
     }
     prepareRecordValidation(this.config);
     return createApp(this.getDb(db), this.config, appOptions);
+  }
+
+  /** @internal Build a reusable Hono app that resolves per-request DB bindings
+   *  from Hono env (falling back to the constructor DB if present). */
+  _createRuntimeApp(options: CreateAppOptions = {}): Hono {
+    if (options.lexicons) {
+      bindRecordValidationLexicons(this.config, options.lexicons);
+    }
+    prepareRecordValidation(this.config);
+    return createRouterApp(this._db, this.config, options);
+  }
+
+  /** @internal Whether this instance was constructed with a default DB. */
+  _hasDefaultDb(): boolean {
+    return this._db !== undefined;
   }
 
   /** Fetch-style handler built from `app()`. Use this from SvelteKit / Next /

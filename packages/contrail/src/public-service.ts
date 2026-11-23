@@ -393,7 +393,13 @@ export function validateServiceManifest(
   if (!uniqueStrings(protectedIds)) {
     throw new Error("service manifest contains duplicate protected methods");
   }
-  if (protectedIds.some((method) => !method.startsWith(prefix))) {
+  if (
+    protectedIds.some(
+      (method) =>
+        !method.startsWith(prefix) &&
+        method !== "com.atproto.moderation.createReport",
+    )
+  ) {
     throw new Error(
       "service manifest protected method is outside its namespace",
     );

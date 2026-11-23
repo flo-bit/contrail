@@ -62,4 +62,35 @@ describe("PostgreSQL adapter driver", () => {
     await expect(db.batch([])).rejects.toThrow("connection lost");
     expect(client.release).toHaveBeenCalledOnce();
   });
+
+  it("handles SQL '' string escapes and trailing backslashes when rewriting placeholders", async () => {
+    const { pool, db } = setup();
+    await db
+      .prepare("SELECT 'it''s ?', 'path\\', ? AS a, ? AS b")
+      .bind("one", "two")
+      .first();
+    expect(pool.query).toHaveBeenCalledWith(
+      "SELECT 'it''s ?', 'path\\', $1 AS a, $2 AS b",
+      ["one", "two"],
+    );
+  });
+
+  it("coerces any INT8 (OID 20) column via driver field metadata, including aliased aggregates", async () => {
+    const pool = {
+      query: vi.fn(async () => ({
+        rows: [{ arbitrary_count: "99", text_num: "123" }],
+        rowCount: 1,
+        fields: [
+          { name: "arbitrary_count", dataTypeID: 20 },
+          { name: "text_num", dataTypeID: 25 },
+        ],
+      })),
+      connect: vi.fn(),
+    };
+    const db = createPostgresDatabase(pool as unknown as pg.Pool);
+    expect(await db.prepare("SELECT COUNT(*) AS arbitrary_count, '123' AS text_num").first()).toEqual({
+      arbitrary_count: 99,
+      text_num: "123",
+    });
+  });
 });

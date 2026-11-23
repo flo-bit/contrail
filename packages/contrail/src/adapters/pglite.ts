@@ -5,7 +5,11 @@ import { createPostgresAdapter, type PostgresQuery } from "./postgres-shared";
 function queryOn(db: PGlite | Transaction): PostgresQuery {
   return async (sql, values) => {
     const result = await db.query(sql, values);
-    return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
+    return {
+      rows: result.rows,
+      rowCount: result.affectedRows ?? result.rows.length,
+      fields: result.fields,
+    };
   };
 }
 
