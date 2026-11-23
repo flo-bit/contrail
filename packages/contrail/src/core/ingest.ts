@@ -325,6 +325,8 @@ export async function ingestRecords(
     ),
   );
 
+  const quietExclusions = new Set<IngestEvent>();
+  const ordinaryUris = new Set<string>();
   for (let index = 0; index < candidates.length; index++) {
     const { event, shortName, record } = candidates[index];
     const failure = validationFailures[index];
@@ -333,30 +335,32 @@ export async function ingestRecords(
       continue;
     }
 
-    if (record) {
-      const filter = config.collections[shortName]?.recordFilter;
-      if (filter) {
-        let keep = false;
-        try {
-          keep = filter(record);
-        } catch (error) {
-          emitIngestWarning(
-            logger,
-            options.warningSamples,
-            `[ingest] recordFilter threw for ${event.uri}: ${error}`,
-          );
+    const collection = config.collections[shortName];
+    const filter = collection?.recordFilter;
+    if (record && filter) {
+      let keep = false;
+      try {
+        keep = filter(record);
+      } catch (error) {
+        emitIngestWarning(
+          logger,
+          options.warningSamples,
+          `[ingest] recordFilter threw for ${event.uri}: ${error}`,
+        );
+      }
+      if (!keep) {
+        dropped.recordFilter++;
+        const exclusion = asProjectionDelete(event);
+        accepted.push(exclusion);
+        policyExcluded.add(exclusion);
+        if (collection.recordFilterTombstones === false && !options.projection) {
+          quietExclusions.add(exclusion);
         }
-        if (!keep) {
-          dropped.recordFilter++;
-          const exclusion = asProjectionDelete(event);
-          accepted.push(exclusion);
-          policyExcluded.add(exclusion);
-          continue;
-        }
+        continue;
       }
     }
-
     accepted.push(event);
+    ordinaryUris.add(event.uri);
   }
 
   const validationDropTotal =
@@ -397,11 +401,17 @@ export async function ingestRecords(
         db,
         accepted.map((event) => event.uri),
       );
+    // Keep the exclusion if there is a version to retract, including a put
+    // earlier in the same batch. Recheck on each projection retry.
+    const projectable = quietExclusions.size
+      ? accepted.filter((event) => !quietExclusions.has(event) ||
+          ordinaryUris.has(event.uri) || predecessors.has(event.uri))
+      : accepted;
     const ordered = options.authoritativeSourceObservation
-      ? selectAuthoritativeMutations(accepted)
+      ? selectAuthoritativeMutations(projectable)
       : options.projection
-        ? await options.projection.selectCurrent(db, accepted)
-        : selectMutationWinners(accepted, predecessors);
+        ? await options.projection.selectCurrent(db, projectable)
+        : selectMutationWinners(projectable, predecessors);
     attemptDropped.superseded += ordered.superseded;
 
     const projectionExclusions = ordered.applied.filter((event) =>

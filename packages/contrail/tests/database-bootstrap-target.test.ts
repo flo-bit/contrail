@@ -378,6 +378,45 @@ describe("database bootstrap target", () => {
     });
   });
 
+  it("dates a snapshot record by when it was seen, not by its batch's oldest record", async () => {
+    const resolved = config();
+    const db = createSqliteDatabase(":memory:");
+    await initSchema(db, resolved);
+    const target = new DatabaseBootstrapTarget(db, resolved);
+    const prepared = snapshot();
+    const batchUs = Date.parse("2026-01-01T00:00:00Z") * 1000;
+    const createdAt = "2026-01-03T00:00:00Z";
+    const createdUs = Date.parse(createdAt) * 1000;
+    const dated = (rkey: string) => ({
+      ...record(rkey, "dated"),
+      value: { ...value("dated"), createdAt },
+    });
+    await target.beginCapture(sourcePosition(1));
+    await target.setSnapshot(prepared, sourcePosition(1));
+    await target.applySnapshotBatch(prepared, {
+      records: [
+        { ...dated("seen"), timeUs: createdUs + 5 },
+        { ...dated("early"), timeUs: createdUs - 5 },
+        dated("unknown"),
+      ],
+      sourceTimeUs: batchUs,
+      progress: { partition: "pds", cursor: null, complete: true },
+      done: true,
+    });
+
+    const rows = await db
+      .prepare(
+        `SELECT r.rkey, r.time_us, v.source_time_us FROM records_event r
+         JOIN record_versions v ON v.uri = r.uri ORDER BY r.rkey`,
+      )
+      .all<{ rkey: string; time_us: number; source_time_us: number }>();
+    expect(rows.results).toEqual([
+      { rkey: "early", time_us: createdUs - 5, source_time_us: batchUs },
+      { rkey: "seen", time_us: createdUs, source_time_us: batchUs },
+      { rkey: "unknown", time_us: batchUs, source_time_us: batchUs },
+    ]);
+  });
+
   it("rejects a mutation position from another epoch before advancing progress", async () => {
     const resolved = config();
     const db = createSqliteDatabase(":memory:");

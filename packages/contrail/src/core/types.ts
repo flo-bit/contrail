@@ -173,6 +173,13 @@ export interface CollectionConfig {
    *  `wantedCollections`, so non-matching records still travel over the wire
    *  — this trims what gets persisted, not bandwidth. */
   recordFilter?: (record: Record<string, unknown>) => boolean;
+  /** Whether a record rejected by `recordFilter` leaves a tombstone (default
+   *  true). The tombstone stops an older version that passes the filter from
+   *  being admitted later. Set false for a high-volume collection whose filter
+   *  rejects most records on fields that do not change: a rejected record with
+   *  no stored version is then dropped without writing anything. A rejected
+   *  update to an indexed record is still removed. */
+  recordFilterTombstones?: boolean;
 }
 
 export interface ProfileConfig {

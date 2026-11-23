@@ -72,6 +72,56 @@ describe("ingestRecords", () => {
     expect(stored.records.map((record) => record.rkey)).toEqual(["kept"]);
   });
 
+  it("drops rejected records without a tombstone when asked to", async () => {
+    const quiet = resolveConfig({
+      namespace: "com.example",
+      logger,
+      collections: {
+        event: {
+          collection: "com.example.event",
+          recordFilter: (record) => record.keep === true,
+          recordFilterTombstones: false,
+        },
+      },
+    });
+    const quietDb = createSqliteDatabase(":memory:");
+    await initSchema(quietDb, quiet);
+    const event = (rkey: string, keep: boolean, timeUs: number) =>
+      createIngestEvent({
+        did: "did:plc:alice",
+        collection: "com.example.event",
+        rkey,
+        operation: timeUs === 1 ? "create" : "update",
+        cid: `cid-${rkey}-${timeUs}`,
+        value: { keep },
+        timeUs,
+      });
+    const versions = async () =>
+      (
+        await quietDb
+          .prepare("SELECT rkey, operation FROM record_versions ORDER BY rkey")
+          .all<{ rkey: string; operation: string }>()
+      ).results;
+
+    const first = await ingestRecords(
+      quietDb,
+      [event("kept", true, 1), event("never", false, 1)],
+      quiet,
+    );
+    expect(first.dropped.recordFilter).toBe(1);
+    expect(await versions()).toEqual([{ rkey: "kept", operation: "create" }]);
+
+    // A record that was indexed and stops matching is still removed.
+    await ingestRecords(quietDb, [event("kept", false, 2)], quiet);
+    expect(await versions()).toEqual([{ rkey: "kept", operation: "delete" }]);
+    const stored = await queryRecords(quietDb, quiet, { collection: "event" });
+    expect(stored.records).toEqual([]);
+
+    // A rejected update must also win against a put in the same batch.
+    await ingestRecords(quietDb, [event("mixed", true, 1), event("mixed", false, 2)], quiet);
+    expect((await queryRecords(quietDb, quiet, { collection: "event" })).records).toEqual([]);
+  });
+
   it("packs record writes into statements within D1's binding limit", async () => {
     const sql: string[] = [];
     const observedDb: Database = {
