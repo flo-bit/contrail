@@ -7,7 +7,10 @@ import {
   labelsBackfillAll,
   labelsBackfillDatabase,
 } from "../../workers/backfill.js";
-import { DEFAULT_ALLUVIUM_ENDPOINT } from "../../adapters/alluvium.js";
+import {
+  DEFAULT_ALLUVIUM_ENDPOINT,
+  type AlluviumProgress,
+} from "../../adapters/alluvium.js";
 import {
   resolveAndLoadConfig,
   resolveValidationLexicons,
@@ -125,9 +128,36 @@ export function registerBackfill(cli: CAC): void {
           console.error("--alluvium loads records; it cannot be combined with --only labels");
           process.exit(1);
         }
+        let lastLogAt = 0;
+        let lastStageKey = "";
+        const onProgress = (progress: AlluviumProgress): void => {
+          const stageKey = `${progress.phase}:${progress.stage ?? ""}:${progress.collection ?? ""}:${progress.relation ?? ""}`;
+          const nowMs = performance.now();
+          if (stageKey === lastStageKey && nowMs - lastLogAt < 5_000) return;
+          lastStageKey = stageKey;
+          lastLogAt = nowMs;
+          const secs = (progress.elapsedMs / 1000).toFixed(1);
+          if (progress.phase === "loading") {
+            const rate =
+              progress.elapsedMs > 0
+                ? Math.round((progress.records * 1000) / progress.elapsedMs)
+                : 0;
+            console.log(
+              `alluvium: loading ${progress.records.toLocaleString("en-US")} records (${secs}s, ${rate.toLocaleString("en-US")} rec/s)`,
+            );
+          } else {
+            const target = progress.relation
+              ? `${progress.collection}.${progress.relation}`
+              : progress.collection;
+            console.log(
+              `alluvium: rebuilding ${progress.stage} (${target}): ${progress.records.toLocaleString("en-US")} rows (${secs}s)`,
+            );
+          }
+        };
         const alluvium = {
           endpoint: options.alluviumEndpoint,
           token: options.alluviumToken ?? process.env.ALLUVIUM_TOKEN,
+          onProgress,
         };
         const result = sqliteDb
           ? await bootstrapAlluviumDatabase({

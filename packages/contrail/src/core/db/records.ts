@@ -2050,10 +2050,13 @@ export async function rebuildDerivedProjections(
     const { columns, projections, bindings, childTable, childTarget, parentTarget } =
       buildRelationRebuildSpec(config, dialect, parentShort, relationName, relation);
     // Keep total bindings per statement comfortably below D1's 100-parameter limit.
-    const subChunkSize = Math.max(
-      1,
-      Math.min(50, MAX_STATEMENT_BINDINGS - 10 - bindings.length),
-    );
+    const maxSubTargets = MAX_STATEMENT_BINDINGS - 10 - bindings.length;
+    if (maxSubTargets < 1) {
+      throw new Error(
+        `Relation "${parentShort}.${relationName}" has too many grouped count bindings (${bindings.length}) for D1's ${MAX_STATEMENT_BINDINGS}-parameter statement limit`,
+      );
+    }
+    const subChunkSize = Math.min(50, maxSubTargets);
     const nonZeroFilter = columns.map((column) => `${column} != 0`).join(" OR ");
     const zeroAssignments = columns.map((column) => `${column} = 0`).join(", ");
     const derivedAssignments = columns

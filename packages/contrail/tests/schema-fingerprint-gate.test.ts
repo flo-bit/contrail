@@ -415,4 +415,75 @@ describe("schema fingerprint gate", () => {
         .records,
     ).toHaveLength(1);
   });
+
+  it("stamps decoupled markers on the steady path for pre-existing marker-less databases", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const withFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+      feeds: {
+        following: { targets: ["event"], maxItems: 50 },
+      },
+    });
+    await initSchema(real, withFeeds);
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "PreExistingEvent" },
+          time_us: 1000,
+        }),
+      ],
+      withFeeds,
+    );
+
+    // Simulate a database created by 0.32.1 (current schema_fingerprint, no markers yet).
+    await real
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
+
+    // First init on the steady path stamps both markers once without rebuilding.
+    const firstSteady = recordingDb(real);
+    await initSchema(firstSteady.db, withFeeds);
+    expect(firstSteady.prepares.join("\n")).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_|UPDATE record_versions/i);
+    expect(await getMeta(real, FTS_FINGERPRINTS_KEY)).toBeTruthy();
+    expect(await getMeta(real, LEGACY_MIGRATIONS_KEY)).toBeTruthy();
+
+    // Subsequent steady-state init is back to a single read.
+    const secondSteady = recordingDb(real);
+    await initSchema(secondSteady.db, withFeeds);
+    expect(secondSteady.prepares).toHaveLength(1);
+
+    // Dropping feeds now skips both FTS rebuild and legacy record_versions seeding.
+    const withoutFeeds = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          searchable: ["name"],
+        },
+      },
+    });
+    const dropped = recordingDb(real);
+    await initSchema(dropped.db, withoutFeeds);
+    const dropSql = dropped.prepares.join("\n");
+    expect(dropSql).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(dropSql).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+    expect(
+      (await queryRecords(real, withoutFeeds, { collection: "event", search: "PreExistingEvent" }))
+        .records,
+    ).toHaveLength(1);
+  });
 });

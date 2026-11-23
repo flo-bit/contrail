@@ -271,10 +271,15 @@ describe("Wrangler D1 remote binding resolution", () => {
     await opened.dispose();
   });
 
-  it("rejects a nonexistent explicit --wrangler-config path", () => {
+  it("rejects a nonexistent explicit --wrangler-config path and a --root directory with no wrangler config", async () => {
     expect(() =>
       findWranglerConfigPath({ wranglerConfig: "/nonexistent/wrangler.jsonc" }),
     ).toThrow(/Wrangler config file not found/);
+
+    const emptyDir = await makeTempDir();
+    expect(() => findWranglerConfigPath({ root: emptyDir })).toThrow(
+      /No Wrangler config .* found in/,
+    );
   });
 
   it("exposes --remote, --binding, --env, and --wrangler-config on backfill and changes CLI commands", async () => {

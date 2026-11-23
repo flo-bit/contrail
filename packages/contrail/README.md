@@ -54,11 +54,11 @@ export default createWorker(config, {
 ```bash
 contrail init [dir] [--prefix <nsid.>] [--namespace <nsid>]
 contrail dev [--alluvium] [--wrangler] [--port 8787]
-contrail backfill [--remote] [--alluvium] [--sqlite <path>]
+contrail backfill [--remote] [--alluvium] [--env <name>] [--sqlite <path>]
 contrail connect <config-dir-or-url> [--update]
 contrail lexicons all [--public]
 contrail lexicons check
-contrail changes status|retry|prune|skip [--remote]
+contrail changes status|retry|prune|skip [--remote] [--env <name>]
 ```
 
 ## Entrypoints
@@ -85,4 +85,4 @@ Full guides live in the [repository](https://github.com/flo-bit/contrail):
 - [Add the typed client](https://github.com/flo-bit/contrail/blob/main/docs/02-client.md)
 - [Configure and query](https://github.com/flo-bit/contrail/blob/main/docs/03-configure-and-query.md)
 - [Deploy to Cloudflare Workers & Node](https://github.com/flo-bit/contrail/blob/main/docs/04-deploy-cloudflare.md)
-- Advanced: [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/advanced/feeds.md) · [Labels](https://github.com/flo-bit/contrail/blob/main/docs/advanced/labels.md) · [Moderation](https://github.com/flo-bit/contrail/blob/main/docs/advanced/moderation.md) · [Outbox](https://github.com/flo-bit/contrail/blob/main/docs/advanced/outbox.md)
+- Advanced: [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/advanced/feeds.md) · [Labels](https://github.com/flo-bit/contrail/blob/main/docs/advanced/labels.md) · [Moderation](https://github.com/flo-bit/contrail/blob/main/docs/advanced/moderation.md) · [Outbox](https://github.com/flo-bit/contrail/blob/main/docs/advanced/outbox.md) · [Remote D1](https://github.com/flo-bit/contrail/blob/main/docs/advanced/remote-d1.md)

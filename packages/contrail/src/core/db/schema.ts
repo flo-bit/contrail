@@ -986,6 +986,14 @@ export async function initSchema(
       // the CREATE VIRTUAL TABLE DDL in `schema_fingerprint`; rebuild only the
       // collections whose FTS fingerprint changed.
       await applyFtsTables(db, config, dialect, storedFtsRaw);
+    } else if (
+      storedFtsRaw === undefined ||
+      storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION
+    ) {
+      // Stamp decoupled markers once for databases created by earlier releases
+      // already at this fingerprint, so a future unrelated config change (like
+      // dropping `feeds`) won't fall back to a full FTS/legacy rebuild.
+      await stampDecoupledMarkers();
     }
     await applyRepositoryScopes();
     // Moderation policy has its own fingerprint: editing moderators or label

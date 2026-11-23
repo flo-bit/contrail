@@ -18,6 +18,8 @@ import {
 import type { BackfillAllOptions } from "../core/backfill.js";
 import type { BackfillStatus } from "../core/status.js";
 import {
+  DEFAULT_D1_BATCH_SIZE,
+  DEFAULT_REBUILD_CHUNK_SIZE,
   loadAlluviumExport,
   type AlluviumProgress,
   type AlluviumTransportOptions,
@@ -201,12 +203,24 @@ export async function bootstrapAlluviumDatabase(
   return runAlluviumBootstrap(contrail, opts.db, opts);
 }
 
-/** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. */
+/** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. Defaults to
+ * D1-safe batching (100 records) and chunked derived-projection rebuilds (500
+ * rows) unless explicitly overridden. */
 export async function bootstrapAlluvium(
   opts: AlluviumBootstrapViaWranglerOptions,
 ): Promise<AlluviumBootstrapResult> {
+  const d1Defaults: AlluviumBootstrapOptions = opts.deferIndexes
+    ? opts
+    : {
+        ...opts,
+        transport: {
+          ...opts.transport,
+          batchSize: opts.transport?.batchSize ?? DEFAULT_D1_BATCH_SIZE,
+        },
+        rebuildChunkSize: opts.rebuildChunkSize ?? DEFAULT_REBUILD_CHUNK_SIZE,
+      };
   return withWrangler(opts, (contrail, db) =>
-    runAlluviumBootstrap(contrail, db, opts),
+    runAlluviumBootstrap(contrail, db, d1Defaults),
   );
 }
 

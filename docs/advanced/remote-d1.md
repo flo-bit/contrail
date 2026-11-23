@@ -22,7 +22,7 @@ Practical guide for populating a remote Cloudflare D1 database and evolving conf
    pnpm contrail backfill --remote
    ```
 
-   Pass `--binding <NAME>` (default `DB`), `--env <NAME>` (when using Wrangler environments), or `--wrangler-config <PATH>` as needed. `--remote` connects to the binding's real `database_id` (ignoring `preview_database_id`) and **fails closed** if Cloudflare auth or the remote D1 connection cannot be established.
+   Pass `--binding <NAME>` (default `DB`), `--env <NAME>` (when using Wrangler environments; note that named Wrangler environments do not inherit top-level `d1_databases` and must redeclare the binding), or `--wrangler-config <PATH>` as needed. `--remote` connects to the binding's real `database_id` (ignoring `preview_database_id`) and **fails closed** if Cloudflare auth or the remote D1 connection cannot be established.
 
 4. **Interrupted? Just re-run the same command.**
    - Alluvium loads in D1-safe batches (default `100` records) and rebuilds FTS and relation counts in bounded keyset chunks (`500` rows per batch), persisting resume state atomically in `_contrail_meta`.

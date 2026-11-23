@@ -111,6 +111,9 @@ export function findWranglerConfigPath(options: {
       const fullPath = join(rootDir, candidate);
       if (existsSync(fullPath)) return fullPath;
     }
+    throw new Error(
+      `No Wrangler config (${WRANGLER_CONFIG_CANDIDATES.join(", ")}) found in ${rootDir}`,
+    );
   }
   return undefined;
 }

@@ -51,12 +51,12 @@ export const ALLUVIUM_BOOTSTRAP_META_KEY = "alluvium_bootstrap";
 export const BOOTSTRAP_DEFERRED_INDEXES_META_KEY = "bootstrap_deferred_indexes";
 
 const DEFAULT_BATCH_SIZE = 500;
-/** Smaller default batch size when indexes are not deferred (e.g. remote D1),
+/** Default batch size used by Wrangler/D1 bootstraps (`bootstrapAlluvium`),
  * keeping each `db.batch()` well within D1's statement and payload limits. */
-const DEFAULT_D1_BATCH_SIZE = 100;
-/** Default chunk size for paginated FTS and relation-count rebuilds when
- * indexes are not deferred (e.g. remote D1). */
-const DEFAULT_REBUILD_CHUNK_SIZE = 500;
+export const DEFAULT_D1_BATCH_SIZE = 100;
+/** Default chunk size used by Wrangler/D1 bootstraps (`bootstrapAlluvium`) for
+ * paginated FTS and relation-count rebuilds. */
+export const DEFAULT_REBUILD_CHUNK_SIZE = 500;
 const PROGRESS_LOG_INTERVAL_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -144,9 +144,9 @@ export interface LoadAlluviumExportOptions {
   /** Drop secondary indexes on record tables while loading and rebuild them
    * once before completion (SQLite only; leave off for D1). */
   deferIndexes?: boolean;
-  /** Override chunk size for derived-projection rebuilds. Defaults to 500 when
-   * `deferIndexes` is false (D1-safe), or single-statement bulk rebuild when
-   * `deferIndexes` is true (local SQLite). Pass `0` to force bulk rebuild. */
+  /** Chunk size for paginated derived-projection rebuilds (set automatically
+   * to {@link DEFAULT_REBUILD_CHUNK_SIZE} by `bootstrapAlluvium` for D1). Omit
+   * or pass `0` for single-statement bulk rebuilds (fastest on SQLite/Postgres). */
   rebuildChunkSize?: number;
   /** Optional progress callback invoked on every committed batch / rebuild chunk. */
   onProgress?: (progress: AlluviumProgress) => void;
@@ -715,33 +715,27 @@ export async function loadAlluviumExport(
     DEFAULT_MAX_LINE_CHARACTERS,
     "Alluvium maxLineCharacters",
   );
-  const defaultBatchSize = options.deferIndexes
-    ? DEFAULT_BATCH_SIZE
-    : DEFAULT_D1_BATCH_SIZE;
   const batchSize = positiveInteger(
     transport.batchSize,
-    defaultBatchSize,
+    DEFAULT_BATCH_SIZE,
     "Alluvium batchSize",
   );
   const rebuildChunkSize =
-    options.rebuildChunkSize === 0
+    options.rebuildChunkSize === 0 || options.rebuildChunkSize === undefined
       ? undefined
-      : options.rebuildChunkSize !== undefined
-        ? positiveInteger(
-            options.rebuildChunkSize,
-            DEFAULT_REBUILD_CHUNK_SIZE,
-            "Alluvium rebuildChunkSize",
-          )
-        : options.deferIndexes
-          ? undefined
-          : DEFAULT_REBUILD_CHUNK_SIZE;
+      : positiveInteger(
+          options.rebuildChunkSize,
+          DEFAULT_REBUILD_CHUNK_SIZE,
+          "Alluvium rebuildChunkSize",
+        );
   const now = options.now ?? Date.now;
   const signal = options.signal;
-  const logger = config.logger ?? console;
+  const logger = config.logger;
   const wallStarted = performance.now();
   let lastProgressLogAt = wallStarted;
   const emitProgress = (progress: AlluviumProgress): void => {
     options.onProgress?.(progress);
+    if (!logger) return;
     const current = performance.now();
     if (current - lastProgressLogAt >= PROGRESS_LOG_INTERVAL_MS) {
       lastProgressLogAt = current;
@@ -914,7 +908,7 @@ export async function loadAlluviumExport(
     await insertInitialStateStatement(db, state).run();
   }
 
-  if (options.deferIndexes) {
+  if (options.deferIndexes && state.phase === "loading") {
     await deferSecondaryIndexes(db, config);
   }
 
@@ -1134,18 +1128,6 @@ export async function loadAlluviumExport(
               updatedAt: now(),
             }),
           onProgress: (progress) => {
-            state = {
-              ...state,
-              rebuild: {
-                stage: progress.stage,
-                collection: progress.collection,
-                ...(progress.relation !== undefined
-                  ? { relation: progress.relation }
-                  : {}),
-                after: state.rebuild?.after ?? null,
-              },
-              updatedAt: now(),
-            };
             emitProgress({
               phase: "rebuilding",
               records: progress.processed,

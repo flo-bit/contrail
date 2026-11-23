@@ -809,9 +809,18 @@ describe("Alluvium export bootstrap", () => {
     ).rejects.toThrow("simulated crash before final handoff");
     expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("rebuilding");
 
-    // Re-running finishes cleanly without re-fetching /export or duplicating records.
+    // Re-running finishes cleanly without re-fetching /export, re-dropping indexes, or duplicating records.
+    const resumePrepares: string[] = [];
+    const trackedResumeDb: Database = {
+      dialect: rawDb.dialect,
+      prepare(sql) {
+        resumePrepares.push(sql);
+        return rawDb.prepare(sql);
+      },
+      batch: (stmts) => rawDb.batch(stmts),
+    };
     const second = service({ rows: ROWS });
-    const resumed = await loadAlluviumExport(rawDb, resolved, {
+    const resumed = await loadAlluviumExport(trackedResumeDb, resolved, {
       endpoint: ENDPOINT,
       source: SOURCE,
       fetch: second.fetchImpl,
@@ -819,6 +828,7 @@ describe("Alluvium export bootstrap", () => {
       deferIndexes: true,
     });
     expect(second.requests).toHaveLength(0);
+    expect(resumePrepares.some((sql) => /DROP INDEX/i.test(sql))).toBe(false);
     expect(resumed).toMatchObject({
       resumed: true,
       alreadyComplete: false,
