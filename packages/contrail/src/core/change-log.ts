@@ -230,7 +230,7 @@ export async function assertFreshChangeLogGeneration(
          EXISTS (SELECT 1 FROM record_versions LIMIT 1) OR
          EXISTS (SELECT 1 FROM cursor LIMIT 1) OR
          EXISTS (SELECT 1 FROM source_position LIMIT 1) OR
-         EXISTS (SELECT 1 FROM bootstrap_state LIMIT 1) OR
+         EXISTS (SELECT 1 FROM _contrail_meta WHERE key = 'alluvium_bootstrap' LIMIT 1) OR
          EXISTS (SELECT 1 FROM backfills LIMIT 1) OR
          EXISTS (SELECT 1 FROM discovery LIMIT 1) OR
          EXISTS (SELECT 1 FROM identities LIMIT 1)

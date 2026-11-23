@@ -328,9 +328,6 @@ importers:
       '@atcute/identity-resolver':
         specifier: ^2.0.1
         version: 2.0.1(@atcute/identity@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3))(@atcute/lexicons@2.0.3)(typescript@6.0.3)
-      '@atcute/jetstream':
-        specifier: ^2.0.2
-        version: 2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)
       '@atcute/lex-cli':
         specifier: ^3.2.1
         version: 3.2.1(@atcute/cbor@2.3.6(@atcute/cid@2.5.0))(@atcute/cid@2.5.0)(prettier@3.9.6)(typescript@6.0.3)
@@ -352,9 +349,6 @@ importers:
       '@atcute/xrpc-server':
         specifier: ^2.0.2
         version: 2.0.2(@atcute/cid@2.5.0)(@atcute/lexicons@2.0.3)(typescript@6.0.3)
-      '@atproto/lex':
-        specifier: ^0.3.8
-        version: 0.3.8
       '@bsky/jetstream':
         specifier: ^1.0.0
         version: 1.0.0(@atproto/lex@0.3.8)
@@ -524,11 +518,6 @@ packages:
 
   '@atcute/identity@2.0.2':
     resolution: {integrity: sha512-amr/EQceqVtBVmjBK4uUF7nKKYuRttadigpvOcAn4dnO6SNSwSjQi8KDH9LnukEotPsSP4UDsQvNfHWEoUcslw==}
-    peerDependencies:
-      '@atcute/lexicons': ^2.0.0
-
-  '@atcute/jetstream@2.0.2':
-    resolution: {integrity: sha512-gKykCWhSkTM6liv/zcpArCIb7s2iGKZupXqspHXmkNoZWCC42/eipXtaos6y2BBRucxV6HNSbK4MU9yv9zesEw==}
     peerDependencies:
       '@atcute/lexicons': ^2.0.0
 
@@ -1879,12 +1868,6 @@ packages:
   '@manypkg/get-packages@1.1.3':
     resolution: {integrity: sha512-fo+QhuU3qE/2TQMQmbVMqaQ6EWbMhi4ABWP+O4AM1NqPBuy0OrApV5LO6BrrgnhtAHS2NH6RrVk9OL181tTi8A==}
 
-  '@mary-ext/event-iterator@1.0.0':
-    resolution: {integrity: sha512-l6gCPsWJ8aRCe/s7/oCmero70kDHgIK5m4uJvYgwEYTqVxoBOIXbKr5tnkLqUHEg6mNduB4IWvms3h70Hp9ADQ==}
-
-  '@mary-ext/simple-event-emitter@1.0.2':
-    resolution: {integrity: sha512-A644JdOf+KfTGyX/EYf8AI1Y18mM7369KrhtOVkdEwRa2QIC0Botv7XWnK6/XU7HuQfvtFpCufmHJC3hi4YMuw==}
-
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
     engines: {node: ^22.20 || ^24.12 || >=25}
@@ -3129,9 +3112,6 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  event-target-polyfill@0.0.4:
-    resolution: {integrity: sha512-Gs6RLjzlLRdT8X9ZipJdIZI/Y6/HhRLyq9RdDlCsnpxr/+Nn6bU2EFGuC94GjxqhM+Nmij2Vcq98yoHrU8uNFQ==}
-
   expect-type@1.4.0:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
@@ -3690,14 +3670,6 @@ packages:
 
   package-manager-detector@0.2.11:
     resolution: {integrity: sha512-BEnLolu+yuz22S56CU1SUKq3XC3PkwD5wv4ikR4MfGvnRVcmzXR9DwSlW2fEamyTPyXHomBJRzgapeuBvRNzJQ==}
-
-  partysocket@1.3.0:
-    resolution: {integrity: sha512-1zToNyolZFK/7nuAw/K2bZrNzFqaZyRoCEkS+9vG6WSC5ikrN6qWRe96q6ImU51uptz2r+dAwSkwhJVdQi4LiA==}
-    peerDependencies:
-      react: '>=17'
-    peerDependenciesMeta:
-      react:
-        optional: true
 
   path-browserify@1.0.1:
     resolution: {integrity: sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g==}
@@ -4368,10 +4340,6 @@ packages:
     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
     engines: {node: '>= 0.8.0'}
 
-  type-fest@4.41.0:
-    resolution: {integrity: sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==}
-    engines: {node: '>=16'}
-
   typescript-eslint@8.66.0:
     resolution: {integrity: sha512-QlEbBPz/RuJ1XUHj29nm3t0F/O/cSlEnntozqPOYHnnTGAXFamnMBu5i9Vn6vhUPHGAjR+Vl+5J8vPN/BMUrJw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
@@ -4708,10 +4676,6 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
-  yocto-queue@1.2.2:
-    resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
-    engines: {node: '>=12.20'}
-
   youch-core@0.3.3:
     resolution: {integrity: sha512-ho7XuGjLaJ2hWHoK8yFnsUGy2Y5uDpqSTq1FkHLK4/oqKtyUU1AFbOOxY4IpC9f0fTLjwYbslUz0Po5BpD1wrA==}
 
@@ -4791,18 +4755,6 @@ snapshots:
       '@atcute/lexicons': 2.0.3
       valibot: 1.4.2(typescript@6.0.3)
     transitivePeerDependencies:
-      - typescript
-
-  '@atcute/jetstream@2.0.2(@atcute/lexicons@2.0.3)(typescript@6.0.3)':
-    dependencies:
-      '@atcute/lexicons': 2.0.3
-      '@mary-ext/event-iterator': 1.0.0
-      '@mary-ext/simple-event-emitter': 1.0.2
-      partysocket: 1.3.0
-      type-fest: 4.41.0
-      valibot: 1.4.2(typescript@6.0.3)
-    transitivePeerDependencies:
-      - react
       - typescript
 
   '@atcute/lex-cli@3.2.1(@atcute/cbor@2.3.6(@atcute/cid@2.5.0))(@atcute/cid@2.5.0)(prettier@3.9.6)(typescript@6.0.3)':
@@ -6072,12 +6024,6 @@ snapshots:
       globby: 11.1.0
       read-yaml-file: 1.1.0
 
-  '@mary-ext/event-iterator@1.0.0':
-    dependencies:
-      yocto-queue: 1.2.2
-
-  '@mary-ext/simple-event-emitter@1.0.2': {}
-
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
@@ -7261,8 +7207,6 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  event-target-polyfill@0.0.4: {}
-
   expect-type@1.4.0: {}
 
   extendable-error@0.1.7: {}
@@ -7734,10 +7678,6 @@ snapshots:
   package-manager-detector@0.2.11:
     dependencies:
       quansync: 0.2.11
-
-  partysocket@1.3.0:
-    dependencies:
-      event-target-polyfill: 0.0.4
 
   path-browserify@1.0.1: {}
 
@@ -8461,8 +8401,6 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
 
-  type-fest@4.41.0: {}
-
   typescript-eslint@8.66.0(eslint@10.8.0(jiti@2.7.0))(typescript@6.0.3):
     dependencies:
       '@typescript-eslint/eslint-plugin': 8.66.0(@typescript-eslint/parser@8.66.0(eslint@10.8.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.8.0(jiti@2.7.0))(typescript@6.0.3)
@@ -8770,8 +8708,6 @@ snapshots:
       yargs-parser: 22.0.0
 
   yocto-queue@0.1.0: {}
-
-  yocto-queue@1.2.2: {}
 
   youch-core@0.3.3:
     dependencies:

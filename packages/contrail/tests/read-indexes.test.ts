@@ -160,6 +160,12 @@ describe("bounded record read indexes", () => {
     await initSchema(db, CONFIG);
     await initSchema(db, CONFIG);
     await expectReadIndexes(db);
+    const tables = await db.prepare(TEST_POSTGRES
+      ? "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'"
+      : "SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
+    const tableNames = new Set(tables.results.map((row) => row.name));
+    expect(tableNames.has("bootstrap_state")).toBe(false);
+    expect(tableNames.has("bootstrap_snapshot_progress")).toBe(false);
   });
 
   it.each(["current", "without-cursor-observations", "interrupted"])("upgrades the real previous fingerprint without rewriting data: %s", async (variant) => {

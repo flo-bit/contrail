@@ -264,13 +264,9 @@ A config source generates Lexicons, Atcute types, `contrailApi`, `createContrail
 
 SQLite dev mode exposes configured protected methods only on loopback without inheriting a production service-auth audience. When `notify` is omitted, it also enables open loopback-only `notifyOfUpdate`. `createLocalContrailClient()` has no OAuth scope and permits plain HTTP only for a validated loopback endpoint.
 
-## Fresh generations (experimental)
+## Alluvium export bootstrap
 
-`PdsSnapshotSource`, `JetstreamChangeSource`, `DatabaseBootstrapTarget`, and `bootstrapFreshProjection()` build an unpublished database with capture-first replay. The capture mark is durable before relay discovery starts; PDS partition cursors and Jetstream checkpoints commit with their records. Completion rebuilds deferred projections, verifies aggregate record/version consistency, and stores only bounded failure categories.
-
-Jetstream generation replay requires an operator-owned continuity epoch and retention guarantee. It uses real stream events as marks, never wall clock or a quiet socket. Optional busy watermark collections can prove progress without being projected.
-
-An optional Alluvium adapter loads a fresh generation from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps a snapshot of every current record outside the Bluesky app, rebuilt about hourly, and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
+An optional Alluvium adapter loads a fresh database from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps a snapshot of every current record outside the Bluesky app, rebuilt about hourly, and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
 
 ```bash
 contrail backfill --sqlite ./data/contrail.sqlite --alluvium
@@ -279,28 +275,18 @@ contrail backfill --sqlite ./data/contrail.sqlite --alluvium
 `--alluvium-endpoint` selects another instance and `--alluvium-token` (or the `ALLUVIUM_TOKEN` environment variable) supplies a bearer token if it requires one. The command rejects a populated database unless it is resuming an interrupted Alluvium bootstrap. With `--sqlite` the record tables have no secondary indexes until the bootstrap completes, so finish or discard an interrupted one before serving from that file. The equivalent programmatic API is:
 
 ```ts
-import { DatabaseBootstrapTarget } from "@atmo-dev/contrail";
-import {
-  createAlluviumBootstrapSources,
-  createAlluviumLiveCursor,
-} from "@atmo-dev/contrail/alluvium";
+import { loadAlluviumExport } from "@atmo-dev/contrail/alluvium";
 
-// The ordered source live ingestion uses after bootstrap.
-const source = { id: "jetstream", epoch: "my-app-v1" };
-const sources = createAlluviumBootstrapSources(config, { source });
-const target = new DatabaseBootstrapTarget(db, config, {
-  deferDerivedProjections: true,
-  liveCursor: createAlluviumLiveCursor(source),
-});
-
-await bootstrapFreshProjection({
+await loadAlluviumExport(db, config, {
   collections: ["community.lexicon.calendar.event"],
-  ...sources,
-  target,
+  source: { id: "jetstream", epoch: "my-app-v1" },
+  deferIndexes: true,
 });
 ```
 
-The export holds current state as of its snapshot, so nothing is replayed during bootstrap. The target persists a timestamp cursor five minutes before the snapshot's last event, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names: it replays the hour or so since the snapshot, and the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
+For Wrangler/D1 or SQLite defaults (including optional SQLite index deferral), use `bootstrapAlluvium()` or `bootstrapAlluviumDatabase()` from `@atmo-dev/contrail/workers`. Call `getAlluviumBootstrapState(db)` from `@atmo-dev/contrail/alluvium` to inspect resumable bootstrap status.
+
+The export holds current state as of its snapshot, so nothing is replayed during bootstrap. The loader persists a timestamp cursor five minutes before the snapshot's last event, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names: it replays the hour or so since the snapshot, and the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
 
 With `--sqlite`, the record tables' secondary indexes are dropped while the export loads and built once at the end, which is much cheaper than maintaining them per row; the dropped set is recorded first, so an interrupted run restores exactly those indexes when it completes. D1 keeps them, since one statement there cannot index a large table within its time limit.
 
@@ -313,8 +299,6 @@ The adapter refuses instead of loading a wrong answer when:
 - an export response is for an older snapshot than the one the bootstrap began with, or does not name its snapshot;
 - an unfinished bootstrap is resumed more than 24 hours after its snapshot (`replayWindowUs`). A Jetstream service only replays its last 36 hours, so the records already loaded could miss later updates and deletes; start again with a fresh database;
 - an export line is malformed. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
-
-A separate control database can use `DatabaseGenerationRegistry` to store immutable `(code, definition, database, generation)` tuples. `activate(candidate, expectedActive)` switches one singleton pointer with compare-and-swap, retaining the previous ready tuple for rollback. There is intentionally no percentage traffic-split API; platform routing must resolve the one active tuple.
 
 ## Generate Lexicons
 

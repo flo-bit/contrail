@@ -1,9 +1,5 @@
-import {
-  Contrail,
-  DatabaseBootstrapTarget,
-  getBootstrapVerification,
-  getStatusOverview,
-} from "@atmo-dev/contrail";
+import { Contrail, getStatusOverview } from "@atmo-dev/contrail";
+import { getAlluviumBootstrapState } from "@atmo-dev/contrail/alluvium";
 import { config } from "./contrail.config";
 import { databasePath, openDatabase } from "./database";
 
@@ -11,7 +7,7 @@ const db = openDatabase();
 const contrail = new Contrail({ ...config, db });
 await contrail.init();
 
-const bootstrap = await new DatabaseBootstrapTarget(db, contrail.config).load();
+const bootstrap = await getAlluviumBootstrapState(db);
 console.log(
   JSON.stringify(
     {
@@ -19,11 +15,10 @@ console.log(
       ...(await getStatusOverview(db, contrail.config)),
       bootstrap: bootstrap && {
         phase: bootstrap.phase,
-        captureFrom: bootstrap.captureFrom,
-        catchupThrough: bootstrap.catchupThrough,
-        changeCheckpoint: bootstrap.changeCheckpoint,
+        endpoint: bootstrap.endpoint,
+        liveCursorUs: bootstrap.liveCursorUs,
+        after: bootstrap.after,
       },
-      verification: await getBootstrapVerification(db),
     },
     null,
     2,
