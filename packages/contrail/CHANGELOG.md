@@ -1,5 +1,11 @@
 # @atmo-dev/contrail
 
+## 0.32.1
+
+### Patch Changes
+
+- 16fba29: Fix PostgreSQL 17 runtime issues found by live PostgreSQL tests: handle `42710` (`duplicate_object`) and route FTS/count index DDL through `runIdempotentDdl` during concurrent `initSchema`, and avoid an untyped `(? IS NULL OR position <= ?)` parameter in `claimChangeRange`.
+
 ## 0.32.0
 
 ### Minor Changes
