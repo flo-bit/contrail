@@ -589,11 +589,27 @@ function createClient(
         }) as Client["post"],
       },
       call: {
-        value: ((schema: unknown, request?: UntypedRequestOptions) => {
+        value: (async (schema: unknown, request?: UntypedRequestOptions) => {
           const method = schemaNsid(schema);
-          return method && serviceMethods.has(method)
-            ? serviceCall(schema, request)
-            : pdsCall(schema, request);
+          if (method && serviceMethods.has(method)) {
+            return serviceCall(schema, request);
+          }
+          const response = await pdsCall(schema, request);
+          if (method && options.notifyMethod) {
+            try {
+              const uri = await writtenRecordUri(
+                method,
+                request,
+                response,
+                trackedCollections,
+                resolveHandle,
+              );
+              if (uri) await notifyWrite(method, uri);
+            } catch (error) {
+              reportNotificationError(error, method, []);
+            }
+          }
+          return response;
         }) as Client["call"],
       },
     });

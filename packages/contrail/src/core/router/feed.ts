@@ -17,8 +17,10 @@ import {
 } from "../types";
 import { resolveActor } from "../identity";
 import { backfillUser } from "../backfill";
+import { pruneActorFeed } from "../db/records";
 import { runPipeline } from "./collection";
 import type { ServiceAuthGate } from "../service-auth";
+import { resolveRequestDb, type DatabaseResolver } from "./index";
 
 const BACKFILL_TIMEOUT_MS = 30_000;
 const BACKFILL_REQUEST_TIMEOUT_MS = 10_000;
@@ -68,6 +70,7 @@ async function bootstrapFeedItems(
     const targetTable = recordsTableName(target.collection);
     const targetCfg = config.collections[target.collection];
     if (!targetCfg) continue;
+    const targetNsid = targetCfg.collection ?? target.collection;
     const cap = feedTargetMaxItems(feedConfig, target);
 
     const insert = await db
@@ -85,20 +88,13 @@ async function bootstrapFeedItems(
            LIMIT ${cap}`
         )
       )
-      .bind(actor, targetCfg.collection, actor)
+      .bind(actor, targetNsid, actor)
       .run();
     totalInserted += (insert as { changes?: number })?.changes ?? 0;
 
-    // Per-target prune so high-volume targets don't squeeze out lower-volume ones.
-    await db
-      .prepare(
-        `DELETE FROM feed_items WHERE actor = ? AND collection = ? AND uri NOT IN (
-           SELECT uri FROM feed_items WHERE actor = ? AND collection = ?
-           ORDER BY time_us DESC LIMIT ?
-         )`
-      )
-      .bind(actor, targetCfg.collection, actor, targetCfg.collection, cap)
-      .run();
+    // Per-target index-bounded prune so high-volume targets don't squeeze out
+    // lower-volume ones (and never runs an anti-join over feed_items).
+    await pruneActorFeed(db, actor, targetNsid, cap);
   }
 
   return totalInserted;
@@ -142,7 +138,7 @@ async function runFeedBackfill(
       .prepare(
         "SELECT completed FROM backfills WHERE did = ? AND collection = ?"
       )
-      .bind(actor, followCfg.collection)
+      .bind(actor, followCfg.collection ?? followShort)
       .first<{ completed: number }>();
 
     if (followStatus?.completed) {
@@ -225,7 +221,7 @@ async function maybeBackfillFeed(
 
 export function registerFeedRoutes(
   app: Hono,
-  db: Database,
+  db: DatabaseResolver,
   config: ContrailConfig,
   serviceAuth?: ServiceAuthGate | null
 ): void {
@@ -234,6 +230,7 @@ export function registerFeedRoutes(
   const ns = config.namespace;
 
   app.get(`/xrpc/${ns}.getFeed`, async (c) => {
+    const resolvedDb = resolveRequestDb(db, c);
     const params = new URL(c.req.url).searchParams;
     const feedName = params.get("feed");
     const actor = params.get("actor");
@@ -253,7 +250,7 @@ export function registerFeedRoutes(
       : null;
     if (authorization?.response) return authorization.response;
 
-    const did = await resolveActor(db, actor, config);
+    const did = await resolveActor(resolvedDb, actor, config);
     if (!did) return c.json({ error: "Could not resolve actor" }, 400);
     if (
       authorization?.principal?.issuer !== undefined &&
@@ -265,8 +262,8 @@ export function registerFeedRoutes(
       );
     }
 
-    if (await isAccountHidden(db, did)) return c.json({ records: [] });
-    await maybeBackfillFeed(c, db, config, did, feedName, feedConfig);
+    if (await isAccountHidden(resolvedDb, did)) return c.json({ records: [] });
+    await maybeBackfillFeed(c, resolvedDb, config, did, feedName, feedConfig);
 
     const targets = feedConfig.targets.map(normalizeFeedTarget);
     if (targets.length === 0) {
@@ -305,7 +302,7 @@ export function registerFeedRoutes(
     };
 
     try {
-      const result = await runPipeline(db, config, requestedShort, pipelineParams, source, c.req.raw.headers);
+      const result = await runPipeline(resolvedDb, config, requestedShort, pipelineParams, source, c.req.raw.headers);
       const { labelersApplied, ...body } = result;
       if (labelersApplied?.length) c.header("atproto-content-labelers", labelersApplied.join(","));
       return c.json(body);

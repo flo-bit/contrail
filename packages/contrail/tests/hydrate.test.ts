@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { Database, RecordRow, RelationConfig, ReferenceConfig } from "../src/index";
-import { recordsTableName } from "../src/index";
-import { parseHydrateParams, resolveHydrates, resolveReferences } from "../src/index";
-import { createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
+import {
+  createApp,
+  ingestRecords as coreIngestRecords,
+  initSchema,
+  recordsTableName,
+  resolveConfig,
+  parseHydrateParams,
+  resolveHydrates,
+  resolveReferences,
+} from "../src/index";
+import { createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { ingestRecords } from "./helpers";
 
 describe("parseHydrateParams", () => {
@@ -286,5 +294,188 @@ describe("resolveHydrates", () => {
 
     expect(result[eventUri].rsvps).toBeDefined();
     expect(result[eventUri].rsvps["other"]).toHaveLength(1);
+  });
+
+  it("does not let one popular parent starve other parents in the same hydrate batch", async () => {
+    const popularUri = "at://did:plc:test/community.lexicon.calendar.event/popular";
+    const quietUri = "at://did:plc:test/community.lexicon.calendar.event/quiet";
+    await ingestRecords(db, [
+      makeEvent({ uri: popularUri, rkey: "popular", time_us: 1000 }),
+      makeEvent({ uri: quietUri, rkey: "quiet", time_us: 1001 }),
+    ]);
+
+    // Older RSVPs on the quiet parent, followed by 50 newer RSVPs on the popular parent.
+    const rsvps = [
+      makeEvent({
+        uri: "at://did:plc:q1/community.lexicon.calendar.rsvp/q1",
+        did: "did:plc:q1",
+        collection: "rsvp",
+        rkey: "q1",
+        record: { subject: { uri: quietUri }, status: "going" },
+        time_us: 2000,
+      }),
+      makeEvent({
+        uri: "at://did:plc:q2/community.lexicon.calendar.rsvp/q2",
+        did: "did:plc:q2",
+        collection: "rsvp",
+        rkey: "q2",
+        record: { subject: { uri: quietUri }, status: "going" },
+        time_us: 2001,
+      }),
+      ...Array.from({ length: 50 }, (_, i) =>
+        makeEvent({
+          uri: `at://did:plc:p${i}/community.lexicon.calendar.rsvp/p${i}`,
+          did: `did:plc:p${i}`,
+          collection: "rsvp",
+          rkey: `p${i}`,
+          record: { subject: { uri: popularUri }, status: "going" },
+          time_us: 5000 + i,
+        }),
+      ),
+    ];
+    await ingestRecords(db, rsvps);
+
+    const eventRows = (
+      await db
+        .prepare(`SELECT * FROM ${recordsTableName("event")} ORDER BY time_us DESC`)
+        .all<RecordRow>()
+    ).results;
+    const relations = TEST_CONFIG.collections["event"].relations!;
+    const result = await resolveHydrates(db, relations, { rsvps: 2 }, eventRows);
+
+    expect(result[popularUri]?.rsvps["going"]).toHaveLength(2);
+    expect(result[quietUri]?.rsvps["going"]).toHaveLength(2);
+  });
+
+  it("includes hydrated reference authors when profiles=true", async () => {
+    const eventAuthor = "did:plc:eventauthoraaaaaaaaaaaa";
+    const rsvpAuthor = "did:plc:rsvpauthoraaaaaaaaaaaaa";
+    const eventUri = `at://${eventAuthor}/community.lexicon.calendar.event/evt1`;
+    const rsvpUri = `at://${rsvpAuthor}/community.lexicon.calendar.rsvp/r1`;
+
+    for (const [did, handle, name] of [
+      [eventAuthor, "eventauthor.test", "Event Author"],
+      [rsvpAuthor, "rsvpauthor.test", "RSVP Author"],
+    ]) {
+      await db
+        .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+        .bind(did, handle, "https://pds.test", Date.now())
+        .run();
+      await db
+        .prepare(
+          `INSERT INTO ${recordsTableName("profile")} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          `at://${did}/app.bsky.actor.profile/self`,
+          did,
+          "self",
+          `cid-${did}`,
+          JSON.stringify({ displayName: name }),
+          100,
+          100,
+        )
+        .run();
+    }
+
+    await ingestRecords(db, [
+      makeEvent({ uri: eventUri, did: eventAuthor, rkey: "evt1", time_us: 1000 }),
+      makeEvent({
+        uri: rsvpUri,
+        did: rsvpAuthor,
+        collection: "rsvp",
+        rkey: "r1",
+        record: { subject: { uri: eventUri }, status: "going" },
+        time_us: 2000,
+      }),
+    ]);
+
+    const app = createApp(db, TEST_CONFIG);
+    const listRes = await app.request(
+      "/xrpc/com.example.rsvp.listRecords?hydrateEvent=true&profiles=true",
+    );
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as any;
+    expect(listBody.profiles.map((p: any) => p.did).sort()).toEqual(
+      [eventAuthor, rsvpAuthor].sort(),
+    );
+
+    const getRes = await app.request(
+      `/xrpc/com.example.rsvp.getRecord?uri=${encodeURIComponent(rsvpUri)}&hydrateEvent=true&profiles=true`,
+    );
+    expect(getRes.status).toBe(200);
+    const getBody = (await getRes.json()) as any;
+    expect(getBody.profiles.map((p: any) => p.did).sort()).toEqual(
+      [eventAuthor, rsvpAuthor].sort(),
+    );
+  });
+
+  it("supports JSON-path countDistinct during live count updates", async () => {
+    const distinctConfig = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        poll: {
+          collection: "com.example.poll",
+          relations: {
+            votes: {
+              collection: "vote",
+              field: "pollUri",
+              countDistinct: "voter.id",
+            },
+          },
+        },
+        vote: {
+          collection: "com.example.vote",
+        },
+      },
+    });
+    const distinctDb = createTestDb();
+    await initSchema(distinctDb, distinctConfig);
+
+    const pollUri = "at://did:plc:host/com.example.poll/p1";
+    await coreIngestRecords(
+      distinctDb,
+      [
+        makeEvent({
+          uri: pollUri,
+          did: "did:plc:host",
+          collection: "com.example.poll",
+          rkey: "p1",
+          record: { question: "Best?" },
+          time_us: 1000,
+        }),
+        makeEvent({
+          uri: "at://did:plc:a/com.example.vote/v1",
+          did: "did:plc:a",
+          collection: "com.example.vote",
+          rkey: "v1",
+          record: { pollUri, voter: { id: "voter-1" } },
+          time_us: 1001,
+        }),
+        makeEvent({
+          uri: "at://did:plc:b/com.example.vote/v2",
+          did: "did:plc:b",
+          collection: "com.example.vote",
+          rkey: "v2",
+          record: { pollUri, voter: { id: "voter-1" } },
+          time_us: 1002,
+        }),
+        makeEvent({
+          uri: "at://did:plc:c/com.example.vote/v3",
+          did: "did:plc:c",
+          collection: "com.example.vote",
+          rkey: "v3",
+          record: { pollUri, voter: { id: "voter-2" } },
+          time_us: 1003,
+        }),
+      ],
+      distinctConfig,
+    );
+
+    const row = await distinctDb
+      .prepare(`SELECT count_vote FROM ${recordsTableName("poll")} WHERE uri = ?`)
+      .bind(pollUri)
+      .first<{ count_vote: number }>();
+    expect(row?.count_vote).toBe(2);
   });
 });

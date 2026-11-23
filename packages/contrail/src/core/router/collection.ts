@@ -32,6 +32,7 @@ import { attachRecordLabels } from "../labels/attach";
 import { selectAcceptedLabelers } from "../labels/select";
 import { parseResourceUri } from "@atcute/lexicons/syntax";
 import { visibleRecordSql, isAccountHidden } from "../moderation";
+import { resolveRequestDb, type DatabaseResolver } from "./index";
 
 export async function runPipeline(
   db: Database,
@@ -194,7 +195,7 @@ export async function runPipeline(
     }
     return formatted;
   });
-  const allDids = collectDids(rows, hydrates);
+  const allDids = collectDids(rows, hydrates, refs);
   const profileMap = wantProfiles
     ? await resolveProfiles(db, config, allDids)
     : undefined;
@@ -235,7 +236,7 @@ function jsonWithLabelers(
 
 export function registerCollectionRoutes(
   app: Hono,
-  db: Database,
+  db: DatabaseResolver,
   config: ContrailConfig,
 ): void {
   const ns = config.namespace;
@@ -247,10 +248,11 @@ export function registerCollectionRoutes(
 
     if (methods.includes("listRecords")) {
       app.get(`/xrpc/${ns}.${collection}.listRecords`, async (c) => {
+        const resolvedDb = resolveRequestDb(db, c);
         const params = new URL(c.req.url).searchParams;
         try {
           const result = await runPipeline(
-            db,
+            resolvedDb,
             config,
             collection,
             params,
@@ -269,6 +271,7 @@ export function registerCollectionRoutes(
 
     if (methods.includes("getRecord")) {
       app.get(`/xrpc/${ns}.${collection}.getRecord`, async (c) => {
+        const resolvedDb = resolveRequestDb(db, c);
         const rawUri = c.req.query("uri");
         if (!rawUri) return c.json({ error: "uri parameter required" }, 400);
 
@@ -293,7 +296,7 @@ export function registerCollectionRoutes(
             400,
           );
         }
-        const did = await resolveActor(db, parsed.repo, config);
+        const did = await resolveActor(resolvedDb, parsed.repo, config);
         if (!did) return c.json({ error: "Could not resolve actor" }, 400);
         const uri = `at://${did}/${parsed.collection}/${parsed.rkey}`;
 
@@ -313,7 +316,7 @@ export function registerCollectionRoutes(
           "indexed_at",
           ...countCols.map(({ column }) => column),
         ].join(", ");
-        const row = await db
+        const row = await resolvedDb
           .prepare(
             `SELECT ${selectCols} FROM ${recordsTableName(collection)} r WHERE uri = ? AND ${visibleRecordSql("r")}`,
           )
@@ -333,14 +336,14 @@ export function registerCollectionRoutes(
           references,
         );
         const hydrates = await resolveHydrates(
-          db,
+          resolvedDb,
           relations,
           hydrateRequested.relations,
           [row],
           config,
         );
         const refs = await resolveReferences(
-          db,
+          resolvedDb,
           references,
           hydrateRequested.references,
           [row],
@@ -358,10 +361,10 @@ export function registerCollectionRoutes(
             formatted[name] = record;
           }
         }
-        const allDids = collectDids([row], hydrates);
+        const allDids = collectDids([row], hydrates, refs);
         const profileMap =
           params.get("profiles") === "true"
-            ? await resolveProfiles(db, config, allDids)
+            ? await resolveProfiles(resolvedDb, config, allDids)
             : undefined;
 
         let labelersApplied: string[] | undefined;
@@ -372,7 +375,7 @@ export function registerCollectionRoutes(
             config.labels,
           );
           if (selection.accepted.length > 0) {
-            await attachRecordLabels(db, [formatted],
+            await attachRecordLabels(resolvedDb, [formatted],
               [...Object.keys(relations), ...Object.keys(references)], selection.accepted,
               Object.values(profileMap ?? {}).flat());
             labelersApplied = selection.accepted;
@@ -392,7 +395,7 @@ export function registerCollectionRoutes(
     for (const [queryName, handler] of Object.entries(colConfig.queries ?? {})) {
       app.get(`/xrpc/${ns}.${collection}.${queryName}`, async (c) => {
         const params = new URL(c.req.url).searchParams;
-        return handler(db, params, config);
+        return handler(resolveRequestDb(db, c), params, config);
       });
     }
 
@@ -400,11 +403,12 @@ export function registerCollectionRoutes(
       colConfig.pipelineQueries ?? {},
     )) {
       app.get(`/xrpc/${ns}.${collection}.${queryName}`, async (c) => {
+        const resolvedDb = resolveRequestDb(db, c);
         const params = new URL(c.req.url).searchParams;
         try {
-          const source = await handler(db, params, config);
+          const source = await handler(resolvedDb, params, config);
           const result = await runPipeline(
-            db,
+            resolvedDb,
             config,
             collection,
             params,

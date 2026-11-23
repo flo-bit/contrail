@@ -7,6 +7,7 @@ import type { ContrailConfig, IngestEvent, Database, Logger, ResolvedContrailCon
 import {
   getCollectionNsids,
   getDependentNsids,
+  getDiscoverableNsids,
   repositoryAllowed,
   buildFeedTargetCaps,
   jetstreamService,
@@ -14,7 +15,7 @@ import {
 } from "./types";
 import { assertJetstreamServiceCompatibility, assertServingSourceCompatibility, initSchema, getLastCursor, loadKnownActorDids, saveJetstreamCursorStatement, saveJetstreamCursorObservationStatements, saveOrderedSourcePositionStatement } from "./db";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "./ingest";
-import { refreshStaleIdentities, applyIdentityEvent } from "./identity";
+import { refreshStaleIdentities, applyIdentityEventStatement } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 import {
   createIngestState,
@@ -24,7 +25,13 @@ import {
   maybeOptimize,
 } from "./jetstream";
 import type { IngestState } from "./jetstream";
-import { accountUpdateStatements, knownAccountDids, type AccountUpdate } from "./moderation";
+import {
+  accountUpdateStatements,
+  knownAccountDids,
+  MODERATION_ACTION_NSID,
+  type AccountUpdate,
+} from "./moderation";
+import { sleepAbortable } from "./scheduling";
 
 /** How often the long-lived persistent loop runs a bounded feed sweep. The
  *  process stays resident, so this in-memory throttle is reliable here (unlike
@@ -117,7 +124,7 @@ export async function runPersistent(
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30_000);
       reconnectAttempts++;
       log.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
-      await new Promise((r) => setTimeout(r, delay));
+      await sleepAbortable(delay, signal);
     }
   }
 
@@ -184,9 +191,19 @@ async function streamAndFlush(
     ]);
   }
 
+  const dependentCollections = new Set(getDependentNsids(config));
+  const discoverableCollections = new Set(getDiscoverableNsids(config));
+  // Tracks actors newly seen in discoverable commits in the unflushed buffer
+  // (`pendingKnownDids`) and in the currently flushing batch
+  // (`inFlightKnownDids`) so dependent commits arriving while a flush is in
+  // flight or retrying stay buffered until `knownDids` is updated.
+  let pendingKnownDids = knownDids ? new Set<string>() : undefined;
+  let inFlightKnownDids: Set<string> | undefined;
   const buffer: IngestEvent[] = [];
   // Newest account event per actor; stored state only depends on the newest.
   const accountBuffer = new Map<string, AccountUpdate>();
+  // Latest handle per actor; flushed in DB batches instead of serially on the stream loop.
+  const identityBuffer = new Map<string, string>();
   const bufferAccount = (update: AccountUpdate) => {
     const prior = accountBuffer.get(update.did);
     if (prior && prior.cursor >= update.cursor) return;
@@ -217,11 +234,34 @@ async function streamAndFlush(
   // the final flush always runs after any in-flight one.
   let flushPending: Promise<void> = Promise.resolve();
 
+  const flushIdentities = async (entries: Array<[string, string]>) => {
+    for (let i = 0; i < entries.length; i += batchSize) {
+      const chunk = entries.slice(i, i + batchSize);
+      try {
+        const updatedAt = Date.now();
+        await db.batch(
+          chunk.map(([did, handle]) =>
+            applyIdentityEventStatement(db, did, handle, updatedAt),
+          ),
+        );
+      } catch (err) {
+        log.warn(`Identity update batch failed (${chunk.length}): ${err}`);
+      }
+    }
+  };
+
   const flushWork = async () => {
     const checkpoint = pendingCursor;
     if (checkpoint !== null) pendingCursor = null;
+    const identityEntries = identityBuffer.size > 0 ? [...identityBuffer] : [];
+    identityBuffer.clear();
     if (buffer.length > 0 || accountBuffer.size > 0) {
       const batch = buffer.splice(0);
+      const flushingKnownDids = pendingKnownDids;
+      if (pendingKnownDids) {
+        inFlightKnownDids = flushingKnownDids;
+        pendingKnownDids = new Set<string>();
+      }
       const accountBatch = [...accountBuffer.values()];
       accountBuffer.clear();
       const lastCursor = Math.max(
@@ -253,7 +293,14 @@ async function streamAndFlush(
         // The cursor transaction failed, so keep this exact batch at the front
         // for the timer's next attempt rather than losing it in memory.
         buffer.unshift(...batch);
+        if (flushingKnownDids && pendingKnownDids) {
+          for (const did of flushingKnownDids) pendingKnownDids.add(did);
+        }
+        inFlightKnownDids = undefined;
         for (const update of accountBatch) bufferAccount(update);
+        for (const [did, handle] of identityEntries) {
+          if (!identityBuffer.has(did)) identityBuffer.set(did, handle);
+        }
         pendingCursor = Math.max(pendingCursor ?? 0, lastCursor);
         throw error;
       }
@@ -264,6 +311,11 @@ async function streamAndFlush(
           knownDids.add(did);
           opts.newlyKnownDids?.add(did);
         }
+      }
+      inFlightKnownDids = undefined;
+
+      if (identityEntries.length > 0) {
+        await flushIdentities(identityEntries);
       }
 
       // A feed can only go over cap right after this batch's fan-out or follow
@@ -306,29 +358,38 @@ async function streamAndFlush(
       }
 
       // Opt-in planner-stat maintenance (gated + persisted cadence).
-      await maybeOptimize(db, config, log);
+      try {
+        await maybeOptimize(db, config, log);
+      } catch (err) {
+        log.warn(`[maintenance] optimize check failed: ${err}`);
+      }
 
       log.log(
         `Flushed ${accepted.length}/${batch.length} records. Cursor: ${lastCursor}`,
       );
-    } else if (checkpoint !== null) {
-      try {
-        await db.batch([
-          saveJetstreamCursorStatement(db, checkpoint),
-          ...(config.orderedSource
-            ? [
-                saveOrderedSourcePositionStatement(
-                  db,
-                  config.orderedSource,
-                  checkpoint,
-                ),
-              ]
-            : []),
-          ...saveJetstreamCursorObservationStatements(db, checkpoint, []),
-        ]);
-      } catch (error) {
-        pendingCursor = Math.max(pendingCursor ?? 0, checkpoint);
-        throw error;
+    } else {
+      if (identityEntries.length > 0) {
+        await flushIdentities(identityEntries);
+      }
+      if (checkpoint !== null) {
+        try {
+          await db.batch([
+            saveJetstreamCursorStatement(db, checkpoint),
+            ...(config.orderedSource
+              ? [
+                  saveOrderedSourcePositionStatement(
+                    db,
+                    config.orderedSource,
+                    checkpoint,
+                  ),
+                ]
+              : []),
+            ...saveJetstreamCursorObservationStatements(db, checkpoint, []),
+          ]);
+        } catch (error) {
+          pendingCursor = Math.max(pendingCursor ?? 0, checkpoint);
+          throw error;
+        }
       }
     }
 
@@ -411,6 +472,33 @@ async function streamAndFlush(
 
       if (event.kind === "commit" && repositoryAllowed(config, event.commit.collection, event.did)) {
         const { commit } = event;
+        if (
+          commit.collection === MODERATION_ACTION_NSID &&
+          !config.moderation?.moderators.includes(event.did)
+        ) {
+          pendingCursor = Math.max(pendingCursor ?? 0, event.seq);
+          continue;
+        }
+        if (
+          pendingKnownDids &&
+          discoverableCollections.has(commit.collection) &&
+          commit.collection !== MODERATION_ACTION_NSID &&
+          commit.operation !== "delete"
+        ) {
+          pendingKnownDids.add(event.did);
+        }
+        if (
+          commit.operation !== "delete" &&
+          commit.collection !== MODERATION_ACTION_NSID &&
+          dependentCollections.has(commit.collection) &&
+          knownDids &&
+          !knownDids.has(event.did) &&
+          !pendingKnownDids?.has(event.did) &&
+          !inFlightKnownDids?.has(event.did)
+        ) {
+          pendingCursor = Math.max(pendingCursor ?? 0, event.seq);
+          continue;
+        }
 
         buffer.push(
           createIngestEvent({
@@ -452,18 +540,18 @@ async function streamAndFlush(
         event.kind === "identity" &&
         event.identity.handle !== undefined
       ) {
-        try {
-          await applyIdentityEvent(db, event.did, event.identity.handle);
-        } catch (err) {
-          log.warn(`Identity update failed for ${event.did}: ${err}`);
-        }
+        identityBuffer.set(event.did, event.identity.handle);
       }
 
       pendingCursor = Math.max(pendingCursor ?? 0, event.seq);
 
-      // Account events are mostly unrelated network traffic; flush them on the
-      // timer unless enough distinct actors accumulate to bound memory.
-      if (buffer.length >= batchSize || accountBuffer.size >= batchSize * 10) {
+      // Account and identity events are mostly unrelated network traffic;
+      // flush them on the timer unless enough distinct actors accumulate.
+      if (
+        buffer.length >= batchSize ||
+        accountBuffer.size >= batchSize * 10 ||
+        identityBuffer.size >= batchSize * 10
+      ) {
         await flush();
       }
     }

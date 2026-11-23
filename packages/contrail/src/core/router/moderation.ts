@@ -6,6 +6,7 @@ import {
   createModerationReports,
   ModerationReportError,
 } from "../moderation-reports";
+import { resolveRequestDb, type DatabaseResolver } from "./index";
 export { REPORT_REASON_TYPES } from "../../moderation-contract";
 
 // Leave room for JSON escape expansion of valid 20,000-byte reasons and
@@ -53,18 +54,19 @@ async function smallJson(c: Context): Promise<any> {
 
 export function registerModerationRoutes(
   app: Hono,
-  projectionDb: Database,
+  projectionDb: DatabaseResolver,
   config: ContrailConfig,
   auth?: ServiceAuthGate | null,
-  db: Database = projectionDb,
+  db: DatabaseResolver = projectionDb,
 ): void {
   if (!config.moderation || config.moderation.reports === false) return;
   if (!auth) throw new TypeError("Reports require serviceAuth.audience");
-  const reports = createModerationReports({
-    projectionDb,
-    reportsDb: db,
-    config,
-  });
+  const getReports = (c: Context) =>
+    createModerationReports({
+      projectionDb: resolveRequestDb(projectionDb, c),
+      reportsDb: resolveRequestDb(db, c),
+      config,
+    });
   const ns = config.namespace;
   const run = async (
     c: Context,
@@ -95,12 +97,12 @@ export function registerModerationRoutes(
   };
   app.post("/xrpc/com.atproto.moderation.createReport", (c) =>
     run(c, "com.atproto.moderation.createReport", async (actor) =>
-      reports.create(actor, await body(c)),
+      getReports(c).create(actor, await body(c)),
     ),
   );
   app.get(`/xrpc/${ns}.moderation.listReports`, (c) =>
     run(c, `${ns}.moderation.listReports`, (actor) =>
-      reports.list(actor, {
+      getReports(c).list(actor, {
         status: (c.req.query("status") ?? "open") as "open" | "resolved",
         limit: Number(c.req.query("limit") ?? 50),
         cursor: c.req.query("cursor"),
@@ -109,7 +111,7 @@ export function registerModerationRoutes(
   );
   app.post(`/xrpc/${ns}.moderation.resolveReport`, (c) =>
     run(c, `${ns}.moderation.resolveReport`, async (actor) =>
-      reports.resolve(actor, await body(c)),
+      getReports(c).resolve(actor, await body(c)),
     ),
   );
 }

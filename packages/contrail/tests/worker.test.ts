@@ -3,10 +3,14 @@ import { createWorker } from "../src/worker";
 import { Contrail } from "../src/contrail";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import {
+  bindRecordValidationLexicons,
   createIngestEvent,
+  describePublicService,
   ingestRecords,
+  initSchema,
   resolveConfig,
   saveCursor,
+  validateServiceManifest,
   type ContrailConfig,
 } from "../src/index";
 
@@ -704,5 +708,172 @@ describe("createWorker", () => {
       ingest.mockRestore();
       retry.mockRestore();
     }
+  });
+
+  it("reuses one Hono router and validation context across per-request DB bindings", async () => {
+    const recordLexicon = {
+      lexicon: 1,
+      id: "community.lexicon.calendar.event",
+      defs: {
+        main: {
+          type: "record",
+          key: "any",
+          record: {
+            type: "object",
+            properties: { name: { type: "string" } },
+          },
+        },
+      },
+    };
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      collections: {
+        event: {
+          ...MINIMAL_CONFIG.collections.event!,
+          validate: true,
+        },
+      },
+    };
+    const lexicons = [...MINIMAL_PUBLIC_LEXICONS, recordLexicon];
+    const buildSpy = vi.spyOn(Contrail.prototype, "_createRuntimeApp");
+    try {
+      const worker = createWorker(config, {
+        lexicons,
+        publicService: { endpoint: "https://api.example.com" },
+      });
+
+      const db1 = createSqliteDatabase(":memory:");
+      const db2 = createSqliteDatabase(":memory:");
+      const resolved = resolveConfig(config);
+      bindRecordValidationLexicons(resolved, lexicons);
+      await initSchema(db1, resolved);
+      await initSchema(db2, resolved);
+      await ingestRecords(
+        db1,
+        [
+          createIngestEvent({
+            uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+            did: "did:plc:alice",
+            collection: "community.lexicon.calendar.event",
+            rkey: "e1",
+            operation: "create",
+            cid: null,
+            value: { $type: "community.lexicon.calendar.event", name: "From DB 1" },
+            timeUs: 1000,
+          }),
+        ],
+        resolved,
+      );
+      await ingestRecords(
+        db2,
+        [
+          createIngestEvent({
+            uri: "at://did:plc:bob/community.lexicon.calendar.event/e2",
+            did: "did:plc:bob",
+            collection: "community.lexicon.calendar.event",
+            rkey: "e2",
+            operation: "create",
+            cid: null,
+            value: { $type: "community.lexicon.calendar.event", name: "From DB 2" },
+            timeUs: 2000,
+          }),
+        ],
+        resolved,
+      );
+
+      const res1 = await worker.fetch(
+        new Request("https://api.example.com/xrpc/com.example.event.listRecords"),
+        { DB: db1 },
+      );
+      const res2 = await worker.fetch(
+        new Request("https://api.example.com/xrpc/com.example.event.listRecords"),
+        { DB: db2 },
+      );
+      const res3 = await worker.fetch(
+        new Request("https://api.example.com/xrpc/com.example.event.listRecords"),
+        { DB: db1 },
+      );
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(res3.status).toBe(200);
+      expect(((await res1.json()) as any).records.map((r: any) => r.value.name)).toEqual(["From DB 1"]);
+      expect(((await res2.json()) as any).records.map((r: any) => r.value.name)).toEqual(["From DB 2"]);
+      expect(((await res3.json()) as any).records.map((r: any) => r.value.name)).toEqual(["From DB 1"]);
+      // Built once for the isolate, never rebuilt per request.
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      buildSpy.mockRestore();
+    }
+  });
+
+  it("allows loopback HTTP in createWorker when publicService sets allowInsecureHttp", async () => {
+    const db = createSqliteDatabase(":memory:");
+    const worker = createWorker(MINIMAL_CONFIG, {
+      lexicons: MINIMAL_PUBLIC_LEXICONS,
+      publicService: {
+        endpoint: "http://127.0.0.1:8787",
+        allowInsecureHttp: true,
+      },
+    });
+    const res = await worker.fetch(
+      new Request("http://127.0.0.1:8787/.well-known/contrail"),
+      { DB: db },
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).endpoint).toBe("http://127.0.0.1:8787");
+  });
+
+  it("deduplicates concurrent cold-start init and retries after init failure", async () => {
+    const db = createSqliteDatabase(":memory:");
+    let failFirst = true;
+    let initCalls = 0;
+    const worker = createWorker(MINIMAL_CONFIG, {
+      onInit: async () => {
+        initCalls++;
+        await new Promise((r) => setTimeout(r, 25));
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("transient init failure");
+        }
+      },
+    });
+
+    await expect(
+      worker.fetch(new Request("http://localhost/health"), { DB: db }),
+    ).rejects.toThrow("transient init failure");
+    expect(initCalls).toBe(1);
+
+    // Concurrent cold-start requests share one in-flight init promise.
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        worker.fetch(new Request("http://localhost/health"), { DB: db }),
+      ),
+    );
+    expect(responses.every((r) => r.status === 200)).toBe(true);
+    expect(initCalls).toBe(2);
+  });
+
+  it("validates public service manifests that expose com.atproto.moderation.createReport", async () => {
+    const config: ContrailConfig = {
+      ...MINIMAL_CONFIG,
+      moderation: { moderators: ["did:plc:moderator"] },
+      serviceAuth: {
+        audience: "did:web:api.example.com#contrail",
+        methods: ["createReport"],
+      },
+    };
+    const lexicons = [
+      ...MINIMAL_PUBLIC_LEXICONS,
+      procedureLexicon("com.atproto.moderation.createReport"),
+      ...queryLexicons("com.example.moderation.listReports"),
+      procedureLexicon("com.example.moderation.resolveReport"),
+    ];
+    const { manifest } = await describePublicService(
+      config,
+      { endpoint: "https://api.example.com" },
+      lexicons,
+    );
+    expect(() => validateServiceManifest(manifest, lexicons)).not.toThrow();
   });
 });

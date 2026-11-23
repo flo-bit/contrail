@@ -81,7 +81,10 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
     );
   }
   if (options.publicService) {
-    normalizePublicServiceEndpoint(options.publicService.endpoint);
+    normalizePublicServiceEndpoint(
+      options.publicService.endpoint,
+      options.publicService,
+    );
     validatePublicServiceLexicons(config, options.lexicons ?? []);
     validatePublicServiceAuthEndpoint(config, options.publicService);
   }
@@ -91,18 +94,33 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
     publicService: options.publicService,
   });
 
-  let ready = false;
-  const ensureReady = async (env: Env, db: Database, request = false): Promise<void> => {
-    if (ready) return;
-    // Requests never wait on a moderation policy job; cron cycles finish it.
-    await contrail.init(db, { deferModerationPolicyJob: request });
-    if (options.reportsBinding) {
-      const reportsDb = env[options.reportsBinding] as Database | undefined;
-      if (!reportsDb) throw new TypeError(`Missing report storage binding ${options.reportsBinding}`);
-      await initModerationReports(reportsDb);
+  let readyPromise: Promise<void> | null = null;
+  const ensureReady = (
+    env: Env,
+    db: Database,
+    request = false,
+  ): Promise<void> => {
+    if (!readyPromise) {
+      const pending = (async () => {
+        // Requests never wait on a moderation policy job; cron cycles finish it.
+        await contrail.init(db, { deferModerationPolicyJob: request });
+        if (options.reportsBinding) {
+          const reportsDb = env[options.reportsBinding] as Database | undefined;
+          if (!reportsDb) {
+            throw new TypeError(
+              `Missing report storage binding ${options.reportsBinding}`,
+            );
+          }
+          await initModerationReports(reportsDb);
+        }
+        await options.onInit?.(env, db);
+      })().catch((error) => {
+        if (readyPromise === pending) readyPromise = null;
+        throw error;
+      });
+      readyPromise = pending;
     }
-    await options.onInit?.(env, db);
-    ready = true;
+    return readyPromise;
   };
 
   return {
@@ -113,7 +131,14 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
     ): Promise<Response> {
       const db = env[binding] as Database;
       await ensureReady(env, db, true);
-      const response = (await handle(request, db, options.reportsBinding ? env[options.reportsBinding] as Database : undefined)) as Response;
+      const response = (await handle(
+        request,
+        db,
+        options.reportsBinding
+          ? (env[options.reportsBinding] as Database)
+          : undefined,
+        ctx,
+      )) as Response;
       const notifyPath = `/xrpc/${contrail.config.namespace}.notifyOfUpdate`;
       if (
         deliveryEnabled &&

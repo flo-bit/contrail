@@ -46,6 +46,7 @@ function formatProfile(row: RecordRow): ProfileEntry {
 export function collectDids(
   records: RecordRow[],
   hydrates: Record<string, Record<string, any[] | Record<string, any[]>>>,
+  references?: Record<string, Record<string, any>>,
 ): string[] {
   const dids = new Set(records.map((r) => r.did));
   for (const rels of Object.values(hydrates)) {
@@ -53,6 +54,13 @@ export function collectDids(
       const items = Array.isArray(value) ? value : Object.values(value).flat();
       for (const item of items) {
         if (item.did) dids.add(item.did);
+      }
+    }
+  }
+  if (references) {
+    for (const refs of Object.values(references)) {
+      for (const item of Object.values(refs)) {
+        if (item?.did) dids.add(item.did);
       }
     }
   }
@@ -211,28 +219,14 @@ async function fetchMissingProfiles(
   config: ContrailConfig,
   missing: Array<{ did: string; profile: ProfileConfig }>,
 ): Promise<void> {
-  // Persistent per-profile negative cache without new schema. Always look up
-  // indexed records first, so live ingestion bypasses an outstanding miss.
+  // Active negative-cache entries were already excluded by readIndexedProfiles.
   const missKey = (uri: string) => `profile-miss:${uri}`;
-  const keys = missing.map(({ did, profile }) =>
-    missKey(`at://${did}/${profile.collection}/${profile.rkey ?? "self"}`),
-  );
-  const cached = await batchedInQuery<{ key: string; value: string }>(
-    db,
-    "SELECT key, value FROM _contrail_meta WHERE key IN (__IN__)",
-    [],
-    keys,
-  );
-  const skip = new Set(
-    cached.filter((r) => Number(r.value) > Date.now()).map((r) => r.key),
-  );
   const misses: Array<{ key: string; until: number }> = [];
   const fetched = await Promise.all(
     missing.map(async ({ did, profile }) => {
       const { collection, rkey: configRkey } = profile;
       const rkey = configRkey ?? "self";
       const uri = `at://${did}/${collection}/${rkey}`;
-      if (skip.has(missKey(uri))) return null;
       const miss = (duration = 3_600_000) => {
         misses.push({ key: missKey(uri), until: Date.now() + duration });
         return null;

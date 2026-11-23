@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { Database, Statement } from "../core/types";
 import { sqliteDialect } from "../core/dialect";
 
@@ -12,30 +12,31 @@ export function createSqliteDatabase(path: string): Database {
   raw.exec("PRAGMA busy_timeout = 5000");
 
   function wrapStatement(
-    sql: string,
+    getPrepared: () => StatementSync,
     boundValues: any[] = []
   ): SqliteStatement {
-    const runSync = () => raw.prepare(sql).run(...boundValues);
+    const runSync = () => getPrepared().run(...boundValues);
     return {
       bind(...values: any[]): SqliteStatement {
-        return wrapStatement(sql, values);
+        return wrapStatement(getPrepared, values);
       },
       async run() {
         return runSync();
       },
       _runSync: runSync,
       async all<T>() {
-        return { results: raw.prepare(sql).all(...boundValues) as T[] };
+        return { results: getPrepared().all(...boundValues) as T[] };
       },
       async first<T>() {
-        return (raw.prepare(sql).get(...boundValues) as T) ?? null;
+        return (getPrepared().get(...boundValues) as T) ?? null;
       },
     };
   }
 
   return {
     prepare(sql: string): Statement {
-      return wrapStatement(sql);
+      let prepared: StatementSync | null = null;
+      return wrapStatement(() => (prepared ??= raw.prepare(sql)));
     },
     async batch(stmts: Statement[]): Promise<any[]> {
       raw.exec("BEGIN IMMEDIATE");

@@ -4,6 +4,7 @@ import type { LabelerSource } from "./types";
 import { applyLabels, type IncomingLabel } from "./apply";
 import { getLabelerState } from "./resolve";
 import { getMeta, setMeta } from "../db/meta";
+import { sleepAbortable } from "../scheduling";
 import {
   getModerationPolicyGeneration,
   lockModerationPolicyStatement,
@@ -117,7 +118,7 @@ async function runOneLabelerForever(
       const delay = Math.min(1_000 * 2 ** attempts, 30_000);
       attempts++;
       log.log(`[labels] ${source.did} reconnecting in ${delay}ms (attempt ${attempts})`);
-      await new Promise((r) => setTimeout(r, delay));
+      await sleepAbortable(delay, signal);
     }
   }
 }
