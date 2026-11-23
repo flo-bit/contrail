@@ -20,7 +20,6 @@ overrides:
   '@atproto/lex-data@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
   '@atproto/lex-json@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
   '@atproto/lex-schema@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
-  '@atproto/identity@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
   '@atproto/lex-document@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
   '@atproto/space@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032
   '@atproto/star@^0.0.0-spaces-alpha-20261105160032': 0.0.0-spaces-alpha-20261105160032

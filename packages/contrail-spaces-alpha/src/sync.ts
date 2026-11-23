@@ -704,7 +704,7 @@ export class SpacesSyncEngine {
           ? now
           : now + (this.config.reconcileIntervalMs ?? 5 * 60_000),
         consecutiveFailures: 0,
-        fullReconciledAt: full && listed ? now : undefined,
+        fullReconciledAt: full && listed && !pass.unfinished ? now : undefined,
         expectedGeneration: watch.generation,
         expectedStatus: "active",
       });

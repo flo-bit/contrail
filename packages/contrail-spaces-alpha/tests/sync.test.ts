@@ -171,7 +171,7 @@ async function connect(db: SpacesSyncEngine["db"], engine: SpacesSyncEngine) {
 
 function encodedCommit(commit: Commit): Record<string, unknown> {
   const bytes = (value: Uint8Array) => ({
-    $bytes: Buffer.from(value).toString("base64url"),
+    $bytes: Buffer.from(value).toString("base64"),
   });
   return {
     ver: commit.ver,
@@ -205,7 +205,7 @@ function transportFor(
           data: Uint8Array.from(
             Buffer.from(
               (body.commit.data as { $bytes: string }).$bytes,
-              "base64url",
+              "base64",
             ),
           ),
         } as Commit;

@@ -777,7 +777,7 @@ export async function advanceSpaceRev(
         return false;
     }
     // Compare-and-set on the value just read, so a concurrent advance wins.
-    await db
+    const result = await db
       .prepare(
         `UPDATE spaces_watches SET space_rev = ?, updated_at = ?
        WHERE space_uri = ? AND generation = ?
@@ -791,6 +791,10 @@ export async function advanceSpaceRev(
         ...(current === null ? [] : [current]),
       )
       .run();
+    const changed = Number(
+      result?.meta?.changes ?? result?.changes ?? result?.rowCount ?? 0,
+    );
+    if (changed > 0) return true;
   }
   return true;
 }

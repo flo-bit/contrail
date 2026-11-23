@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SpaceCredentialTransport } from "../src/protocol";
 import { SpacesSyncEngine, type SpacesSyncConfig } from "../src/sync";
 import {
+  acquireSyncLease,
   advanceSpaceRev,
   ensureSpaceWatch,
   getRepoState,
@@ -26,6 +27,7 @@ import {
   listRepoFailures,
   loadCredential,
   recordRepoFailure,
+  releaseSyncLease,
   saveCredential,
 } from "../src/storage";
 import { spaceProjectionKey } from "../src/uri";
@@ -100,7 +102,7 @@ function writerHost(repo: string, state: { rev: string; notes: string[] }) {
           rev: commit.rev,
           repo: commit.repo,
           space: commit.space,
-          data: { $bytes: Buffer.from(commit.data).toString("base64url") },
+          data: { $bytes: Buffer.from(commit.data).toString("base64") },
         },
       },
       { headers: { "Atproto-Space-Mac": mac } },
@@ -185,7 +187,7 @@ function authority(listing: () => Listed[], cursors: (string | null)[] = []) {
             data: {
               $bytes: Buffer.from(
                 await commitHash(entry.did, entry.state),
-              ).toString("base64url"),
+              ).toString("base64"),
             },
             spaceRev: entry.spaceRev,
           })),
@@ -428,6 +430,50 @@ describe("per-writer failure isolation", () => {
     await engine.reconcileSpace(SPACE);
     expect(await notes()).toEqual(["from bob", "from carol"]);
     expect((await getSpaceWatch(db, SPACE))?.spaceRev).toBe("2");
+  });
+
+  it("retries a full pass when a writer is busy instead of stamping fullReconciledAt", async () => {
+    const { db, engine, serve, connect, notes } = await setup();
+    await connect();
+    const bob = { rev: "1", notes: ["from bob"] };
+    const carol = { rev: "1", notes: ["from carol"] };
+    const cursors: (string | null)[] = [];
+    serve({
+      [ALICE]: authority(
+        () => [
+          { did: BOB, state: bob, spaceRev: "1" },
+          { did: CAROL, state: carol, spaceRev: "2" },
+        ],
+        cursors,
+      ),
+      [BOB]: writerHost(BOB, bob),
+      [CAROL]: writerHost(CAROL, carol),
+    });
+
+    // Establish an earlier checkpoint so an incremental pass would skip Bob.
+    await advanceSpaceRev(db, WATCH, { spaceRev: "2" });
+    await acquireSyncLease(db, {
+      ...WATCH,
+      repoDid: BOB,
+      owner: "other-worker",
+      ttlMs: 60_000,
+    });
+
+    await engine.reconcileSpace(SPACE);
+    expect(await notes()).toEqual(["from carol"]);
+    const afterBusy = (await getSpaceWatch(db, SPACE))!;
+    expect(afterBusy.lastFullReconcileAt).toBeNull();
+    expect(afterBusy.nextReconcileAt).toBeLessThanOrEqual(Date.now());
+
+    await releaseSyncLease(db, {
+      ...WATCH,
+      repoDid: BOB,
+      owner: "other-worker",
+    });
+    await engine.reconcileSpace(SPACE);
+    expect(cursors).toEqual([null, "2", null, "2"]);
+    expect(await notes()).toEqual(["from bob", "from carol"]);
+    expect((await getSpaceWatch(db, SPACE))?.lastFullReconcileAt).not.toBeNull();
   });
 
   it("backs off exponentially per writer, capped at an hour", async () => {
