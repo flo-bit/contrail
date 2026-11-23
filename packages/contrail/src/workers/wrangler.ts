@@ -1,6 +1,6 @@
 /**
- * Wrangler v4 D1 binding loader shared by CLI commands (`contrail backfill`,
- * `contrail changes`) and `@atmo-dev/contrail/workers`.
+ * Wrangler v4 D1 binding loader shared by `contrail backfill` and
+ * `@atmo-dev/contrail/workers`.
  *
  * Wrangler v4's `getPlatformProxy()` only connects a D1 binding remotely when
  * that binding explicitly has `"remote": true` in the loaded config — passing

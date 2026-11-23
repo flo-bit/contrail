@@ -30,20 +30,6 @@ export * from "./core/diagnostics";
 export * from "./core/service-auth";
 export { formatServiceOAuthScope } from "./service-auth-contract";
 export * from "./core/isolated-projection";
-export {
-  getChangeLogCostPlan,
-  getChangeLogState,
-  MAX_CHANGE_BATCH_BYTES,
-  MAX_CHANGE_BATCH_CHANGES,
-} from "./core/change-log";
-export type {
-  ChangeLogCostPlan,
-  ChangeLogState,
-  RecordChange,
-} from "./core/change-log";
-export * from "./core/changes";
-export * from "./core/change-bootstrap";
-export * from "./core/delivery";
 export * from "./core/validation";
 export * from "./core/search";
 export * from "./core/constellation";

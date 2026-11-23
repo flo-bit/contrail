@@ -3,7 +3,6 @@ import type { ContrailConfig, Database } from "../types";
 import { getCollectionShortNames, recordsTableName, nsidForShortName } from "../types";
 import { getLastCursor, getServingSourcePosition } from "../db";
 import { getBackfillStatus } from "../status";
-import { getRequiredChangeConsumerReadiness } from "../changes";
 import { isJetstreamTimestampCursor } from "../jetstream-live";
 import { resolveRequestDb, type DatabaseResolver } from "./index";
 
@@ -54,12 +53,9 @@ export async function getStatusOverview(db: Database, config: ContrailConfig) {
     }
   }
 
-  const [ingestion, backfill, requiredDelivery] = await Promise.all([
+  const [ingestion, backfill] = await Promise.all([
     getCursorStatus(db),
     getBackfillStatus(db, config),
-    config.changes && Object.keys(config.changes.consumers).length > 0
-      ? getRequiredChangeConsumerReadiness(db)
-      : Promise.resolve({ ready: true, through: "0", pending: [] }),
   ]);
 
   return {
@@ -68,11 +64,6 @@ export async function getStatusOverview(db: Database, config: ContrailConfig) {
     collections,
     ingestion,
     backfill,
-    delivery: {
-      required: requiredDelivery.ready ? "ready" as const : "catching_up" as const,
-      pending: requiredDelivery.pending.length,
-      through: requiredDelivery.through,
-    },
   };
 }
 

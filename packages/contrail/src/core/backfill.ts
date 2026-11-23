@@ -444,7 +444,6 @@ async function backfillUserAttempt(
         )
         .bind(nextCursor ?? null, pageDone ? 1 : 0, now, did, collection);
       const result = await ingestRecords(db, events, config, {
-        phase: "historical",
         skipReplayDetection: options?.skipReplayDetection,
         skipFeedFanout: true,
         knownDids: options?.knownDids,

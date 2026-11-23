@@ -6,7 +6,6 @@ import type {
   IngestEvent,
   Logger,
   MutationSource,
-  ProjectionPhase,
   Statement,
 } from "./types";
 import {
@@ -155,9 +154,6 @@ export interface IngestRecordsOptions {
    * and per-URI optimistic projection-guard statements so each batch commits
    * in one database round-trip. */
   freshBulkLoad?: boolean;
-  /** Acquisition phase for optional durable consumers. Defaults to live for
-   * backwards-compatible direct ingestRecords() calls. */
-  phase?: ProjectionPhase;
   /** @internal Aggregate private diagnostics for one bulk run. The caller
    * flushes this bounded object once after concurrent page processing. */
   aggregateDiagnostics?: IngestDiagnosticCounts;
@@ -499,7 +495,6 @@ export async function ingestRecords(
           : projectEvents;
         await project(db, projectionEvents, config, {
           ...options,
-          phase: options.phase ?? "live",
           // A pre-fetched visible-row map is not safe after a conflict; the
           // projector deliberately reloads it under this predecessor attempt.
           existing: undefined,

@@ -192,7 +192,6 @@ export async function backfillFollowersFromConstellation(
       if (events.length > 0) {
         known.add(subjectDid);
         const ingest = await ingestRecords(db, events, config, {
-          phase: "historical",
           knownDids: known,
         });
         inserted += ingest.accepted.length;

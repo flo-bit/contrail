@@ -299,5 +299,5 @@ async function fetchMissingProfiles(
 
   const events = fetched.filter((event) => event !== null);
   if (events.length === 0) return;
-  await ingestRecords(db, events, config, { phase: "historical" });
+  await ingestRecords(db, events, config);
 }

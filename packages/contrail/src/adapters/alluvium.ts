@@ -974,7 +974,6 @@ export async function loadAlluviumExport(
         updatedAt: now(),
       };
       const result = await ingestRecords(db, events, config, {
-        phase: "historical",
         knownDids,
         skipDerivedProjections: true,
         skipFeedFanout: !hasExportedFollowCollection,
