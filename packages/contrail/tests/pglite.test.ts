@@ -7,6 +7,11 @@ import { createPgliteDatabase } from "../src/adapters/pglite";
 import { postgresDialect } from "../src/core/dialect";
 import { initSchema, ingestRecords, queryRecords, resolveConfig, type Database } from "../src/index";
 import { makeEvent } from "./helpers";
+import {
+  closeAllPgliteDatabases,
+  createPgliteDatabase as createPooledPgliteDatabase,
+  resetLeasedPgliteDatabases,
+} from "./pglite";
 
 describe("PGlite adapter", () => {
   let pglite: PGlite;
@@ -179,3 +184,36 @@ it("persists a caller-owned PGlite database across reopen", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 }, 60_000);
+
+describe("pooled PGlite test helper", () => {
+  let suiteDb: Database;
+  let perTestDb: Database;
+
+  beforeAll(async () => {
+    suiteDb = createPooledPgliteDatabase();
+    await suiteDb.prepare("CREATE TABLE suite_items (id INTEGER PRIMARY KEY)").run();
+    await suiteDb.prepare("INSERT INTO suite_items VALUES (1)").run();
+  }, 60_000);
+
+  beforeEach(() => {
+    perTestDb = createPooledPgliteDatabase();
+  });
+
+  afterAll(async () => {
+    await closeAllPgliteDatabases();
+  });
+
+  it("keeps beforeAll databases across resets while clearing beforeEach databases", async () => {
+    await perTestDb.prepare("CREATE TABLE test_items (id INTEGER PRIMARY KEY)").run();
+    await resetLeasedPgliteDatabases();
+    expect(await suiteDb.prepare("SELECT id FROM suite_items").first()).toEqual({ id: 1 });
+    await expect(perTestDb.prepare("SELECT * FROM test_items").all()).rejects.toThrow();
+    const inTestDb = createPooledPgliteDatabase();
+    await inTestDb.prepare("CREATE TABLE auto_reset_items (id INTEGER PRIMARY KEY)").run();
+  });
+
+  it("retains beforeAll tables and resets per-test tables automatically between tests", async () => {
+    expect(await suiteDb.prepare("SELECT id FROM suite_items").first()).toEqual({ id: 1 });
+    await expect(perTestDb.prepare("SELECT * FROM auto_reset_items").all()).rejects.toThrow();
+  });
+});

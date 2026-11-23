@@ -486,23 +486,28 @@ async function claimChangeRange(
       await releaseLease(db, consumerId, generation, from, owner, limits.now);
       throw new Error(`Change consumer ${consumerId} has no bootstrap target`);
     }
-    const metadata = await db
-      .prepare(
-        `SELECT position, phase, change_count, encoded_bytes
-         FROM change_batches
-         WHERE generation_id = ? AND position > ?
-           AND (? IS NULL OR position <= ?)
-         ORDER BY position
-         LIMIT ?`,
-      )
-      .bind(
-        generation,
-        from,
-        bootstrapTarget,
-        bootstrapTarget,
-        limits.maxBatches,
-      )
-      .all<BatchMetadataRow>();
+    const metadata =
+      bootstrapTarget !== null
+        ? await db
+            .prepare(
+              `SELECT position, phase, change_count, encoded_bytes
+               FROM change_batches
+               WHERE generation_id = ? AND position > ? AND position <= ?
+               ORDER BY position
+               LIMIT ?`,
+            )
+            .bind(generation, from, bootstrapTarget, limits.maxBatches)
+            .all<BatchMetadataRow>()
+        : await db
+            .prepare(
+              `SELECT position, phase, change_count, encoded_bytes
+               FROM change_batches
+               WHERE generation_id = ? AND position > ?
+               ORDER BY position
+               LIMIT ?`,
+            )
+            .bind(generation, from, limits.maxBatches)
+            .all<BatchMetadataRow>();
 
     if (metadata.results.length === 0) {
       if (bootstrap && from === bootstrapTarget) {

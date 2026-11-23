@@ -52,13 +52,29 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      # turbo's `^build` only builds upstream deps, not contrail's own dist/
+      # (required by tests/public-service-e2e.test.ts).
       - run: pnpm --filter @atmo-dev/contrail build
       - run: pnpm test
 
   postgres:
-    name: PostgreSQL (PGlite) tests
+    name: PostgreSQL tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: contrail
+          POSTGRES_PASSWORD: contrail
+          POSTGRES_DB: contrail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contrail -d contrail"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -73,6 +89,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:postgres
+      - run: pnpm test:postgres:live
+        env:
+          TEST_DATABASE_URL: postgresql://contrail:contrail@127.0.0.1:5432/contrail
 
   cost:
     name: D1 row-cost guardrails
@@ -97,7 +116,7 @@ jobs:
 
       - name: Upload D1 cost report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: d1-cost-report
           path: apps/benchmark/results/cost-ci.json

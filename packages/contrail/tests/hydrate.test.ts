@@ -343,8 +343,8 @@ describe("resolveHydrates", () => {
     const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 2 }, eventRows);
 
-    expect(result[popularUri]?.rsvps["going"]).toHaveLength(2);
-    expect(result[quietUri]?.rsvps["going"]).toHaveLength(2);
+    expect((result[popularUri]?.rsvps as Record<string, any[]>)["going"]).toHaveLength(2);
+    expect((result[quietUri]?.rsvps as Record<string, any[]>)["going"]).toHaveLength(2);
   });
 
   it("includes hydrated reference authors when profiles=true", async () => {

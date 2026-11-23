@@ -279,6 +279,12 @@ try {
     mockJetstream.preflightCursors.includes("100"),
     `Expected HTTP 426 seq preflight for cursor 100, saw ${JSON.stringify(mockJetstream.preflightCursors)}`,
   );
+  assert(
+    mockJetstream.wsCursors.length >= 2 &&
+      Number(mockJetstream.wsCursors[0]) >= 1_000_000_000_000_000 &&
+      mockJetstream.wsCursors[1] === "100",
+    `Expected WebSocket connect with bridge timestamp then resumed cursor 100, saw ${JSON.stringify(mockJetstream.wsCursors)}`,
+  );
 
   await waitFor(
     async () => summaries(),

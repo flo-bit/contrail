@@ -12,6 +12,7 @@
     "test": "turbo run test",
     "test:built": "pnpm --filter @atmo-dev/contrail test:built",
     "test:postgres": "pnpm --filter @atmo-dev/contrail test:postgres",
+    "test:postgres:live": "pnpm --filter @atmo-dev/contrail test:postgres:live",
     "test:workerd": "pnpm --filter @atmo-dev/contrail test:workerd",
     "bench": "node --no-warnings --experimental-strip-types apps/benchmark/src/bench.ts",
     "bench:cost": "node --no-warnings --experimental-strip-types apps/benchmark/src/cost.ts",
