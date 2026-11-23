@@ -58,7 +58,11 @@ import {
   type Database,
   type Logger,
 } from "../src/index";
-import { saveJetstreamCursor } from "../src/core/db/records";
+import {
+  loadKnownActorDids,
+  lookupKnownActorDids,
+  saveJetstreamCursor,
+} from "../src/core/db/records";
 import { createTestDb, feedUris, GROWN_FEED, seedGrownFeed } from "./helpers";
 
 const COLLECTION = "com.example.event";
@@ -486,6 +490,237 @@ describe("bounded scheduled ingest cycles", () => {
     expect(summary?.text).toContain('"retained_candidates":0');
     expect(summary?.text).toContain('"source_scope_filtered":1');
     expect(summary?.text).toContain('"safe_ending_cursor":2000001');
+  });
+});
+
+describe("scheduled known-actor lookup", () => {
+  beforeEach(() => {
+    source.initialCursor = 0;
+    source.requestedCursors = [];
+    source.events = [];
+  });
+
+  const FOLLOW = "app.bsky.graph.follow";
+  const follow = (seq: number, did: string, rkey = `follow-${seq}`) => ({
+    ...commit(seq, rkey),
+    did,
+    commit: { ...commit(seq, rkey).commit, collection: FOLLOW },
+  });
+  const seedEvent = (db: Database, did: string, rkey: string) =>
+    db
+      .prepare(
+        "INSERT INTO records_event (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, 1, 1)",
+      )
+      .bind(`at://${did}/${COLLECTION}/${rkey}`, did, rkey, `cid-${rkey}`, "{}")
+      .run();
+  const followers = async (db: Database) =>
+    (
+      await db
+        .prepare("SELECT did, rkey FROM records_follow ORDER BY time_us, rkey")
+        .all<{ did: string; rkey: string }>()
+    ).results;
+
+  it("never scans the record tables, however large the index is", async () => {
+    const db = createTestDb();
+    const configured = config(logger().value, true);
+    await initSchema(db, configured);
+    for (let i = 0; i < 40; i++) await seedEvent(db, `did:plc:author${i}`, `e${i}`);
+    source.events = [
+      follow(10, "did:plc:author7"),
+      follow(11, "did:plc:stranger"),
+    ];
+
+    const prepare = db.prepare.bind(db);
+    const statements: string[] = [];
+    vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      statements.push(sql);
+      return prepare(sql);
+    });
+    try {
+      await runIngestCycle(db, configured, { ...budget, maxCandidates: 50 });
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(statements.filter((sql) => /SELECT DISTINCT did FROM/.test(sql))).toEqual([]);
+    expect(statements.filter((sql) => /FROM identities UNION/.test(sql))).toEqual([]);
+    expect(await followers(db)).toEqual([
+      { did: "did:plc:author7", rkey: "follow-10" },
+    ]);
+    expect(await getLastCursor(db)).toBe(11);
+  });
+
+  it("recognises an actor from a record, an identity, or a relay backfill row", async () => {
+    const db = createTestDb();
+    const configured = config(logger().value, true);
+    await initSchema(db, configured);
+    await seedEvent(db, "did:plc:record", "e1");
+    await db
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind("did:plc:identity", "identity.test", "https://pds.test", Date.now())
+      .run();
+    await db
+      .prepare("INSERT INTO backfills (did, collection, completed) VALUES (?, ?, 1)")
+      .bind("did:plc:backfill", COLLECTION)
+      .run();
+    const asked = [
+      "did:plc:record",
+      "did:plc:identity",
+      "did:plc:backfill",
+      "did:plc:stranger",
+    ];
+
+    const found = await lookupKnownActorDids(db, configured, asked);
+    const all = await loadKnownActorDids(db, configured);
+    expect([...found].sort()).toEqual(asked.filter((did) => all.has(did)).sort());
+    expect(found.has("did:plc:stranger")).toBe(false);
+    expect(found.size).toBe(3);
+
+    source.events = asked.map((did, index) => follow(20 + index, did));
+    await runIngestCycle(db, configured, { ...budget, maxCandidates: 50 });
+    expect((await followers(db)).map((row) => row.did)).toEqual([
+      "did:plc:record",
+      "did:plc:identity",
+      "did:plc:backfill",
+    ]);
+  });
+
+  it("does not treat the publisher of an exact repository scope as known", async () => {
+    const db = createTestDb();
+    const items = "app.bsky.graph.listitem";
+    const configured = resolveConfig({
+      namespace: "com.example", profiles: [], constellation: false,
+      collections: {
+        event: { collection: COLLECTION },
+        follow: { collection: FOLLOW, discover: false },
+        item: { collection: items, repos: ["did:plc:bot"] },
+      },
+      logger: logger().value,
+    });
+    await initSchema(db, configured);
+
+    expect(await loadKnownActorDids(db, configured)).not.toContain("did:plc:bot");
+    expect(await lookupKnownActorDids(db, configured, ["did:plc:bot"])).toEqual(new Set());
+  });
+
+  it("keeps unknown actors out of the candidate budget and preserves source order", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    await initSchema(db, configured);
+    await seedEvent(db, "did:plc:known", "seed");
+    source.events = [
+      ...Array.from({ length: 150 }, (_, index) =>
+        follow(100 + index, `did:plc:stranger${index}`),
+      ),
+      follow(300, "did:plc:known", "first"),
+      commit(301, "between"),
+      follow(302, "did:plc:known", "second"),
+    ];
+
+    await runIngestCycle(db, configured, { ...budget, maxCandidates: 3 });
+
+    expect(await followers(db)).toEqual([
+      { did: "did:plc:known", rkey: "first" },
+      { did: "did:plc:known", rkey: "second" },
+    ]);
+    expect(
+      (await db.prepare("SELECT rkey FROM records_event ORDER BY rkey").all()).results,
+    ).toEqual([{ rkey: "between" }, { rkey: "seed" }]);
+    expect(await getLastCursor(db)).toBe(302);
+    const summary = JSON.parse(
+      output.lines
+        .find((line) => line.text.includes("[ingest] cycle summary"))!
+        .text.replace(/^.*cycle summary /, ""),
+    );
+    expect(summary.retained_candidates).toBe(3);
+    // 151 unconfirmed authors, one query.
+    expect(summary.actor_lookups).toBe(1);
+  });
+
+  it("stops at the lookup cap and continues from there on the next cycle", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    await initSchema(db, configured);
+    await seedEvent(db, "did:plc:known", "seed");
+    source.events = [
+      ...Array.from({ length: 600 }, (_, index) =>
+        follow(1_000 + index, `did:plc:stranger${index}`),
+      ),
+      follow(1_600, "did:plc:known", "after"),
+    ];
+    const capped = { ...budget, maxCandidates: 50, maxActorLookups: 1 };
+    const summaries = () =>
+      output.lines
+        .filter((line) => line.text.includes("[ingest] cycle summary"))
+        .map((line) => JSON.parse(line.text.replace(/^.*cycle summary /, "")));
+
+    await runIngestCycle(db, configured, capped);
+    expect(summaries()[0]).toMatchObject({
+      stop_reason: "actor-lookups",
+      actor_lookups: 1,
+      max_actor_lookups: 1,
+    });
+    // The first 500 authors were resolved; the 501st event is not accounted.
+    expect(await getLastCursor(db)).toBe(1_499);
+    expect(await followers(db)).toEqual([]);
+
+    await runIngestCycle(db, configured, capped);
+    expect(summaries()[1]).toMatchObject({ stop_reason: "idle", actor_lookups: 1 });
+    expect(await getLastCursor(db)).toBe(1_600);
+    expect(await followers(db)).toEqual([{ did: "did:plc:known", rkey: "after" }]);
+  });
+
+  it("makes no lookup when no dependent event arrives", async () => {
+    const db = createTestDb();
+    const output = logger();
+    const configured = config(output.value, true);
+    source.events = [commit(2_000, "plain")];
+
+    await runIngestCycle(db, configured, { ...budget, maxActorLookups: 1 });
+    const summary = JSON.parse(
+      output.lines
+        .find((line) => line.text.includes("[ingest] cycle summary"))!
+        .text.replace(/^.*cycle summary /, ""),
+    );
+    expect(summary.actor_lookups).toBe(0);
+    expect(summary.stop_reason).toBe("idle");
+  });
+
+  it("replays what a held window could not fit under the candidate cap", async () => {
+    const db = createTestDb();
+    const configured = config(logger().value, true);
+    await initSchema(db, configured);
+    await seedEvent(db, "did:plc:known", "seed");
+    source.events = [
+      follow(400, "did:plc:known", "one"),
+      follow(401, "did:plc:known", "two"),
+      follow(402, "did:plc:known", "three"),
+    ];
+    const capped = { ...budget, maxCandidates: 2 };
+
+    await runIngestCycle(db, configured, capped);
+    expect((await followers(db)).map((row) => row.rkey)).toEqual(["one", "two"]);
+    expect(await getLastCursor(db)).toBe(401);
+
+    await runIngestCycle(db, configured, capped);
+    expect((await followers(db)).map((row) => row.rkey)).toEqual(["one", "two", "three"]);
+    expect(await getLastCursor(db)).toBe(402);
+  });
+
+  it("admits a dependent record whose author is discovered in the same cycle", async () => {
+    const db = createTestDb();
+    const configured = config(logger().value, true);
+    source.events = [
+      { ...commit(500, "discovers"), did: "did:plc:fresh" },
+      follow(501, "did:plc:fresh", "dependent"),
+    ];
+
+    await runIngestCycle(db, configured, { ...budget, maxCandidates: 50 });
+    expect(await followers(db)).toEqual([
+      { did: "did:plc:fresh", rkey: "dependent" },
+    ]);
   });
 });
 

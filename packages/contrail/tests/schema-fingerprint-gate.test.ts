@@ -57,7 +57,8 @@ describe("schema fingerprint gate", () => {
     const real = createSqliteDatabase(":memory:");
     await initSchema(real, CONFIG);
     const current = (await getMeta(real, "schema_fingerprint"))!;
-    const previous = current.replace(/:cursor-observations-v1$/, "");
+    const previous = current.replace(/:cursor-observations-v1:backfills-pending-v1$/, "");
+    expect(previous).not.toBe(current);
     await real.prepare("DROP TABLE cursor_observations").run();
     await setMeta(real, "schema_fingerprint", previous);
 
@@ -67,6 +68,27 @@ describe("schema fingerprint gate", () => {
     expect(
       upgraded.prepares.some((sql) => /CREATE TABLE IF NOT EXISTS cursor_observations/.test(sql)),
     ).toBe(true);
+    expect(upgraded.prepares.some((sql) => /fts_event|records_event/.test(sql))).toBe(false);
+    expect(await getMeta(real, "schema_fingerprint")).toBe(current);
+  });
+
+  it("adds the pending-backfill index to a current database without rebuilding it", async () => {
+    const real = createSqliteDatabase(":memory:");
+    await initSchema(real, CONFIG);
+    const current = (await getMeta(real, "schema_fingerprint"))!;
+    const previous = current.replace(/:backfills-pending-v1$/, "");
+    expect(previous).not.toBe(current);
+    await real.prepare("DROP INDEX idx_backfills_pending").run();
+    await setMeta(real, "schema_fingerprint", previous);
+
+    const upgraded = recordingDb(real);
+    await initSchema(upgraded.db, CONFIG);
+
+    expect(
+      await real
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_backfills_pending'")
+        .first(),
+    ).toBeTruthy();
     expect(upgraded.prepares.some((sql) => /fts_event|records_event/.test(sql))).toBe(false);
     expect(await getMeta(real, "schema_fingerprint")).toBe(current);
   });

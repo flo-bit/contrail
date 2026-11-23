@@ -952,6 +952,58 @@ export async function loadKnownActorDids(
   return known;
 }
 
+const KNOWN_ACTOR_LOOKUP_CHUNK = 500;
+
+/** The subset of `dids` that `loadKnownActorDids` would contain, found with
+ * one index probe per actor and source. Scheduled ingestion uses this so its
+ * read cost follows the actors in a batch, not the size of the index: a
+ * recycled isolate would otherwise scan every record table on each run. */
+export async function lookupKnownActorDids(
+  db: Database,
+  config: ContrailConfig,
+  dids: Iterable<string>,
+): Promise<Set<string>> {
+  const known = new Set<string>();
+  const pending = [...new Set(dids)];
+  if (pending.length === 0) return known;
+
+  // Same exclusion as loadKnownActorDids: configuring an exact pair must not
+  // make its publisher known to unrelated dependent collections.
+  const scoped: string[] = [];
+  const sources = ["EXISTS (SELECT 1 FROM identities WHERE did = v.value)"];
+  for (const [shortName, collection] of Object.entries(config.collections)) {
+    const mode = collectionAcquisition(collection).mode;
+    if (mode === "repos") scoped.push(collection.collection ?? shortName);
+    if (mode === "discover") {
+      sources.push(
+        `EXISTS (SELECT 1 FROM ${recordsTableName(shortName)} WHERE did = v.value)`,
+      );
+    }
+  }
+  sources.push(
+    `EXISTS (SELECT 1 FROM backfills WHERE did = v.value${
+      scoped.length
+        ? ` AND collection NOT IN (${scoped.map(() => "?").join(",")})`
+        : ""
+    })`,
+  );
+  // One JSON parameter carries the whole chunk, whatever the bind limit.
+  const values = isPostgresDialect(getDialect(db))
+    ? "json_array_elements_text(CAST(? AS json)) AS v(value)"
+    : "json_each(?) AS v";
+  const sql = `SELECT v.value AS did FROM ${values} WHERE ${sources.join(" OR ")}`;
+
+  for (let index = 0; index < pending.length; index += KNOWN_ACTOR_LOOKUP_CHUNK) {
+    const chunk = pending.slice(index, index + KNOWN_ACTOR_LOOKUP_CHUNK);
+    const rows = await db
+      .prepare(sql)
+      .bind(JSON.stringify(chunk), ...scoped)
+      .all<{ did: string }>();
+    for (const row of rows.results ?? []) known.add(row.did);
+  }
+  return known;
+}
+
 /** Save a legacy timestamp cursor monotonically without allowing an old
  * writer to move a database that has transitioned to the v2 seq domain back
  * into the timestamp domain. */

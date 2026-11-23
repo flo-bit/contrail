@@ -17,6 +17,7 @@ import {
 } from "./types";
 import {
   isProjectionConflictError,
+  lookupKnownActorDids,
   lookupRecordVersions,
   projectEvents,
   selectAuthoritativeMutations,
@@ -136,6 +137,10 @@ export interface IngestRecordsOptions {
   existing?: Map<string, ExistingRecordInfo>;
   /** Known actors used to filter dependent records without another DB read. */
   knownDids?: ReadonlySet<string>;
+  /** Known actors confirmed so far, when the caller does not hold the complete
+   * set. Actors this batch depends on are looked up and added before
+   * filtering. Ignored when `knownDids` is given. */
+  knownActorCache?: Set<string>;
   /** Statements committed after projection in the same database batch. */
   trailingStatements?: Statement[];
   /** Private extensions own their version state and must never touch public tables. */
@@ -282,12 +287,17 @@ export async function ingestRecords(
     const collection = config.collections[shortName];
     return event.operation !== "delete" && collection && collectionAcquisition(collection).mode === "discover";
   });
-  if (options.knownDids && !hasDiscoverableMutation) {
+  let knownDids = options.knownDids;
+  if (!knownDids && options.knownActorCache) {
+    await cacheKnownActors(db, config, candidates, options.knownActorCache);
+    knownDids = options.knownActorCache;
+  }
+  if (knownDids && !hasDiscoverableMutation) {
     candidates = candidates.filter(({ event, shortName, record }) => {
       if (event.operation === "delete" || event.collection === MODERATION_ACTION_NSID) return true;
       const collection = config.collections[shortName];
       if (!collection || collectionAcquisition(collection).mode !== "known") return true;
-      if (!options.knownDids!.has(event.did)) {
+      if (!knownDids.has(event.did)) {
         dropped.unknownActor++;
         return false;
       }
@@ -299,7 +309,7 @@ export async function ingestRecords(
         dropped.unknownSubject++;
         return false;
       }
-      if (!options.knownDids!.has(subject)) {
+      if (!knownDids.has(subject)) {
         dropped.unknownSubject++;
         return false;
       }
@@ -401,9 +411,7 @@ export async function ingestRecords(
       (event) => !policyExcluded.has(event),
     );
 
-    const effectiveKnownDids = options.knownDids
-      ? new Set(options.knownDids)
-      : undefined;
+    const effectiveKnownDids = knownDids ? new Set(knownDids) : undefined;
     const discoveredDids: string[] = [];
     if (effectiveKnownDids) {
       for (const event of admitted) {
@@ -571,6 +579,37 @@ async function filterUnknownSubjects(
     if (subject !== "") dropped.unknownSubject++;
   }
   return accepted;
+}
+
+/** Confirm the actors one batch depends on: authors of dependent records,
+ * their subjects, and authors of discoverable records (so an actor already in
+ * the index is not reported as newly discovered). */
+async function cacheKnownActors(
+  db: Database,
+  config: ContrailConfig,
+  candidates: Array<{
+    event: IngestEvent;
+    shortName: string;
+    record: Record<string, unknown> | null;
+  }>,
+  cache: Set<string>,
+): Promise<void> {
+  const missing = new Set<string>();
+  for (const { event, shortName, record } of candidates) {
+    if (event.operation === "delete" || event.collection === MODERATION_ACTION_NSID) continue;
+    const collection = config.collections[shortName];
+    if (!collection) continue;
+    const mode = collectionAcquisition(collection).mode;
+    if (mode !== "known" && mode !== "discover") continue;
+    if (!cache.has(event.did)) missing.add(event.did);
+    if (mode !== "known" || !collection.subjectField || !record) continue;
+    const subject = getNestedValue(record, collection.subjectField);
+    if (typeof subject === "string" && isDid(subject) && !cache.has(subject)) {
+      missing.add(subject);
+    }
+  }
+  if (missing.size === 0) return;
+  for (const did of await lookupKnownActorDids(db, config, missing)) cache.add(did);
 }
 
 async function loadKnownDids(
