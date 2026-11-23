@@ -734,7 +734,10 @@ export async function loadAlluviumExport(
   const wallStarted = performance.now();
   let lastProgressLogAt = wallStarted;
   const emitProgress = (progress: AlluviumProgress): void => {
-    options.onProgress?.(progress);
+    if (options.onProgress) {
+      options.onProgress(progress);
+      return;
+    }
     if (!logger) return;
     const current = performance.now();
     if (current - lastProgressLogAt >= PROGRESS_LOG_INTERVAL_MS) {

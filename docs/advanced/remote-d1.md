@@ -33,6 +33,8 @@ Practical guide for populating a remote Cloudflare D1 database and evolving conf
 
 ## Very large datasets (local SQLite → chunked SQL import)
 
+Direct `--remote --alluvium` through Wrangler's remote binding proxy runs at ~50 records/s during loading (~2 seconds per 100-record batch over remote RTT) and ~1,200 rows/s during chunked FTS and count rebuilds — so ~10k records takes ~3 minutes, while ~165k records takes ~55–60 minutes (fully resumable if interrupted).
+
 For very large datasets (hundreds of thousands of records) or heavy PDS rate-limit retries where remote round-trips are too slow, you can build locally with SQLite (`pnpm contrail backfill --sqlite ./candidate.sqlite --alluvium`) and import bounded SQL files with `wrangler d1 execute --remote`:
 
 - **Never import one giant SQL dump** — large single files hit `D1_RESET_DO` and roll back.
