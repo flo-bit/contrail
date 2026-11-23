@@ -204,9 +204,8 @@ Deletion currently retains data invisibly; it is **not** interpreted as an
 unverified permanent purge. Public relation counts/hydration, references, feeds,
 search and pagination exclude hidden actors and records. Feed caches and FTS
 rows remain retained, so reversible status changes do not require rebuilding.
-Bootstrap sources still advertise `accountLifecycle: false`. An Alluvium export
-leaves out deleted and inactive accounts as of its head, but a fresh snapshot
-alone does not establish account state. Do not claim lifecycle
+An Alluvium export leaves out deleted and inactive accounts as of its head, but
+a fresh snapshot alone does not establish account state. Do not claim lifecycle
 coverage for a source without that capability.
 
 ### Enforcement implementation and cost

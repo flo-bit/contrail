@@ -607,4 +607,217 @@ describe("Alluvium export bootstrap", () => {
       globalThis.fetch = realFetch;
     }
   });
+
+  it("recognizes completed legacy bootstrap_state databases and rejects interrupted ones clearly", async () => {
+    const resolved = config();
+    const db = await freshDb(resolved);
+    const liveCursorUs = HEAD_US - DEFAULT_ALLUVIUM_REWIND_US;
+    await db
+      .prepare(
+        `CREATE TABLE bootstrap_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          phase TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          capture_source TEXT NOT NULL,
+          capture_epoch TEXT NOT NULL,
+          capture_cursor TEXT NOT NULL,
+          snapshot_complete INTEGER NOT NULL DEFAULT 0,
+          catchup_source TEXT,
+          catchup_epoch TEXT,
+          catchup_cursor TEXT,
+          change_source TEXT,
+          change_epoch TEXT,
+          change_cursor TEXT,
+          started_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          finished_at INTEGER
+        )`,
+      )
+      .run();
+    const snapshotJson = JSON.stringify({
+      id: "alluvium:alluvium.test:900",
+      provider: "alluvium",
+      collections: [EVENT, RSVP],
+      providerData: {
+        v: 4,
+        endpoint: `${ENDPOINT}/`,
+        collections: [EVENT, RSVP],
+        cursor: 900,
+        timeUs: HEAD_US,
+        liveCursorUs,
+      },
+    });
+    await db
+      .prepare(
+        `INSERT INTO bootstrap_state
+         (id, phase, snapshot_json, capture_source, capture_epoch, capture_cursor,
+          snapshot_complete, change_source, change_epoch, change_cursor,
+          started_at, updated_at, finished_at)
+         VALUES (1, 'complete', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        snapshotJson,
+        SOURCE.id,
+        SOURCE.epoch,
+        String(liveCursorUs),
+        SOURCE.id,
+        SOURCE.epoch,
+        String(liveCursorUs),
+        NOW_MS,
+        NOW_MS,
+        NOW_MS,
+      )
+      .run();
+    await saveJetstreamCursor(db, 57_624_562);
+
+    const state = await getAlluviumBootstrapState(db);
+    expect(state).toMatchObject({
+      phase: "complete",
+      endpoint: `${ENDPOINT}/`,
+      source: SOURCE,
+      liveCursorUs,
+    });
+
+    const { fetchImpl, requests } = service({ rows: ROWS });
+    const result = await loadAlluviumExport(db, resolved, {
+      endpoint: ENDPOINT,
+      source: SOURCE,
+      fetch: fetchImpl,
+      now: () => NOW_MS,
+    });
+    expect(result).toMatchObject({
+      resumed: true,
+      alreadyComplete: true,
+      liveCursor: 57_624_562,
+      recordsLoaded: 0,
+    });
+    expect(requests).toHaveLength(0);
+
+    // An interrupted legacy bootstrap fails with a clear start-fresh message.
+    await db.prepare("UPDATE bootstrap_state SET phase = 'snapshot' WHERE id = 1").run();
+    await expect(
+      loadAlluviumExport(db, resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: fetchImpl,
+        now: () => NOW_MS,
+      }),
+    ).rejects.toThrow("earlier Contrail version cannot be resumed");
+  });
+
+  it("surfaces database commit errors immediately without retrying the HTTP export", async () => {
+    const resolved = config();
+    const rawDb = await freshDb(resolved);
+    const { fetchImpl, requests } = service({ rows: ROWS });
+    const failingDb = {
+      dialect: rawDb.dialect,
+      prepare: (sql: string) => rawDb.prepare(sql),
+      async batch() {
+        throw new Error("simulated disk full");
+      },
+    };
+
+    await expect(
+      loadAlluviumExport(failingDb, resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: fetchImpl,
+        now: () => NOW_MS,
+        transport: { batchSize: 2, maxAttempts: 4 },
+      }),
+    ).rejects.toThrow("simulated disk full");
+
+    // One /alluvium/head + one /export request — zero HTTP retries on DB error.
+    expect(requests.filter((r) => r.pathname === "/export")).toHaveLength(1);
+  });
+
+  it("propagates meta read failures and rejects concurrent initial pins", async () => {
+    const resolved = config();
+    const rawDb = await freshDb(resolved);
+    const brokenReadDb = {
+      dialect: rawDb.dialect,
+      prepare() {
+        throw new Error("meta read failed");
+      },
+      batch: rawDb.batch.bind(rawDb),
+    };
+    await expect(getAlluviumBootstrapState(brokenReadDb)).rejects.toThrow("meta read failed");
+
+    // Simulate a concurrent loader inserting the pin between read and initial insert.
+    const { fetchImpl } = service({ rows: ROWS });
+    let insertedConcurrentPin = false;
+    const racingFetch: typeof fetch = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (!insertedConcurrentPin && new URL(String(input)).pathname === "/alluvium/head") {
+        insertedConcurrentPin = true;
+        await rawDb
+          .prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)")
+          .bind(ALLUVIUM_BOOTSTRAP_META_KEY, "{}")
+          .run();
+      }
+      return response;
+    };
+    await expect(
+      loadAlluviumExport(rawDb, resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: racingFetch,
+        now: () => NOW_MS,
+      }),
+    ).rejects.toThrow(/UNIQUE|PRIMARY KEY|constraint/i);
+  });
+
+  it("resumes cleanly if a run crashes after restoring deferred indexes but before completion", async () => {
+    const resolved = config();
+    const rawDb = createSqliteDatabase(":memory:");
+    await initSchema(rawDb, resolved);
+
+    // Fail on the final handoff batch (which writes source_position + cursor + complete state)
+    // after restoreSecondaryIndexes has already restored the dropped indexes.
+    let finalBatchFailed = false;
+    const crashBeforeCompleteDb = {
+      dialect: rawDb.dialect,
+      prepare: (sql: string) => rawDb.prepare(sql),
+      async batch(stmts: Parameters<typeof rawDb.batch>[0]) {
+        const deferred = await rawDb
+          .prepare("SELECT value FROM _contrail_meta WHERE key = 'bootstrap_deferred_indexes'")
+          .first();
+        if (!finalBatchFailed && deferred === null && stmts.length === 3) {
+          finalBatchFailed = true;
+          throw new Error("simulated crash before final handoff");
+        }
+        return rawDb.batch(stmts);
+      },
+    };
+
+    const first = service({ rows: ROWS });
+    await expect(
+      loadAlluviumExport(crashBeforeCompleteDb, resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: first.fetchImpl,
+        now: () => NOW_MS,
+        deferIndexes: true,
+        transport: { batchSize: 2 },
+      }),
+    ).rejects.toThrow("simulated crash before final handoff");
+    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("loading");
+
+    // Re-running finishes cleanly without duplicating records.
+    const second = service({ rows: ROWS });
+    const resumed = await loadAlluviumExport(rawDb, resolved, {
+      endpoint: ENDPOINT,
+      source: SOURCE,
+      fetch: second.fetchImpl,
+      now: () => NOW_MS,
+      deferIndexes: true,
+    });
+    expect(resumed).toMatchObject({
+      resumed: true,
+      alreadyComplete: false,
+      recordsLoaded: 0,
+    });
+    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("complete");
+    expect((await queryRecords(rawDb, resolved, { collection: EVENT })).records).toHaveLength(3);
+  });
 });

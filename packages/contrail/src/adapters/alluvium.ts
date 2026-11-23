@@ -1,6 +1,6 @@
 import { isDid, isNsid, isRecordKey } from "@atcute/lexicons/syntax";
 import { getDialect, isPostgresDialect } from "../core/dialect";
-import { getMeta, setMeta } from "../core/db/meta";
+import { setMeta } from "../core/db/meta";
 import {
   getLastCursor,
   loadKnownActorDids,
@@ -284,6 +284,15 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function insertInitialStateStatement(
+  db: Database,
+  state: AlluviumBootstrapState,
+): Statement {
+  return db
+    .prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)")
+    .bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
+}
+
 function saveStateStatement(db: Database, state: AlluviumBootstrapState): Statement {
   return db
     .prepare(
@@ -293,12 +302,107 @@ function saveStateStatement(db: Database, state: AlluviumBootstrapState): Statem
     .bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
 }
 
-/** Read durable Alluvium bootstrap state from `_contrail_meta`, if any. */
+/** Read a `_contrail_meta` value without swallowing database errors. */
+async function readMetaStrict(db: Database, key: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT value FROM _contrail_meta WHERE key = ?")
+    .bind(key)
+    .first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+function isMissingLegacyBootstrapTable(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "42P01") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /no such table:\s*bootstrap_state/i.test(message) ||
+    /relation "bootstrap_state" does not exist/i.test(message)
+  );
+}
+
+/** Translate a completed pre-v0.32 `bootstrap_state` Alluvium row so existing
+ * dev databases keep restarting cleanly under `contrail dev --alluvium`. */
+async function readLegacyBootstrapState(
+  db: Database,
+): Promise<AlluviumBootstrapState | null> {
+  let row: {
+    phase: string;
+    snapshot_json: string;
+    capture_source: string;
+    capture_epoch: string;
+    capture_cursor: string;
+    change_source: string | null;
+    change_epoch: string | null;
+    change_cursor: string | null;
+    started_at: number | string;
+    updated_at: number | string;
+    finished_at: number | string | null;
+  } | null;
+  try {
+    row = await db
+      .prepare(
+        `SELECT phase, snapshot_json, capture_source, capture_epoch, capture_cursor,
+                change_source, change_epoch, change_cursor, started_at, updated_at, finished_at
+         FROM bootstrap_state WHERE id = 1`,
+      )
+      .first();
+  } catch (error) {
+    if (isMissingLegacyBootstrapTable(error)) return null;
+    throw error;
+  }
+  if (!row) return null;
+  if (row.phase !== "complete") {
+    throw new Error(
+      "An interrupted bootstrap from an earlier Contrail version cannot be resumed; delete the database and start fresh.",
+    );
+  }
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(row.snapshot_json);
+  } catch {
+    return null;
+  }
+  const data = object(snapshot) ? snapshot.providerData : undefined;
+  if (
+    !object(snapshot) ||
+    snapshot.provider !== "alluvium" ||
+    !object(data) ||
+    data.v !== 4 ||
+    typeof data.endpoint !== "string" ||
+    !Array.isArray(data.collections) ||
+    !data.collections.every((item) => typeof item === "string")
+  ) {
+    return null;
+  }
+  const sourceId = row.change_source ?? row.capture_source;
+  const sourceEpoch = row.change_epoch ?? row.capture_epoch;
+  return {
+    v: 1,
+    phase: "complete",
+    endpoint: data.endpoint,
+    source: { id: sourceId, epoch: sourceEpoch },
+    collections: data.collections as string[],
+    cursor: safeInteger(data.cursor, "Legacy Alluvium cursor"),
+    timeUs: safeInteger(data.timeUs, "Legacy Alluvium timeUs"),
+    liveCursorUs: safeInteger(data.liveCursorUs, "Legacy Alluvium liveCursorUs"),
+    after: null,
+    startedAt: safeInteger(Number(row.started_at), "Legacy Alluvium startedAt"),
+    updatedAt: safeInteger(Number(row.updated_at), "Legacy Alluvium updatedAt"),
+    ...(row.finished_at != null
+      ? { finishedAt: safeInteger(Number(row.finished_at), "Legacy Alluvium finishedAt") }
+      : {}),
+  };
+}
+
+/** Read durable Alluvium bootstrap state from `_contrail_meta` (or a completed
+ * legacy `bootstrap_state` row), if any. */
 export async function getAlluviumBootstrapState(
   db: Database,
 ): Promise<AlluviumBootstrapState | null> {
-  const raw = await getMeta(db, ALLUVIUM_BOOTSTRAP_META_KEY);
-  if (raw === null) return null;
+  const raw = await readMetaStrict(db, ALLUVIUM_BOOTSTRAP_META_KEY);
+  if (raw === null) return readLegacyBootstrapState(db);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -368,7 +472,7 @@ async function deferSecondaryIndexes(
   config: ContrailConfig,
 ): Promise<void> {
   if (isPostgresDialect(getDialect(db))) return;
-  if (await getMeta(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY)) return;
+  if (await readMetaStrict(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY)) return;
   const tables = [
     ...Object.keys(config.collections).map(recordsTableName),
     "record_versions",
@@ -394,7 +498,7 @@ async function deferSecondaryIndexes(
 
 /** Rebuild the indexes {@link deferSecondaryIndexes} dropped. */
 async function restoreSecondaryIndexes(db: Database): Promise<void> {
-  const recorded = await getMeta(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY);
+  const recorded = await readMetaStrict(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY);
   if (!recorded) return;
   const indexes = JSON.parse(recorded) as Array<{ name: string; sql: string }>;
   for (const index of indexes) {
@@ -712,7 +816,7 @@ export async function loadAlluviumExport(
       startedAt,
       updatedAt: startedAt,
     };
-    await saveStateStatement(db, state).run();
+    await insertInitialStateStatement(db, state).run();
   }
 
   if (options.deferIndexes) {
@@ -812,6 +916,19 @@ export async function loadAlluviumExport(
     }
 
     let received = 0;
+    let commitError: unknown;
+    const runCommit = async (
+      batch: ExportRecord[],
+      sourceTimeUs: number,
+      nextAfter: string | null,
+    ): Promise<void> => {
+      try {
+        await commitBatch(batch, sourceTimeUs, nextAfter);
+      } catch (error) {
+        commitError = error;
+        throw error;
+      }
+    };
     try {
       for await (const line of lines) {
         if (line.end === true) {
@@ -821,7 +938,7 @@ export async function loadAlluviumExport(
             );
           }
           if (records.length > 0) {
-            await commitBatch(records, batchTimeUs, after);
+            await runCommit(records, batchTimeUs, after);
             records = [];
             batchTimeUs = state.liveCursorUs;
           }
@@ -836,7 +953,7 @@ export async function loadAlluviumExport(
         batchTimeUs = Math.min(batchTimeUs, item.timeUs);
         after = item.uri;
         if (records.length >= batchSize) {
-          await commitBatch(records, batchTimeUs, after);
+          await runCommit(records, batchTimeUs, after);
           records = [];
           batchTimeUs = state.liveCursorUs;
           // Progress resets the retry budget: only consecutive failures count.
@@ -848,6 +965,11 @@ export async function loadAlluviumExport(
         "Alluvium export ended before its closing line",
       );
     } catch (error) {
+      if (commitError !== undefined && error === commitError) {
+        // Database/projection failures must surface immediately rather than
+        // retrying the HTTP export as if it were a network interruption.
+        throw error;
+      }
       signal?.throwIfAborted();
       if (
         error instanceof AlluviumExportInvalidError ||

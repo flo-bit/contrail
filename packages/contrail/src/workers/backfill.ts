@@ -154,10 +154,13 @@ async function runAlluviumBootstrap(
   opts: AlluviumBootstrapOptions,
 ): Promise<AlluviumBootstrapResult> {
   const ordered = contrail.config.orderedSource;
-  const source = {
-    id: opts.sourceId ?? ordered?.source ?? "jetstream",
-    epoch: opts.sourceEpoch ?? ordered?.epoch ?? "alluvium-export",
-  };
+  const source =
+    opts.sourceId !== undefined || opts.sourceEpoch !== undefined
+      ? {
+          id: opts.sourceId ?? ordered?.source ?? "jetstream",
+          epoch: opts.sourceEpoch ?? ordered?.epoch ?? "alluvium-export",
+        }
+      : undefined;
   const started = performance.now();
   const result = await loadAlluviumExport(db, contrail.config, {
     endpoint: opts.endpoint,

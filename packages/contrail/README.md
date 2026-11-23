@@ -284,7 +284,7 @@ await loadAlluviumExport(db, config, {
 });
 ```
 
-For Wrangler/D1 or CLI-style defaults (with optional SQLite index deferral and dependent-collection backfill discovery), use `bootstrapAlluvium()` or `bootstrapAlluviumDatabase()` from `@atmo-dev/contrail/workers`. Call `getAlluviumBootstrapState(db)` from `@atmo-dev/contrail/alluvium` to inspect resumable bootstrap status.
+For Wrangler/D1 or SQLite defaults (including optional SQLite index deferral), use `bootstrapAlluvium()` or `bootstrapAlluviumDatabase()` from `@atmo-dev/contrail/workers`. Call `getAlluviumBootstrapState(db)` from `@atmo-dev/contrail/alluvium` to inspect resumable bootstrap status.
 
 The export holds current state as of its snapshot, so nothing is replayed during bootstrap. The loader persists a timestamp cursor five minutes before the snapshot's last event, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names: it replays the hour or so since the snapshot, and the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
 
