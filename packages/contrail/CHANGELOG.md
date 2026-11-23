@@ -1,5 +1,21 @@
 # @atmo-dev/contrail
 
+## 0.32.0
+
+### Minor Changes
+
+- 7400419: Remove unused Phase-3 fresh-generation scaffolding (`generations`, `pds-snapshot`, `jetstream-source`, `jetstreamUrlOption`) and drop the unused `@atproto/lex` and `@atcute/jetstream` runtime dependencies.
+
+  Collapse the generic multi-provider bootstrap layer (`sources`, `bootstrap`, `verification`, `AlluviumChangeSource`, and global `bootstrap_state` / `bootstrap_snapshot_progress` tables) into a direct resumable Alluvium export loader (`loadAlluviumExport`, `getAlluviumBootstrapState`) in `@atmo-dev/contrail/alluvium`. The separate post-load `verifyBootstrapCandidate` / `getBootstrapVerification` integrity gate was removed alongside `verification`.
+
+  `contrail backfill --alluvium`, `contrail dev --alluvium`, `bootstrapAlluvium`, and `bootstrapAlluviumDatabase` now store resume state in `_contrail_meta`. Existing databases retain any legacy `bootstrap_state` / `bootstrap_snapshot_progress` tables harmlessly, and databases whose Alluvium bootstrap completed on an earlier version are still recognized as complete on restart (any interrupted pre-0.32 bootstrap must be discarded and started fresh).
+
+### Patch Changes
+
+- e3d24ff: Cache the Hono router and validation context across per-request Worker bindings, deduplicate concurrent cold-start initialization, and fix several core correctness and performance bugs across routing, hydration, feeds, notifications, persistent ingestion, and database adapters.
+
+  Note for PostgreSQL / PGlite callers: `INT8` / `BIGINT` columns (including aggregate results such as `COUNT(*)`) are now coerced to `number` based on PostgreSQL OID 20 rather than only a hardcoded column-name list.
+
 ## 0.31.0
 
 ### Minor Changes
