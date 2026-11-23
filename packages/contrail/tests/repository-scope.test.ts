@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   backfillPending, backfillUser, createApp, discoverDIDs, getDependentNsids,
-  getDiscoverableNsids, getLastCursor, ingestRecords, initSchema, PdsSnapshotSource,
+  getDiscoverableNsids, getLastCursor, ingestRecords, initSchema,
   processNotifyUris, queryRecords, resolveConfig, retryPendingBackfills,
   type CollectionConfig, type Database,
 } from "../src/index";
@@ -198,27 +198,6 @@ describe("repository-scoped collections", () => {
       expect(await work(db)).toEqual([{ did: BOT, collection: ITEMS, completed: 1 }]);
     }
     expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("prepares scoped-only snapshots without unrelated relay discovery and paginates the bot PDS", async () => {
-    const resolved = config();
-    const db = createTestDb();
-    await initSchema(db, resolved);
-    await seedIdentity(db);
-    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      expect(url.hostname).toBe("pds.allowed.test");
-      expect(url.searchParams.get("repo")).toBe(BOT);
-      expect(url.searchParams.get("collection")).toBe(ITEMS);
-      return Response.json({ records: [], ...(url.searchParams.has("cursor") ? {} : { cursor: "next" }) });
-    });
-    const source = new PdsSnapshotSource(db, resolved, { maxRetries: 0 });
-    const snapshot = await source.prepare({ collections: [ITEMS] });
-    expect(fetch).not.toHaveBeenCalled();
-    const batches = [];
-    for await (const batch of source.read({ snapshot })) batches.push(batch);
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(batches.at(-1)?.done).toBe(true);
   });
 
   it("refuses changing/removing durable scope, but permits reordering and adding new empty collections", async () => {

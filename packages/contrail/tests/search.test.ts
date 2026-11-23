@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import type { Database } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { createTestDb, makeEvent } from "./helpers";
-import { initSchema, verifyBootstrapCandidate } from "../src/index";
+import { initSchema } from "../src/index";
 import { ingestRecords, queryRecords } from "../src/index";
 import { rebuildDerivedProjections } from "../src/core/db/records";
 
@@ -468,14 +468,16 @@ describe.skipIf(!hasFts)("FTS rowid schema migration", () => {
       collection: "community.lexicon.calendar.event",
       search: "MigrationNeedle",
     })).records).toHaveLength(1);
-    const verification = await verifyBootstrapCandidate(legacy, SEARCH_CONFIG);
-    const ftsChecks = verification.checks.filter(
-      ({ name }) =>
-        name.includes("fts-") &&
-        name.endsWith("community.lexicon.calendar.event"),
-    );
-    expect(ftsChecks).toHaveLength(4);
-    expect(ftsChecks.every(({ ok }) => ok)).toBe(true);
+    expect(
+      await legacy
+        .prepare(
+          `SELECT COUNT(*) AS joined
+           FROM ${rowsTable} mapped
+           JOIN ${ftsTable} fts ON fts.rowid = mapped.id
+           JOIN records_community_lexicon_calendar_event rec ON rec.uri = mapped.uri`,
+        )
+        .first<{ joined: number }>(),
+    ).toEqual({ joined: 1 });
 
     const plan = await legacy
       .prepare(

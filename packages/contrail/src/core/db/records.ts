@@ -13,6 +13,7 @@ import type {
   RecordSource,
   OrderedSourceConfig,
   ProjectionPhase,
+  SourcePosition,
 } from "../types";
 import {
   getNestedValue,
@@ -43,7 +44,6 @@ import {
   isPostgresDialect,
   sqliteFtsContentExpression,
 } from "../dialect";
-import type { SourcePosition } from "../sources";
 import { appendChangeLogStatements } from "../change-log";
 import { actionProjectionStatements, activeHiddenSql, visibleRecordSql, labelBackfillEnqueueStatements } from "../moderation";
 

@@ -49,7 +49,42 @@ function getResolved(config: ContrailConfig): ResolvedMaps {
   );
 }
 
-function buildBaseSchema(dialect: SqlDialect): string {
+function buildBaseSchema(
+  dialect: SqlDialect,
+  includeLegacyBootstrapTables = false,
+): string {
+  // Retained strictly for computing prior schema fingerprints so existing
+  // databases upgrade without triggering a full FTS/version/count rebuild.
+  const legacyBootstrapTables = includeLegacyBootstrapTables
+    ? `
+CREATE TABLE IF NOT EXISTS bootstrap_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  phase TEXT NOT NULL CHECK (phase IN ('snapshot', 'catchup', 'complete')),
+  snapshot_json TEXT NOT NULL,
+  capture_source TEXT NOT NULL,
+  capture_epoch TEXT NOT NULL,
+  capture_cursor TEXT NOT NULL,
+  snapshot_complete INTEGER NOT NULL DEFAULT 0,
+  catchup_source TEXT,
+  catchup_epoch TEXT,
+  catchup_cursor TEXT,
+  change_source TEXT,
+  change_epoch TEXT,
+  change_cursor TEXT,
+  started_at ${dialect.bigintType} NOT NULL,
+  updated_at ${dialect.bigintType} NOT NULL,
+  finished_at ${dialect.bigintType}
+);
+CREATE TABLE IF NOT EXISTS bootstrap_snapshot_progress (
+  bootstrap_id INTEGER NOT NULL,
+  partition TEXT NOT NULL,
+  cursor TEXT,
+  completed INTEGER NOT NULL DEFAULT 0,
+  updated_at ${dialect.bigintType} NOT NULL,
+  PRIMARY KEY (bootstrap_id, partition),
+  FOREIGN KEY (bootstrap_id) REFERENCES bootstrap_state(id)
+);`
+    : "";
   return `
 CREATE TABLE IF NOT EXISTS _contrail_meta (
   key TEXT PRIMARY KEY,
@@ -96,34 +131,7 @@ CREATE TABLE IF NOT EXISTS backfill_state (
   started_at ${dialect.bigintType},
   heartbeat_at ${dialect.bigintType},
   finished_at ${dialect.bigintType}
-);
-CREATE TABLE IF NOT EXISTS bootstrap_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  phase TEXT NOT NULL CHECK (phase IN ('snapshot', 'catchup', 'complete')),
-  snapshot_json TEXT NOT NULL,
-  capture_source TEXT NOT NULL,
-  capture_epoch TEXT NOT NULL,
-  capture_cursor TEXT NOT NULL,
-  snapshot_complete INTEGER NOT NULL DEFAULT 0,
-  catchup_source TEXT,
-  catchup_epoch TEXT,
-  catchup_cursor TEXT,
-  change_source TEXT,
-  change_epoch TEXT,
-  change_cursor TEXT,
-  started_at ${dialect.bigintType} NOT NULL,
-  updated_at ${dialect.bigintType} NOT NULL,
-  finished_at ${dialect.bigintType}
-);
-CREATE TABLE IF NOT EXISTS bootstrap_snapshot_progress (
-  bootstrap_id INTEGER NOT NULL,
-  partition TEXT NOT NULL,
-  cursor TEXT,
-  completed INTEGER NOT NULL DEFAULT 0,
-  updated_at ${dialect.bigintType} NOT NULL,
-  PRIMARY KEY (bootstrap_id, partition),
-  FOREIGN KEY (bootstrap_id) REFERENCES bootstrap_state(id)
-);
+);${legacyBootstrapTables}
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
@@ -876,11 +884,26 @@ export async function initSchema(
     for (const apply of options.extraSchemas ?? []) await apply(db);
     return;
   }
+  const priorBase = buildBaseSchema(dialect, true)
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  const priorBaseFingerprint = schemaFingerprint(config, dialect, {
+    base: priorBase,
+    collections,
+    indexes,
+    feeds,
+    fts,
+    changes,
+  });
   if (
     storedFingerprint === baseFingerprint ||
-    storedFingerprint === cursorObservationsFingerprint
+    storedFingerprint === cursorObservationsFingerprint ||
+    storedFingerprint === priorBaseFingerprint ||
+    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1` ||
+    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1:backfills-pending-v1`
   ) {
-    // These independent additive objects must not force an otherwise-current
+    // These independent additive/removal changes must not force an otherwise-current
     // deployment through the FTS rebuild path. Upgrade the prior fingerprint
     // directly after their idempotent DDL succeeds.
     await runIdempotentDdl(db, cursorObservationsDdl);
@@ -893,7 +916,7 @@ export async function initSchema(
   }
 
   const legacyFingerprint = schemaFingerprint(config, dialect, {
-    base, collections,
+    base: priorBase, collections,
     indexes: buildVersionedDynamicIndexes(config, dialect, true),
     feeds: buildFeedTables(config, dialect, true),
     fts, changes,

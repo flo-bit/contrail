@@ -11,19 +11,14 @@
  */
 import { Contrail } from "../contrail.js";
 import {
-  getDiscoverableNsids,
-  recordsTableName,
   type ContrailConfig,
   type Database,
+  type SourcePosition,
 } from "../core/types.js";
 import type { BackfillAllOptions } from "../core/backfill.js";
 import type { BackfillStatus } from "../core/status.js";
-import { DatabaseBootstrapTarget } from "../core/bootstrap.js";
-import { bootstrapFreshProjection, type SourcePosition } from "../core/sources.js";
-import { getLastCursor } from "../core/db/records.js";
 import {
-  createAlluviumBootstrapSources,
-  createAlluviumLiveCursor,
+  loadAlluviumExport,
   type AlluviumTransportOptions,
 } from "../adapters/alluvium.js";
 
@@ -153,30 +148,6 @@ export interface AlluviumBootstrapResult {
   alreadyComplete: boolean;
 }
 
-async function assertFreshBootstrapDatabase(
-  db: Database,
-  config: ContrailConfig,
-): Promise<void> {
-  const cursor = await getLastCursor(db);
-  const versionRow = await db
-    .prepare("SELECT COUNT(*) AS count FROM record_versions")
-    .first<{ count: number | string }>();
-  let visibleRecords = 0;
-  for (const shortName of Object.keys(config.collections)) {
-    const row = await db
-      .prepare(`SELECT COUNT(*) AS count FROM ${recordsTableName(shortName)}`)
-      .first<{ count: number | string }>();
-    visibleRecords += Number(row?.count ?? 0);
-  }
-  const versions = Number(versionRow?.count ?? 0);
-  if (cursor !== null || versions > 0 || visibleRecords > 0) {
-    throw new Error(
-      "Alluvium bootstrap requires a fresh unpublished database. " +
-        "Create or select a new database instead of resetting an active generation.",
-    );
-  }
-}
-
 async function runAlluviumBootstrap(
   contrail: Contrail,
   db: Database,
@@ -187,20 +158,8 @@ async function runAlluviumBootstrap(
     id: opts.sourceId ?? ordered?.source ?? "jetstream",
     epoch: opts.sourceEpoch ?? ordered?.epoch ?? "alluvium-export",
   };
-  if (ordered && (ordered.source !== source.id || ordered.epoch !== source.epoch)) {
-    throw new Error(
-      "Alluvium source ID/epoch must match the configured orderedSource",
-    );
-  }
-  const target = new DatabaseBootstrapTarget(db, contrail.config, {
-    deferDerivedProjections: true,
-    deferSecondaryIndexes: opts.deferIndexes === true,
-    liveCursor: createAlluviumLiveCursor(source),
-  });
-  const prior = await target.load();
-  if (!prior) await assertFreshBootstrapDatabase(db, contrail.config);
-
-  const sources = createAlluviumBootstrapSources(contrail.config, {
+  const started = performance.now();
+  const result = await loadAlluviumExport(db, contrail.config, {
     endpoint: opts.endpoint,
     token: opts.token,
     source,
@@ -209,29 +168,14 @@ async function runAlluviumBootstrap(
     allowInsecureHttp: opts.allowInsecureHttp,
     replayWindowUs: opts.replayWindowUs,
     transport: opts.transport,
+    deferIndexes: opts.deferIndexes === true,
   });
-  const started = performance.now();
-  const result = await bootstrapFreshProjection({
-    // Profiles, follows, and other dependent collections remain separately
-    // accounted PDS enrichment rather than being misrepresented as Alluvium
-    // coverage.
-    collections: getDiscoverableNsids(contrail.config),
-    ...sources,
-    target,
-  });
-  const liveCursor = await getLastCursor(db);
-  // A bootstrap completed by an earlier run has handed off already: live
-  // ingestion owns the cursor and has moved it on, to a sequence number.
-  const handedOff = prior?.phase === "complete";
-  if (liveCursor === null || (!handedOff && liveCursor !== Number(result.through.cursor))) {
-    throw new Error("Alluvium bootstrap did not persist its live cursor");
-  }
   return {
     elapsedMs: Math.round(performance.now() - started),
-    handoff: result.through,
-    liveCursor,
-    resumed: prior !== null,
-    alreadyComplete: handedOff,
+    handoff: result.handoff,
+    liveCursor: result.liveCursor,
+    resumed: result.resumed,
+    alreadyComplete: result.alreadyComplete,
   };
 }
 

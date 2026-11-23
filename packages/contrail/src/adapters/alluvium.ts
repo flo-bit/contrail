@@ -1,18 +1,25 @@
 import { isDid, isNsid, isRecordKey } from "@atcute/lexicons/syntax";
-import type {
-  ChangeSource,
-  CollectionCoverage,
-  MutationBatch,
-  PreparedSnapshot,
-  SnapshotBatch,
-  SnapshotProgress,
-  SnapshotRecord,
-  SnapshotSource,
-  SourcePosition,
-  SourceSemantics,
-} from "../core/sources";
-import { SourceHistoryExpiredError } from "../core/jetstream-source";
-import type { ContrailConfig } from "../core/types";
+import { getDialect, isPostgresDialect } from "../core/dialect";
+import { getMeta, setMeta } from "../core/db/meta";
+import {
+  getLastCursor,
+  loadKnownActorDids,
+  rebuildDerivedProjections,
+  saveCursorStatement,
+  saveServingSourcePositionStatement,
+} from "../core/db/records";
+import { createIngestEvent, ingestRecords, recordTimeUs } from "../core/ingest";
+import {
+  getDependentNsids,
+  getDiscoverableNsids,
+  recordsTableName,
+  resolveConfig,
+  type ContrailConfig,
+  type Database,
+  type ResolvedContrailConfig,
+  type SourcePosition,
+  type Statement,
+} from "../core/types";
 
 /** Hosted Alluvium service: every current record outside the Bluesky app,
  * exported per collection. */
@@ -35,15 +42,29 @@ export const DEFAULT_ALLUVIUM_MAX_AGE_US = 6 * 60 * 60 * 1_000_000;
  * ones) cannot deliver the updates and deletes since. */
 export const DEFAULT_ALLUVIUM_REPLAY_WINDOW_US = 24 * 60 * 60 * 1_000_000;
 
+/** `_contrail_meta` key storing resumable Alluvium bootstrap state. */
+export const ALLUVIUM_BOOTSTRAP_META_KEY = "alluvium_bootstrap";
+
+/** Secondary indexes dropped for the duration of a bootstrap load, as JSON
+ * `[{ name, sql }]`. Present only while they are missing. */
+export const BOOTSTRAP_DEFERRED_INDEXES_META_KEY = "bootstrap_deferred_indexes";
+
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_LINE_CHARACTERS = 2 * 1024 * 1024;
 const MAX_COLLECTIONS = 100;
-const EXPORT_PARTITION = "export";
-const PROVIDER = "alluvium";
 /** Jetstream v2 reads cursors at or above this as unix-microsecond times. */
 const TIMESTAMP_CURSOR_MIN = 1_000_000_000_000_000;
+
+/** Thrown when a paused bootstrap's live replay cursor is too old for the
+ * live stream to catch up without a gap. */
+export class SourceHistoryExpiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SourceHistoryExpiredError";
+  }
+}
 
 export interface AlluviumSourceIdentity {
   /** Ordered source the projection is served from after bootstrap; matches
@@ -63,10 +84,34 @@ export interface AlluviumTransportOptions {
   batchSize?: number;
 }
 
-export interface AlluviumBootstrapSourceOptions {
+export interface AlluviumBootstrapState {
+  v: 1;
+  phase: "loading" | "complete";
+  endpoint: string;
+  source: AlluviumSourceIdentity;
+  collections: string[];
+  /** Service sequence number when the export was pinned; informational. */
+  cursor: number;
+  /** When the pinned snapshot's last event was witnessed. Every export read
+   * for this bootstrap must reach at least this far. */
+  timeUs: number;
+  /** Timestamp cursor live ingestion resumes from. */
+  liveCursorUs: number;
+  /** Last projected record URI for resume (`?after=<uri>`), or null. */
+  after: string | null;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+}
+
+export interface LoadAlluviumExportOptions {
   /** Alluvium HTTP origin. Default: {@link DEFAULT_ALLUVIUM_ENDPOINT}. */
   endpoint?: string | URL;
-  source: AlluviumSourceIdentity;
+  /** Ordered source handed off to live ingestion. Default: `config.orderedSource`
+   * or `{ id: "jetstream", epoch: "alluvium-export" }`. */
+  source?: AlluviumSourceIdentity;
+  /** Collections to load. Default: `getDiscoverableNsids(config)`. */
+  collections?: string[];
   /** Bearer token, when the service requires one. */
   token?: string;
   /** Default: {@link DEFAULT_ALLUVIUM_REWIND_US}. */
@@ -76,54 +121,64 @@ export interface AlluviumBootstrapSourceOptions {
   /** Default: {@link DEFAULT_ALLUVIUM_REPLAY_WINDOW_US}. */
   replayWindowUs?: number;
   transport?: AlluviumTransportOptions;
+  /** Drop secondary indexes on record tables while loading and rebuild them
+   * once before completion (SQLite only; leave off for D1). */
+  deferIndexes?: boolean;
   fetch?: typeof fetch;
   /** Permit HTTP to a non-loopback host. Loopback endpoints never need it.
    * Default: false. */
   allowInsecureHttp?: boolean;
   /** Clock override for tests. */
   now?: () => number;
+  signal?: AbortSignal;
 }
 
-export interface AlluviumBootstrapSources {
-  snapshotSource: AlluviumSnapshotSource;
-  changeSource: AlluviumChangeSource;
+export interface LoadAlluviumExportResult {
+  /** Position live ingestion resumes from: a timestamp cursor. */
+  handoff: SourcePosition;
+  /** The cursor live ingestion reads next. After a completed bootstrap has
+   * handed off, this is wherever live ingestion has got to. */
+  liveCursor: number;
+  resumed: boolean;
+  /** An earlier run had already completed this bootstrap; nothing was loaded. */
+  alreadyComplete: boolean;
+  /** Number of records projected during this invocation. */
+  recordsLoaded: number;
 }
 
-/** What `GET /alluvium/head` reports about the snapshot being served. */
 interface AlluviumHead {
-  /** Sequence number, on the service's own Jetstream, of the last event the
-   * snapshot includes. */
   cursor: number;
-  /** When that event was witnessed, in unix microseconds. */
   timeUs: number;
-  /** Collections the service does not carry: exact NSIDs or `prefix.*`. */
   excludes: string[];
 }
 
-interface PinnedExport {
-  v: 4;
-  endpoint: string;
-  collections: string[];
-  /** Service sequence number when the export was pinned; informational. */
-  cursor: number;
-  /** When the pinned snapshot's last event was witnessed. Every export read
-   * for this bootstrap must reach at least this far. */
+interface ExportRecord {
+  uri: string;
+  did: string;
+  collection: string;
+  rkey: string;
+  cid: string;
+  value: Record<string, unknown>;
   timeUs: number;
-  /** Timestamp cursor live ingestion resumes from. */
-  liveCursorUs: number;
 }
 
-/** The export holds current state only; replay semantics describe the live
- * stream that takes over from it. Account lifecycle and repository
- * replacement are already folded into the export but are not replayed. */
-const semantics: SourceSemantics = {
-  ordinaryRecords: true,
-  ordinaryDeletes: true,
-  accountLifecycle: false,
-  repositoryReplacement: false,
-  verifiedCommits: false,
-  explicitHead: true,
-};
+/** Thrown when an export stream ends before its closing line. The records
+ * received so far are valid; the export resumes after the last one. */
+class AlluviumExportInterruptedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AlluviumExportInterruptedError";
+  }
+}
+
+/** Thrown when an export contradicts itself. Reading the rest again would
+ * only hide it. */
+class AlluviumExportInvalidError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlluviumExportInvalidError";
+  }
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -229,135 +284,346 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Thrown when an export stream ends before its closing line. The records
- * received so far are valid; the export resumes after the last one. */
-class AlluviumExportInterruptedError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "AlluviumExportInterruptedError";
+function saveStateStatement(db: Database, state: AlluviumBootstrapState): Statement {
+  return db
+    .prepare(
+      `INSERT INTO _contrail_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
+}
+
+/** Read durable Alluvium bootstrap state from `_contrail_meta`, if any. */
+export async function getAlluviumBootstrapState(
+  db: Database,
+): Promise<AlluviumBootstrapState | null> {
+  const raw = await getMeta(db, ALLUVIUM_BOOTSTRAP_META_KEY);
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Durable Alluvium bootstrap state is not valid JSON");
+  }
+  if (
+    !object(parsed) ||
+    parsed.v !== 1 ||
+    (parsed.phase !== "loading" && parsed.phase !== "complete") ||
+    typeof parsed.endpoint !== "string" ||
+    !object(parsed.source) ||
+    typeof parsed.source.id !== "string" ||
+    typeof parsed.source.epoch !== "string" ||
+    !Array.isArray(parsed.collections) ||
+    !parsed.collections.every((item) => typeof item === "string") ||
+    (parsed.after !== null && typeof parsed.after !== "string")
+  ) {
+    throw new Error("Durable Alluvium bootstrap state is malformed");
+  }
+  return {
+    v: 1,
+    phase: parsed.phase,
+    endpoint: parsed.endpoint,
+    source: { id: parsed.source.id, epoch: parsed.source.epoch },
+    collections: parsed.collections as string[],
+    cursor: safeInteger(parsed.cursor, "Alluvium state cursor"),
+    timeUs: safeInteger(parsed.timeUs, "Alluvium state timeUs"),
+    liveCursorUs: safeInteger(parsed.liveCursorUs, "Alluvium state liveCursorUs"),
+    after: parsed.after,
+    startedAt: safeInteger(parsed.startedAt, "Alluvium state startedAt"),
+    updatedAt: safeInteger(parsed.updatedAt, "Alluvium state updatedAt"),
+    ...(parsed.finishedAt !== undefined
+      ? { finishedAt: safeInteger(parsed.finishedAt, "Alluvium state finishedAt") }
+      : {}),
+  };
+}
+
+async function assertFreshBootstrapDatabase(
+  db: Database,
+  config: ContrailConfig,
+): Promise<void> {
+  const cursor = await getLastCursor(db);
+  const versionRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM record_versions")
+    .first<{ count: number | string }>();
+  let visibleRecords = 0;
+  for (const shortName of Object.keys(config.collections)) {
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS count FROM ${recordsTableName(shortName)}`)
+      .first<{ count: number | string }>();
+    visibleRecords += Number(row?.count ?? 0);
+  }
+  const versions = Number(versionRow?.count ?? 0);
+  if (cursor !== null || versions > 0 || visibleRecords > 0) {
+    throw new Error(
+      "Alluvium bootstrap requires a fresh unpublished database. " +
+        "Create or select a new database instead of resetting an active generation.",
+    );
   }
 }
 
-/** Thrown when an export contradicts itself. Reading the rest again would
- * only hide it. */
-class AlluviumExportInvalidError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AlluviumExportInvalidError";
+/** Record, then drop, every plain secondary index on the tables a snapshot
+ * writes. Unique indexes stay so upserts resolve conflicts on them. */
+async function deferSecondaryIndexes(
+  db: Database,
+  config: ContrailConfig,
+): Promise<void> {
+  if (isPostgresDialect(getDialect(db))) return;
+  if (await getMeta(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY)) return;
+  const tables = [
+    ...Object.keys(config.collections).map(recordsTableName),
+    "record_versions",
+  ];
+  const rows = await db
+    .prepare(
+      `SELECT name, sql FROM sqlite_master
+       WHERE type = 'index' AND sql IS NOT NULL
+         AND tbl_name IN (${tables.map(() => "?").join(", ")})`,
+    )
+    .bind(...tables)
+    .all<{ name: string; sql: string }>();
+  const indexes = (rows.results ?? []).filter(
+    (row) =>
+      /^[A-Za-z0-9_]+$/.test(row.name) && !/^\s*CREATE\s+UNIQUE\b/i.test(row.sql),
+  );
+  if (indexes.length === 0) return;
+  await setMeta(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY, JSON.stringify(indexes));
+  for (const index of indexes) {
+    await db.prepare(`DROP INDEX IF EXISTS ${index.name}`).run();
   }
 }
 
-class AlluviumAdapterBase {
-  readonly id = PROVIDER;
-  protected readonly endpoint: URL;
-  protected readonly source: AlluviumSourceIdentity;
-  protected readonly fetchImpl: typeof fetch;
-  protected readonly token: string | undefined;
-  protected readonly rewindUs: number;
-  protected readonly maxAgeUs: number;
-  protected readonly replayWindowUs: number;
-  protected readonly maxAttempts: number;
-  protected readonly requestTimeoutMs: number;
-  protected readonly maxLineCharacters: number;
-  protected readonly batchSize: number;
-  protected readonly now: () => number;
-
-  constructor(options: AlluviumBootstrapSourceOptions) {
-    this.endpoint = normalizeEndpoint(options.endpoint, options.allowInsecureHttp === true);
-    this.source = normalizeSource(options.source);
-    this.fetchImpl = options.fetch ?? fetch;
-    this.token = options.token;
-    this.rewindUs = nonNegative(options.rewindUs, DEFAULT_ALLUVIUM_REWIND_US, "Alluvium rewindUs");
-    this.maxAgeUs = positiveInteger(options.maxAgeUs, DEFAULT_ALLUVIUM_MAX_AGE_US, "Alluvium maxAgeUs");
-    this.replayWindowUs = positiveInteger(
-      options.replayWindowUs,
-      DEFAULT_ALLUVIUM_REPLAY_WINDOW_US,
-      "Alluvium replayWindowUs",
-    );
-    const transport = options.transport ?? {};
-    this.maxAttempts = positiveInteger(transport.maxAttempts, DEFAULT_MAX_ATTEMPTS, "Alluvium maxAttempts");
-    this.requestTimeoutMs = positiveInteger(
-      transport.requestTimeoutMs,
-      DEFAULT_REQUEST_TIMEOUT_MS,
-      "Alluvium requestTimeoutMs",
-    );
-    this.maxLineCharacters = positiveInteger(
-      transport.maxLineCharacters,
-      DEFAULT_MAX_LINE_CHARACTERS,
-      "Alluvium maxLineCharacters",
-    );
-    this.batchSize = positiveInteger(transport.batchSize, DEFAULT_BATCH_SIZE, "Alluvium batchSize");
-    this.now = options.now ?? Date.now;
+/** Rebuild the indexes {@link deferSecondaryIndexes} dropped. */
+async function restoreSecondaryIndexes(db: Database): Promise<void> {
+  const recorded = await getMeta(db, BOOTSTRAP_DEFERRED_INDEXES_META_KEY);
+  if (!recorded) return;
+  const indexes = JSON.parse(recorded) as Array<{ name: string; sql: string }>;
+  for (const index of indexes) {
+    const sql = /\bIF\s+NOT\s+EXISTS\b/i.test(index.sql)
+      ? index.sql
+      : index.sql.replace(/^\s*CREATE\s+INDEX\s+/i, "CREATE INDEX IF NOT EXISTS ");
+    await db.prepare(sql).run();
   }
+  await db
+    .prepare("DELETE FROM _contrail_meta WHERE key = ?")
+    .bind(BOOTSTRAP_DEFERRED_INDEXES_META_KEY)
+    .run();
+}
 
-  protected position(cursorUs: number): SourcePosition {
-    return { source: this.source.id, epoch: this.source.epoch, cursor: String(cursorUs) };
+function parseExportRecord(
+  line: Record<string, unknown>,
+  collections: ReadonlySet<string>,
+): ExportRecord {
+  const { uri, cid, record } = line;
+  if (typeof uri !== "string" || !uri.startsWith("at://")) {
+    throw new TypeError("Alluvium export line is not a record");
   }
+  const [did, collection, rkey, ...extra] = uri.slice("at://".length).split("/");
+  if (!did || !isDid(did)) throw new TypeError("Alluvium record has an invalid DID");
+  if (!collection || !collections.has(collection)) {
+    throw new TypeError(
+      `Alluvium returned a record of an unrequested collection: ${String(collection)}`,
+    );
+  }
+  if (!rkey || extra.length > 0 || !isRecordKey(rkey)) {
+    throw new TypeError("Alluvium record has an invalid record key");
+  }
+  if (typeof cid !== "string" || !cid) throw new TypeError("Alluvium record has no CID");
+  if (!object(record)) throw new TypeError("Alluvium record value must be an object");
+  const timeUs = safeInteger(line.time_us, "Alluvium record time_us");
+  return { uri, did, collection, rkey, cid, value: record, timeUs };
+}
 
-  protected assertOwnPosition(position: SourcePosition, label: string): void {
-    if (position.source !== this.source.id || position.epoch !== this.source.epoch) {
-      throw new Error(`${label} does not belong to ${this.source.id}/${this.source.epoch}`);
+function parseJsonLine(text: string, maxLineCharacters: number): Record<string, unknown> {
+  if (text.length > maxLineCharacters) {
+    throw new TypeError("Alluvium export line exceeds the configured limit");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new TypeError("Alluvium export line is not JSON", { cause: error });
+  }
+  if (!object(value)) throw new TypeError("Alluvium export line must be an object");
+  return value;
+}
+
+async function* readJsonLines(
+  response: Response,
+  maxLineCharacters: number,
+  signal?: AbortSignal,
+): AsyncGenerator<Record<string, unknown>> {
+  if (!response.body) {
+    throw new AlluviumExportInterruptedError("Alluvium export has no body");
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      let chunk: ReadableStreamReadResult<string>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw new AlluviumExportInterruptedError("Alluvium export connection failed", {
+          cause: error,
+        });
+      }
+      if (chunk.done) break;
+      buffered += chunk.value;
+      let newline = buffered.indexOf("\n");
+      while (newline >= 0) {
+        const text = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        if (text) yield parseJsonLine(text, maxLineCharacters);
+        newline = buffered.indexOf("\n");
+      }
+      if (buffered.length > maxLineCharacters) {
+        throw new TypeError("Alluvium export line exceeds the configured limit");
+      }
     }
+    // A final line without a newline means the stream was cut mid-line.
+    if (buffered) {
+      throw new AlluviumExportInterruptedError("Alluvium export ended mid-line");
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
   }
+}
 
-  /** Refuse to continue a bootstrap whose live cursor may have left the live
-   * service's retention. Records already loaded would then miss the updates
-   * and deletes since, so the only sound continuation is a fresh load. */
-  protected assertReplayable(pinned: PinnedExport): void {
-    const ageUs = this.now() * 1_000 - pinned.timeUs;
-    if (ageUs > this.replayWindowUs) {
+/**
+ * Load a fresh Contrail database from an Alluvium export and seed the live
+ * Jetstream timestamp cursor just before the pinned export's head.
+ *
+ * Resumable across crashes or dropped HTTP streams: each projected batch
+ * commits its records and `?after=<uri>` resume token in the same transaction.
+ */
+export async function loadAlluviumExport(
+  db: Database,
+  configInput: ContrailConfig,
+  options: LoadAlluviumExportOptions = {},
+): Promise<LoadAlluviumExportResult> {
+  const config = (configInput as ResolvedContrailConfig)._resolved
+    ? (configInput as ResolvedContrailConfig)
+    : resolveConfig(configInput);
+  const endpoint = normalizeEndpoint(
+    options.endpoint,
+    options.allowInsecureHttp === true,
+  );
+  const ordered = config.orderedSource;
+  const source = normalizeSource(
+    options.source ?? {
+      id: ordered?.source ?? "jetstream",
+      epoch: ordered?.epoch ?? "alluvium-export",
+    },
+  );
+  if (ordered && (ordered.source !== source.id || ordered.epoch !== source.epoch)) {
+    throw new Error(
+      "Alluvium source ID/epoch must match the configured orderedSource",
+    );
+  }
+  const collections = requestedCollections(
+    options.collections ?? getDiscoverableNsids(config),
+  );
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const token = options.token;
+  const rewindUs = nonNegative(
+    options.rewindUs,
+    DEFAULT_ALLUVIUM_REWIND_US,
+    "Alluvium rewindUs",
+  );
+  const maxAgeUs = positiveInteger(
+    options.maxAgeUs,
+    DEFAULT_ALLUVIUM_MAX_AGE_US,
+    "Alluvium maxAgeUs",
+  );
+  const replayWindowUs = positiveInteger(
+    options.replayWindowUs,
+    DEFAULT_ALLUVIUM_REPLAY_WINDOW_US,
+    "Alluvium replayWindowUs",
+  );
+  const transport = options.transport ?? {};
+  const maxAttempts = positiveInteger(
+    transport.maxAttempts,
+    DEFAULT_MAX_ATTEMPTS,
+    "Alluvium maxAttempts",
+  );
+  const requestTimeoutMs = positiveInteger(
+    transport.requestTimeoutMs,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    "Alluvium requestTimeoutMs",
+  );
+  const maxLineCharacters = positiveInteger(
+    transport.maxLineCharacters,
+    DEFAULT_MAX_LINE_CHARACTERS,
+    "Alluvium maxLineCharacters",
+  );
+  const batchSize = positiveInteger(
+    transport.batchSize,
+    DEFAULT_BATCH_SIZE,
+    "Alluvium batchSize",
+  );
+  const now = options.now ?? Date.now;
+  const signal = options.signal;
+
+  const assertReplayable = (state: AlluviumBootstrapState): void => {
+    const ageUs = now() * 1_000 - state.timeUs;
+    if (ageUs > replayWindowUs) {
       throw new SourceHistoryExpiredError(
         `This Alluvium bootstrap was pinned ${Math.round(ageUs / 3_600_000_000)} hours ago; ` +
           "live ingestion can no longer replay from it. Start again with a fresh database.",
       );
     }
-  }
+  };
 
-  /** Open a response, failing on anything but 200. The timeout covers the
-   * wait for headers only; an export body streams for as long as it needs. */
-  protected async open(url: URL, signal?: AbortSignal): Promise<Response> {
-    // The default Accept-Encoding stays: the service answers it with gzip.
-    // It can also send its zstd frames as stored, but Node's fetch (24.15)
-    // decodes only the first frame of such a stream.
-    const headers = new Headers({ accept: "application/json, application/x-ndjson" });
-    if (this.token) headers.set("authorization", `Bearer ${this.token}`);
+  const open = async (url: URL): Promise<Response> => {
+    // Keep the default Accept-Encoding (gzip); Node's fetch decodes only the
+    // first frame of multi-frame zstd streams.
+    const headers = new Headers({
+      accept: "application/json, application/x-ndjson",
+    });
+    if (token) headers.set("authorization", `Bearer ${token}`);
     const timeout = new AbortController();
     const timer = setTimeout(
       () => timeout.abort(new Error("Alluvium request timed out")),
-      this.requestTimeoutMs,
+      requestTimeoutMs,
     );
     const onAbort = () => timeout.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
     let response: Response;
     try {
-      response = await this.fetchImpl(url, { headers, signal: timeout.signal });
+      response = await fetchImpl(url, { headers, signal: timeout.signal });
     } catch (error) {
       signal?.removeEventListener("abort", onAbort);
       throw error;
     } finally {
       clearTimeout(timer);
     }
-    // The caller's signal keeps governing the body; the header timer is done.
     if (response.status !== 200) {
       signal?.removeEventListener("abort", onAbort);
       await response.body?.cancel().catch(() => {});
-      const error = new Error(`Alluvium ${url.pathname} returned HTTP ${response.status}`);
-      (error as Error & { retryable?: boolean }).retryable = retryableStatus(response.status);
+      const error = new Error(
+        `Alluvium ${url.pathname} returned HTTP ${response.status}`,
+      );
+      (error as Error & { retryable?: boolean }).retryable = retryableStatus(
+        response.status,
+      );
       (error as Error & { status?: number }).status = response.status;
       throw error;
     }
     return response;
-  }
+  };
 
-  /** Read the service's current head, retrying transient failures. */
-  protected async head(signal?: AbortSignal): Promise<AlluviumHead> {
-    const url = new URL("alluvium/head", this.endpoint);
+  const fetchHead = async (): Promise<AlluviumHead> => {
+    const url = new URL("alluvium/head", endpoint);
     let lastError: unknown;
-    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
-      if (attempt > 0) await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (attempt > 0) {
+        await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
+      }
       try {
-        const body: unknown = await (await this.open(url, signal)).json();
+        const body: unknown = await (await open(url)).json();
         if (!object(body)) throw new TypeError("Alluvium head must be an object");
         const excludes = Array.isArray(body.excludes) ? body.excludes : [];
         return {
@@ -373,353 +639,265 @@ class AlluviumAdapterBase {
     }
     const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
     throw new Error(`Alluvium head is unavailable${reason}`, { cause: lastError });
-  }
+  };
 
-  /** The timestamp cursor that replays everything a head could have missed. */
-  protected liveCursorUs(head: AlluviumHead): number {
-    const cursorUs = head.timeUs - this.rewindUs;
-    if (cursorUs < TIMESTAMP_CURSOR_MIN) {
-      throw new Error("Alluvium has not ingested any events yet");
+  const prior = await getAlluviumBootstrapState(db);
+  if (prior?.phase === "complete") {
+    const handoff: SourcePosition = {
+      source: prior.source.id,
+      epoch: prior.source.epoch,
+      cursor: String(prior.liveCursorUs),
+    };
+    const liveCursor = await getLastCursor(db);
+    if (liveCursor === null) {
+      throw new Error("Alluvium bootstrap did not persist its live cursor");
     }
-    return cursorUs;
+    return {
+      handoff,
+      liveCursor,
+      resumed: true,
+      alreadyComplete: true,
+      recordsLoaded: 0,
+    };
   }
-}
 
-function parsePinned(snapshot: PreparedSnapshot): PinnedExport {
-  const data = snapshot.providerData;
-  if (
-    snapshot.provider !== PROVIDER ||
-    !object(data) ||
-    data.v !== 4 ||
-    typeof data.endpoint !== "string" ||
-    !Array.isArray(data.collections) ||
-    !data.collections.every((item) => typeof item === "string")
-  ) {
-    throw new Error(`Snapshot ${snapshot.id} was not prepared by this Alluvium adapter`);
-  }
-  return {
-    v: 4,
-    endpoint: data.endpoint,
-    collections: data.collections as string[],
-    cursor: safeInteger(data.cursor, "Pinned Alluvium cursor"),
-    timeUs: safeInteger(data.timeUs, "Pinned Alluvium time"),
-    liveCursorUs: safeInteger(data.liveCursorUs, "Pinned Alluvium live cursor"),
-  };
-}
-
-/** One line of an export: a record, with the time the service witnessed
- * this version of it. Its URI is also the position to resume after. */
-function exportRecord(
-  line: Record<string, unknown>,
-  collections: ReadonlySet<string>,
-): { record: SnapshotRecord; timeUs: number } {
-  const { uri, cid, record } = line;
-  if (typeof uri !== "string" || !uri.startsWith("at://")) {
-    throw new TypeError("Alluvium export line is not a record");
-  }
-  const [did, collection, rkey, ...extra] = uri.slice("at://".length).split("/");
-  if (!did || !isDid(did)) throw new TypeError("Alluvium record has an invalid DID");
-  if (!collection || !collections.has(collection)) {
-    throw new TypeError(`Alluvium returned a record of an unrequested collection: ${String(collection)}`);
-  }
-  if (!rkey || extra.length > 0 || !isRecordKey(rkey)) {
-    throw new TypeError("Alluvium record has an invalid record key");
-  }
-  if (typeof cid !== "string" || !cid) throw new TypeError("Alluvium record has no CID");
-  if (!object(record)) throw new TypeError("Alluvium record value must be an object");
-  const timeUs = safeInteger(line.time_us, "Alluvium record time_us");
-  return {
-    record: { uri, did, collection, rkey, cid, value: record, timeUs },
-    timeUs,
-  };
-}
-
-/**
- * Current-state snapshot from an Alluvium export.
- *
- * One request streams every record of the selected collections as of the
- * service's latest snapshot. It is resumable by record: a dropped connection
- * or a restarted process continues after the last record it projected.
- * Records read after a resume may come from a newer snapshot than those read
- * before it; that is sound because live ingestion then replays from before
- * the first snapshot's time, which brings every record to the same final
- * state.
- */
-export class AlluviumSnapshotSource extends AlluviumAdapterBase implements SnapshotSource {
-  async prepare(options: {
-    collections: string[];
-    signal?: AbortSignal;
-  }): Promise<PreparedSnapshot> {
-    const collections = requestedCollections(options.collections);
-    const head = await this.head(options.signal);
+  let state: AlluviumBootstrapState;
+  const resumed = prior !== null;
+  if (prior) {
+    if (prior.endpoint !== endpoint.href) {
+      throw new Error("Bootstrap was pinned against a different Alluvium endpoint");
+    }
+    if (prior.source.id !== source.id || prior.source.epoch !== source.epoch) {
+      throw new Error("Bootstrap was pinned against a different source identity");
+    }
+    if (
+      prior.collections.length !== collections.length ||
+      prior.collections.some((col, index) => col !== collections[index])
+    ) {
+      throw new Error("Bootstrap was pinned against a different collection set");
+    }
+    assertReplayable(prior);
+    state = { ...prior };
+  } else {
+    await assertFreshBootstrapDatabase(db, config);
+    const head = await fetchHead();
     for (const collection of collections) {
       if (excluded(head.excludes, collection)) {
         throw new Error(
-          `Alluvium at ${this.endpoint.host} does not carry ${collection}; load it from PDSes instead`,
+          `Alluvium at ${endpoint.host} does not carry ${collection}; load it from PDSes instead`,
         );
       }
     }
-    const ageUs = this.now() * 1_000 - head.timeUs;
-    if (ageUs > this.maxAgeUs) {
+    const ageUs = now() * 1_000 - head.timeUs;
+    if (ageUs > maxAgeUs) {
       throw new Error(
-        `Alluvium at ${this.endpoint.host} is serving a snapshot ${Math.round(ageUs / 60_000_000)} minutes old`,
+        `Alluvium at ${endpoint.host} is serving a snapshot ${Math.round(ageUs / 60_000_000)} minutes old`,
       );
     }
-    const pinned: PinnedExport = {
-      v: 4,
-      endpoint: this.endpoint.href,
+    const liveCursorUs = head.timeUs - rewindUs;
+    if (liveCursorUs < TIMESTAMP_CURSOR_MIN) {
+      throw new Error("Alluvium has not ingested any events yet");
+    }
+    const startedAt = now();
+    state = {
+      v: 1,
+      phase: "loading",
+      endpoint: endpoint.href,
+      source,
       collections,
       cursor: head.cursor,
       timeUs: head.timeUs,
-      liveCursorUs: this.liveCursorUs(head),
+      liveCursorUs,
+      after: null,
+      startedAt,
+      updatedAt: startedAt,
     };
-    const coverage: Record<string, CollectionCoverage> = {};
-    for (const collection of collections) coverage[collection] = { state: "complete" };
-    return {
-      id: `alluvium:${this.endpoint.host}:${head.cursor}`,
-      provider: PROVIDER,
-      // Each response is one snapshot, but a resumed export can span
-      // several, and the live replay is what reconciles them.
-      consistency: "sampled-current-state",
-      collections: coverage,
-      semantics,
-      providerData: pinned,
-    };
+    await saveStateStatement(db, state).run();
   }
 
-  async *read(options: {
-    snapshot: PreparedSnapshot;
-    progress?: SnapshotProgress[];
-    signal?: AbortSignal;
-  }): AsyncIterable<SnapshotBatch> {
-    const pinned = parsePinned(options.snapshot);
-    if (pinned.endpoint !== this.endpoint.href) {
-      throw new Error("Snapshot was pinned against a different Alluvium endpoint");
-    }
-    const prior = options.progress?.find((item) => item.partition === EXPORT_PARTITION);
-    if (prior?.complete) return;
-    this.assertReplayable(pinned);
-    const collections = new Set(pinned.collections);
-
-    let after = prior?.cursor ?? null;
-    let records: SnapshotRecord[] = [];
-    let batchTimeUs = pinned.liveCursorUs;
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
-      if (attempt > 0) await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), options.signal);
-      const url = new URL("export", this.endpoint);
-      for (const collection of pinned.collections) url.searchParams.append("collection", collection);
-      if (after) url.searchParams.set("after", after);
-
-      let lines: AsyncGenerator<Record<string, unknown>>;
-      try {
-        const response = await this.open(url, options.signal);
-        // Before any row is projected: live ingestion replays from the
-        // pinned snapshot's time, so an export of an older snapshot (a
-        // rollback, a replica that is behind) would leave a gap. A newer
-        // one is fine, and the pinned handoff stays as it is.
-        const header = response.headers.get("alluvium-time-us");
-        const servedUs = header && /^\d+$/.test(header) ? Number(header) : null;
-        if (servedUs === null || !Number.isSafeInteger(servedUs) || servedUs < pinned.timeUs) {
-          await response.body?.cancel().catch(() => {});
-          throw new Error(
-            servedUs === null
-              ? "Alluvium export did not say which snapshot it serves"
-              : "Alluvium served an export older than the snapshot this bootstrap pinned",
-          );
-        }
-        lines = this.lines(response, options.signal);
-      } catch (error) {
-        options.signal?.throwIfAborted();
-        lastError = error;
-        if ((error as { retryable?: boolean }).retryable === false) break;
-        continue;
-      }
-
-      let received = 0;
-      try {
-        for await (const line of lines) {
-          if (line.end === true) {
-            if (safeInteger(line.records, "Alluvium export record count") !== received) {
-              throw new AlluviumExportInvalidError(
-                "Alluvium export ended with a different record count than it sent",
-              );
-            }
-            yield {
-              records,
-              sourceTimeUs: batchTimeUs,
-              progress: { partition: EXPORT_PARTITION, cursor: null, complete: true },
-              done: true,
-            };
-            return;
-          }
-          const item = exportRecord(line, collections);
-          received += 1;
-          records.push(item.record);
-          // A batch is ordered against later changes by one time, so it
-          // takes the oldest of its records': none may look newer than it is.
-          // Each record keeps its own time for its place in query order.
-          batchTimeUs = Math.min(batchTimeUs, item.timeUs);
-          after = item.record.uri;
-          if (records.length >= this.batchSize) {
-            yield {
-              records,
-              sourceTimeUs: batchTimeUs,
-              progress: { partition: EXPORT_PARTITION, cursor: after, complete: false },
-              done: false,
-            };
-            records = [];
-            batchTimeUs = pinned.liveCursorUs;
-            // Progress resets the retry budget: only consecutive failures count.
-            attempt = 0;
-          }
-        }
-        throw new AlluviumExportInterruptedError("Alluvium export ended before its closing line");
-      } catch (error) {
-        options.signal?.throwIfAborted();
-        if (
-          error instanceof AlluviumExportInvalidError ||
-          (!(error instanceof AlluviumExportInterruptedError) && error instanceof TypeError)
-        ) {
-          // Malformed data will not improve on retry.
-          throw error;
-        }
-        lastError = error;
-        // Records received but not yet yielded stay buffered; `after` already
-        // points past them, so the next attempt continues from there.
-      }
-    }
-    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
-    throw new Error(`Alluvium export did not complete${reason}`, { cause: lastError });
+  if (options.deferIndexes) {
+    await deferSecondaryIndexes(db, config);
   }
 
-  /** Split a response body into parsed JSON lines. */
-  private async *lines(
-    response: Response,
-    signal?: AbortSignal,
-  ): AsyncGenerator<Record<string, unknown>> {
-    if (!response.body) throw new AlluviumExportInterruptedError("Alluvium export has no body");
-    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-    let buffered = "";
-    try {
-      for (;;) {
-        signal?.throwIfAborted();
-        let chunk: ReadableStreamReadResult<string>;
-        try {
-          chunk = await reader.read();
-        } catch (error) {
-          signal?.throwIfAborted();
-          throw new AlluviumExportInterruptedError("Alluvium export connection failed", {
-            cause: error,
-          });
-        }
-        if (chunk.done) break;
-        buffered += chunk.value;
-        let newline = buffered.indexOf("\n");
-        while (newline >= 0) {
-          const text = buffered.slice(0, newline);
-          buffered = buffered.slice(newline + 1);
-          if (text) yield this.parseLine(text);
-          newline = buffered.indexOf("\n");
-        }
-        if (buffered.length > this.maxLineCharacters) {
-          throw new TypeError("Alluvium export line exceeds the configured limit");
-        }
-      }
-      // A final line without a newline means the stream was cut mid-line.
-      if (buffered) throw new AlluviumExportInterruptedError("Alluvium export ended mid-line");
-    } finally {
-      await reader.cancel().catch(() => {});
-    }
-  }
+  const knownDids =
+    getDependentNsids(config).length > 0
+      ? await loadKnownActorDids(db, config)
+      : undefined;
+  const collectionSet = new Set(state.collections);
+  const snapshotId = `alluvium:${endpoint.host}:${state.cursor}`;
+  let recordsLoaded = 0;
 
-  private parseLine(text: string): Record<string, unknown> {
-    if (text.length > this.maxLineCharacters) {
-      throw new TypeError("Alluvium export line exceeds the configured limit");
+  const commitBatch = async (
+    batch: ExportRecord[],
+    sourceTimeUs: number,
+    nextAfter: string | null,
+  ): Promise<void> => {
+    const indexedAt = now() * 1_000;
+    const events = batch.map((item) =>
+      createIngestEvent({
+        uri: item.uri,
+        did: item.did,
+        collection: item.collection,
+        rkey: item.rkey,
+        operation: "update",
+        cid: item.cid,
+        value: item.value,
+        timeUs: recordTimeUs(item.value, item.collection, config, item.timeUs),
+        indexedAt,
+        source: {
+          id: "snapshot:alluvium",
+          epoch: snapshotId,
+          time_us: sourceTimeUs,
+          revision: null,
+          cursor: nextAfter ?? "export",
+        },
+      }),
+    );
+    state = { ...state, after: nextAfter, updatedAt: now() };
+    const result = await ingestRecords(db, events, config, {
+      phase: "historical",
+      knownDids,
+      skipDerivedProjections: true,
+      authoritativeSourceObservation: true,
+      trailingStatements: [saveStateStatement(db, state)],
+    });
+    if (knownDids) {
+      for (const did of result.discoveredDids) knownDids.add(did);
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(text);
-    } catch (error) {
-      throw new TypeError("Alluvium export line is not JSON", { cause: error });
-    }
-    if (!object(value)) throw new TypeError("Alluvium export line must be an object");
-    return value;
-  }
-}
-
-/**
- * Hand-off from an Alluvium export to live ingestion.
- *
- * The export already contains every change up to its snapshot, so there is
- * nothing to replay during bootstrap. This source only fixes the
- * two coordinates the coordinator needs: where capture began, and the
- * timestamp cursor live ingestion resumes from. Both are times, not sequence
- * numbers, so the live service can be any Jetstream instance.
- */
-export class AlluviumChangeSource extends AlluviumAdapterBase implements ChangeSource {
-  readonly semantics = semantics;
-
-  constructor(_config: ContrailConfig, options: AlluviumBootstrapSourceOptions) {
-    super(options);
-  }
-
-  async mark(options: {
-    collections: string[];
-    snapshot?: PreparedSnapshot;
-    signal?: AbortSignal;
-  }): Promise<SourcePosition> {
-    if (options.snapshot) {
-      const pinned = parsePinned(options.snapshot);
-      this.assertReplayable(pinned);
-      return this.position(pinned.liveCursorUs);
-    }
-    // Strictly before any snapshot pinned afterwards, whose live cursor is
-    // computed from a head at least as new as this one.
-    return this.position(this.liveCursorUs(await this.head(options.signal)) - 1);
-  }
-
-  async *read(options: {
-    collections: string[];
-    snapshot?: PreparedSnapshot;
-    after: SourcePosition;
-    through: SourcePosition;
-    signal?: AbortSignal;
-  }): AsyncIterable<MutationBatch> {
-    this.assertOwnPosition(options.after, "Alluvium catch-up cursor");
-    this.assertOwnPosition(options.through, "Alluvium catch-up target");
-    // The last step before the handoff is persisted as the live cursor.
-    if (options.snapshot) this.assertReplayable(parsePinned(options.snapshot));
-    yield { mutations: [], checkpoint: options.through, caughtUp: true };
-  }
-}
-
-/** Map the final bootstrap checkpoint to the timestamp cursor ordinary
- * scheduled ingestion resumes from. */
-export function createAlluviumLiveCursor(
-  source: AlluviumSourceIdentity,
-): (position: SourcePosition) => number {
-  const expected = normalizeSource(source);
-  return (position) => {
-    if (position.source !== expected.id || position.epoch !== expected.epoch) {
-      throw new Error("Alluvium live cursor belongs to a different source");
-    }
-    const cursor = Number(position.cursor);
-    if (!Number.isSafeInteger(cursor) || cursor < TIMESTAMP_CURSOR_MIN) {
-      throw new TypeError("Alluvium live cursor must be a microsecond timestamp");
-    }
-    return cursor;
+    recordsLoaded += batch.length;
   };
-}
 
-/** Create the paired Alluvium snapshot and hand-off sources. */
-export function createAlluviumBootstrapSources(
-  config: ContrailConfig,
-  options: AlluviumBootstrapSourceOptions,
-): AlluviumBootstrapSources {
+  let after = state.after;
+  let records: ExportRecord[] = [];
+  let batchTimeUs = state.liveCursorUs;
+  let lastError: unknown;
+  let completedStream = false;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) {
+      await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
+    }
+    assertReplayable(state);
+    const url = new URL("export", endpoint);
+    for (const collection of state.collections) {
+      url.searchParams.append("collection", collection);
+    }
+    if (after) url.searchParams.set("after", after);
+
+    let lines: AsyncGenerator<Record<string, unknown>>;
+    try {
+      const response = await open(url);
+      // Live ingestion replays from the pinned snapshot's time, so an export
+      // of an older snapshot (rollback or lagging replica) would leave a gap.
+      const header = response.headers.get("alluvium-time-us");
+      const servedUs = header && /^\d+$/.test(header) ? Number(header) : null;
+      if (
+        servedUs === null ||
+        !Number.isSafeInteger(servedUs) ||
+        servedUs < state.timeUs
+      ) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error(
+          servedUs === null
+            ? "Alluvium export did not say which snapshot it serves"
+            : "Alluvium served an export older than the snapshot this bootstrap pinned",
+        );
+      }
+      lines = readJsonLines(response, maxLineCharacters, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      lastError = error;
+      if ((error as { retryable?: boolean }).retryable === false) break;
+      continue;
+    }
+
+    let received = 0;
+    try {
+      for await (const line of lines) {
+        if (line.end === true) {
+          if (safeInteger(line.records, "Alluvium export record count") !== received) {
+            throw new AlluviumExportInvalidError(
+              "Alluvium export ended with a different record count than it sent",
+            );
+          }
+          if (records.length > 0) {
+            await commitBatch(records, batchTimeUs, after);
+            records = [];
+            batchTimeUs = state.liveCursorUs;
+          }
+          completedStream = true;
+          break;
+        }
+        const item = parseExportRecord(line, collectionSet);
+        received += 1;
+        records.push(item);
+        // A batch is ordered against later changes by one time, so it takes the
+        // oldest of its records' and never exceeds the live replay cursor.
+        batchTimeUs = Math.min(batchTimeUs, item.timeUs);
+        after = item.uri;
+        if (records.length >= batchSize) {
+          await commitBatch(records, batchTimeUs, after);
+          records = [];
+          batchTimeUs = state.liveCursorUs;
+          // Progress resets the retry budget: only consecutive failures count.
+          attempt = 0;
+        }
+      }
+      if (completedStream) break;
+      throw new AlluviumExportInterruptedError(
+        "Alluvium export ended before its closing line",
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (
+        error instanceof AlluviumExportInvalidError ||
+        (!(error instanceof AlluviumExportInterruptedError) &&
+          error instanceof TypeError)
+      ) {
+        // Malformed data will not improve on retry.
+        throw error;
+      }
+      lastError = error;
+      // Uncommitted records stay buffered while `after` already points past
+      // them, so the next attempt continues without duplicating them.
+    }
+  }
+
+  if (!completedStream) {
+    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+    throw new Error(`Alluvium export did not complete${reason}`, {
+      cause: lastError,
+    });
+  }
+
+  assertReplayable(state);
+  await restoreSecondaryIndexes(db);
+  await rebuildDerivedProjections(db, config);
+
+  const handoff: SourcePosition = {
+    source: state.source.id,
+    epoch: state.source.epoch,
+    cursor: String(state.liveCursorUs),
+  };
+  const finishedAt = now();
+  state = {
+    ...state,
+    phase: "complete",
+    after: null,
+    updatedAt: finishedAt,
+    finishedAt,
+  };
+  await db.batch([
+    saveServingSourcePositionStatement(db, handoff),
+    saveCursorStatement(db, state.liveCursorUs),
+    saveStateStatement(db, state),
+  ]);
+
   return {
-    snapshotSource: new AlluviumSnapshotSource(options),
-    changeSource: new AlluviumChangeSource(config, options),
+    handoff,
+    liveCursor: state.liveCursorUs,
+    resumed,
+    alreadyComplete: false,
+    recordsLoaded,
   };
 }
