@@ -1,10 +1,10 @@
 # Outbox
 
-> Experimental. Enable the outbox only on a fresh, empty Contrail database.
+> Experimental. Enable only on a fresh, empty database.
 
-The outbox delivers indexed record changes to external projections such as search indexes, webhooks, or caches. Contrail appends each change in the same database transaction as the canonical record and source cursor; destination failures never roll back ingestion.
+Transactionally records indexed puts/deletes alongside canonical writes so you can reliably feed external search indexes, webhooks, or caches. Destination failures never block ingestion.
 
-## Configure a consumer
+## Configure
 
 ```ts
 const config: ContrailConfig = {
@@ -15,28 +15,30 @@ const config: ContrailConfig = {
   changes: {
     consumers: {
       search: {
-        collections: ["community.lexicon.calendar.event"],
-        phases: ["historical", "live"],
-        initial: "history",
+        collections: ["community.lexicon.calendar.event"], // full NSIDs
+        phases: ["historical", "live"],                    // optional; default both
+        initial: "history",                                // "history" | "future" | "current"
       },
     },
   },
 };
 ```
 
-Collections are full NSIDs, not config short names. Omitting `phases` includes both historical backfill and live ingestion.
+| `initial` | Starts from |
+| --- | --- |
+| `history` | All retained historical and live changes |
+| `future` | Changes written after consumer registration |
+| `current` | Keyset snapshot + catch-up tail + atomic activation (requires `changeBootstraps` handlers) |
 
-## Deliver from a Worker
+## Deliver
 
-Add one handler for every configured consumer:
+### Cloudflare Worker
 
 ```ts
-type Env = { SEARCH_ENDPOINT: string };
-
-export default createWorker<Env>(config, {
+export default createWorker<{ SEARCH_ENDPOINT: string }>(config, {
   deliveries: {
     search: async (batch, { env, signal }) => {
-      const response = await fetch(env.SEARCH_ENDPOINT, {
+      const res = await fetch(env.SEARCH_ENDPOINT, {
         method: "POST",
         signal,
         headers: { "content-type": "application/json" },
@@ -46,29 +48,15 @@ export default createWorker<Env>(config, {
           deletes: batch.absentUris,
         }),
       });
-      if (!response.ok) throw new Error(`Search returned ${response.status}`);
+      if (!res.ok) throw new Error(`Search returned ${res.status}`);
     },
   },
 });
 ```
 
-`createWorker` runs bounded delivery rounds after scheduled ingestion. Throwing retries the batch with backoff; returning successfully acknowledges it.
+`createWorker` runs delivery rounds after scheduled ingestion. Throwing retries with backoff; returning acknowledges the batch. Delivery is **at least once** — make handlers idempotent (upsert/delete by URI).
 
-Delivery is **at least once**. A destination may apply a batch before the acknowledgement fails, so handlers must be idempotent. Upsert and delete by record URI rather than incrementing counters.
-
-Claims coalesce repeated changes to the same URI. `currentRecords` contains the latest indexed values when the batch is delivered; `absentUris` contains records that are currently deleted.
-
-## Initial state
-
-| `initial` | Starts with |
-|---|---|
-| `history` | All retained historical and live changes |
-| `future` | Changes written after the consumer is registered |
-| `current` | A current-state snapshot, a fixed catch-up tail, then atomic destination activation |
-
-`current` is intended for building a candidate index without a read gap. It additionally requires matching `changeBootstraps` snapshot and activation handlers.
-
-For a long-lived Node process, run delivery beside ingestion:
+### Persistent Node.js
 
 ```ts
 await Promise.all([
@@ -89,6 +77,6 @@ pnpm contrail changes retry search --remote
 pnpm contrail changes prune --remote
 ```
 
-Status reports each consumer's position, backlog, lease, and retry state. Pruning never passes the slowest durable consumer. `changes skip` is an explicit audited data-loss operation and should be reserved for recovery.
-
-Once enabled, ordinary startup fails closed if a consumer is removed or changed incompatibly. Adding a consumer is safe only when its collection/phase coverage was already retained; otherwise build a fresh database generation.
+- Startup fails closed if a configured consumer is removed or incompatibly changed.
+- Adding a consumer is only allowed if its collection/phase coverage was already retained; otherwise rebuild on a fresh database.
+- `changes skip --through <pos> --reason "..." --yes` is an explicit audited data-loss escape hatch for stuck consumers.

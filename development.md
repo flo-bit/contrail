@@ -1,49 +1,35 @@
-# Contrail development
+# Development
 
 > Pre-alpha. Expect breaking changes.
 
-## Layout
+## Workspace layout
 
-Contrail now has one package and one implementation:
+- `packages/contrail/` — `@atmo-dev/contrail` (core, adapters, Cloudflare Worker helper, CLI)
+- `packages/contrail-spaces-alpha/` — workspace-private Spaces extension
+- `apps/cloudflare-workers/` — minimal Worker + D1 example
+- `apps/sqlite/` — minimal Node + SQLite + Alluvium example
+- `apps/postgres/` — minimal Node + PostgreSQL example
+- `apps/benchmark/` — backfill benchmarks and D1 row-cost guardrails
 
-```text
-packages/contrail/
-  src/core/       ingestion, storage, queries, hydration
-  src/adapters/   SQLite and PostgreSQL adapters
-  src/worker/     Cloudflare Worker helper
-  src/cli/        operational commands
-```
+## Commands
 
-Reference deployments live under `apps/`:
-
-- `cloudflare-workers` — minimal Worker + D1;
-- `benchmark` — disposable local-D1 backfill benchmarks;
-- `postgres` — minimal Node.js + PostgreSQL; and
-- `sveltekit-cloudflare-workers` — SvelteKit + D1.
-
-## Setup
+Requires Node.js >= 22.15 (Node 24 recommended for SQLite FTS5) and pnpm.
 
 ```bash
 pnpm install
-pnpm build
-pnpm typecheck
-pnpm test
-```
-
-Focused commands:
-
-```bash
-pnpm --filter @atmo-dev/contrail build
-pnpm --filter @atmo-dev/contrail test
-# After building: local-only workerd/D1 profile hydration and query-count smoke.
-pnpm --filter @atmo-dev/contrail test:workerd:profiles
-pnpm --filter contrail-cloudflare-workers-example dev
-pnpm bench --config calendar.config.json --concurrency 100
+pnpm typecheck          # typecheck all packages, tests, and example apps
+pnpm build              # build packages/*
+pnpm test               # unit tests (SQLite + Spaces)
+pnpm test:postgres      # PostgreSQL tests via in-process PGlite
+pnpm test:built         # smoke tests against built dist/ entrypoints
+pnpm test:workerd       # Cloudflare workerd + local D1 smoke tests
+pnpm test:cost          # cost-harness unit tests
+pnpm bench:cost:ci      # local D1 row-cost ceiling checks
 ```
 
 ## Releasing
 
-Changesets version and publish `@atmo-dev/contrail`:
+Uses Changesets for `@atmo-dev/contrail`:
 
 ```bash
 pnpm changeset

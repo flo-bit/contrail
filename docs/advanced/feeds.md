@@ -1,6 +1,6 @@
 # Feeds
 
-Feeds provide a per-user timeline of records authored by people that user follows.
+Per-actor timelines of records authored by accounts that actor follows.
 
 ## Configure
 
@@ -18,15 +18,15 @@ export default {
 };
 ```
 
-The default follow collection is `app.bsky.graph.follow`. Contrail adds it internally with `discover: false`; declare a different collection and set `follow` only when your app uses another follow record type.
+Contrail adds `app.bsky.graph.follow` automatically with `discover: false`. Set `follow` on the feed only if you use a different follow collection.
 
 ## Query
 
 ```ts
-const response = await contrail.get("com.example.getFeed", {
+const res = await contrail.get("com.example.getFeed", {
   params: {
     feed: "network",
-    actor: signedInDid,
+    actor: signedInDid, // whose feed (DID or handle), not record author
     collection: "community.lexicon.calendar.event",
     profiles: true,
     limit: 20,
@@ -34,8 +34,10 @@ const response = await contrail.get("com.example.getFeed", {
 });
 ```
 
-`actor` means “whose feed,” not “record author.” It accepts a DID or handle. Filters, sorting, pagination, and hydration work like `listRecords` for the selected target collection.
+Filters, sorting, pagination, and hydration work like `listRecords` for the target collection.
 
-The first read starts a bounded backfill of that actor's follows, so its initial result may be partial. New target records are then fanned out during normal ingestion. Old items are pruned to each target's `maxItems` cap.
+## Notes
 
-Fan-out cost grows with an author's number of indexed followers. Feeds are therefore a projection for bounded application communities, not a replacement for a network-wide timeline service.
+- The first read for an actor triggers a bounded follow backfill, so the very first response may be partial.
+- New records fan out on ingest and prune down to each target's `maxItems`.
+- Fan-out cost scales with an author's indexed follower count — suited for bounded app communities, not a network-wide Bluesky timeline.

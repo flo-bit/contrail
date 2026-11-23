@@ -6,7 +6,6 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - workerd
-  - '@tailwindcss/oxide'
   - '@sveltejs/kit'
 
 # Keep the Spaces alpha graph off stable 0.0.0 placeholders published with

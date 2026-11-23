@@ -6,13 +6,15 @@
   "scripts": {
     "sync": "tsx sync.ts",
     "ingest": "tsx ingest.ts",
-    "serve": "tsx serve.ts"
+    "serve": "tsx serve.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@atmo-dev/contrail": "workspace:*",
     "pg": "^8.22.0"
   },
   "devDependencies": {
+    "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
     "tsx": "^4.23.6",
     "typescript": "^6.0.3"

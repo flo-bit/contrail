@@ -16,7 +16,7 @@ import type {
 import { createInitArtifacts } from "../src/cli/init/render";
 import { writeInitArtifacts } from "../src/cli/init/write";
 
-const fixtureRoot = resolve("../../apps/atmo-rsvp/lexicons/pulled");
+const fixtureRoot = resolve(import.meta.dirname, "fixtures/lexicons");
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {

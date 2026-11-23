@@ -1,10 +1,8 @@
-# Deploy to Cloudflare Workers
+# Deploy to Cloudflare Workers & Node
 
-Turn the same local AppView into a public Worker backed by D1.
+## Standalone Cloudflare Worker + D1
 
-## Install
-
-From the directory containing `contrail.config.ts`:
+From the directory containing `contrail.config.ts` (run `pnpm init` first if there is no `package.json` yet):
 
 ```bash
 pnpm init
@@ -12,49 +10,38 @@ pnpm add @atmo-dev/contrail
 pnpm add -D @atcute/lex-cli wrangler typescript
 ```
 
-Add an ordered source to the config. Keep its epoch stable for the lifetime of this database:
+Set a stable `orderedSource` in `contrail.config.ts` (keep `epoch` unchanged for the lifetime of the database):
 
 ```ts
-// contrail.config.ts
 import type { ContrailConfig } from "@atmo-dev/contrail";
 
-const config: ContrailConfig = {
+export default {
   namespace: "com.example",
-  orderedSource: {
-    source: "jetstream",
-    epoch: "my-appview-jetstream-v2",
-  },
+  orderedSource: { source: "jetstream", epoch: "my-appview-v1" },
   collections: {
-    // ...your existing collections
+    // ...
   },
-};
-
-export default config;
+} satisfies ContrailConfig;
 ```
 
-Generate the public query Lexicons and their referenced record Lexicons:
+Generate the Lexicons:
 
 ```bash
 pnpm contrail lexicons all --public
 ```
 
-## Create the Worker
+Create `worker.ts`:
 
 ```ts
-// worker.ts
 import { createWorker } from "@atmo-dev/contrail/worker";
 import config from "./contrail.config";
 import { lexicons } from "./lexicons/generated";
 
 export default createWorker(config, {
   lexicons,
-  publicService: {
-    endpoint: "https://my-appview.example.com",
-  },
+  publicService: { endpoint: "https://my-appview.example.com" },
 });
 ```
-
-Use the Worker's actual `workers.dev` or custom-domain URL as `endpoint`.
 
 Create `wrangler.jsonc`:
 
@@ -62,8 +49,7 @@ Create `wrangler.jsonc`:
 {
   "name": "my-appview",
   "main": "worker.ts",
-  "compatibility_date": "2025-12-25",
-  "observability": { "enabled": true },
+  "compatibility_date": "2026-01-01",
   "d1_databases": [
     {
       "binding": "DB",
@@ -75,27 +61,51 @@ Create `wrangler.jsonc`:
 }
 ```
 
-## Deploy and backfill
+Provision D1, deploy, and backfill:
 
 ```bash
-pnpm wrangler d1 create my-appview  # copy its ID into wrangler.jsonc
+pnpm wrangler d1 create my-appview   # paste database_id into wrangler.jsonc
 pnpm wrangler deploy
-pnpm contrail backfill --remote
+pnpm contrail backfill --remote      # or add --alluvium on an empty D1 database
 ```
 
-The one-minute cron keeps the AppView current. Check it with:
+Verify and connect your consumer app:
 
 ```bash
 curl https://my-appview.example.com/status
-curl 'https://my-appview.example.com/xrpc/com.example.event.listRecords?limit=10'
-```
-
-Finally, point the application from the previous guide at the deployment:
-
-```bash
 pnpx @atmo-dev/contrail connect https://my-appview.example.com
 ```
 
-When the config changes, regenerate the Lexicons, deploy, backfill any new collections, and reconnect the client with `--update`.
+When changing config later: regenerate Lexicons, redeploy, run `contrail backfill --remote` for new collections, and reconnect clients with `--update`.
 
-For optional outbox deliveries, feeds, and labels, see [advanced topics](./advanced/README.md).
+## Embedding in SvelteKit (Cloudflare Workers)
+
+Skip a separate Worker when your SvelteKit app already runs on Cloudflare Workers:
+
+```ts
+// src/lib/server/contrail.ts
+import { Contrail } from "@atmo-dev/contrail";
+import { createHandler } from "@atmo-dev/contrail/server";
+import config from "./contrail.config";
+
+export const contrail = new Contrail(config);
+export const handleContrail = createHandler(contrail);
+```
+
+- Forward `/xrpc/[...path]` to `handleContrail(request, platform.env.DB)` after `await contrail.init(platform.env.DB, { deferModerationPolicyJob: true })`.
+- Run `await contrail.ingest({}, platform.env.DB)` from a protected cron endpoint, or use `contrail append-scheduled` on the built Worker bundle so Cloudflare's `scheduled` trigger calls it.
+
+## Node.js (SQLite, PostgreSQL, PGlite)
+
+For long-lived Node servers, use `createHandler(contrail)` with `contrail.runPersistent({ signal })` instead of cron:
+
+- **SQLite (`@atmo-dev/contrail/sqlite`):** `createSqliteDatabase("./data/contrail.sqlite")` — see [apps/sqlite](../apps/sqlite/README.md).
+- **PostgreSQL (`@atmo-dev/contrail/postgres`):** `createPostgresDatabase(new pg.Pool({ connectionString }))` — see [apps/postgres](../apps/postgres/README.md).
+- **PGlite (`@atmo-dev/contrail/pglite`):** `createPgliteDatabase(new PGlite("./data/pg"))` for embedded Postgres with no server.
+
+## Next steps
+
+- [Feeds](./advanced/feeds.md) — per-actor following timelines
+- [Labels](./advanced/labels.md) — labeler subscriptions and author self-labels
+- [Moderation](./advanced/moderation.md) — hides, takedowns, account lifecycle, and private reports
+- [Outbox](./advanced/outbox.md) — transactional change delivery to search/webhooks

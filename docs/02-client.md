@@ -1,34 +1,54 @@
 # Add the typed client
 
-With your [local AppView](./00-getting-started.md) set up, add Contrail and Atcute to your application:
+Once your [local AppView](./01-getting-started.md) is configured, install Contrail and Atcute in your app and run `connect`:
 
 ```bash
 pnpm add @atmo-dev/contrail @atcute/client @atcute/lexicons
 pnpx @atmo-dev/contrail connect ../my-appview
 ```
 
-Point `connect` at the directory containing `contrail.config.ts`. It resolves the source and query Lexicons, then uses Atcute to generate a typed client in `src/contrail/`.
+`connect` accepts either a local directory containing `contrail.config.ts` or a deployed AppView's HTTPS URL. It installs the Lexicons, generates Atcute types, and writes a typed client module in `src/contrail/`.
 
-Use it from your app:
+## Query records
 
 ```ts
 import { createLocalContrailClient } from "./contrail/index.js";
 
 const contrail = createLocalContrailClient();
-const response = await contrail.get("com.example.event.listRecords", {
+const res = await contrail.get("com.example.calendar.event.listRecords", {
   params: {
     startsAtMin: new Date().toISOString(),
     limit: 20,
   },
 });
 
-if (!response.ok) throw new Error(`Contrail returned ${response.status}`);
+if (!res.ok) throw new Error(`Contrail returned ${res.status}`);
 
-for (const event of response.data.records) {
+for (const event of res.data.records) {
   console.log(event.value.name, event.value.startsAt);
 }
 ```
 
-The method name, parameters, and response are all typed from the Lexicons. Re-run `connect` when the AppView config changes.
+When connecting to a deployed HTTPS AppView, use `createContrailClient()` instead of `createLocalContrailClient()`.
 
-Next: [configure filters, sorting, and hydration](./03-configure-and-query.md). To use an existing deployed AppView, pass its HTTPS URL to `contrail connect` instead of a config path.
+## Notify after writes
+
+If your AppView enables `notify: true` (or `notify` with service auth), call `notifyOfUpdate` after writing a record to a user's PDS so it indexes immediately without waiting for Jetstream:
+
+```ts
+await contrail.post("com.example.calendar.notifyOfUpdate", {
+  input: { uri: createdRecordUri },
+});
+```
+
+## Updating
+
+Re-run `connect` whenever the AppView config changes:
+
+```bash
+pnpx @atmo-dev/contrail connect ../my-appview
+# or against a deployed URL:
+pnpx @atmo-dev/contrail connect https://my-appview.example.com --update
+```
+
+Next: [Configure and query](./03-configure-and-query.md).
