@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALLUVIUM_BOOTSTRAP_META_KEY,
   DEFAULT_ALLUVIUM_REWIND_US,
+  DEFAULT_D1_BATCH_SIZE,
   SourceHistoryExpiredError,
   getAlluviumBootstrapState,
   loadAlluviumExport,
@@ -10,8 +11,10 @@ import {
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import {
   Contrail,
+  createIngestEvent,
   getLastCursor,
   getServingSourcePosition,
+  ingestRecords,
   initSchema,
   queryRecords,
   resolveConfig,
@@ -1144,5 +1147,137 @@ describe("Alluvium export bootstrap", () => {
       await queryRecords(rawDb, resolved, { collection: "event", limit: 20 })
     ).records.find((row) => row.rkey === "e03");
     expect(afterReset?.counts).toBeUndefined();
+  });
+
+  it("commits each Alluvium loading batch in one db.batch() round-trip using json_each without pre-insert SELECTs, guards, or unused feed fanout", async () => {
+    expect(DEFAULT_D1_BATCH_SIZE).toBe(250);
+    const resolved = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      orderedSource: { source: SOURCE.id, epoch: SOURCE.epoch },
+      feeds: {
+        following: {
+          targets: ["event"],
+        },
+      },
+      collections: {
+        event: {
+          collection: EVENT,
+          searchable: ["name"],
+        },
+        rsvp: {
+          collection: RSVP,
+        },
+      },
+    });
+    const rawDb = await freshDb(resolved);
+
+    // 25 events (including numeric-looking rkey + quotes + emoji) so multi-row VALUES
+    // would have needed 2 record inserts + 4 version inserts + 25 feed inserts = 31 statements,
+    // whereas json_each + freshBulkLoad + skipFeedFanout needs just 3 statements total!
+    const bulkRows: Row[] = Array.from({ length: 25 }, (_, i) => ({
+      collection: EVENT,
+      rkey: i === 0 ? "123456" : `e${String(i).padStart(3, "0")}`,
+      name: i === 0 ? `Alpine "Quote" 🏔️` : `Event ${i}`,
+    }));
+
+    let phase: "pre" | "loading" | "rebuilding" = "pre";
+    const loadingPreparedSql: string[] = [];
+    const loadingBatchSizes: number[] = [];
+    const trackedDb: Database = {
+      dialect: rawDb.dialect,
+      prepare(sql) {
+        if (phase === "loading") loadingPreparedSql.push(sql);
+        return rawDb.prepare(sql);
+      },
+      async batch(stmts) {
+        if (phase === "loading") loadingBatchSizes.push(stmts.length);
+        return rawDb.batch(stmts);
+      },
+    };
+
+    const { fetchImpl } = service({ rows: bulkRows });
+    const wrappedFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/export") phase = "loading";
+      return fetchImpl(input, init);
+    };
+
+    const result = await loadAlluviumExport(trackedDb, resolved, {
+      endpoint: ENDPOINT,
+      source: SOURCE,
+      collections: [EVENT, RSVP],
+      fetch: wrappedFetch,
+      now: () => NOW_MS,
+      transport: { batchSize: 25 },
+      rebuildChunkSize: 50,
+      onProgress: (p) => {
+        if (p.phase === "rebuilding") phase = "rebuilding";
+      },
+    });
+    expect(result.recordsLoaded).toBe(25);
+
+    // Zero pre-insert version/record SELECTs, zero _contrail_projection_state guards,
+    // and zero unused feed_items fan-out statements!
+    expect(
+      loadingPreparedSql.filter((sql) =>
+        /SELECT\b.*\bFROM\s+(record_versions|records_event|records_rsvp)\s+WHERE\s+uri\s+IN/i.test(
+          sql,
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      loadingPreparedSql.filter((sql) => /_contrail_projection_state|feed_items/i.test(sql)),
+    ).toEqual([]);
+    // The 25-record loading batch should be packed into exactly 3 statements:
+    // 1x json_each records_event + 1x json_each record_versions + 1x _contrail_meta state save!
+    expect(loadingBatchSizes[0]).toBe(3);
+    expect(loadingPreparedSql.some((sql) => /FROM json_each\(\?\)/i.test(sql))).toBe(true);
+
+    // Verify exact SQLite types, quotes, UTF-8 emoji, and non-null projection_tokens.
+    const special = await rawDb
+      .prepare(
+        "SELECT rkey, typeof(rkey) AS rk_type, typeof(time_us) AS t_type, record FROM records_event WHERE rkey = '123456'",
+      )
+      .first<{ rkey: string; rk_type: string; t_type: string; record: string }>();
+    expect(special?.rk_type).toBe("text");
+    expect(special?.t_type).toBe("integer");
+    expect(JSON.parse(special!.record)).toMatchObject({ name: `Alpine "Quote" 🏔️` });
+
+    const tokens = (
+      await rawDb
+        .prepare("SELECT uri, typeof(source_revision) AS rev_type, projection_token FROM record_versions ORDER BY uri")
+        .all<{ uri: string; rev_type: string; projection_token: string | null }>()
+    ).results;
+    expect(tokens).toHaveLength(25);
+    expect(tokens.every((row) => row.rev_type === "null" && typeof row.projection_token === "string" && row.projection_token.length > 0)).toBe(true);
+
+    // Subsequent live ingestRecords on an Alluvium-loaded URI uses full guards and updates cleanly.
+    const livePreparedSql: string[] = [];
+    const liveTrackedDb: Database = {
+      dialect: rawDb.dialect,
+      prepare(sql) {
+        livePreparedSql.push(sql);
+        return rawDb.prepare(sql);
+      },
+      batch: (stmts) => rawDb.batch(stmts),
+    };
+    const liveUpdate = createIngestEvent({
+      did: DID,
+      collection: EVENT,
+      rkey: "123456",
+      operation: "update",
+      cid: "bafy-updated",
+      value: { $type: EVENT, name: "Updated Summit Name" },
+      timeUs: HEAD_US + 10_000,
+      source: { id: SOURCE.id, epoch: SOURCE.epoch, time_us: HEAD_US + 10_000 },
+    });
+    const liveResult = await ingestRecords(liveTrackedDb, [liveUpdate], resolved);
+    expect(liveResult.accepted).toHaveLength(1);
+    expect(livePreparedSql.some((sql) => /_contrail_projection_state/i.test(sql))).toBe(true);
+    expect(
+      (await queryRecords(rawDb, resolved, { collection: "event", search: "Updated" })).records,
+    ).toHaveLength(1);
   });
 });

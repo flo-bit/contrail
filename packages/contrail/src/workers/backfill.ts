@@ -204,7 +204,7 @@ export async function bootstrapAlluviumDatabase(
 }
 
 /** Wrangler/D1 counterpart to {@link bootstrapAlluviumDatabase}. Defaults to
- * D1-safe batching (100 records) and chunked derived-projection rebuilds (500
+ * D1-safe batching (250 records) and chunked derived-projection rebuilds (500
  * rows) unless explicitly overridden. */
 export async function bootstrapAlluvium(
   opts: AlluviumBootstrapViaWranglerOptions,

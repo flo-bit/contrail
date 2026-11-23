@@ -149,6 +149,12 @@ export interface IngestRecordsOptions {
   /** The source response is a current authoritative snapshot, so it supersedes
    * durable observations without a redundant version lookup. */
   authoritativeSourceObservation?: boolean;
+  /** @internal Fast path strictly for fresh unpublished single-writer bulk
+   * loads (such as Alluvium export bootstrap) whose URIs are unique and not
+   * already present in the database. Skips pre-insert version/record SELECTs
+   * and per-URI optimistic projection-guard statements so each batch commits
+   * in one database round-trip. */
+  freshBulkLoad?: boolean;
   /** Acquisition phase for optional durable consumers. Defaults to live for
    * backwards-compatible direct ingestRecords() calls. */
   phase?: ProjectionPhase;
@@ -395,23 +401,26 @@ export async function ingestRecords(
       unknownSubject: retryBase.unknownSubject,
       superseded: retryBase.superseded,
     };
-    const predecessors = options.projection
-      ? new Map()
-      : await lookupRecordVersions(
-        db,
-        accepted.map((event) => event.uri),
-      );
+    const freshBulk = options.freshBulkLoad === true && !options.projection;
+    const predecessors =
+      options.projection || freshBulk
+        ? new Map()
+        : await lookupRecordVersions(
+          db,
+          accepted.map((event) => event.uri),
+        );
     // Keep the exclusion if there is a version to retract, including a put
     // earlier in the same batch. Recheck on each projection retry.
     const projectable = quietExclusions.size
       ? accepted.filter((event) => !quietExclusions.has(event) ||
           ordinaryUris.has(event.uri) || predecessors.has(event.uri))
       : accepted;
-    const ordered = options.authoritativeSourceObservation
-      ? selectAuthoritativeMutations(projectable)
-      : options.projection
-        ? await options.projection.selectCurrent(db, projectable)
-        : selectMutationWinners(projectable, predecessors);
+    const ordered =
+      options.authoritativeSourceObservation || freshBulk
+        ? selectAuthoritativeMutations(projectable)
+        : options.projection
+          ? await options.projection.selectCurrent(db, projectable)
+          : selectMutationWinners(projectable, predecessors);
     attemptDropped.superseded += ordered.superseded;
 
     const projectionExclusions = ordered.applied.filter((event) =>

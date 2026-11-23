@@ -11,8 +11,10 @@ import {
 } from "../core/db/records";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../core/ingest";
 import {
+  DEFAULT_FOLLOW_SHORT,
   getDependentNsids,
   getDiscoverableNsids,
+  nsidForShortName,
   recordsTableName,
   resolveConfig,
   type ContrailConfig,
@@ -52,8 +54,9 @@ export const BOOTSTRAP_DEFERRED_INDEXES_META_KEY = "bootstrap_deferred_indexes";
 
 const DEFAULT_BATCH_SIZE = 500;
 /** Default batch size used by Wrangler/D1 bootstraps (`bootstrapAlluvium`),
- * keeping each `db.batch()` well within D1's statement and payload limits. */
-export const DEFAULT_D1_BATCH_SIZE = 100;
+ * keeping each `db.batch()` to a handful of `json_each(?)` bulk statements
+ * comfortably within D1's payload and CPU ceilings. */
+export const DEFAULT_D1_BATCH_SIZE = 250;
 /** Default chunk size used by Wrangler/D1 bootstraps (`bootstrapAlluvium`) for
  * paginated FTS and relation-count rebuilds. */
 export const DEFAULT_REBUILD_CHUNK_SIZE = 500;
@@ -924,6 +927,17 @@ export async function loadAlluviumExport(
       getDependentNsids(config).length > 0
         ? await loadKnownActorDids(db, config)
         : undefined;
+    // On a fresh database, feed fan-out joins against each feed's follow table.
+    // When none of the configured follow collections are in this export (e.g.
+    // app.bsky.graph.follow, which Alluvium excludes), those tables stay empty
+    // throughout the load so per-record fan-out statements would be pure no-ops.
+    const hasExportedFollowCollection = Object.values(config.feeds ?? {}).some(
+      (feedConfig) => {
+        const followShort = feedConfig.follow ?? DEFAULT_FOLLOW_SHORT;
+        const followNsid = nsidForShortName(config, followShort);
+        return followNsid !== undefined && collectionSet.has(followNsid);
+      },
+    );
 
     const commitBatch = async (
       batch: ExportRecord[],
@@ -963,7 +977,9 @@ export async function loadAlluviumExport(
         phase: "historical",
         knownDids,
         skipDerivedProjections: true,
+        skipFeedFanout: !hasExportedFollowCollection,
         authoritativeSourceObservation: true,
+        freshBulkLoad: true,
         trailingStatements: [saveStateStatement(db, nextState)],
       });
       state = nextState;

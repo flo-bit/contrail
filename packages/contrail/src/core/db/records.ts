@@ -1397,6 +1397,35 @@ const RECORD_VERSION_ROWS = Math.floor(
   MAX_STATEMENT_BINDINGS / RECORD_VERSION_BINDINGS,
 );
 const PROJECTION_GUARD_URIS = 40;
+/** Max UTF-8 bytes per `json_each(?)` bulk upsert payload on SQLite/D1. Keeps
+ * each statement comfortably below D1's payload/CPU ceilings while collapsing
+ * dozens of multi-row VALUES statements into one prepared statement. */
+const MAX_BULK_JSON_BYTES = 256 * 1024;
+const BULK_JSON_ENCODER = new TextEncoder();
+
+function chunkJsonArrayRows(
+  rows: unknown[][],
+  maxBytes: number = MAX_BULK_JSON_BYTES,
+): string[] {
+  const payloads: string[] = [];
+  let parts: string[] = [];
+  let bytes = 2; // "[]"
+  for (const row of rows) {
+    const encoded = JSON.stringify(row);
+    const rowBytes = BULK_JSON_ENCODER.encode(encoded).byteLength;
+    const extra = parts.length === 0 ? rowBytes : rowBytes + 1;
+    if (parts.length > 0 && bytes + extra > maxBytes) {
+      payloads.push(`[${parts.join(",")}]`);
+      parts = [encoded];
+      bytes = 2 + rowBytes;
+    } else {
+      parts.push(encoded);
+      bytes += extra;
+    }
+  }
+  if (parts.length > 0) payloads.push(`[${parts.join(",")}]`);
+  return payloads;
+}
 
 interface StorageMutation {
   event: IngestEvent;
@@ -1408,7 +1437,50 @@ function buildRecordVersionStatements(
   events: IngestEvent[],
   existing: Map<string, ExistingRecordInfo>,
   projectionTokens: ReadonlyMap<string, string>,
+  useJsonBulk = false,
 ): Statement[] {
+  const versionTuple = (event: IngestEvent) => {
+    const version = versionForEvent(event);
+    const retainedCid =
+      event.operation === "delete"
+        ? (version.cid ?? existing.get(event.uri)?.cid ?? null)
+        : version.cid;
+    return [
+      version.uri,
+      version.did,
+      version.collection,
+      version.rkey,
+      version.operation,
+      retainedCid,
+      version.source_id,
+      version.source_epoch,
+      version.source_revision,
+      version.source_time_us,
+      version.source_cursor,
+      version.indexed_at,
+      projectionTokens.get(event.uri)!,
+    ];
+  };
+
+  if (useJsonBulk && events.length > 1) {
+    const payloads = chunkJsonArrayRows(events.map(versionTuple));
+    return payloads.map((payload) =>
+      db
+        .prepare(
+          `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at, projection_token)
+           SELECT json_extract(j.value, '$[0]'), json_extract(j.value, '$[1]'), json_extract(j.value, '$[2]'),
+                  json_extract(j.value, '$[3]'), json_extract(j.value, '$[4]'), json_extract(j.value, '$[5]'),
+                  json_extract(j.value, '$[6]'), json_extract(j.value, '$[7]'), json_extract(j.value, '$[8]'),
+                  json_extract(j.value, '$[9]'), json_extract(j.value, '$[10]'), json_extract(j.value, '$[11]'),
+                  json_extract(j.value, '$[12]')
+           FROM json_each(?) AS j
+           WHERE true
+           ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_epoch = excluded.source_epoch, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at, projection_token = excluded.projection_token`,
+        )
+        .bind(payload),
+    );
+  }
+
   const statements: Statement[] = [];
   for (let index = 0; index < events.length; index += RECORD_VERSION_ROWS) {
     const chunk = events.slice(index, index + RECORD_VERSION_ROWS);
@@ -1420,30 +1492,7 @@ function buildRecordVersionStatements(
         .prepare(
           `INSERT INTO record_versions (uri, did, collection, rkey, operation, cid, source_id, source_epoch, source_revision, source_time_us, source_cursor, indexed_at, projection_token) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET did = excluded.did, collection = excluded.collection, rkey = excluded.rkey, operation = excluded.operation, cid = excluded.cid, source_id = excluded.source_id, source_epoch = excluded.source_epoch, source_revision = excluded.source_revision, source_time_us = excluded.source_time_us, source_cursor = excluded.source_cursor, indexed_at = excluded.indexed_at, projection_token = excluded.projection_token`,
         )
-        .bind(
-          ...chunk.flatMap((event) => {
-            const version = versionForEvent(event);
-            const retainedCid =
-              event.operation === "delete"
-                ? (version.cid ?? existing.get(event.uri)?.cid ?? null)
-                : version.cid;
-            return [
-              version.uri,
-              version.did,
-              version.collection,
-              version.rkey,
-              version.operation,
-              retainedCid,
-              version.source_id,
-              version.source_epoch,
-              version.source_revision,
-              version.source_time_us,
-              version.source_cursor,
-              version.indexed_at,
-              projectionTokens.get(event.uri)!,
-            ];
-          }),
-        ),
+        .bind(...chunk.flatMap(versionTuple)),
     );
   }
   return statements;
@@ -1451,7 +1500,8 @@ function buildRecordVersionStatements(
 
 function buildRecordMutationStatements(
   db: Database,
-  mutations: Iterable<StorageMutation>
+  mutations: Iterable<StorageMutation>,
+  useJsonBulk = false,
 ): Statement[] {
   const byTable = new Map<
     string,
@@ -1466,26 +1516,55 @@ function buildRecordMutationStatements(
 
   const statements: Statement[] = [];
   for (const [table, { upserts, deletes }] of byTable) {
-    for (let index = 0; index < upserts.length; index += RECORD_UPSERT_ROWS) {
-      const chunk = upserts.slice(index, index + RECORD_UPSERT_ROWS);
-      const values = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`
-          )
-          .bind(
-            ...chunk.flatMap((event) => [
-              event.uri,
-              event.did,
-              event.rkey,
-              event.cid,
-              event.record,
-              event.time_us,
-              event.indexed_at,
-            ])
-          )
+    if (useJsonBulk && upserts.length > 1) {
+      const payloads = chunkJsonArrayRows(
+        upserts.map((event) => [
+          event.uri,
+          event.did,
+          event.rkey,
+          event.cid,
+          event.record,
+          event.time_us,
+          event.indexed_at,
+        ]),
       );
+      for (const payload of payloads) {
+        statements.push(
+          db
+            .prepare(
+              `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at)
+               SELECT json_extract(j.value, '$[0]'), json_extract(j.value, '$[1]'), json_extract(j.value, '$[2]'),
+                      json_extract(j.value, '$[3]'), json_extract(j.value, '$[4]'), json_extract(j.value, '$[5]'),
+                      json_extract(j.value, '$[6]')
+               FROM json_each(?) AS j
+               WHERE true
+               ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`,
+            )
+            .bind(payload),
+        );
+      }
+    } else {
+      for (let index = 0; index < upserts.length; index += RECORD_UPSERT_ROWS) {
+        const chunk = upserts.slice(index, index + RECORD_UPSERT_ROWS);
+        const values = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
+        statements.push(
+          db
+            .prepare(
+              `INSERT INTO ${table} (uri, did, rkey, cid, record, time_us, indexed_at) VALUES ${values} ON CONFLICT(uri) DO UPDATE SET cid = excluded.cid, record = excluded.record, time_us = excluded.time_us, indexed_at = excluded.indexed_at`
+            )
+            .bind(
+              ...chunk.flatMap((event) => [
+                event.uri,
+                event.did,
+                event.rkey,
+                event.cid,
+                event.record,
+                event.time_us,
+                event.indexed_at,
+              ])
+            )
+        );
+      }
     }
 
     for (let index = 0; index < deletes.length; index += MAX_STATEMENT_BINDINGS) {
@@ -1575,6 +1654,11 @@ export async function projectEvents(
     skipFeedFanout?: boolean;
     /** Skip FTS and relation-count maintenance during canonical bulk loading. */
     skipDerivedProjections?: boolean;
+    /** @internal Fast path strictly for fresh unpublished single-writer bulk
+     * loads (such as Alluvium export bootstrap). Skips pre-insert version and
+     * existing-record SELECT lookups and per-URI `_contrail_projection_state`
+     * guard statements so each batch commits in a single `db.batch()` call. */
+    freshBulkLoad?: boolean;
     /** @deprecated Existing rows are re-read for transaction conflict safety. */
     existing?: Map<string, ExistingRecordInfo>;
     /** Statements committed after projection in the same database batch. */
@@ -1589,12 +1673,17 @@ export async function projectEvents(
 ): Promise<MutationSelection> {
   if (events.length === 0) return { applied: [], superseded: 0 };
 
+  const freshBulk = options?.freshBulkLoad === true;
   const predecessors =
     options?.predecessors ??
-    (await lookupRecordVersions(db, events.map((event) => event.uri)));
+    (freshBulk
+      ? new Map<string, RecordVersionInfo>()
+      : await lookupRecordVersions(db, events.map((event) => event.uri)));
   const selection = options?.sourceOrderingChecked
     ? { applied: events, superseded: 0 }
-    : selectMutationWinners(events, predecessors);
+    : freshBulk
+      ? selectAuthoritativeMutations(events)
+      : selectMutationWinners(events, predecessors);
   events = selection.applied;
   if (events.length === 0) {
     if (options?.trailingStatements?.length) {
@@ -1620,7 +1709,8 @@ export async function projectEvents(
   // map can predate that selection and would make derived changes incorrect
   // even when the optimistic token guard itself succeeds.
   const needExistingState =
-    !options?.skipReplayDetection || needRecordContent || changesEnabled(config);
+    !freshBulk &&
+    (!options?.skipReplayDetection || needRecordContent || changesEnabled(config));
   const existingMap = needExistingState
     ? await lookupExistingRecords(db, events, needRecordContent, config)
     : new Map<string, ExistingRecordInfo>();
@@ -1679,15 +1769,20 @@ export async function projectEvents(
 
   // Lock, verify the exact durable predecessors selected by the caller, then
   // write storage and version metadata. Any changed token violates the named
-  // guard constraint and rolls the complete database batch back.
+  // guard constraint and rolls the complete database batch back. Fresh
+  // single-writer bulk loads (Alluvium bootstrap) skip the guard statements
+  // and pack SQLite/D1 upserts via `json_each(?)` to keep batches to a few
+  // prepared statements.
+  const useJsonBulk = freshBulk && !isPostgresDialect(getDialect(db));
   batch.unshift(
-    ...buildProjectionGuardStatements(db, events, predecessors),
-    ...buildRecordMutationStatements(db, storageMutations.values()),
+    ...(freshBulk ? [] : buildProjectionGuardStatements(db, events, predecessors)),
+    ...buildRecordMutationStatements(db, storageMutations.values(), useJsonBulk),
     ...buildRecordVersionStatements(
       db,
       events,
       existingMap,
       projectionTokens,
+      useJsonBulk,
     ),
   );
 
