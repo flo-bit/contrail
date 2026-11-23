@@ -9,8 +9,10 @@ import {
   hasAccessLease,
   hideDeletedSpace,
   initSpacesStorage,
+  invalidateAccessLease,
   invalidateRevokedCredential,
   listConnectedSpaceWatches,
+  loadAccessLease,
   loadCredential,
   rediscoverSpace,
   renewSyncLease,
@@ -30,6 +32,24 @@ const projection = resolveConfig({
 const space = "at://did:plc:alice/space/garden.atmo.circle/self";
 
 describe("Spaces storage boundaries", () => {
+  it("gives renewed read grants distinct evidence and fences stale invalidations", async () => {
+    const db = createSqliteDatabase(":memory:");
+    await initSpacesStorage(db, projection);
+    const input = { userDid: "did:plc:bob", spaceUri: space, generation: 1 };
+    const expiresAt = Date.now() + 60_000;
+    expect(await loadAccessLease(db, input)).toBeNull();
+    await saveAccessLease(db, { ...input, expiresAt });
+    const original = (await loadAccessLease(db, input))!;
+    await saveAccessLease(db, { ...input, expiresAt });
+    const replacement = (await loadAccessLease(db, input))!;
+    expect(replacement.evidence).not.toBe(original.evidence);
+    expect(replacement.expiresAt).toBe(expiresAt);
+    await invalidateAccessLease(db, { ...input, evidence: original.evidence });
+    expect(await loadAccessLease(db, input)).toEqual(replacement);
+    await invalidateAccessLease(db, { ...input, evidence: replacement.evidence });
+    expect(await hasAccessLease(db, input)).toBe(false);
+  });
+
   it("binds encrypted credentials and access leases to the Space generation", async () => {
     const db = createSqliteDatabase(":memory:");
     await initSpacesStorage(db, projection);

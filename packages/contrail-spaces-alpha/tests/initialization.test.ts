@@ -56,7 +56,6 @@ describe("Spaces storage initialization and fencing", () => {
       rev: "1",
       ltHash: new Uint8Array(2048),
       commitHash: new Uint8Array(32),
-      removalObservations: 0,
     };
     await saveRepoStateStatement(db, state).run();
     await initSpacesStorage(db, config);

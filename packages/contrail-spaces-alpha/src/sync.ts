@@ -16,12 +16,15 @@ import {
   ingestRecords,
   rebuildIsolatedCountsStatements,
   recordTimeUs,
+  validateCanonicalRecord,
   type ContrailConfig,
   type Database,
   type IngestEvent,
   type Statement,
 } from "@atmo-dev/contrail";
+import { delegationFailure } from "./crypto";
 import {
+  exchangeSpaceCredential,
   getRepoStar,
   getPublishedSpacePolicy,
   listRepoOps,
@@ -36,17 +39,24 @@ import {
 } from "./protocol";
 import {
   acquireSyncLease,
+  advanceSpaceRev,
+  clearRepoFailure,
   deleteRepoState,
   getRepoState,
   getSpaceWatch,
   hideDeletedSpace,
   invalidateRevokedCredential,
   listDueWatches,
+  listRepoFailures,
   listRepoStates,
   loadCredential,
   purgeSpaceGeneration,
+  recordRepoFailure,
   releaseSyncLease,
   renewSyncLease,
+  REPO_FAILURE_MAX_BACKOFF_MS,
+  revBefore,
+  saveCredential,
   saveRepoStateStatement,
   syncLeaseFenceStatements,
   updateWatch,
@@ -55,14 +65,20 @@ import {
 } from "./storage";
 import { formatSpaceRecordUri, parseSpaceUri, spaceProjectionKey } from "./uri";
 
-import { isSyncedSpacePolicy, type SyncedSpacePolicy } from "./policy";
+import {
+  isAuthorityDecidedPolicy,
+  isSyncedSpacePolicy,
+  type SpaceTypePolicy,
+} from "./policy";
 
 export interface SpaceTypeConfig {
   collections: readonly string[];
   skey?: string;
   /** Access configuration asserted against the authority's authenticated policy
-   * record. The owner must enable publishPolicy on the PDS. */
-  policy: SyncedSpacePolicy;
+   * record. The owner must enable publishPolicy on the PDS. An
+   * `{ $type: "authority" }` policy skips that check: the authority host
+   * decides access by itself. */
+  policy: SpaceTypePolicy;
 }
 
 export interface SpacesSyncBudget {
@@ -76,13 +92,25 @@ export interface SpacesSyncBudget {
 export type SpacesSyncBudgetOptions = Partial<SpacesSyncBudget>;
 
 export const DEFAULT_SPACES_SYNC_BUDGET = Object.freeze({
-  maxIncrementalOperations: 10,
+  maxIncrementalOperations: 50,
   recoveryBatchSize: 50,
 }) satisfies SpacesSyncBudget;
 
-function boundedSyncInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 50) {
-    throw new TypeError(`${label} must be an integer from 1 through 50`);
+/** Incremental operations are projected in one atomic batch with their
+ * checkpoint, so runtimes with small transaction limits should stay near the
+ * default. Past the bound a writer is recovered from its full archive. */
+const MAX_INCREMENTAL_OPERATIONS = 1000;
+const MAX_RECOVERY_BATCH_SIZE = 50;
+
+function boundedSyncInteger(
+  value: number,
+  label: string,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new TypeError(
+      `${label} must be an integer from 1 through ${maximum}`,
+    );
   }
   return value;
 }
@@ -95,10 +123,12 @@ export function resolveSpacesSyncBudget(
       value.maxIncrementalOperations ??
         DEFAULT_SPACES_SYNC_BUDGET.maxIncrementalOperations,
       "syncBudget.maxIncrementalOperations",
+      MAX_INCREMENTAL_OPERATIONS,
     ),
     recoveryBatchSize: boundedSyncInteger(
       value.recoveryBatchSize ?? DEFAULT_SPACES_SYNC_BUDGET.recoveryBatchSize,
       "syncBudget.recoveryBatchSize",
+      MAX_RECOVERY_BATCH_SIZE,
     ),
   };
 }
@@ -109,6 +139,18 @@ export interface SpacesSyncConfig {
   serviceAudience: string;
   credentialEncryptionKey: string;
   reconcileIntervalMs?: number;
+  /** How often reconciliation lists every writer instead of only those
+   * updated since the last processed space revision (default one hour). */
+  fullReconcileIntervalMs?: number;
+  /** Mint a fresh delegation token for background sync when the stored
+   * credential is missing or about to expire. Return null when no session can
+   * mint one; the Space then pauses until a user authorizes it again. */
+  renewCredential?: (input: {
+    spaceUri: string;
+    authorityDid: string;
+    /** The user whose delegation produced the previous credential. */
+    viewerDid?: string;
+  }) => Promise<CredentialRenewal | null>;
   notificationRegistration?: "required" | "best-effort" | "disabled";
   registrationRenewalWindowMs?: number;
   syncBudget?: SpacesSyncBudgetOptions;
@@ -119,12 +161,70 @@ export interface SpacesSyncConfig {
   onInvalidate?: (spaceUri: string) => void | Promise<void>;
 }
 
+export interface CredentialRenewal {
+  userDid: string;
+  delegation: string;
+}
+
+export type SyncRepoOutcome =
+  /** Projection advanced to the host's latest verified commit. */
+  | "synced"
+  /** The notified revision was already applied. */
+  | "unchanged"
+  /** The host still serves a revision older than the one notified. */
+  | "behind"
+  /** The writer's host failed; recorded with backoff, other writers continue. */
+  | "failed"
+  /** Another worker holds this writer's sync lease. */
+  | "busy"
+  /** The Space is not active. */
+  | "skipped"
+  /** The authority confirmed the Space was deleted. */
+  | "deleted";
+
+export interface SyncRepoResult {
+  outcome: SyncRepoOutcome;
+  /** Notifications between the checkpoint and this one were missed; the
+   * caller should reconcile the Space to catch up. */
+  catchUp: boolean;
+}
+
 export interface ReconcileOptions {
   limit?: number;
   deadline?: number;
 }
 
 const SYNC_LEASE_TTL_MS = 90_000;
+const CREDENTIAL_RENEWAL_WINDOW_MS = 5 * 60_000;
+/** Waits before re-reading a host that has not caught up to its own
+ * notification yet. */
+const CHASE_DELAYS_MS = [300, 1_000];
+const WATCH_FAILURE_MAX_BACKOFF_MS = 60 * 60_000;
+
+/** Hosts answer these for a writer's own repo. Takedown hides the writer's
+ * records; the others keep the verified copy and retry later. */
+const WRITER_TAKEDOWN = "RepoTakendown";
+/** The archive would answer the same, so do not fall back to recovery. */
+const WRITER_UNAVAILABLE = new Set([WRITER_TAKEDOWN, "RepoDeactivated"]);
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function errorMessage(error: unknown): string {
+  if (error instanceof SpaceProtocolError)
+    return error.message === error.code
+      ? error.code
+      : `${error.code}: ${error.message}`;
+  return error instanceof Error ? error.message : "Sync failed";
+}
+
+/** A claim about the Space or its credential, as opposed to one repo. */
+function spaceLevel(error: unknown): error is SpaceProtocolError {
+  return (
+    error instanceof SpaceProtocolError &&
+    (error.deleted || error.accessDenied || error.code === "CredentialExpired")
+  );
+}
 
 interface LoadedCredentialTransport {
   transport: SpaceCredentialTransport;
@@ -188,11 +288,21 @@ export class SpacesSyncEngine {
   private async transport(
     watch: SpaceWatch,
   ): Promise<LoadedCredentialTransport> {
-    const stored = await loadCredential(this.db, {
-      spaceUri: watch.spaceUri,
-      generation: watch.generation,
-      encryptionKey: this.config.credentialEncryptionKey,
-    });
+    const load = () =>
+      loadCredential(this.db, {
+        spaceUri: watch.spaceUri,
+        generation: watch.generation,
+        encryptionKey: this.config.credentialEncryptionKey,
+      });
+    let stored = await load();
+    if (
+      this.config.renewCredential &&
+      (!stored ||
+        stored.credential.expiresAt - Date.now() < CREDENTIAL_RENEWAL_WINDOW_MS)
+    ) {
+      if (await this.renewCredential(watch, stored?.viewerDid, !stored))
+        stored = await load();
+    }
     if (!stored) {
       await updateWatch(this.db, watch.spaceUri, {
         status: "paused",
@@ -208,6 +318,71 @@ export class SpacesSyncEngine {
       ),
       encryptedValue: stored.encryptedValue,
     };
+  }
+
+  /** Exchange an application-minted delegation for a new sync credential.
+   * A usable stored credential outlives a failed renewal. Without one, a
+   * failing hook is transient and must not pause the Space; only "no session
+   * can mint" (null) or an authority refusal does. */
+  private async renewCredential(
+    watch: SpaceWatch,
+    viewerDid: string | undefined,
+    required: boolean,
+  ): Promise<boolean> {
+    try {
+      const renewal = await this.config.renewCredential!({
+        spaceUri: watch.spaceUri,
+        authorityDid: watch.authorityDid,
+        viewerDid,
+      });
+      if (!renewal) return false;
+      const failure = delegationFailure(renewal.delegation, {
+        userDid: renewal.userDid,
+        spaceUri: watch.spaceUri,
+      });
+      if (failure) throw new Error(`Renewal delegation rejected: ${failure}`);
+      const transport = await exchangeSpaceCredential({
+        authorityPds: await this.identities.resolvePds(watch.authorityDid),
+        delegationToken: renewal.delegation,
+        spaceUri: watch.spaceUri,
+        fetch: this.config.protocol?.fetch,
+      });
+      await saveCredential(this.db, {
+        spaceUri: watch.spaceUri,
+        generation: watch.generation,
+        viewerDid: renewal.userDid,
+        credential: await transport.serialize(),
+        encryptionKey: this.config.credentialEncryptionKey,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof SpaceProtocolError && error.deleted) throw error;
+      const refused = error instanceof SpaceProtocolError && error.accessDenied;
+      if (required && !refused) throw error;
+      this.logger.warn(
+        `[spaces] credential renewal failed for ${watch.spaceUri}`,
+        error,
+      );
+      return false;
+    }
+  }
+
+  /** Ask the authority whether a Space-level claim made by a writer's host is
+   * true. Throws the authority's own answer if it agrees. */
+  private async confirmWithAuthority(
+    watch: SpaceWatch,
+    transport: SpaceCredentialTransport,
+  ): Promise<void> {
+    try {
+      await listRepos(
+        transport,
+        await this.identities.resolvePds(watch.authorityDid),
+        { space: watch.spaceUri, limit: 1 },
+      );
+    } catch (error) {
+      if (spaceLevel(error)) throw error;
+      // An unreachable authority confirms nothing.
+    }
   }
 
   private async invalidateRevoked(
@@ -242,6 +417,9 @@ export class SpacesSyncEngine {
     if (type.skey !== undefined && parsed.skey !== type.skey) {
       throw new Error(`Unsupported Space key for ${parsed.type}`);
     }
+    // The authority host decides access by itself; it need not publish a
+    // policy, and the credential it issued is the assertion.
+    if (isAuthorityDecidedPolicy(type.policy)) return;
     const read = async (forceRefresh: boolean) => {
       const kemDidKey = await this.identities.resolveKemKey(
         parsed.authorityDid,
@@ -331,7 +509,7 @@ export class SpacesSyncEngine {
 
   async reconcileSpace(
     spaceUri: string,
-    options: { deadline?: number; preferredRepo?: string } = {},
+    options: { deadline?: number; preferredRepo?: string; full?: boolean } = {},
   ): Promise<void> {
     const watch = await getSpaceWatch(this.db, spaceUri);
     if (!watch || watch.status !== "active") return;
@@ -376,14 +554,95 @@ export class SpacesSyncEngine {
         }
       }
 
-      const advertised = new Map<string, { rev: string; hash: Uint8Array }>();
-      let cursor: string | undefined;
-      do {
+      const local = new Map(
+        (await listRepoStates(this.db, watch)).map((state) => [
+          state.repoDid,
+          state,
+        ]),
+      );
+      const failures = new Map(
+        (await listRepoFailures(this.db, watch)).map((failure) => [
+          failure.repoDid,
+          failure,
+        ]),
+      );
+      const preferred = options.preferredRepo;
+      const attempted = new Set<string>();
+      const pass = {
+        /** The Space was deleted or deactivated under us. */
+        halted: false,
+        /** Out of time, or halted: start no more work. */
+        stopped: false,
+        /** Some writer is neither current nor on the retry list, so the
+         * processed revision must not move past it. */
+        unfinished: false,
+      };
+      const sync = async (repoDid: string): Promise<boolean> => {
+        if (Date.now() >= deadline) {
+          pass.unfinished = pass.stopped = true;
+          return false;
+        }
+        attempted.add(repoDid);
+        const failure = failures.get(repoDid);
+        // A backed-off writer stays on the retry list; it does not hold up
+        // the others or the checkpoint.
+        if (failure && failure.retryAfter > Date.now() && repoDid !== preferred)
+          return true;
+        try {
+          const { outcome } = await this.syncRepo(
+            watch.spaceUri,
+            repoDid,
+            undefined,
+            { deadline },
+          );
+          if (outcome === "deleted" || outcome === "skipped") {
+            pass.halted = pass.stopped = true;
+            return false;
+          }
+          if (outcome === "busy") pass.unfinished = true;
+          return true;
+        } catch (error) {
+          if (error instanceof SyncDeadlineExceededError) {
+            pass.unfinished = pass.stopped = true;
+            return false;
+          }
+          if (error instanceof SyncLeaseLostError) {
+            pass.unfinished = true;
+            return true;
+          }
+          throw error;
+        }
+      };
+
+      // An integrated application names the writer it just wrote for. Its
+      // host is the source of truth, so do not wait for the authority's
+      // listing to catch up.
+      if (preferred && local.has(preferred)) await sync(preferred);
+
+      // The listing is ordered by space revision, so the checkpoint advances
+      // page by page and an interrupted pass resumes where it stopped. A full
+      // pass starts from the beginning to repair anything the incremental
+      // cursor could not see.
+      const full =
+        options.full === true ||
+        !watch.spaceRev ||
+        !watch.lastFullReconcileAt ||
+        Date.now() - watch.lastFullReconcileAt >=
+          (this.config.fullReconcileIntervalMs ?? 60 * 60_000);
+      let cursor = full ? undefined : (watch.spaceRev ?? undefined);
+      let listed = false;
+      while (!pass.stopped) {
+        if (Date.now() >= deadline) {
+          pass.unfinished = pass.stopped = true;
+          break;
+        }
         const page = await listRepos(transport, authorityPds, {
           space: watch.spaceUri,
           limit: 1000,
           cursor,
         });
+        let pageRev: string | undefined;
+        const stale: string[] = [];
         for (const repo of page.repos) {
           if (
             !/^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/.test(repo.did) ||
@@ -394,54 +653,58 @@ export class SpacesSyncEngine {
           ) {
             throw new Error("Space authority returned an invalid writer entry");
           }
-          advertised.set(repo.did, { rev: repo.repoRev, hash: repo.data });
+          if (!pageRev || revBefore(pageRev, repo.spaceRev))
+            pageRev = repo.spaceRev;
+          const state = local.get(repo.did);
+          if (
+            !attempted.has(repo.did) &&
+            (!state ||
+              state.rev !== repo.repoRev ||
+              !bytesEqual(state.commitHash, repo.data))
+          )
+            stale.push(repo.did);
         }
-        if (page.cursor && page.cursor === cursor)
+        if (preferred && stale.includes(preferred)) {
+          stale.splice(stale.indexOf(preferred), 1);
+          stale.unshift(preferred);
+        }
+        for (const repoDid of stale) if (!(await sync(repoDid))) break;
+        if (pass.stopped) break;
+        if (pageRev && !pass.unfinished)
+          await advanceSpaceRev(this.db, watch, { spaceRev: pageRev });
+        const next = page.repos.length ? page.cursor : undefined;
+        if (!next) {
+          listed = true;
+          break;
+        }
+        if (next === cursor)
           throw new Error("Writer listing cursor did not advance");
-        cursor = page.repos.length ? page.cursor : undefined;
-      } while (cursor && Date.now() < deadline);
-      if (cursor)
-        throw new Error(
-          "Reconciliation deadline reached during writer listing",
-        );
-
-      const local = new Map(
-        (await listRepoStates(this.db, watch)).map((state) => [
-          state.repoDid,
-          state,
-        ]),
-      );
-      const advertisedEntries = [...advertised];
-      if (options.preferredRepo && advertised.has(options.preferredRepo)) {
-        advertisedEntries.sort(([left], [right]) =>
-          left === options.preferredRepo
-            ? -1
-            : right === options.preferredRepo
-              ? 1
-              : 0,
-        );
-      }
-      for (const [repoDid, remote] of advertisedEntries) {
-        if (Date.now() >= deadline) break;
-        const state = local.get(repoDid);
-        if (
-          !state ||
-          state.rev !== remote.rev ||
-          !bytesEqual(state.commitHash, remote.hash)
-        ) {
-          await this.syncRepo(watch.spaceUri, repoDid, undefined, { deadline });
-        }
+        cursor = next;
       }
 
       // Omission in a latest-state listing does not prove writer removal.
       // Keep verified records until authoritative deletion evidence arrives.
+
+      // Writers that failed earlier are retried from the retry list: an
+      // incremental listing will not mention them again until they write.
+      for (const repoDid of failures.keys()) {
+        if (pass.stopped) break;
+        if (!attempted.has(repoDid)) await sync(repoDid);
+      }
+      if (pass.halted) return;
 
       const now = Date.now();
       await updateWatch(this.db, watch.spaceUri, {
         status: "active",
         error: null,
         reconciledAt: now,
-        nextReconcileAt: now + (this.config.reconcileIntervalMs ?? 5 * 60_000),
+        // Unfinished work is due again on the next pass, not a full interval
+        // later.
+        nextReconcileAt: pass.unfinished
+          ? now
+          : now + (this.config.reconcileIntervalMs ?? 5 * 60_000),
+        consecutiveFailures: 0,
+        fullReconciledAt: full && listed && !pass.unfinished ? now : undefined,
         expectedGeneration: watch.generation,
         expectedStatus: "active",
       });
@@ -455,11 +718,17 @@ export class SpacesSyncEngine {
       const paused =
         error instanceof SpaceProtocolError &&
         (error.accessDenied || error.code === "CredentialExpired");
+      const failed = watch.consecutiveFailures + 1;
       await updateWatch(this.db, watch.spaceUri, {
         status: paused ? "paused" : watch.status,
-        error:
-          error instanceof Error ? error.message.slice(0, 500) : "Sync failed",
-        nextReconcileAt: Date.now() + 60_000,
+        error: errorMessage(error).slice(0, 500),
+        nextReconcileAt:
+          Date.now() +
+          Math.min(
+            WATCH_FAILURE_MAX_BACKOFF_MS,
+            60_000 * 2 ** Math.min(failed - 1, 10),
+          ),
+        consecutiveFailures: failed,
         expectedGeneration: watch.generation,
         expectedStatus: "active",
       });
@@ -467,25 +736,78 @@ export class SpacesSyncEngine {
     }
   }
 
+  /** Bring one writer's repo current.
+   *
+   * Only Space-level failures are thrown: the authority (or this service's
+   * own credential state) says the Space is deleted, access is gone, or the
+   * credential is revoked. A writer's host is authoritative for that writer's
+   * repo and nothing else, so its failures are recorded with backoff and
+   * reported as `failed`; when such a host makes a Space-level claim, the
+   * authority is asked to confirm before anything is paused or purged. */
   async syncRepo(
     spaceUri: string,
     repoDid: string,
-    advertised?: { rev?: string; hash?: Uint8Array },
+    advertised?: {
+      rev?: string;
+      hash?: Uint8Array;
+      /** Sequencing from an authority-forwarded notification. */
+      spaceRev?: string;
+      prevSpaceRev?: string;
+    },
     options: { deadline?: number } = {},
-  ): Promise<void> {
+  ): Promise<SyncRepoResult> {
     const watch = await getSpaceWatch(this.db, spaceUri);
-    if (!watch || watch.status !== "active") return;
+    if (!watch || watch.status !== "active")
+      return { outcome: "skipped", catchUp: false };
+    // Once the writer is current or on the retry list the notification is
+    // processed, and the checkpoint may move if nothing before it was missed.
+    const settle = async (
+      outcome: SyncRepoOutcome,
+    ): Promise<SyncRepoResult> => ({
+      outcome,
+      catchUp: advertised?.spaceRev
+        ? !(await advanceSpaceRev(this.db, watch, {
+            spaceRev: advertised.spaceRev,
+            prevSpaceRev: advertised.prevSpaceRev,
+            contiguousOnly: true,
+          }))
+        : false,
+    });
+    const alreadyApplied = async (): Promise<boolean> => {
+      if (!advertised?.rev) return false;
+      const state = await getRepoState(this.db, watch, repoDid);
+      if (!state || revBefore(state.rev, advertised.rev)) return false;
+      return !(
+        state.rev === advertised.rev &&
+        advertised.hash &&
+        !bytesEqual(state.commitHash, advertised.hash)
+      );
+    };
     const owner = crypto.randomUUID();
-    if (
-      !(await acquireSyncLease(this.db, {
-        spaceUri,
-        generation: watch.generation,
-        repoDid,
-        owner,
-        ttlMs: SYNC_LEASE_TTL_MS,
-      }))
-    )
-      return;
+    for (let attempt = 0; ; attempt++) {
+      // Duplicate and out-of-order notifications cost one local read.
+      if (await alreadyApplied()) return settle("unchanged");
+      if (
+        await acquireSyncLease(this.db, {
+          spaceUri,
+          generation: watch.generation,
+          repoDid,
+          owner,
+          ttlMs: SYNC_LEASE_TTL_MS,
+        })
+      )
+        break;
+      // Another worker is syncing this writer, possibly from before the
+      // notified write. Wait briefly for it rather than dropping the update.
+      const delay = advertised?.rev ? CHASE_DELAYS_MS[attempt] : undefined;
+      if (
+        delay === undefined ||
+        (options.deadline !== undefined &&
+          Date.now() + delay >= options.deadline)
+      )
+        return { outcome: "busy", catchUp: false };
+      await sleep(delay);
+    }
     // Every durable stage renews this owner token first. Work may outlive the
     // original TTL while downloading/verifying, but a worker that loses the
     // lease is fenced before it can resume projection or checkpoint writes.
@@ -510,6 +832,7 @@ export class SpacesSyncEngine {
         owner,
       });
     let credential: LoadedCredentialTransport | undefined;
+    let hostContacted = false;
     try {
       const currentWatch = await getSpaceWatch(this.db, spaceUri);
       if (
@@ -517,43 +840,24 @@ export class SpacesSyncEngine {
         currentWatch.generation !== watch.generation ||
         currentWatch.status !== "active"
       )
-        return;
+        return { outcome: "skipped", catchUp: false };
       credential = await this.transport(watch);
       const { transport } = credential;
       await assertLease();
-      const state = await getRepoState(this.db, watch, repoDid);
-      if (!state) {
-        await this.recoverRepo(watch, repoDid, transport, assertLease, fence);
-      } else {
-        try {
-          await this.incrementalRepo(
-            watch,
-            state,
-            transport,
-            assertLease,
-            options.deadline,
-            fence,
-          );
-        } catch (error) {
-          if (
-            error instanceof SyncLeaseLostError ||
-            error instanceof SyncDeadlineExceededError ||
-            (error instanceof SpaceProtocolError &&
-              (error.accessDenied ||
-                error.deleted ||
-                error.code === "CredentialExpired"))
-          )
-            throw error;
-          this.logger.warn(
-            `[spaces] incremental sync fell back to recovery for ${spaceUri} ${repoDid}`,
-            error,
-          );
-          await this.recoverRepo(watch, repoDid, transport, assertLease, fence);
-        }
-      }
-      if (advertised?.hash) {
+      hostContacted = true;
+      let behind = false;
+      for (let attempt = 0; ; attempt++) {
+        await this.syncRepoOnce(
+          watch,
+          repoDid,
+          transport,
+          assertLease,
+          fence,
+          options.deadline,
+        );
         const updated = await getRepoState(this.db, watch, repoDid);
         if (
+          advertised?.hash &&
           updated &&
           advertised.rev === updated.rev &&
           !bytesEqual(updated.commitHash, advertised.hash)
@@ -562,16 +866,86 @@ export class SpacesSyncEngine {
             "Synchronized commit did not match notification target hash",
           );
         }
+        behind = Boolean(
+          advertised?.rev && updated && revBefore(updated.rev, advertised.rev),
+        );
+        if (!behind) break;
+        // The host has not caught up to its own notification yet.
+        const delay = CHASE_DELAYS_MS[attempt];
+        if (
+          delay === undefined ||
+          (options.deadline !== undefined &&
+            Date.now() + delay >= options.deadline)
+        )
+          break;
+        await sleep(delay);
+        await assertLease();
+      }
+      if (behind) {
+        await recordRepoFailure(this.db, watch, repoDid, {
+          error: "Repo host is behind its notified revision",
+          retryInMs: 30_000,
+        });
+      } else {
+        await clearRepoFailure(this.db, watch, repoDid);
       }
       await this.config.onInvalidate?.(spaceUri);
+      return await settle(behind ? "behind" : "synced");
     } catch (error) {
-      if (error instanceof SpaceProtocolError && error.deleted) {
-        await assertLease();
-        await this.deleteSpace(watch);
-      } else {
-        await this.invalidateRevoked(watch, credential, error);
+      if (
+        error instanceof SyncLeaseLostError ||
+        error instanceof SyncDeadlineExceededError
+      )
         throw error;
+      let spaceError: unknown;
+      if (!hostContacted) {
+        spaceError = error;
+      } else if (spaceLevel(error)) {
+        if (
+          repoDid === watch.authorityDid ||
+          error.code === "CredentialExpired"
+        ) {
+          spaceError = error;
+        } else {
+          // A member's host cannot delete the Space, revoke our credential or
+          // deny access to it. Believe that only from the authority.
+          try {
+            await this.confirmWithAuthority(watch, credential!.transport);
+          } catch (confirmed) {
+            spaceError = confirmed;
+          }
+        }
       }
+      if (spaceError !== undefined) {
+        if (spaceError instanceof SpaceProtocolError && spaceError.deleted) {
+          await assertLease();
+          await this.deleteSpace(watch);
+          return { outcome: "deleted", catchUp: false };
+        }
+        await this.invalidateRevoked(watch, credential, spaceError);
+        throw spaceError;
+      }
+
+      const takedown =
+        error instanceof SpaceProtocolError && error.code === WRITER_TAKEDOWN;
+      if (takedown) {
+        // Stop serving a taken-down account's records, as public indexes do.
+        // The repo is recovered in full if the account is reinstated.
+        const state = await getRepoState(this.db, watch, repoDid);
+        if (state) {
+          await assertLease();
+          await this.removeWriter(watch, state);
+        }
+      }
+      const message = errorMessage(error);
+      const failure = await recordRepoFailure(this.db, watch, repoDid, {
+        error: message,
+        retryInMs: takedown ? REPO_FAILURE_MAX_BACKOFF_MS : undefined,
+      });
+      this.logger.warn(
+        `[spaces] writer ${repoDid} failed in ${spaceUri} (${failure.failures}x): ${message}`,
+      );
+      return await settle("failed");
     } finally {
       await releaseSyncLease(this.db, {
         spaceUri,
@@ -579,6 +953,45 @@ export class SpacesSyncEngine {
         repoDid,
         owner,
       });
+    }
+  }
+
+  private async syncRepoOnce(
+    watch: SpaceWatch,
+    repoDid: string,
+    transport: SpaceCredentialTransport,
+    assertLease: () => Promise<void>,
+    fence: () => Statement[],
+    deadline?: number,
+  ): Promise<void> {
+    const state = await getRepoState(this.db, watch, repoDid);
+    if (!state) {
+      await this.recoverRepo(watch, repoDid, transport, assertLease, fence);
+      return;
+    }
+    try {
+      await this.incrementalRepo(
+        watch,
+        state,
+        transport,
+        assertLease,
+        deadline,
+        fence,
+      );
+    } catch (error) {
+      if (
+        error instanceof SyncLeaseLostError ||
+        error instanceof SyncDeadlineExceededError ||
+        spaceLevel(error) ||
+        (error instanceof SpaceProtocolError &&
+          WRITER_UNAVAILABLE.has(error.code))
+      )
+        throw error;
+      this.logger.warn(
+        `[spaces] incremental sync fell back to recovery for ${watch.spaceUri} ${repoDid}`,
+        error,
+      );
+      await this.recoverRepo(watch, repoDid, transport, assertLease, fence);
     }
   }
 
@@ -692,38 +1105,58 @@ export class SpacesSyncEngine {
         }
       }
       const observedAt = Date.now() * 1000;
-      events.push(
-        createIngestEvent({
-          uri: formatSpaceRecordUri({
-            spaceUri: watch.spaceUri,
-            writerDid: local.repoDid,
-            collection: operation.collection,
-            rkey: operation.rkey,
-          }),
-          did: local.repoDid,
+      const value = operation.cid
+        ? (lexToJson(operation.value!) as Record<string, unknown>)
+        : undefined;
+      const event = createIngestEvent({
+        uri: formatSpaceRecordUri({
+          spaceUri: watch.spaceUri,
+          writerDid: local.repoDid,
           collection: operation.collection,
           rkey: operation.rkey,
-          operation: operation.cid
-            ? operation.prev
-              ? "update"
-              : "create"
-            : "delete",
-          cid: operation.cid,
-          value: operation.cid ? lexToJson(operation.value!) : undefined,
-          timeUs: recordTimeUs(
-            operation.value,
-            operation.collection,
-            this.config.projection,
-            observedAt,
-          ),
-          indexedAt: observedAt,
-          source: {
-            id: `space:${watch.spaceUri}:${watch.generation}`,
-            revision: operation.rev,
-            time_us: observedAt,
-          },
         }),
-      );
+        did: local.repoDid,
+        collection: operation.collection,
+        rkey: operation.rkey,
+        operation: operation.cid
+          ? operation.prev
+            ? "update"
+            : "create"
+          : "delete",
+        cid: operation.cid,
+        value,
+        timeUs: recordTimeUs(
+          operation.value,
+          operation.collection,
+          this.config.projection,
+          observedAt,
+        ),
+        indexedAt: observedAt,
+        source: {
+          id: `space:${watch.spaceUri}:${watch.generation}`,
+          revision: operation.rev,
+          time_us: observedAt,
+        },
+      });
+      if (value) {
+        const failure = await validateCanonicalRecord(
+          this.config.projection,
+          event,
+          value,
+        );
+        if (failure === "lexicon_validation") {
+          // MAC, whole-repo LtHash and this value's CID are already verified.
+          // Exclude an invalid current record instead of keeping its previous
+          // valid value. Preserve the source CID/revision in the tombstone so
+          // projection, derived state and checkpoint advance atomically.
+          events.push({ ...event, operation: "delete", record: null });
+          continue;
+        }
+        if (failure) {
+          throw new Error(`Incremental record validation failed: ${failure}`);
+        }
+      }
+      events.push(event);
     }
     await assertLease();
     const checkpoint = saveRepoStateStatement(this.db, {
@@ -732,7 +1165,6 @@ export class SpacesSyncEngine {
       rev: commit.rev,
       ltHash: state.setHash.state(),
       commitHash: commit.data,
-      removalObservations: 0,
     });
     if (events.length) {
       await ingestRecords(this.db, events, this.config.projection, {
@@ -827,7 +1259,9 @@ export class SpacesSyncEngine {
         (error.accessDenied ||
           error.deleted ||
           error.code === "CredentialExpired" ||
-          error.code === "RepoTooLarge")
+          error.code === "RepoTooLarge" ||
+          error.code === "UpstreamTimeout" ||
+          WRITER_UNAVAILABLE.has(error.code))
       )
         throw error;
       recovered = await recover(true);
@@ -898,7 +1332,6 @@ export class SpacesSyncEngine {
       rev: recovered.commit.rev,
       ltHash: RepoCommit.fromRecords(recovered.records).setHash.state(),
       commitHash: recovered.commit.data,
-      removalObservations: 0,
     });
     await this.db.batch([
       activateIsolatedPartitionStatement(this.db, {

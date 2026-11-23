@@ -108,6 +108,34 @@ export function decodeJwtClaims(token: string): JwtClaims {
   }
 }
 
+export type DelegationFailure =
+  "DelegationIssuerMismatch" | "DelegationSpaceMismatch" | "DelegationExpired";
+
+/** Check an unverified delegation token's claims against the user and Space
+ * it is presented for. The authority verifies the signature on exchange. */
+export function delegationFailure(
+  token: string,
+  expected: { userDid: string; spaceUri: string; now?: number },
+): DelegationFailure | null {
+  const claims = decodeJwtClaims(token);
+  const subject =
+    typeof claims.iss === "string"
+      ? claims.iss
+      : typeof claims.sub === "string"
+        ? claims.sub
+        : null;
+  if (subject?.split("#", 1)[0] !== expected.userDid)
+    return "DelegationIssuerMismatch";
+  if (typeof claims.sub === "string" && claims.sub !== expected.spaceUri)
+    return "DelegationSpaceMismatch";
+  if (
+    typeof claims.exp === "number" &&
+    claims.exp * 1000 <= (expected.now ?? Date.now())
+  )
+    return "DelegationExpired";
+  return null;
+}
+
 export function jwtExpiresAt(token: string): number | null {
   const exp = decodeJwtClaims(token).exp;
   return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;

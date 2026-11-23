@@ -8,7 +8,7 @@ import {
   type ContrailConfig,
   type Database,
 } from "@atmo-dev/contrail";
-import { decodeJwtClaims } from "./crypto";
+import { delegationFailure, type DelegationFailure } from "./crypto";
 import { exchangeSpaceCredential, SpaceProtocolError } from "./protocol";
 import {
   ensureSpaceWatch,
@@ -16,7 +16,9 @@ import {
   hasAccessLease,
   hideDeletedSpace,
   initSpacesStorage,
+  invalidateAccessLease,
   listConnectedSpaceWatches,
+  loadAccessLease,
   purgeSpaceGeneration,
   rediscoverSpace,
   saveAccessLease,
@@ -27,12 +29,13 @@ import {
 import {
   resolveSpacesSyncBudget,
   SpacesSyncEngine,
+  type CredentialRenewal,
   type SpacesSyncBudgetOptions,
   type SpaceTypeConfig,
 } from "./sync";
 import { parseSpaceUri, spaceProjectionKey } from "./uri";
 import { createSpaceRecordValidation } from "./validation";
-import { isSyncedSpacePolicy } from "./policy";
+import { isAuthorityDecidedPolicy, isSyncedSpacePolicy } from "./policy";
 
 export const AUTHORIZE_SPACE_METHOD = "authorizeSpace";
 export const SYNC_SPACE_METHOD = "syncSpace";
@@ -148,6 +151,19 @@ export interface SpacesWorkerOptions<
   };
   accessLeaseMs?: number;
   reconcileIntervalMs?: number;
+  /** How often reconciliation lists every writer rather than only those
+   * updated since the last processed space revision (default one hour). */
+  fullReconcileIntervalMs?: number;
+  /** Keep background sync running while no user is active. Called when the
+   * stored sync credential is missing or about to expire; return a delegation
+   * token minted from a session the application holds for a user who can read
+   * the Space, or null when none can. Without this the Space pauses when its
+   * credential expires, until a user calls authorizeSpace again. This does
+   * not grant or extend anyone's read access. */
+  renewCredential?: (
+    input: { space: string; authorityDid: string; viewerDid?: string },
+    context: { env: Env },
+  ) => Promise<CredentialRenewal | null>;
   /** PDS push registration is optional because integrated applications notify
    * successful writes directly and reconciliation remains authoritative. */
   notificationRegistration?:
@@ -173,7 +189,15 @@ export interface SpacesWorkerOptions<
 
 type SyncMessage =
   | { kind: "reconcile"; space: string; preferredRepo?: string }
-  | { kind: "repo"; space: string; repo: string; rev?: string; hash?: string };
+  | {
+      kind: "repo";
+      space: string;
+      repo: string;
+      rev?: string;
+      hash?: string;
+      spaceRev?: string;
+      prevSpaceRev?: string;
+    };
 
 function json(value: unknown, status = 200, headers?: HeadersInit): Response {
   return new Response(JSON.stringify(value), {
@@ -410,6 +434,12 @@ function collectionMethod(
 ): string {
   return `${namespace}.${short}.${suffix}`;
 }
+
+const DELEGATION_FAILURE_MESSAGES: Record<DelegationFailure, string> = {
+  DelegationIssuerMismatch: "Delegation issuer mismatch",
+  DelegationSpaceMismatch: "Delegation Space mismatch",
+  DelegationExpired: "Delegation expired",
+};
 
 function baseDid(value: string): string {
   return value.split("#", 1)[0];
@@ -755,6 +785,7 @@ export function createSpacesWorker<
   bindRecordValidationProvider(projection, validation.validate);
   prepareRecordValidation(projection);
   for (const [spaceType, type] of Object.entries(options.spaceTypes)) {
+    if (isAuthorityDecidedPolicy(type.policy)) continue;
     if (!isSyncedSpacePolicy(type.policy)) {
       throw new TypeError(
         `Space type ${spaceType} requires an explicit supported policy`,
@@ -845,8 +876,7 @@ export function createSpacesWorker<
 
   const subscriptionHub = (env: Env, spaceUri: string): DurableObjectStub => {
     const binding = env[subscriptionBinding] as
-      | DurableObjectNamespace
-      | undefined;
+      DurableObjectNamespace | undefined;
     if (
       !binding ||
       typeof binding.idFromName !== "function" ||
@@ -897,6 +927,14 @@ export function createSpacesWorker<
       serviceAudience: options.service.audience,
       credentialEncryptionKey: stringBinding(env, encryptionBinding),
       reconcileIntervalMs: options.reconcileIntervalMs,
+      fullReconcileIntervalMs: options.fullReconcileIntervalMs,
+      renewCredential: options.renewCredential
+        ? ({ spaceUri, authorityDid, viewerDid }) =>
+            options.renewCredential!(
+              { space: spaceUri, authorityDid, viewerDid },
+              { env },
+            )
+        : undefined,
       notificationRegistration:
         typeof options.notificationRegistration === "function"
           ? options.notificationRegistration(env)
@@ -925,8 +963,7 @@ export function createSpacesWorker<
     fallback: () => Promise<void>,
   ) => {
     const queue = env[queueBinding] as
-      | { send?: (body: SyncMessage) => Promise<void> }
-      | undefined;
+      { send?: (body: SyncMessage) => Promise<void> } | undefined;
     if (queue?.send) await queue.send(message);
     else ctx.waitUntil(fallback());
   };
@@ -1007,32 +1044,15 @@ export function createSpacesWorker<
           );
         }
         if (!input.delegation) throw new TypeError("delegation is required");
-        const claims = decodeJwtClaims(input.delegation);
-        const delegationDid =
-          typeof claims.iss === "string"
-            ? baseDid(claims.iss)
-            : typeof claims.sub === "string"
-              ? baseDid(claims.sub)
-              : null;
-        if (delegationDid !== input.userDid) {
+        const failure = delegationFailure(input.delegation, {
+          userDid: input.userDid,
+          spaceUri: parsed.uri,
+        });
+        if (failure) {
           throw new SpacesRuntimeError(
-            "DelegationIssuerMismatch",
-            403,
-            "Delegation issuer mismatch",
-          );
-        }
-        if (typeof claims.sub === "string" && claims.sub !== parsed.uri) {
-          throw new SpacesRuntimeError(
-            "DelegationSpaceMismatch",
-            403,
-            "Delegation Space mismatch",
-          );
-        }
-        if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now()) {
-          throw new SpacesRuntimeError(
-            "DelegationExpired",
-            401,
-            "Delegation expired",
+            failure,
+            failure === "DelegationExpired" ? 401 : 403,
+            DELEGATION_FAILURE_MESSAGES[failure],
           );
         }
         const existingWatch = await getSpaceWatch(db, parsed.uri);
@@ -1050,6 +1070,13 @@ export function createSpacesWorker<
             "Rediscovery is not allowed for this Space",
           );
         }
+        const existingLease = existingWatch
+          ? await loadAccessLease(db, {
+              userDid: input.userDid,
+              spaceUri: parsed.uri,
+              generation: existingWatch.generation,
+            })
+          : null;
         const authorityPds = await engine.identities.resolvePds(
           parsed.authorityDid,
         );
@@ -1070,6 +1097,20 @@ export function createSpacesWorker<
             await hideDeletedSpace(db, existingWatch);
             await purgeSpaceGeneration(db, projection, existingWatch);
             await invalidate(parsed.uri, env);
+          } else if (
+            error instanceof SpaceProtocolError &&
+            error.accessDenied &&
+            existingWatch &&
+            existingLease
+          ) {
+            // A confirmed refusal supersedes this viewer's old read grant,
+            // not other viewers' grants or a newer concurrent authorization.
+            await invalidateAccessLease(db, {
+              userDid: input.userDid,
+              spaceUri: parsed.uri,
+              generation: existingWatch.generation,
+              evidence: existingLease.evidence,
+            });
           }
           throw error;
         }
@@ -1084,6 +1125,9 @@ export function createSpacesWorker<
           nextReconcileAt: Date.now(),
           lastReconciledAt: null,
           lastError: null,
+          spaceRev: null,
+          consecutiveFailures: 0,
+          lastFullReconcileAt: null,
         };
         await engine.validateWatch(provisionalWatch, transport);
         const watch =
@@ -1424,7 +1468,7 @@ export function createSpacesWorker<
         ...(providerLexicons.length
           ? { lexicons: new URL("/lexicons", options.service.endpoint).href }
           : {}),
-        spacesAlpha: "0.0.0-spaces-alpha-20261029171913",
+        spacesAlpha: "0.0.0-spaces-alpha-20261105160032",
       });
     }
 
@@ -1536,6 +1580,10 @@ export function createSpacesWorker<
         typeof body.repoRev !== "string" ||
         body.repoRev.length > 128 ||
         typeof body.spaceRev !== "string" ||
+        body.spaceRev.length > 128 ||
+        (body.prevSpaceRev !== undefined &&
+          (typeof body.prevSpaceRev !== "string" ||
+            body.prevSpaceRev.length > 128)) ||
         !hash ||
         hash.byteLength !== 32
       ) {
@@ -1546,6 +1594,8 @@ export function createSpacesWorker<
       }
       const repoDid = body.repo;
       const revision = body.repoRev;
+      const spaceRev = body.spaceRev;
+      const prevSpaceRev = body.prevSpaceRev;
       const watch = await getSpaceWatch(db, parsed.uri);
       if (watch?.status === "active") {
         await enqueue(
@@ -1557,12 +1607,20 @@ export function createSpacesWorker<
             repo: repoDid,
             rev: revision,
             hash: encodeBytes(hash),
+            spaceRev,
+            prevSpaceRev,
           },
-          () =>
-            engine.syncRepo(parsed.uri, repoDid, {
+          async () => {
+            const result = await engine.syncRepo(parsed.uri, repoDid, {
               rev: revision,
               hash,
-            }),
+              spaceRev,
+              prevSpaceRev,
+            });
+            // A sequencing gap means notifications were missed: catch up
+            // from the authority's listing.
+            if (result.catchUp) await engine.reconcileSpace(parsed.uri);
+          },
         );
       }
       return json({ queued: Boolean(watch) }, 202);
@@ -1726,10 +1784,17 @@ export function createSpacesWorker<
               preferredRepo: body.preferredRepo,
             });
           } else {
-            await engine.syncRepo(body.space, body.repo, {
+            const result = await engine.syncRepo(body.space, body.repo, {
               rev: body.rev,
               hash: body.hash ? decodeBytes(body.hash) : undefined,
+              spaceRev: body.spaceRev,
+              prevSpaceRev: body.prevSpaceRev,
             });
+            if (result.catchUp) await engine.reconcileSpace(body.space);
+            if (result.outcome === "busy") {
+              message.retry({ delaySeconds: 5 });
+              continue;
+            }
           }
           message.ack();
         } catch (error) {
