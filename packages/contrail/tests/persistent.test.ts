@@ -799,4 +799,327 @@ describe("runPersistent", () => {
     expect(await feedUris(feedDb, `f-${String(FEED_PRUNE_SWEEP_ACTORS).padStart(4, "0")}`, EVENT)).toHaveLength(1);
     expect(await feedUris(feedDb, bystander, EVENT)).toHaveLength(2);
   });
+
+  it("retains dependent commits that arrive while a newly discovered actor's flush is in flight", async () => {
+    const config = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      collections: {
+        event: { collection: "com.example.event" },
+        rsvp: { collection: "com.example.rsvp", discover: false },
+      },
+    });
+    const rawDb = createTestDb();
+    await initSchema(rawDb, config);
+
+    let batchStarted!: () => void;
+    const batchStartedPromise = new Promise<void>((r) => { batchStarted = r; });
+    let releaseBatch!: () => void;
+    const releaseBatchPromise = new Promise<void>((r) => { releaseBatch = r; });
+    let slowedOnce = false;
+    const slowDb: Database = {
+      dialect: rawDb.dialect,
+      prepare: (sql) => rawDb.prepare(sql),
+      async batch(stmts) {
+        if (!slowedOnce) {
+          slowedOnce = true;
+          batchStarted();
+          await releaseBatchPromise;
+        }
+        return rawDb.batch(stmts);
+      },
+    };
+
+    const alice = "did:plc:alice-inflight";
+    const queue: any[] = [];
+    let notifyNext: (() => void) | null = null;
+    let streamStarted!: () => void;
+    const streamStartedPromise = new Promise<void>((r) => { streamStarted = r; });
+    const pushEvent = (ev: any) => {
+      queue.push(ev);
+      notifyNext?.();
+      notifyNext = null;
+    };
+    const controller = new AbortController();
+    const subscription: PersistentJetstreamSubscription = {
+      cursor: null,
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            streamStarted();
+            while (queue.length === 0) {
+              if (controller.signal.aborted) return { value: undefined, done: true as const };
+              await new Promise<void>((resolve) => {
+                notifyNext = resolve;
+                controller.signal.addEventListener("abort", () => resolve(), { once: true });
+              });
+            }
+            const ev = queue.shift()!;
+            return { value: { ...ev, seq: ev.time_us }, done: false as const };
+          },
+          return: async () => ({ value: undefined, done: true as const }),
+        };
+      },
+    };
+
+    const promise = runPersistent(slowDb, config, {
+      batchSize: 100,
+      flushIntervalMs: 30,
+      signal: controller.signal,
+      createSubscription: () => subscription,
+    });
+
+    await streamStartedPromise;
+
+    // 1. Yield alice's discoverable event; timer starts flushing it and pauses mid-batch.
+    pushEvent({
+      kind: "commit",
+      did: alice,
+      time_us: 10_000,
+      commit: {
+        collection: "com.example.event",
+        operation: "create",
+        rkey: "ev1",
+        cid: "cid-ev1",
+        record: { name: "Launch" },
+      },
+    });
+    await batchStartedPromise;
+
+    // 2. While batch 1 is still in flight (before knownDids has alice), yield her dependent rsvp.
+    pushEvent({
+      kind: "commit",
+      did: alice,
+      time_us: 10_001,
+      commit: {
+        collection: "com.example.rsvp",
+        operation: "create",
+        rkey: "rsvp1",
+        cid: "cid-rsvp1",
+        record: { status: "going" },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 3. Release batch 1, then abort so final flush commits the dependent rsvp.
+    releaseBatch();
+    await new Promise((r) => setTimeout(r, 80));
+    controller.abort();
+    await promise;
+
+    expect((await queryRecords(rawDb, config, { collection: "event" })).records).toHaveLength(1);
+    expect((await queryRecords(rawDb, config, { collection: "rsvp" })).records).toHaveLength(1);
+  });
+
+  it("retains dependent commits and identity updates across a failed flush", async () => {
+    const config = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      collections: {
+        event: { collection: "com.example.event" },
+        rsvp: { collection: "com.example.rsvp", discover: false },
+      },
+    });
+    const rawDb = createTestDb();
+    await initSchema(rawDb, config);
+
+    const alice = "did:plc:alice-retry";
+    const bob = "did:plc:bob-retry";
+    await rawDb
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind(alice, "alice-old.test", "https://pds.test", 1)
+      .run();
+    await rawDb
+      .prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
+      .bind(bob, "bob-old.test", "https://pds.test", 1)
+      .run();
+
+    let failedOnce = false;
+    let firstFailureDone!: () => void;
+    const firstFailurePromise = new Promise<void>((r) => { firstFailureDone = r; });
+    const flakyDb: Database = {
+      dialect: rawDb.dialect,
+      prepare: (sql) => rawDb.prepare(sql),
+      async batch(stmts) {
+        if (!failedOnce) {
+          failedOnce = true;
+          firstFailureDone();
+          throw new Error("transient D1 write failure");
+        }
+        return rawDb.batch(stmts);
+      },
+    };
+
+    const queue: any[] = [];
+    let notifyNext: (() => void) | null = null;
+    let streamStarted!: () => void;
+    const streamStartedPromise = new Promise<void>((r) => { streamStarted = r; });
+    const pushEvent = (ev: any) => {
+      queue.push(ev);
+      notifyNext?.();
+      notifyNext = null;
+    };
+    const controller = new AbortController();
+    const subscription: PersistentJetstreamSubscription = {
+      cursor: null,
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            streamStarted();
+            while (queue.length === 0) {
+              if (controller.signal.aborted) return { value: undefined, done: true as const };
+              await new Promise<void>((resolve) => {
+                notifyNext = resolve;
+                controller.signal.addEventListener("abort", () => resolve(), { once: true });
+              });
+            }
+            const ev = queue.shift()!;
+            return { value: { ...ev, seq: ev.time_us }, done: false as const };
+          },
+          return: async () => ({ value: undefined, done: true as const }),
+        };
+      },
+    };
+
+    const promise = runPersistent(flakyDb, config, {
+      batchSize: 100,
+      flushIntervalMs: 40,
+      signal: controller.signal,
+      createSubscription: () => subscription,
+      logger: { log() {}, warn() {}, error() {} },
+    });
+
+    await streamStartedPromise;
+
+    // Buffer alice's discoverable event plus handle updates for alice & bob; first timer flush fails.
+    pushEvent({
+      kind: "commit",
+      did: alice,
+      time_us: 20_000,
+      commit: {
+        collection: "com.example.event",
+        operation: "create",
+        rkey: "ev1",
+        cid: "cid-ev1",
+        record: { name: "Retry Event" },
+      },
+    });
+    pushEvent({ kind: "identity", did: alice, time_us: 20_001, identity: { handle: "alice-v1.test" } });
+    pushEvent({ kind: "identity", did: bob, time_us: 20_002, identity: { handle: "bob-v1.test" } });
+
+    await firstFailurePromise;
+    await new Promise((r) => setTimeout(r, 10));
+
+    // After the failed flush, alice sends a dependent rsvp and bob gets a newer handle.
+    pushEvent({
+      kind: "commit",
+      did: alice,
+      time_us: 20_003,
+      commit: {
+        collection: "com.example.rsvp",
+        operation: "create",
+        rkey: "rsvp1",
+        cid: "cid-rsvp1",
+        record: { status: "going" },
+      },
+    });
+    pushEvent({ kind: "identity", did: bob, time_us: 20_004, identity: { handle: "bob-v2.test" } });
+
+    await new Promise((r) => setTimeout(r, 100));
+    controller.abort();
+    await promise;
+
+    expect((await queryRecords(rawDb, config, { collection: "event" })).records).toHaveLength(1);
+    expect((await queryRecords(rawDb, config, { collection: "rsvp" })).records).toHaveLength(1);
+    const aliceRow = await rawDb.prepare("SELECT handle FROM identities WHERE did = ?").bind(alice).first<{ handle: string }>();
+    const bobRow = await rawDb.prepare("SELECT handle FROM identities WHERE did = ?").bind(bob).first<{ handle: string }>();
+    expect(aliceRow?.handle).toBe("alice-v1.test");
+    expect(bobRow?.handle).toBe("bob-v2.test");
+  });
+
+  it("applies dependent deletes for rows inserted out-of-band after startup", async () => {
+    const config = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      collections: {
+        event: { collection: "com.example.event" },
+        rsvp: { collection: "com.example.rsvp", discover: false },
+      },
+    });
+    const localDb = createTestDb();
+    await initSchema(localDb, config);
+
+    const outOfBandDid = "did:plc:out-of-band";
+    const rsvpUri = `at://${outOfBandDid}/com.example.rsvp/r1`;
+    const queue: any[] = [];
+    let notifyNext: (() => void) | null = null;
+    const pushEvent = (ev: any) => {
+      queue.push(ev);
+      notifyNext?.();
+      notifyNext = null;
+    };
+    const controller = new AbortController();
+    let streamStarted!: () => void;
+    const streamStartedPromise = new Promise<void>((r) => { streamStarted = r; });
+
+    const subscription: PersistentJetstreamSubscription = {
+      cursor: 0,
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            streamStarted();
+            while (queue.length === 0) {
+              if (controller.signal.aborted) return { value: undefined, done: true as const };
+              await new Promise<void>((resolve) => {
+                notifyNext = resolve;
+                controller.signal.addEventListener("abort", () => resolve(), { once: true });
+              });
+            }
+            const ev = queue.shift()!;
+            return { value: { ...ev, seq: ev.time_us }, done: false as const };
+          },
+          return: async () => ({ value: undefined, done: true as const }),
+        };
+      },
+    };
+
+    const promise = runPersistent(localDb, config, {
+      batchSize: 10,
+      flushIntervalMs: 60_000,
+      signal: controller.signal,
+      createSubscription: () => subscription,
+    });
+
+    // Wait until runPersistent has already loaded its startup knownDids snapshot.
+    await streamStartedPromise;
+
+    // Insert a dependent row out-of-band (e.g. via notifyOfUpdate or backfill).
+    await localDb
+      .prepare(
+        "INSERT INTO records_rsvp (uri, did, rkey, cid, record, time_us, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(rsvpUri, outOfBandDid, "r1", "cid-r1", JSON.stringify({ status: "going" }), 1000, 1000)
+      .run();
+    expect((await queryRecords(localDb, config, { collection: "rsvp" })).records).toHaveLength(1);
+
+    // Now Jetstream delivers a delete for that dependent record.
+    pushEvent({
+      kind: "commit",
+      did: outOfBandDid,
+      time_us: 2000,
+      commit: {
+        collection: "com.example.rsvp",
+        operation: "delete",
+        rkey: "r1",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    controller.abort();
+    await promise;
+
+    expect((await queryRecords(localDb, config, { collection: "rsvp" })).records).toHaveLength(0);
+  });
 });

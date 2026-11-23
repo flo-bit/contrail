@@ -153,3 +153,22 @@ export function createStreamingHostScheduler<TResult>(
     },
   };
 }
+
+/** Sleep for `ms` milliseconds, resolving immediately if `signal` aborts. */
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}

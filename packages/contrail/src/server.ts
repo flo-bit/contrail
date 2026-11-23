@@ -13,6 +13,13 @@ export interface CreateHandlerOptions {
   reportsDb?: Database;
 }
 
+/** Structural execution-context subset accepted by fetch handlers (compatible
+ *  with Cloudflare Workers `ExecutionContext` without requiring workers types). */
+export interface HandlerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
 /** Create a fetch handler, optionally accepting a per-request database binding.
  *  Builds and caches the Hono router and validation context once per handler;
  *  per-request bindings are injected via Hono env and never retained across requests. */
@@ -23,14 +30,14 @@ export function createHandler(
   request: Request,
   db?: Database,
   reportsDb?: Database,
-  ctx?: ExecutionContext,
+  ctx?: HandlerExecutionContext,
 ) => Promise<Response> {
   let cachedApp: Hono | null = null;
   return (
     request: Request,
     db?: Database,
     reportsDb?: Database,
-    ctx?: ExecutionContext,
+    ctx?: HandlerExecutionContext,
   ) => {
     if (!db && !contrail._hasDefaultDb()) {
       throw new Error(
@@ -49,7 +56,11 @@ export function createHandler(
             ...(reportsDb ? { [REQUEST_REPORTS_DB]: reportsDb } : {}),
           }
         : undefined;
-    return cachedApp.fetch(request, env, ctx) as Promise<Response>;
+    return cachedApp.fetch(
+      request,
+      env,
+      ctx as Parameters<Hono["fetch"]>[2],
+    ) as Promise<Response>;
   };
 }
 

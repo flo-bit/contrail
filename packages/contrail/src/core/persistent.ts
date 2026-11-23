@@ -31,6 +31,7 @@ import {
   MODERATION_ACTION_NSID,
   type AccountUpdate,
 } from "./moderation";
+import { sleepAbortable } from "./scheduling";
 
 /** How often the long-lived persistent loop runs a bounded feed sweep. The
  *  process stays resident, so this in-memory throttle is reliable here (unlike
@@ -123,21 +124,7 @@ export async function runPersistent(
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30_000);
       reconnectAttempts++;
       log.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
-      await new Promise<void>((resolve) => {
-        if (signal?.aborted) {
-          resolve();
-          return;
-        }
-        const onAbort = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        const timer = setTimeout(() => {
-          signal?.removeEventListener("abort", onAbort);
-          resolve();
-        }, delay);
-        signal?.addEventListener("abort", onAbort, { once: true });
-      });
+      await sleepAbortable(delay, signal);
     }
   }
 
@@ -206,9 +193,12 @@ async function streamAndFlush(
 
   const dependentCollections = new Set(getDependentNsids(config));
   const discoverableCollections = new Set(getDiscoverableNsids(config));
-  // Tracks actors newly seen in discoverable commits in the current unflushed
-  // buffer so dependent commits from the same actor in the same batch stay.
-  const pendingKnownDids = knownDids ? new Set<string>() : undefined;
+  // Tracks actors newly seen in discoverable commits in the unflushed buffer
+  // (`pendingKnownDids`) and in the currently flushing batch
+  // (`inFlightKnownDids`) so dependent commits arriving while a flush is in
+  // flight or retrying stay buffered until `knownDids` is updated.
+  let pendingKnownDids = knownDids ? new Set<string>() : undefined;
+  let inFlightKnownDids: Set<string> | undefined;
   const buffer: IngestEvent[] = [];
   // Newest account event per actor; stored state only depends on the newest.
   const accountBuffer = new Map<string, AccountUpdate>();
@@ -267,7 +257,11 @@ async function streamAndFlush(
     identityBuffer.clear();
     if (buffer.length > 0 || accountBuffer.size > 0) {
       const batch = buffer.splice(0);
-      pendingKnownDids?.clear();
+      const flushingKnownDids = pendingKnownDids;
+      if (pendingKnownDids) {
+        inFlightKnownDids = flushingKnownDids;
+        pendingKnownDids = new Set<string>();
+      }
       const accountBatch = [...accountBuffer.values()];
       accountBuffer.clear();
       const lastCursor = Math.max(
@@ -299,7 +293,14 @@ async function streamAndFlush(
         // The cursor transaction failed, so keep this exact batch at the front
         // for the timer's next attempt rather than losing it in memory.
         buffer.unshift(...batch);
+        if (flushingKnownDids && pendingKnownDids) {
+          for (const did of flushingKnownDids) pendingKnownDids.add(did);
+        }
+        inFlightKnownDids = undefined;
         for (const update of accountBatch) bufferAccount(update);
+        for (const [did, handle] of identityEntries) {
+          if (!identityBuffer.has(did)) identityBuffer.set(did, handle);
+        }
         pendingCursor = Math.max(pendingCursor ?? 0, lastCursor);
         throw error;
       }
@@ -310,6 +311,11 @@ async function streamAndFlush(
           knownDids.add(did);
           opts.newlyKnownDids?.add(did);
         }
+      }
+      inFlightKnownDids = undefined;
+
+      if (identityEntries.length > 0) {
+        await flushIdentities(identityEntries);
       }
 
       // A feed can only go over cap right after this batch's fan-out or follow
@@ -352,10 +358,10 @@ async function streamAndFlush(
       }
 
       // Opt-in planner-stat maintenance (gated + persisted cadence).
-      await maybeOptimize(db, config, log);
-
-      if (identityEntries.length > 0) {
-        await flushIdentities(identityEntries);
+      try {
+        await maybeOptimize(db, config, log);
+      } catch (err) {
+        log.warn(`[maintenance] optimize check failed: ${err}`);
       }
 
       log.log(
@@ -482,10 +488,13 @@ async function streamAndFlush(
           pendingKnownDids.add(event.did);
         }
         if (
+          commit.operation !== "delete" &&
+          commit.collection !== MODERATION_ACTION_NSID &&
           dependentCollections.has(commit.collection) &&
           knownDids &&
           !knownDids.has(event.did) &&
-          !pendingKnownDids?.has(event.did)
+          !pendingKnownDids?.has(event.did) &&
+          !inFlightKnownDids?.has(event.did)
         ) {
           pendingCursor = Math.max(pendingCursor ?? 0, event.seq);
           continue;
