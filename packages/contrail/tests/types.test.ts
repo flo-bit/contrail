@@ -209,7 +209,7 @@ describe("resolveConfig", () => {
       collections: {},
       profiles: ["custom.profile"],
     });
-    expect(resolved.profiles?.[0].collection).toBe("custom.profile");
+    expect((resolved.profiles?.[0] as { collection: string }).collection).toBe("custom.profile");
     expect(resolved.collections["profile"]).toBeDefined();
     expect(resolved.collections["profile"].collection).toBe("custom.profile");
   });

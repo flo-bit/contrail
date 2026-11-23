@@ -30,7 +30,7 @@ class LabelSocket extends EventTarget {
     const bytes = new Uint8Array(header.length + body.length);
     bytes.set(header);
     bytes.set(body, header.length);
-    this.dispatchEvent(new MessageEvent("message", { data: bytes }));
+    this.dispatchEvent(new MessageEvent("message", { data: bytes.buffer }));
   }
   close() {
     if (this.closed) return;

@@ -1,0 +1,104 @@
+name: Test
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Superseded PR runs are disposable; release runs must finish in order.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check, build & runtime smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test:built
+      - run: pnpm test:workerd
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @atmo-dev/contrail build
+      - run: pnpm test
+
+  postgres:
+    name: PostgreSQL (PGlite) tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:postgres
+
+  cost:
+    name: D1 row-cost guardrails
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @atmo-dev/contrail build
+      - run: pnpm test:cost
+      - run: pnpm bench:cost:ci
+
+      - name: Upload D1 cost report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-cost-report
+          path: apps/benchmark/results/cost-ci.json
+          if-no-files-found: ignore

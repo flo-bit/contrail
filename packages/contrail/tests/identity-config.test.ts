@@ -10,7 +10,7 @@ import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";
 
 describe("identity.ts — config plumb-through", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();

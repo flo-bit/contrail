@@ -148,7 +148,7 @@ describe("atmo Lexicon registry client", () => {
 
     await expect(
       importLexiconPrefix(prefix, { fetcher, timeoutMs: 5_000 }),
-    ).rejects.toMatchObject<Partial<LexiconRegistryError>>({
+    ).rejects.toMatchObject({
       code: "IncompleteVerification",
     });
     await expect(
@@ -172,7 +172,7 @@ describe("atmo Lexicon registry client", () => {
     };
     await expect(
       importLexiconPrefix(prefix, { fetcher, timeoutMs: 5_000 }),
-    ).rejects.toMatchObject<Partial<LexiconRegistryError>>({
+    ).rejects.toMatchObject({
       code: "IncompleteIndexing",
     });
   });
@@ -211,7 +211,7 @@ describe("atmo Lexicon registry client", () => {
       json({ ...page({ documents: [] }), verified: false });
     await expect(
       importLexiconPrefix(prefix, { fetcher, timeoutMs: 5_000 }),
-    ).rejects.toMatchObject<Partial<LexiconRegistryError>>({
+    ).rejects.toMatchObject({
       code: "InvalidResponse",
     });
   });

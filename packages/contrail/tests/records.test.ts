@@ -88,8 +88,7 @@ describe("ingestRecords", () => {
           record: { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" },
           time_us: 2000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
 
     // Query event with counts
@@ -152,13 +151,11 @@ describe("ingestRecords", () => {
           },
         }),
       ],
-      TEST_CONFIG,
     );
 
     await ingestRecords(
       db,
       [makeEvent({ uri: eventUri, rkey: "late", record: { name: "Late" } })],
-      TEST_CONFIG,
     );
 
     const row = await db
@@ -187,9 +184,13 @@ describe("ingestRecords", () => {
           record: rsvpRecord,
           time_us: 2000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
+
+    const before = await queryRecords(db, TEST_CONFIG, {
+      collection: "community.lexicon.calendar.event",
+    });
+    expect(before.records[0].counts?.["rsvp"]).toBe(1);
 
     // Delete the RSVP
     await ingestRecords(
@@ -204,8 +205,7 @@ describe("ingestRecords", () => {
           operation: "delete",
           time_us: 3000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
 
     const result = await queryRecords(db, TEST_CONFIG, {
@@ -213,7 +213,7 @@ describe("ingestRecords", () => {
     });
     const counts = result.records[0].counts;
     // Count should be 0 or undefined after delete
-    expect(counts?.["community.lexicon.calendar.rsvp"] ?? 0).toBe(0);
+    expect(counts?.["rsvp"] ?? 0).toBe(0);
   });
 });
 
@@ -313,7 +313,7 @@ describe("queryRecords", () => {
         time_us: 1000,
       }),
     );
-    await ingestRecords(db, tied, TEST_CONFIG);
+    await ingestRecords(db, tied);
 
     const page1 = await queryRecords(db, TEST_CONFIG, {
       collection: "community.lexicon.calendar.event",
@@ -353,7 +353,6 @@ describe("queryRecords", () => {
           time_us,
         }),
       ),
-      TEST_CONFIG,
     );
 
     const collect = async (direction: "asc" | "desc") => {

@@ -21,7 +21,7 @@ const EVENT = "community.lexicon.calendar.event";
 const RSVP = "community.lexicon.calendar.rsvp";
 
 describe("backfill failure state", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();
@@ -487,7 +487,7 @@ describe("backfill failure state", () => {
 });
 
 describe("scheduled backfill retries", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();

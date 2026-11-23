@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
+import { createTestDb } from "./helpers";
 import { initSchema } from "../src/index";
 import { resolveConfig, type ContrailConfig } from "../src/index";
 import { applyLabels } from "../src/index";
@@ -18,7 +18,7 @@ function ctsIso(deltaSec = 0): string {
 }
 
 async function setup() {
-  const db = createSqliteDatabase(":memory:");
+  const db = createTestDb();
   const config: ContrailConfig = {
     namespace: "com.example",
     collections: {

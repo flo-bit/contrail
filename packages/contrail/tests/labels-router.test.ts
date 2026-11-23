@@ -5,7 +5,7 @@
  *  - unaccepted labelers are dropped */
 import { describe, it, expect } from "vitest";
 import { Contrail } from "../src/contrail";
-import { createSqliteDatabase } from "../src/adapters/sqlite";
+import { createTestDb } from "./helpers";
 import { ingestRecords } from "../src/index";
 import { applyLabels } from "../src/index";
 import type { IngestEvent } from "../src/index";
@@ -33,7 +33,7 @@ function ev(): IngestEvent {
 }
 
 async function setup() {
-  const db = createSqliteDatabase(":memory:");
+  const db = createTestDb();
   const contrail = new Contrail({
     namespace: "ex",
     collections: { event: { collection: COLL } },
@@ -109,7 +109,7 @@ describe("labels router integration", () => {
   });
 
   it("when no labels are configured, no header and no field", async () => {
-    const db = createSqliteDatabase(":memory:");
+    const db = createTestDb();
     const contrail = new Contrail({
       namespace: "ex",
       collections: { event: { collection: COLL } },

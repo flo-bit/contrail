@@ -160,7 +160,7 @@ describe("repository-scoped collections", () => {
     expect(result.errors).toEqual([expect.stringContaining("outside configured scope")]);
     const response = await createApp(db, resolved).request(`/xrpc/com.example.item.listRecords?actor=${OTHER}`);
     expect(response.status).toBe(200);
-    expect((await response.json()).records).toEqual([]);
+    expect((await response.json<{ records: unknown[] }>()).records).toEqual([]);
     expect(await backfillUser(db, OTHER, ITEMS, Infinity, resolved)).toBe(0);
     expect(fetch).not.toHaveBeenCalled();
   });
