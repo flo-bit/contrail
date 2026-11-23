@@ -65,19 +65,18 @@ export function collectCountTargets(
   config: ContrailConfig,
   existingRecordJson: string | null,
   targets: Map<string, CountTarget>,
-  parsedRecord?: unknown,
+  getRecord?: () => unknown,
 ): void {
   const childShort = shortNameForNsid(config, event.collection);
   if (!childShort) return;
   const inbound = getInboundRelations(config, childShort);
   if (inbound.length === 0) return;
 
-  const record =
-    parsedRecord !== undefined
-      ? parsedRecord
-      : event.record
-        ? JSON.parse(event.record)
-        : null;
+  const record = getRecord
+    ? getRecord()
+    : event.record
+      ? JSON.parse(event.record)
+      : null;
   const existingRecord = existingRecordJson
     ? JSON.parse(existingRecordJson)
     : null;

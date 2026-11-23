@@ -20,7 +20,7 @@ export function buildFeedStatements(
   event: IngestEvent,
   config: ContrailConfig,
   existingRecords: Map<string, string | null>,
-  parsedRecord?: unknown,
+  getRecord?: () => unknown,
 ): Statement[] {
   if (!config.feeds) return [];
 
@@ -60,12 +60,11 @@ export function buildFeedStatements(
     // Follow collection: handle follow/unfollow
     if (eventShort === followShort) {
       if (event.operation === "create") {
-        const record =
-          parsedRecord !== undefined
-            ? parsedRecord
-            : event.record
-              ? JSON.parse(event.record)
-              : null;
+        const record = getRecord
+          ? getRecord()
+          : event.record
+            ? JSON.parse(event.record)
+            : null;
         const subject = (record as { subject?: unknown } | null)?.subject;
         if (subject) {
           for (const target of targets) {

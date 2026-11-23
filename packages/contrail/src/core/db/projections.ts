@@ -65,7 +65,7 @@ function buildFtsStatements(
   db: Database,
   event: IngestEvent,
   config: ContrailConfig,
-  parsedRecord?: unknown,
+  getRecord?: () => unknown,
 ): Statement[] {
   // PostgreSQL: tsvector generated column is auto-maintained, no manual FTS sync
   if (getDialect(db).ftsStrategy === "generated-column") return [];
@@ -93,12 +93,11 @@ function buildFtsStatements(
     return [deleteFtsRow(), deleteMapping()];
   }
 
-  const record =
-    parsedRecord !== undefined
-      ? parsedRecord
-      : event.record
-        ? JSON.parse(event.record)
-        : null;
+  const record = getRecord
+    ? getRecord()
+    : event.record
+      ? JSON.parse(event.record)
+      : null;
   if (!record) return [];
   const content = buildFtsContent(record, fields);
   if (!content) {
@@ -354,9 +353,17 @@ export async function projectEvents(
 
     const runDerived = !options?.skipDerivedProjections;
     const runFeed = !isReplay && !options?.skipFeedFanout && !!config.feeds;
-    // Parse event.record at most once when derived projections or feeds need it.
-    const parsedRecord =
-      (runDerived || runFeed) && e.record ? JSON.parse(e.record) : null;
+    // Lazily parse event.record on first consumer demand: zero parses when no
+    // consumer needs the JSON body, and at most one parse when multiple do.
+    let parsed = false;
+    let cachedRecord: unknown = null;
+    const getRecord = () => {
+      if (!parsed) {
+        cachedRecord = e.record ? JSON.parse(e.record) : null;
+        parsed = true;
+      }
+      return cachedRecord;
+    };
 
     if (runDerived) {
       // Collect count targets (deduplicated across the whole batch)
@@ -366,7 +373,7 @@ export async function projectEvents(
         config,
         existingRecordJson,
         countTargets,
-        parsedRecord,
+        getRecord,
       );
       collectParentCountTargets(e, config, countTargets);
     }
@@ -378,12 +385,12 @@ export async function projectEvents(
           e,
           config,
           existingRecordStrings,
-          parsedRecord,
+          getRecord,
         ),
       );
     }
     if (runDerived) {
-      batch.push(...buildFtsStatements(db, e, config, parsedRecord));
+      batch.push(...buildFtsStatements(db, e, config, getRecord));
     }
   }
 
