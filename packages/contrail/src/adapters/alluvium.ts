@@ -7,6 +7,7 @@ import {
   rebuildDerivedProjections,
   saveCursorStatement,
   saveServingSourcePositionStatement,
+  type DerivedProjectionResumeCursor,
 } from "../core/db/records";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../core/ingest";
 import {
@@ -50,6 +51,13 @@ export const ALLUVIUM_BOOTSTRAP_META_KEY = "alluvium_bootstrap";
 export const BOOTSTRAP_DEFERRED_INDEXES_META_KEY = "bootstrap_deferred_indexes";
 
 const DEFAULT_BATCH_SIZE = 500;
+/** Smaller default batch size when indexes are not deferred (e.g. remote D1),
+ * keeping each `db.batch()` well within D1's statement and payload limits. */
+const DEFAULT_D1_BATCH_SIZE = 100;
+/** Default chunk size for paginated FTS and relation-count rebuilds when
+ * indexes are not deferred (e.g. remote D1). */
+const DEFAULT_REBUILD_CHUNK_SIZE = 500;
+const PROGRESS_LOG_INTERVAL_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_LINE_CHARACTERS = 2 * 1024 * 1024;
@@ -86,7 +94,7 @@ export interface AlluviumTransportOptions {
 
 export interface AlluviumBootstrapState {
   v: 1;
-  phase: "loading" | "complete";
+  phase: "loading" | "rebuilding" | "complete";
   endpoint: string;
   source: AlluviumSourceIdentity;
   collections: string[];
@@ -99,9 +107,21 @@ export interface AlluviumBootstrapState {
   liveCursorUs: number;
   /** Last projected record URI for resume (`?after=<uri>`), or null. */
   after: string | null;
+  /** Resume cursor within the derived-projection rebuild phase, when chunked. */
+  rebuild?: DerivedProjectionResumeCursor | null;
   startedAt: number;
   updatedAt: number;
   finishedAt?: number;
+}
+
+export interface AlluviumProgress {
+  phase: "loading" | "rebuilding";
+  /** Records loaded so far in `loading`, or rows processed in the current rebuild stage. */
+  records: number;
+  elapsedMs: number;
+  stage?: "fts" | "counts";
+  collection?: string;
+  relation?: string;
 }
 
 export interface LoadAlluviumExportOptions {
@@ -124,6 +144,12 @@ export interface LoadAlluviumExportOptions {
   /** Drop secondary indexes on record tables while loading and rebuild them
    * once before completion (SQLite only; leave off for D1). */
   deferIndexes?: boolean;
+  /** Override chunk size for derived-projection rebuilds. Defaults to 500 when
+   * `deferIndexes` is false (D1-safe), or single-statement bulk rebuild when
+   * `deferIndexes` is true (local SQLite). Pass `0` to force bulk rebuild. */
+  rebuildChunkSize?: number;
+  /** Optional progress callback invoked on every committed batch / rebuild chunk. */
+  onProgress?: (progress: AlluviumProgress) => void;
   fetch?: typeof fetch;
   /** Permit HTTP to a non-loopback host. Loopback endpoints never need it.
    * Default: false. */
@@ -412,7 +438,9 @@ export async function getAlluviumBootstrapState(
   if (
     !object(parsed) ||
     parsed.v !== 1 ||
-    (parsed.phase !== "loading" && parsed.phase !== "complete") ||
+    (parsed.phase !== "loading" &&
+      parsed.phase !== "rebuilding" &&
+      parsed.phase !== "complete") ||
     typeof parsed.endpoint !== "string" ||
     !object(parsed.source) ||
     typeof parsed.source.id !== "string" ||
@@ -422,6 +450,30 @@ export async function getAlluviumBootstrapState(
     (parsed.after !== null && typeof parsed.after !== "string")
   ) {
     throw new Error("Durable Alluvium bootstrap state is malformed");
+  }
+  let rebuild: DerivedProjectionResumeCursor | null | undefined;
+  if (parsed.rebuild !== undefined) {
+    if (parsed.rebuild === null) {
+      rebuild = null;
+    } else if (
+      object(parsed.rebuild) &&
+      (parsed.rebuild.stage === "fts" || parsed.rebuild.stage === "counts") &&
+      typeof parsed.rebuild.collection === "string" &&
+      (parsed.rebuild.relation === undefined ||
+        typeof parsed.rebuild.relation === "string") &&
+      (parsed.rebuild.after === null || typeof parsed.rebuild.after === "string")
+    ) {
+      rebuild = {
+        stage: parsed.rebuild.stage,
+        collection: parsed.rebuild.collection,
+        ...(parsed.rebuild.relation !== undefined
+          ? { relation: parsed.rebuild.relation }
+          : {}),
+        after: parsed.rebuild.after,
+      };
+    } else {
+      throw new Error("Durable Alluvium bootstrap rebuild cursor is malformed");
+    }
   }
   return {
     v: 1,
@@ -433,6 +485,7 @@ export async function getAlluviumBootstrapState(
     timeUs: safeInteger(parsed.timeUs, "Alluvium state timeUs"),
     liveCursorUs: safeInteger(parsed.liveCursorUs, "Alluvium state liveCursorUs"),
     after: parsed.after,
+    ...(rebuild !== undefined ? { rebuild } : {}),
     startedAt: safeInteger(parsed.startedAt, "Alluvium state startedAt"),
     updatedAt: safeInteger(parsed.updatedAt, "Alluvium state updatedAt"),
     ...(parsed.finishedAt !== undefined
@@ -662,13 +715,55 @@ export async function loadAlluviumExport(
     DEFAULT_MAX_LINE_CHARACTERS,
     "Alluvium maxLineCharacters",
   );
+  const defaultBatchSize = options.deferIndexes
+    ? DEFAULT_BATCH_SIZE
+    : DEFAULT_D1_BATCH_SIZE;
   const batchSize = positiveInteger(
     transport.batchSize,
-    DEFAULT_BATCH_SIZE,
+    defaultBatchSize,
     "Alluvium batchSize",
   );
+  const rebuildChunkSize =
+    options.rebuildChunkSize === 0
+      ? undefined
+      : options.rebuildChunkSize !== undefined
+        ? positiveInteger(
+            options.rebuildChunkSize,
+            DEFAULT_REBUILD_CHUNK_SIZE,
+            "Alluvium rebuildChunkSize",
+          )
+        : options.deferIndexes
+          ? undefined
+          : DEFAULT_REBUILD_CHUNK_SIZE;
   const now = options.now ?? Date.now;
   const signal = options.signal;
+  const logger = config.logger ?? console;
+  const wallStarted = performance.now();
+  let lastProgressLogAt = wallStarted;
+  const emitProgress = (progress: AlluviumProgress): void => {
+    options.onProgress?.(progress);
+    const current = performance.now();
+    if (current - lastProgressLogAt >= PROGRESS_LOG_INTERVAL_MS) {
+      lastProgressLogAt = current;
+      const secs = (progress.elapsedMs / 1000).toFixed(1);
+      if (progress.phase === "loading") {
+        const rate =
+          progress.elapsedMs > 0
+            ? Math.round((progress.records * 1000) / progress.elapsedMs)
+            : 0;
+        logger.log(
+          `[alluvium] loading: ${progress.records.toLocaleString("en-US")} records (${secs}s, ${rate.toLocaleString("en-US")} rec/s)`,
+        );
+      } else {
+        const target = progress.relation
+          ? `${progress.collection}.${progress.relation}`
+          : progress.collection;
+        logger.log(
+          `[alluvium] rebuilding ${progress.stage} (${target}): ${progress.records.toLocaleString("en-US")} rows (${secs}s)`,
+        );
+      }
+    }
+  };
 
   const assertReplayable = (state: AlluviumBootstrapState): void => {
     const ageUs = now() * 1_000 - state.timeUs;
@@ -823,178 +918,246 @@ export async function loadAlluviumExport(
     await deferSecondaryIndexes(db, config);
   }
 
-  const knownDids =
-    getDependentNsids(config).length > 0
-      ? await loadKnownActorDids(db, config)
-      : undefined;
   const collectionSet = new Set(state.collections);
   const snapshotId = `alluvium:${endpoint.host}:${state.cursor}`;
   let recordsLoaded = 0;
 
-  const commitBatch = async (
-    batch: ExportRecord[],
-    sourceTimeUs: number,
-    nextAfter: string | null,
-  ): Promise<void> => {
-    const indexedAt = now() * 1_000;
-    const events = batch.map((item) =>
-      createIngestEvent({
-        uri: item.uri,
-        did: item.did,
-        collection: item.collection,
-        rkey: item.rkey,
-        operation: "update",
-        cid: item.cid,
-        value: item.value,
-        timeUs: recordTimeUs(item.value, item.collection, config, item.timeUs),
-        indexedAt,
-        source: {
-          id: "snapshot:alluvium",
-          epoch: snapshotId,
-          time_us: sourceTimeUs,
-          revision: null,
-          cursor: nextAfter ?? "export",
-        },
-      }),
-    );
-    state = { ...state, after: nextAfter, updatedAt: now() };
-    const result = await ingestRecords(db, events, config, {
-      phase: "historical",
-      knownDids,
-      skipDerivedProjections: true,
-      authoritativeSourceObservation: true,
-      trailingStatements: [saveStateStatement(db, state)],
-    });
-    if (knownDids) {
-      for (const did of result.discoveredDids) knownDids.add(did);
-    }
-    recordsLoaded += batch.length;
-  };
+  if (state.phase === "loading") {
+    const knownDids =
+      getDependentNsids(config).length > 0
+        ? await loadKnownActorDids(db, config)
+        : undefined;
 
-  let after = state.after;
-  let records: ExportRecord[] = [];
-  let batchTimeUs = state.liveCursorUs;
-  let lastError: unknown;
-  let completedStream = false;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (attempt > 0) {
-      await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
-    }
-    assertReplayable(state);
-    const url = new URL("export", endpoint);
-    for (const collection of state.collections) {
-      url.searchParams.append("collection", collection);
-    }
-    if (after) url.searchParams.set("after", after);
-
-    let lines: AsyncGenerator<Record<string, unknown>>;
-    try {
-      const response = await open(url);
-      // Live ingestion replays from the pinned snapshot's time, so an export
-      // of an older snapshot (rollback or lagging replica) would leave a gap.
-      const header = response.headers.get("alluvium-time-us");
-      const servedUs = header && /^\d+$/.test(header) ? Number(header) : null;
-      if (
-        servedUs === null ||
-        !Number.isSafeInteger(servedUs) ||
-        servedUs < state.timeUs
-      ) {
-        await response.body?.cancel().catch(() => {});
-        throw new Error(
-          servedUs === null
-            ? "Alluvium export did not say which snapshot it serves"
-            : "Alluvium served an export older than the snapshot this bootstrap pinned",
-        );
-      }
-      lines = readJsonLines(response, maxLineCharacters, signal);
-    } catch (error) {
-      signal?.throwIfAborted();
-      lastError = error;
-      if ((error as { retryable?: boolean }).retryable === false) break;
-      continue;
-    }
-
-    let received = 0;
-    let commitError: unknown;
-    const runCommit = async (
+    const commitBatch = async (
       batch: ExportRecord[],
       sourceTimeUs: number,
       nextAfter: string | null,
+      nextPhase: "loading" | "rebuilding" = "loading",
     ): Promise<void> => {
-      try {
-        await commitBatch(batch, sourceTimeUs, nextAfter);
-      } catch (error) {
-        commitError = error;
-        throw error;
+      const indexedAt = now() * 1_000;
+      const events = batch.map((item) =>
+        createIngestEvent({
+          uri: item.uri,
+          did: item.did,
+          collection: item.collection,
+          rkey: item.rkey,
+          operation: "update",
+          cid: item.cid,
+          value: item.value,
+          timeUs: recordTimeUs(item.value, item.collection, config, item.timeUs),
+          indexedAt,
+          source: {
+            id: "snapshot:alluvium",
+            epoch: snapshotId,
+            time_us: sourceTimeUs,
+            revision: null,
+            cursor: nextAfter ?? "export",
+          },
+        }),
+      );
+      const nextState: AlluviumBootstrapState = {
+        ...state,
+        phase: nextPhase,
+        after: nextPhase === "rebuilding" ? null : nextAfter,
+        ...(nextPhase === "rebuilding" ? { rebuild: null } : {}),
+        updatedAt: now(),
+      };
+      const result = await ingestRecords(db, events, config, {
+        phase: "historical",
+        knownDids,
+        skipDerivedProjections: true,
+        authoritativeSourceObservation: true,
+        trailingStatements: [saveStateStatement(db, nextState)],
+      });
+      state = nextState;
+      if (knownDids) {
+        for (const did of result.discoveredDids) knownDids.add(did);
       }
+      recordsLoaded += batch.length;
+      emitProgress({
+        phase: "loading",
+        records: recordsLoaded,
+        elapsedMs: Math.round(performance.now() - wallStarted),
+      });
     };
-    try {
-      for await (const line of lines) {
-        if (line.end === true) {
-          if (safeInteger(line.records, "Alluvium export record count") !== received) {
-            throw new AlluviumExportInvalidError(
-              "Alluvium export ended with a different record count than it sent",
-            );
+
+    let after = state.after;
+    let records: ExportRecord[] = [];
+    let batchTimeUs = state.liveCursorUs;
+    let lastError: unknown;
+    let completedStream = false;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (attempt > 0) {
+        await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
+      }
+      assertReplayable(state);
+      const url = new URL("export", endpoint);
+      for (const collection of state.collections) {
+        url.searchParams.append("collection", collection);
+      }
+      if (after) url.searchParams.set("after", after);
+
+      let lines: AsyncGenerator<Record<string, unknown>>;
+      try {
+        const response = await open(url);
+        // Live ingestion replays from the pinned snapshot's time, so an export
+        // of an older snapshot (rollback or lagging replica) would leave a gap.
+        const header = response.headers.get("alluvium-time-us");
+        const servedUs = header && /^\d+$/.test(header) ? Number(header) : null;
+        if (
+          servedUs === null ||
+          !Number.isSafeInteger(servedUs) ||
+          servedUs < state.timeUs
+        ) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error(
+            servedUs === null
+              ? "Alluvium export did not say which snapshot it serves"
+              : "Alluvium served an export older than the snapshot this bootstrap pinned",
+          );
+        }
+        lines = readJsonLines(response, maxLineCharacters, signal);
+      } catch (error) {
+        signal?.throwIfAborted();
+        lastError = error;
+        if ((error as { retryable?: boolean }).retryable === false) break;
+        continue;
+      }
+
+      let received = 0;
+      let commitError: unknown;
+      const runCommit = async (
+        batch: ExportRecord[],
+        sourceTimeUs: number,
+        nextAfter: string | null,
+        nextPhase: "loading" | "rebuilding" = "loading",
+      ): Promise<void> => {
+        try {
+          await commitBatch(batch, sourceTimeUs, nextAfter, nextPhase);
+        } catch (error) {
+          commitError = error;
+          throw error;
+        }
+      };
+      try {
+        for await (const line of lines) {
+          if (line.end === true) {
+            if (safeInteger(line.records, "Alluvium export record count") !== received) {
+              throw new AlluviumExportInvalidError(
+                "Alluvium export ended with a different record count than it sent",
+              );
+            }
+            if (records.length > 0) {
+              await runCommit(records, batchTimeUs, after, "rebuilding");
+              records = [];
+              batchTimeUs = state.liveCursorUs;
+            } else {
+              try {
+                state = {
+                  ...state,
+                  phase: "rebuilding",
+                  after: null,
+                  rebuild: null,
+                  updatedAt: now(),
+                };
+                await saveStateStatement(db, state).run();
+              } catch (error) {
+                commitError = error;
+                throw error;
+              }
+            }
+            completedStream = true;
+            break;
           }
-          if (records.length > 0) {
+          const item = parseExportRecord(line, collectionSet);
+          received += 1;
+          records.push(item);
+          // A batch is ordered against later changes by one time, so it takes the
+          // oldest of its records' and never exceeds the live replay cursor.
+          batchTimeUs = Math.min(batchTimeUs, item.timeUs);
+          after = item.uri;
+          if (records.length >= batchSize) {
             await runCommit(records, batchTimeUs, after);
             records = [];
             batchTimeUs = state.liveCursorUs;
+            // Progress resets the retry budget: only consecutive failures count.
+            attempt = 0;
           }
-          completedStream = true;
-          break;
         }
-        const item = parseExportRecord(line, collectionSet);
-        received += 1;
-        records.push(item);
-        // A batch is ordered against later changes by one time, so it takes the
-        // oldest of its records' and never exceeds the live replay cursor.
-        batchTimeUs = Math.min(batchTimeUs, item.timeUs);
-        after = item.uri;
-        if (records.length >= batchSize) {
-          await runCommit(records, batchTimeUs, after);
-          records = [];
-          batchTimeUs = state.liveCursorUs;
-          // Progress resets the retry budget: only consecutive failures count.
-          attempt = 0;
+        if (completedStream) break;
+        throw new AlluviumExportInterruptedError(
+          "Alluvium export ended before its closing line",
+        );
+      } catch (error) {
+        if (commitError !== undefined && error === commitError) {
+          // Database/projection failures must surface immediately rather than
+          // retrying the HTTP export as if it were a network interruption.
+          throw error;
         }
+        signal?.throwIfAborted();
+        if (
+          error instanceof AlluviumExportInvalidError ||
+          (!(error instanceof AlluviumExportInterruptedError) &&
+            error instanceof TypeError)
+        ) {
+          // Malformed data will not improve on retry.
+          throw error;
+        }
+        lastError = error;
+        // Uncommitted records stay buffered while `after` already points past
+        // them, so the next attempt continues without duplicating them.
       }
-      if (completedStream) break;
-      throw new AlluviumExportInterruptedError(
-        "Alluvium export ended before its closing line",
-      );
-    } catch (error) {
-      if (commitError !== undefined && error === commitError) {
-        // Database/projection failures must surface immediately rather than
-        // retrying the HTTP export as if it were a network interruption.
-        throw error;
-      }
-      signal?.throwIfAborted();
-      if (
-        error instanceof AlluviumExportInvalidError ||
-        (!(error instanceof AlluviumExportInterruptedError) &&
-          error instanceof TypeError)
-      ) {
-        // Malformed data will not improve on retry.
-        throw error;
-      }
-      lastError = error;
-      // Uncommitted records stay buffered while `after` already points past
-      // them, so the next attempt continues without duplicating them.
     }
-  }
 
-  if (!completedStream) {
-    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
-    throw new Error(`Alluvium export did not complete${reason}`, {
-      cause: lastError,
-    });
+    if (!completedStream) {
+      const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+      throw new Error(`Alluvium export did not complete${reason}`, {
+        cause: lastError,
+      });
+    }
   }
 
   assertReplayable(state);
   await restoreSecondaryIndexes(db);
-  await rebuildDerivedProjections(db, config);
+  await rebuildDerivedProjections(
+    db,
+    config,
+    rebuildChunkSize !== undefined
+      ? {
+          chunkSize: rebuildChunkSize,
+          resume: state.rebuild ?? null,
+          checkpointStatement: (cursor) =>
+            saveStateStatement(db, {
+              ...state,
+              rebuild: cursor,
+              updatedAt: now(),
+            }),
+          onProgress: (progress) => {
+            state = {
+              ...state,
+              rebuild: {
+                stage: progress.stage,
+                collection: progress.collection,
+                ...(progress.relation !== undefined
+                  ? { relation: progress.relation }
+                  : {}),
+                after: state.rebuild?.after ?? null,
+              },
+              updatedAt: now(),
+            };
+            emitProgress({
+              phase: "rebuilding",
+              records: progress.processed,
+              elapsedMs: Math.round(performance.now() - wallStarted),
+              stage: progress.stage,
+              collection: progress.collection,
+              relation: progress.relation,
+            });
+          },
+        }
+      : {},
+  );
 
   const handoff: SourcePosition = {
     source: state.source.id,
@@ -1006,6 +1169,7 @@ export async function loadAlluviumExport(
     ...state,
     phase: "complete",
     after: null,
+    rebuild: null,
     updatedAt: finishedAt,
     finishedAt,
   };

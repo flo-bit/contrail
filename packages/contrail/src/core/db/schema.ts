@@ -42,6 +42,48 @@ import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY 
 
 export const CONTRAIL_SCHEMA_VERSION = 17;
 const SCHEMA_FINGERPRINT_KEY = "schema_fingerprint";
+export const FTS_FINGERPRINTS_KEY = "fts_fingerprints";
+export const LEGACY_MIGRATIONS_KEY = "legacy_migrations_version";
+const FTS_PROJECTION_VERSION = "v2";
+const LEGACY_MIGRATIONS_VERSION = String(CONTRAIL_SCHEMA_VERSION);
+const MODERATION_CTS_UNIT_KEY = "moderation_cts_unit";
+
+/** Detect the SQLite error raised when a runtime build lacks the FTS5 module.
+ * All other database/D1/timeout/CPU errors must propagate loudly. */
+export function isMissingFts5ModuleError(error: unknown): boolean {
+  if (!error) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such module:\s*fts5/i.test(message);
+}
+
+function ftsCollectionFingerprint(collection: string, fields: string[]): string {
+  return hashStrings([FTS_PROJECTION_VERSION, collection, ...fields]);
+}
+
+function buildFtsFingerprintsMap(config: ContrailConfig): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const [collection, colConfig] of Object.entries(config.collections)) {
+    const fields = getSearchableFields(collection, colConfig);
+    if (!fields || fields.length === 0) continue;
+    map[collection] = ftsCollectionFingerprint(collection, fields);
+  }
+  return map;
+}
+
+function parseFtsFingerprints(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "string") result[key] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
 
 function getResolved(config: ContrailConfig): ResolvedMaps {
   return (
@@ -342,26 +384,36 @@ export async function addColumnIfNotExists(
   table: string,
   column: string,
   columnDef: string,
-): Promise<void> {
+): Promise<boolean> {
   if (isPostgresDialect(getDialect(db))) {
+    const existing = await db
+      .prepare(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
+      )
+      .bind(table, column)
+      .first();
+    if (existing) return false;
     await db
       .prepare(
         `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${columnDef}`,
       )
       .run();
-    return;
+    return true;
   }
 
   const info = await db
     .prepare(`PRAGMA table_info(${table})`)
     .all<{ name: string }>();
-  if (info.results.some((candidate) => candidate.name === column)) return;
+  if (info.results.some((candidate) => candidate.name === column)) return false;
   try {
     await db
       .prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${columnDef}`)
       .run();
+    return true;
   } catch (error) {
     if (!isDuplicateColumnError(error)) throw error;
+    return false;
   }
 }
 
@@ -612,18 +664,29 @@ async function applyFtsTables(
   db: Database,
   config: ContrailConfig,
   dialect: SqlDialect,
+  storedFtsRaw: string | undefined,
 ): Promise<void> {
   if (dialect.ftsStrategy === "generated-column") {
     for (const statement of buildFtsTables(config, dialect)) {
       await runIdempotentDdl(db, statement);
     }
+    const nextJson = JSON.stringify(buildFtsFingerprintsMap(config));
+    if (storedFtsRaw !== nextJson) {
+      await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
+    }
     return;
   }
+
+  const storedFts = parseFtsFingerprints(storedFtsRaw);
+  const progressFts: Record<string, string> = { ...storedFts };
+  const activeFts: Record<string, string> = {};
 
   for (const [collection, colConfig] of Object.entries(config.collections)) {
     const fields = getSearchableFields(collection, colConfig);
     if (!fields || fields.length === 0) continue;
+    const expectedFp = ftsCollectionFingerprint(collection, fields);
     const ftsTable = ftsTableName(collection);
+    const rowsTable = ftsRowTableName(collection);
     const columns = await virtualFtsColumns(db, ftsTable);
     if (columns.includes("uri")) {
       await migrateLegacyVirtualFts(
@@ -633,7 +696,20 @@ async function applyFtsTables(
         collection,
         fields,
       );
+      activeFts[collection] = expectedFp;
+      progressFts[collection] = expectedFp;
+      await setMeta(db, FTS_FINGERPRINTS_KEY, JSON.stringify(progressFts));
       continue;
+    }
+
+    if (columns.length > 0 && storedFts[collection] === expectedFp) {
+      const rowsColumns = await virtualFtsColumns(db, rowsTable);
+      if (rowsColumns.length > 0) {
+        // Collection's FTS tables exist in content-only form and match its
+        // searchable fields — never rebuild just because unrelated config changed.
+        activeFts[collection] = expectedFp;
+        continue;
+      }
     }
 
     const schema = buildFtsSchema(
@@ -642,21 +718,33 @@ async function applyFtsTables(
       fields,
     );
     await db.prepare(schema[0]!).run();
+    let ftsUnavailable = false;
     try {
       await db.prepare(schema[1]!).run();
-    } catch {
+    } catch (error) {
+      if (!isMissingFts5ModuleError(error)) throw error;
       // FTS5 is optional in some SQLite builds. The ordinary mapping table is
       // harmless when the virtual table cannot be created.
+      ftsUnavailable = true;
     }
+    if (ftsUnavailable) continue;
+
     const currentColumns =
       columns.length > 0 ? columns : await virtualFtsColumns(db, ftsTable);
     if (currentColumns.length > 0) {
-      // applyFtsTables only runs while the global schema fingerprint is stale.
-      // Rebuild even an already content-only table before accepting the new
-      // fingerprint: a prior migration may have committed and then failed
-      // verification, or the configured searchable fields may have changed.
+      // Rebuild when this collection's FTS definition changed, tables were
+      // missing, or a prior migration had not yet verified and recorded its FTS
+      // fingerprint.
       await rebuildVirtualFtsProjection(db, collection, fields);
+      activeFts[collection] = expectedFp;
+      progressFts[collection] = expectedFp;
+      await setMeta(db, FTS_FINGERPRINTS_KEY, JSON.stringify(progressFts));
     }
+  }
+
+  const finalJson = JSON.stringify(activeFts);
+  if (storedFtsRaw !== finalJson || JSON.stringify(progressFts) !== finalJson) {
+    await setMeta(db, FTS_FINGERPRINTS_KEY, finalJson);
   }
 }
 
@@ -864,19 +952,41 @@ export async function initSchema(
     observation TEXT NOT NULL,
     PRIMARY KEY (time_us, observation)
   )`;
-  // One steady-state read covers the schema and moderation policy gates.
+  // One steady-state read covers the schema, FTS, legacy migration, and
+  // moderation policy gates.
   const meta = await getMetaValues(db, [
     SCHEMA_FINGERPRINT_KEY,
+    FTS_FINGERPRINTS_KEY,
+    LEGACY_MIGRATIONS_KEY,
+    MODERATION_CTS_UNIT_KEY,
     REPOSITORY_SCOPES_KEY,
     ...MODERATION_POLICY_META_KEYS,
   ]);
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
+  const storedFtsRaw = meta.get(FTS_FINGERPRINTS_KEY);
+  const storedLegacyVersion = meta.get(LEGACY_MIGRATIONS_KEY) ?? null;
+  const expectedFtsJson = JSON.stringify(buildFtsFingerprintsMap(config));
+  const ftsChanged = storedFtsRaw !== undefined && storedFtsRaw !== expectedFtsJson;
   const applyRepositoryScopes = async () => {
     await ensureRepositoryScopes(db, config, meta.get(REPOSITORY_SCOPES_KEY));
     await seedRepositoryBackfills(db, config);
   };
+  const stampDecoupledMarkers = async () => {
+    if (storedFtsRaw !== expectedFtsJson) {
+      await setMeta(db, FTS_FINGERPRINTS_KEY, expectedFtsJson);
+    }
+    if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
+      await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
+    }
+  };
 
   if (storedFingerprint === fingerprint) {
+    if (ftsChanged) {
+      // On SQLite/D1, changing a collection's searchable fields does not alter
+      // the CREATE VIRTUAL TABLE DDL in `schema_fingerprint`; rebuild only the
+      // collections whose FTS fingerprint changed.
+      await applyFtsTables(db, config, dialect, storedFtsRaw);
+    }
     await applyRepositoryScopes();
     // Moderation policy has its own fingerprint: editing moderators or label
     // sources must not rerun DDL or rebuild FTS.
@@ -911,6 +1021,7 @@ export async function initSchema(
     await applyRepositoryScopes();
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
+    await stampDecoupledMarkers();
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
     return;
   }
@@ -933,6 +1044,7 @@ export async function initSchema(
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
     for (const apply of options.extraSchemas ?? []) await apply(db);
+    await stampDecoupledMarkers();
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
     return;
   }
@@ -956,11 +1068,13 @@ export async function initSchema(
   // Existing queues need the generation column before policy jobs can reset
   // them. CREATE TABLE IF NOT EXISTS only covers fresh databases.
   await addColumnIfNotExists(db, "label_backfill_queue", "generation", "INTEGER NOT NULL DEFAULT 0");
-  await upgradeModerationCreationTimestamps(db);
+  if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
+    await upgradeModerationCreationTimestamps(db);
+  }
   await applyModerationPolicy(db, config, { ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
 
   await runIdempotentDdl(db, cursorObservationsDdl);
-  await applyFtsTables(db, config, dialect);
+  await applyFtsTables(db, config, dialect, storedFtsRaw);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
   await runMigrations(db, hasFeeds);
@@ -968,17 +1082,21 @@ export async function initSchema(
   await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
   await db
     .prepare(
-      "UPDATE record_versions SET projection_token = uri WHERE projection_token IS NULL",
-    )
-    .run();
-  await db
-    .prepare(
       `INSERT INTO _contrail_projection_state (id, revision, guard)
        VALUES (1, 0, 1) ON CONFLICT(id) DO NOTHING`,
     )
     .run();
   await applyCountColumns(db, config);
-  await seedLegacyRecordVersions(db, config);
+
+  const needsLegacyMigrations = storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION;
+  if (needsLegacyMigrations) {
+    await db
+      .prepare(
+        "UPDATE record_versions SET projection_token = uri WHERE projection_token IS NULL",
+      )
+      .run();
+    await seedLegacyRecordVersions(db, config);
+  }
 
   if (changesEnabled(config)) {
     const concurrentChangeLog = await probeChangeLogSchema(db);
@@ -986,7 +1104,7 @@ export async function initSchema(
       await assertFreshChangeLogGeneration(db);
     }
     for (const statement of changes) await runIdempotentDdl(db, statement);
-    await addColumnIfNotExists(
+    const addedEncodedBytes = await addColumnIfNotExists(
       db,
       "change_batches",
       "encoded_bytes",
@@ -998,14 +1116,19 @@ export async function initSchema(
       "lease_through_position",
       dialect.bigintType,
     );
-    await db
-      .prepare(
-        "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",
-      )
-      .run();
+    if (priorChangeLog.exists && (addedEncodedBytes || needsLegacyMigrations)) {
+      await db
+        .prepare(
+          "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",
+        )
+        .run();
+    }
     await initializeChangeLog(db, config);
   }
 
+  if (needsLegacyMigrations) {
+    await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
+  }
   for (const apply of options.extraSchemas ?? []) await apply(db);
   await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
 }

@@ -18,6 +18,8 @@ interface BackfillOpts {
   root?: string;
   remote?: boolean;
   binding: string;
+  env?: string;
+  wranglerConfig?: string;
   sqlite?: string;
   concurrency: number;
   pdsConcurrency: number;
@@ -39,10 +41,15 @@ export function registerBackfill(cli: CAC): void {
     )
     .option("--config <path>", "Path to Contrail config file (TS or JS)")
     .option("--root <path>", "Project root for auto-detection (default: CWD)")
-    .option("--remote", "Use production D1 bindings")
+    .option("--remote", "Connect to the remote Cloudflare D1 database for --binding")
     .option("--binding <name>", "D1 binding name in wrangler.jsonc", {
       default: "DB",
     })
+    .option("--env <name>", "Wrangler environment name in wrangler.jsonc (optional)")
+    .option(
+      "--wrangler-config <path>",
+      "Path to wrangler.jsonc / wrangler.json / wrangler.toml",
+    )
     .option(
       "--sqlite <path>",
       "Use a local SQLite database instead of a Wrangler D1 binding",
@@ -104,6 +111,9 @@ export function registerBackfill(cli: CAC): void {
         lexicons,
         remote: !!options.remote,
         binding: options.binding,
+        env: options.env,
+        wranglerConfig: options.wranglerConfig,
+        root: options.root,
       };
       const sqliteDb = options.sqlite
         ? (await import("../../adapters/sqlite.js")).createSqliteDatabase(options.sqlite)

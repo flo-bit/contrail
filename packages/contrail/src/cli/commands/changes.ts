@@ -2,6 +2,7 @@ import type { CAC } from "cac";
 import { Contrail } from "../../contrail.js";
 import { getChangeLogCostPlan } from "../../core/change-log.js";
 import type { Database } from "../../core/types.js";
+import { openWranglerD1 } from "../../workers/wrangler.js";
 import {
   resolveAndLoadConfig,
   resolveValidationLexicons,
@@ -12,6 +13,8 @@ interface ChangeCommandOptions {
   root?: string;
   remote?: boolean;
   binding: string;
+  env?: string;
+  wranglerConfig?: string;
   sqlite?: string;
   json?: boolean;
   through?: string;
@@ -38,21 +41,19 @@ async function withChangesDatabase<T>(
     return callback(contrail, db);
   }
 
-  const { getPlatformProxy } = await import("wrangler");
-  const { env, dispose } = await getPlatformProxy({
-    environment: options.remote ? "production" : undefined,
+  const opened = await openWranglerD1({
+    remote: !!options.remote,
+    binding: options.binding,
+    env: options.env,
+    wranglerConfig: options.wranglerConfig,
+    root: options.root,
+    logger: config.logger,
   });
-  const binding = options.binding ?? "DB";
-  const db = (env as Record<string, unknown>)[binding] as Database | undefined;
-  if (!db) {
-    await dispose();
-    throw new Error(`No binding named "${binding}" in wrangler env`);
-  }
   try {
-    await contrail.init(db);
-    return await callback(contrail, db);
+    await contrail.init(opened.db);
+    return await callback(contrail, opened.db);
   } finally {
-    await dispose();
+    await opened.dispose();
   }
 }
 
@@ -60,10 +61,15 @@ function options(command: ReturnType<CAC["command"]>) {
   return command
     .option("--config <path>", "Path to Contrail config file (TS or JS)")
     .option("--root <path>", "Project root for auto-detection (default: CWD)")
-    .option("--remote", "Use production D1 bindings")
+    .option("--remote", "Connect to the remote Cloudflare D1 database for --binding")
     .option("--binding <name>", "D1 binding name in wrangler.jsonc", {
       default: "DB",
     })
+    .option("--env <name>", "Wrangler environment name in wrangler.jsonc (optional)")
+    .option(
+      "--wrangler-config <path>",
+      "Path to wrangler.jsonc / wrangler.json / wrangler.toml",
+    )
     .option(
       "--sqlite <path>",
       "Use a local SQLite database instead of a Wrangler D1 binding",

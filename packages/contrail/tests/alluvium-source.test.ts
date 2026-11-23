@@ -5,6 +5,7 @@ import {
   SourceHistoryExpiredError,
   getAlluviumBootstrapState,
   loadAlluviumExport,
+  type AlluviumProgress,
 } from "../src/adapters/alluvium";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import {
@@ -14,8 +15,13 @@ import {
   initSchema,
   queryRecords,
   resolveConfig,
+  type Database,
+  type Statement,
 } from "../src/index";
-import { saveJetstreamCursor } from "../src/core/db/records";
+import {
+  rebuildDerivedProjections,
+  saveJetstreamCursor,
+} from "../src/core/db/records";
 import { bootstrapAlluviumDatabase } from "../src/workers/backfill";
 
 const EVENT = "community.lexicon.calendar.event";
@@ -801,9 +807,9 @@ describe("Alluvium export bootstrap", () => {
         transport: { batchSize: 2 },
       }),
     ).rejects.toThrow("simulated crash before final handoff");
-    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("loading");
+    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("rebuilding");
 
-    // Re-running finishes cleanly without duplicating records.
+    // Re-running finishes cleanly without re-fetching /export or duplicating records.
     const second = service({ rows: ROWS });
     const resumed = await loadAlluviumExport(rawDb, resolved, {
       endpoint: ENDPOINT,
@@ -812,6 +818,7 @@ describe("Alluvium export bootstrap", () => {
       now: () => NOW_MS,
       deferIndexes: true,
     });
+    expect(second.requests).toHaveLength(0);
     expect(resumed).toMatchObject({
       resumed: true,
       alreadyComplete: false,
@@ -819,5 +826,313 @@ describe("Alluvium export bootstrap", () => {
     });
     expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("complete");
     expect((await queryRecords(rawDb, resolved, { collection: EVENT })).records).toHaveLength(3);
+  });
+
+  it("propagates real FTS rebuild errors loudly instead of marking bootstrap complete with empty FTS", async () => {
+    const resolved = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      orderedSource: { source: SOURCE.id, epoch: SOURCE.epoch },
+      collections: {
+        event: {
+          collection: EVENT,
+          searchable: ["name"],
+        },
+        rsvp: {
+          collection: RSVP,
+        },
+      },
+    });
+    const rawDb = await freshDb(resolved);
+    const sqlByStmt = new WeakMap<Statement, string>();
+    const track = (stmt: Statement, sql: string): Statement => {
+      sqlByStmt.set(stmt, sql);
+      const origBind = stmt.bind.bind(stmt);
+      stmt.bind = (...values: unknown[]) => track(origBind(...values), sql);
+      return stmt;
+    };
+    const ftsFailingDb: Database = {
+      dialect: rawDb.dialect,
+      prepare: (sql) => track(rawDb.prepare(sql), sql),
+      async batch(stmts) {
+        if (stmts.some((stmt) => /INSERT INTO fts_event\b/i.test(sqlByStmt.get(stmt) ?? ""))) {
+          throw new Error("D1_ERROR: exceeded CPU time limit during FTS rebuild");
+        }
+        return rawDb.batch(stmts);
+      },
+    };
+
+    const { fetchImpl } = service({ rows: ROWS });
+    // Fails loudly in chunked (D1) mode and leaves bootstrap in `rebuilding`, never `complete`.
+    await expect(
+      loadAlluviumExport(ftsFailingDb, resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: fetchImpl,
+        now: () => NOW_MS,
+        deferIndexes: false,
+        rebuildChunkSize: 2,
+      }),
+    ).rejects.toThrow(/exceeded CPU time limit during FTS rebuild/);
+    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("rebuilding");
+    expect(await getLastCursor(rawDb)).toBeNull();
+
+    // Bulk rebuildDerivedProjections also propagates real errors rather than swallowing them.
+    await expect(rebuildDerivedProjections(ftsFailingDb, resolved)).rejects.toThrow(
+      /exceeded CPU time limit during FTS rebuild/,
+    );
+  });
+
+  it("loads and rebuilds FTS + grouped relation counts in bounded D1 chunks and resumes across mid-rebuild failures", async () => {
+    const GOING = "community.lexicon.calendar.rsvp#going";
+    const INTERESTED = "community.lexicon.calendar.rsvp#interested";
+    const resolved = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      orderedSource: { source: SOURCE.id, epoch: SOURCE.epoch },
+      collections: {
+        event: {
+          collection: EVENT,
+          searchable: ["name"],
+          relations: {
+            rsvps: {
+              collection: "rsvp",
+              groupBy: "status",
+              groups: {
+                going: GOING,
+                interested: INTERESTED,
+              },
+            },
+          },
+        },
+        rsvp: {
+          collection: RSVP,
+          queryable: { "subject.uri": {}, status: {} },
+          references: {
+            event: { collection: "event", field: "subject.uri" },
+          },
+        },
+      },
+    });
+    const rawDb = await freshDb(resolved);
+
+    // Build 9 events (including one with 0 RSVPs) and 14 RSVPs across events.
+    const exportLines: string[] = [];
+    for (let i = 1; i <= 9; i++) {
+      const rkey = `e${String(i).padStart(2, "0")}`;
+      exportLines.push(
+        JSON.stringify({
+          uri: `at://${DID}/${EVENT}/${rkey}`,
+          cid: `bafy-${rkey}`,
+          rev: "3kabcdefghij2",
+          time_us: HEAD_US - 10_000 + i,
+          record: { $type: EVENT, name: `Summit ${rkey} Alpine` },
+        }),
+      );
+    }
+    const rsvpSpecs: Array<{ rkey: string; eventIdx: number; status: string }> = [
+      { rkey: "r01", eventIdx: 1, status: GOING },
+      { rkey: "r02", eventIdx: 1, status: GOING },
+      { rkey: "r03", eventIdx: 1, status: INTERESTED },
+      { rkey: "r04", eventIdx: 2, status: GOING },
+      { rkey: "r05", eventIdx: 4, status: GOING },
+      { rkey: "r06", eventIdx: 4, status: GOING },
+      { rkey: "r07", eventIdx: 4, status: GOING },
+      { rkey: "r08", eventIdx: 5, status: INTERESTED },
+      { rkey: "r09", eventIdx: 6, status: GOING },
+      { rkey: "r10", eventIdx: 7, status: GOING },
+      { rkey: "r11", eventIdx: 7, status: INTERESTED },
+      { rkey: "r12", eventIdx: 8, status: GOING },
+      { rkey: "r13", eventIdx: 9, status: GOING },
+      { rkey: "r14", eventIdx: 9, status: INTERESTED },
+    ];
+    for (const [idx, spec] of rsvpSpecs.entries()) {
+      const eventRkey = `e${String(spec.eventIdx).padStart(2, "0")}`;
+      exportLines.push(
+        JSON.stringify({
+          uri: `at://did:plc:guest${idx}/${RSVP}/${spec.rkey}`,
+          cid: `bafy-${spec.rkey}`,
+          rev: "3kabcdefghij2",
+          time_us: HEAD_US - 5_000 + idx,
+          record: {
+            $type: RSVP,
+            subject: { uri: `at://${DID}/${EVENT}/${eventRkey}` },
+            status: spec.status,
+          },
+        }),
+      );
+    }
+
+    const requests: URL[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      requests.push(url);
+      if (url.pathname === "/alluvium/head") {
+        return Response.json({
+          cursor: 1_000,
+          time_us: HEAD_US,
+          excludes: ["app.bsky.*"],
+        });
+      }
+      if (url.pathname === "/export") {
+        const body = [
+          ...exportLines,
+          JSON.stringify({
+            end: true,
+            cursor: 1_000,
+            time_us: HEAD_US,
+            records: exportLines.length,
+          }),
+        ].join("\n") + "\n";
+        return new Response(body, {
+          headers: {
+            "content-type": "application/x-ndjson",
+            "alluvium-cursor": "1000",
+            "alluvium-time-us": String(HEAD_US),
+          },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    // Helper to wrap rawDb and fail once on the Nth batch matching a SQL regex.
+    const failOnceOnBatch = (pattern: RegExp, targetHit: number): Database => {
+      let hits = 0;
+      let failed = false;
+      const sqlByStmt = new WeakMap<Statement, string>();
+      const track = (stmt: Statement, sql: string): Statement => {
+        sqlByStmt.set(stmt, sql);
+        const origBind = stmt.bind.bind(stmt);
+        stmt.bind = (...values: unknown[]) => track(origBind(...values), sql);
+        return stmt;
+      };
+      return {
+        dialect: rawDb.dialect,
+        prepare: (sql) => track(rawDb.prepare(sql), sql),
+        async batch(stmts) {
+          const matched = stmts.some((stmt) =>
+            pattern.test(sqlByStmt.get(stmt) ?? ""),
+          );
+          if (matched) {
+            hits += 1;
+            if (!failed && hits === targetHit) {
+              failed = true;
+              throw new Error(`simulated interruption on hit ${targetHit}`);
+            }
+          }
+          return rawDb.batch(stmts);
+        },
+      };
+    };
+
+    // Run 1: stream succeeds, 1st FTS chunk commits (3 rows), 2nd FTS chunk fails.
+    const progress1: AlluviumProgress[] = [];
+    await expect(
+      loadAlluviumExport(failOnceOnBatch(/INSERT INTO fts_event\b/i, 2), resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: fetchImpl,
+        now: () => NOW_MS,
+        deferIndexes: false,
+        transport: { batchSize: 5 },
+        rebuildChunkSize: 3,
+        onProgress: (p) => progress1.push(p),
+      }),
+    ).rejects.toThrow("simulated interruption on hit 2");
+
+    const stateAfterFtsCrash = await getAlluviumBootstrapState(rawDb);
+    expect(stateAfterFtsCrash?.phase).toBe("rebuilding");
+    expect(stateAfterFtsCrash?.rebuild).toEqual({
+      stage: "fts",
+      collection: "event",
+      after: `at://${DID}/${EVENT}/e03`,
+    });
+    expect(progress1.some((p) => p.phase === "loading")).toBe(true);
+    expect(progress1.some((p) => p.phase === "rebuilding" && p.stage === "fts")).toBe(true);
+    const exportsAfterRun1 = requests.filter((u) => u.pathname === "/export").length;
+    expect(exportsAfterRun1).toBe(1);
+
+    // Run 2: resumes FTS without re-fetching /export, finishes FTS, commits 1st count chunk, fails on 2nd count chunk.
+    await expect(
+      loadAlluviumExport(failOnceOnBatch(/WITH derived AS/i, 2), resolved, {
+        endpoint: ENDPOINT,
+        source: SOURCE,
+        fetch: fetchImpl,
+        now: () => NOW_MS,
+        deferIndexes: false,
+        rebuildChunkSize: 3,
+      }),
+    ).rejects.toThrow("simulated interruption on hit 2");
+
+    expect(requests.filter((u) => u.pathname === "/export")).toHaveLength(1);
+    const stateAfterCountsCrash = await getAlluviumBootstrapState(rawDb);
+    expect(stateAfterCountsCrash?.phase).toBe("rebuilding");
+    expect(stateAfterCountsCrash?.rebuild).toEqual({
+      stage: "counts",
+      collection: "event",
+      relation: "rsvps",
+      after: `at://${DID}/${EVENT}/e03`,
+    });
+
+    // Run 3: resumes counts and finishes cleanly, still with zero extra /export requests.
+    const progress3: AlluviumProgress[] = [];
+    const finalResult = await loadAlluviumExport(rawDb, resolved, {
+      endpoint: ENDPOINT,
+      source: SOURCE,
+      fetch: fetchImpl,
+      now: () => NOW_MS,
+      deferIndexes: false,
+      rebuildChunkSize: 3,
+      onProgress: (p) => progress3.push(p),
+    });
+
+    expect(requests.filter((u) => u.pathname === "/export")).toHaveLength(1);
+    expect(finalResult.resumed).toBe(true);
+    expect(finalResult.alreadyComplete).toBe(false);
+    expect((await getAlluviumBootstrapState(rawDb))?.phase).toBe("complete");
+    expect(progress3.some((p) => p.phase === "rebuilding" && p.stage === "counts")).toBe(true);
+
+    // Verify FTS has exact 9 rows (zero duplicates) and finds every event.
+    expect(
+      await rawDb.prepare("SELECT COUNT(*) AS c FROM fts_event_rows").first<{ c: number }>(),
+    ).toEqual({ c: 9 });
+    expect(
+      await rawDb.prepare("SELECT COUNT(*) AS c FROM fts_event").first<{ c: number }>(),
+    ).toEqual({ c: 9 });
+    expect(
+      (await queryRecords(rawDb, resolved, { collection: "event", search: "Alpine" })).records,
+    ).toHaveLength(9);
+    expect(
+      (await queryRecords(rawDb, resolved, { collection: "event", search: "e07" })).records,
+    ).toHaveLength(1);
+
+    // Verify exact total & grouped relation counts across all 9 events (including e03 with 0 RSVPs).
+    const allEvents = (
+      await queryRecords(rawDb, resolved, { collection: "event", limit: 20 })
+    ).records;
+    const byRkey = Object.fromEntries(allEvents.map((row) => [row.rkey, row.counts ?? {}]));
+    expect(byRkey).toEqual({
+      e01: { rsvp: 3, [GOING]: 2, [INTERESTED]: 1 },
+      e02: { rsvp: 1, [GOING]: 1 },
+      e03: {},
+      e04: { rsvp: 3, [GOING]: 3 },
+      e05: { rsvp: 1, [INTERESTED]: 1 },
+      e06: { rsvp: 1, [GOING]: 1 },
+      e07: { rsvp: 2, [GOING]: 1, [INTERESTED]: 1 },
+      e08: { rsvp: 1, [GOING]: 1 },
+      e09: { rsvp: 2, [GOING]: 1, [INTERESTED]: 1 },
+    });
+
+    // Verify chunked rebuild resets stale non-zero counts back to 0 when children disappear.
+    await rawDb
+      .prepare("UPDATE records_event SET count_rsvp = 99, count_rsvp_going = 99 WHERE rkey = 'e03'")
+      .run();
+    await rebuildDerivedProjections(rawDb, resolved, { chunkSize: 3 });
+    const afterReset = (
+      await queryRecords(rawDb, resolved, { collection: "event", limit: 20 })
+    ).records.find((row) => row.rkey === "e03");
+    expect(afterReset?.counts).toBeUndefined();
   });
 });
