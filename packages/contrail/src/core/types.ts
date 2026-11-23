@@ -838,17 +838,12 @@ export function canonicalChangeDefinitions(config: ContrailConfig): string {
 }
 
 export function validateConfig(config: ContrailConfig): void {
-  const shortNames = new Set<string>();
   for (const [short, colConfig] of Object.entries(config.collections)) {
     // NSID-keyed collections use the map key as the NSID (no short alias), so
     // the key legitimately contains dots and must skip short-name validation.
     const nsidKeyed =
       colConfig.collection === undefined || colConfig.collection === short;
     if (!nsidKeyed) validateShortName(short);
-    if (shortNames.has(short)) {
-      throw new Error(`Duplicate collection short name: ${short}`);
-    }
-    shortNames.add(short);
 
     for (const field of Object.keys(colConfig.queryable ?? {})) {
       validateFieldName(field);
@@ -1082,10 +1077,7 @@ export function shortNameForNsid(
 
 /** The config key a collection's rows are stored under: its short alias when
  *  one exists, otherwise the NSID itself when the config is keyed directly by
- *  NSID. Returns null when the collection is unknown. Use this wherever you need
- *  the storage key (records insert, FTS, existing-record lookup). Unlike
- *  {@link shortNameForNsid}, which only reports an alias and so returns
- *  undefined for NSID-keyed configs. */
+ *  NSID. Returns null when the collection is unknown. */
 export function resolveCollectionKey(
   config: ContrailConfig,
   nsid: string

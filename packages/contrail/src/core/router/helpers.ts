@@ -45,6 +45,10 @@ export function parseIntParam(
   return isNaN(parsed) ? defaultValue : parsed;
 }
 
+export function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 export function fieldToParam(field: string): string {
   return field.replace(/\.(\w)/g, (_, c) => c.toUpperCase());
 }

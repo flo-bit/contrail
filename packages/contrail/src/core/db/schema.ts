@@ -2,7 +2,6 @@ import type {
   ContrailConfig,
   Database,
   ResolvedContrailConfig,
-  Statement,
   ResolvedMaps,
 } from "../types";
 import type { SqlDialect } from "../dialect";
@@ -38,6 +37,7 @@ import {
   changesEnabled,
 } from "../types";
 import { getMetaValues, setMeta } from "./meta";
+import { populateVirtualFtsStatements } from "./projections";
 import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY } from "../repository-scope";
 
 export const CONTRAIL_SCHEMA_VERSION = 17;
@@ -331,9 +331,13 @@ function buildVersionedDynamicIndexes(
   return indexes;
 }
 
-export function buildCountColumns(config: ContrailConfig): string[] {
+type CountColumnDdlSpec =
+  | { kind: "column"; table: string; column: string; columnDef: string }
+  | { kind: "index"; sql: string };
+
+function buildCountColumnSpecs(config: ContrailConfig): CountColumnDdlSpec[] {
   const resolved = getResolved(config);
-  const statements: string[] = [];
+  const specs: CountColumnDdlSpec[] = [];
   const addedColumns = new Map<string, Set<string>>();
 
   for (const [collection, colConfig] of Object.entries(config.collections)) {
@@ -349,13 +353,17 @@ export function buildCountColumns(config: ContrailConfig): string[] {
       const totalColumn = countColumnName(relation.collection);
       if (!tableColumns.has(totalColumn)) {
         tableColumns.add(totalColumn);
-        statements.push(
-          `ALTER TABLE ${table} ADD COLUMN ${totalColumn} INTEGER NOT NULL DEFAULT 0`,
-        );
+        specs.push({
+          kind: "column",
+          table,
+          column: totalColumn,
+          columnDef: "INTEGER NOT NULL DEFAULT 0",
+        });
       }
-      statements.push(
-        `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${totalColumn} ON ${table}(${totalColumn} DESC, time_us DESC)`,
-      );
+      specs.push({
+        kind: "index",
+        sql: `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${totalColumn} ON ${table}(${totalColumn} DESC, time_us DESC)`,
+      });
 
       const mapping = relationMap[relationName];
       if (!mapping) continue;
@@ -366,17 +374,29 @@ export function buildCountColumns(config: ContrailConfig): string[] {
         );
         if (!tableColumns.has(groupColumn)) {
           tableColumns.add(groupColumn);
-          statements.push(
-            `ALTER TABLE ${table} ADD COLUMN ${groupColumn} INTEGER NOT NULL DEFAULT 0`,
-          );
+          specs.push({
+            kind: "column",
+            table,
+            column: groupColumn,
+            columnDef: "INTEGER NOT NULL DEFAULT 0",
+          });
         }
-        statements.push(
-          `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${groupColumn} ON ${table}(${groupColumn} DESC, time_us DESC)`,
-        );
+        specs.push({
+          kind: "index",
+          sql: `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_${groupColumn} ON ${table}(${groupColumn} DESC, time_us DESC)`,
+        });
       }
     }
   }
-  return statements;
+  return specs;
+}
+
+export function buildCountColumns(config: ContrailConfig): string[] {
+  return buildCountColumnSpecs(config).map((spec) =>
+    spec.kind === "column"
+      ? `ALTER TABLE ${spec.table} ADD COLUMN ${spec.column} ${spec.columnDef}`
+      : spec.sql,
+  );
 }
 
 export async function addColumnIfNotExists(
@@ -453,15 +473,11 @@ export async function applyCountColumns(
   db: Database,
   config: ContrailConfig,
 ): Promise<void> {
-  for (const statement of buildCountColumns(config)) {
-    const match = statement.match(
-      /^ALTER TABLE\s+(\S+)\s+ADD COLUMN\s+(\S+)\s+(.+)$/i,
-    );
-    if (match) {
-      const [, table, column, columnDef] = match;
-      await addColumnIfNotExists(db, table, column, columnDef);
+  for (const spec of buildCountColumnSpecs(config)) {
+    if (spec.kind === "column") {
+      await addColumnIfNotExists(db, spec.table, spec.column, spec.columnDef);
     } else {
-      await runIdempotentDdl(db, statement);
+      await runIdempotentDdl(db, spec.sql);
     }
   }
 }
@@ -545,36 +561,6 @@ async function virtualFtsColumns(
     .prepare(`PRAGMA table_info(${table})`)
     .all<{ name: string }>();
   return (rows.results ?? []).map((row) => row.name);
-}
-
-function populateVirtualFtsStatements(
-  db: Database,
-  collection: string,
-  fields: string[],
-): Statement[] {
-  const recordsTable = recordsTableName(collection);
-  const ftsTable = ftsTableName(collection);
-  const rowsTable = ftsRowTableName(collection);
-  const content = sqliteFtsContentExpression(fields);
-  return [
-    db.prepare(
-      `INSERT INTO ${rowsTable} (uri)
-       SELECT uri FROM (
-         SELECT uri, ${content} AS content FROM ${recordsTable}
-       ) rebuilt
-       WHERE content <> ''
-       ORDER BY uri`,
-    ),
-    db.prepare(
-      `INSERT INTO ${ftsTable} (rowid, content)
-       SELECT fts_rows.id, rebuilt.content
-       FROM (
-         SELECT uri, ${content} AS content FROM ${recordsTable}
-       ) rebuilt
-       JOIN ${rowsTable} fts_rows ON fts_rows.uri = rebuilt.uri
-       WHERE rebuilt.content <> ''`,
-    ),
-  ];
 }
 
 async function verifyVirtualFtsProjection(

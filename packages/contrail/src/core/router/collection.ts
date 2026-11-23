@@ -27,7 +27,7 @@ import {
 import { collectDids, resolveProfiles } from "./profiles";
 import { resolveActor } from "../identity";
 import type { FormattedRecord } from "./helpers";
-import { fieldToParam, formatRecord, parseIntParam } from "./helpers";
+import { capitalize, fieldToParam, formatRecord, parseIntParam } from "./helpers";
 import { attachRecordLabels } from "../labels/attach";
 import { selectAcceptedLabelers } from "../labels/select";
 import { parseResourceUri } from "@atcute/lexicons/syntax";
@@ -100,8 +100,6 @@ export async function runPipeline(
     if (totalMin != null) countFilters[rel.collection] = totalMin;
     const mapping = relMap[relName];
     if (mapping) {
-      const capitalize = (value: string): string =>
-        value.charAt(0).toUpperCase() + value.slice(1);
       for (const [shortName, fullToken] of Object.entries(mapping.groups)) {
         const value = parseIntParam(
           params.get(`${relName}${capitalize(shortName)}CountMin`),
@@ -128,8 +126,6 @@ export async function runPipeline(
       sort = { recordField: fieldEntry[0], direction };
     } else {
       const direction = orderParam === "asc" ? "asc" : "desc";
-      const capitalize = (value: string): string =>
-        value.charAt(0).toUpperCase() + value.slice(1);
       for (const [relName, rel] of Object.entries(relations)) {
         if (sortParam === `${relName}Count`) {
           sort = { countType: rel.collection, direction };
@@ -476,8 +472,6 @@ function flattenCounts(
   relations: Record<string, RelationConfig>,
 ): void {
   if (!counts) return;
-  const capitalize = (value: string): string =>
-    value.charAt(0).toUpperCase() + value.slice(1);
   const collectionToRelName: Record<string, string> = {};
   const tokenToField: Record<string, string> = {};
 
