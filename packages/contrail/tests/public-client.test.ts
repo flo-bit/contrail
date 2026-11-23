@@ -104,7 +104,7 @@ describe("public service client", () => {
   it("rejects legacy incomplete or wildcard service-auth configuration", () => {
     expect(() =>
       createPublicServiceClient({ endpoint, serviceDid }),
-    ).toThrow("connect --update");
+    ).toThrow("incomplete");
     expect(() =>
       createPublicServiceClient({
         endpoint,
@@ -113,7 +113,7 @@ describe("public service client", () => {
         scope: "rpc?aud=did:web:api.example.com%23contrail&lxm=*",
         protectedMethods: [method],
       }),
-    ).toThrow("connect --update");
+    ).toThrow("invalid");
     expect(() =>
       createPublicServiceClient({
         endpoint,

@@ -7,9 +7,7 @@ Turn public AT Protocol records into a queryable AppView on Cloudflare Workers +
 ## Quick start
 
 ```bash
-pnpx @atmo-dev/contrail init my-appview \
-  --prefix community.lexicon.calendar. \
-  --namespace com.example.calendar
+pnpx @atmo-dev/contrail init my-appview
 cd my-appview
 pnpx @atmo-dev/contrail dev
 ```
@@ -52,10 +50,9 @@ export default createWorker(config, {
 ## CLI
 
 ```bash
-contrail init [dir] [--prefix <nsid.>] [--namespace <nsid>]
+contrail init [dir]
 contrail dev [--alluvium] [--wrangler] [--port 8787]
 contrail backfill [--remote] [--alluvium] [--env <name>] [--sqlite <path>]
-contrail connect <config-dir-or-url> [--update]
 contrail lexicons all [--public]
 contrail lexicons check
 ```

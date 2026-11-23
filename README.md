@@ -11,14 +11,12 @@ Contrail turns public AT Protocol records into a queryable AppView.
 ## Quick start
 
 ```bash
-pnpx @atmo-dev/contrail init my-appview \
-  --prefix community.lexicon.calendar. \
-  --namespace com.example.calendar
+pnpx @atmo-dev/contrail init my-appview
 cd my-appview
 pnpx @atmo-dev/contrail dev
 ```
 
-`--prefix` imports your source record Lexicons; `--namespace` sets the XRPC namespace for the generated AppView methods.
+Edit `contrail.config.ts` to pick the collections, queryable fields, relations, and search fields you want to index.
 
 ## Docs
 

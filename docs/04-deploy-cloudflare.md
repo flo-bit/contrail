@@ -69,14 +69,13 @@ pnpm wrangler deploy
 pnpm contrail backfill --remote      # or add --alluvium on an empty D1 database
 ```
 
-Verify and connect your consumer app:
+Verify the deployment:
 
 ```bash
 curl https://my-appview.example.com/status
-pnpx @atmo-dev/contrail connect https://my-appview.example.com
 ```
 
-When changing config later: regenerate Lexicons, redeploy, run `contrail backfill --remote` for new collections, and reconnect clients with `--update`.
+When changing config later: re-run `contrail lexicons all`, redeploy, and run `contrail backfill --remote` for new collections.
 
 ## Embedding in SvelteKit (Cloudflare Workers)
 
