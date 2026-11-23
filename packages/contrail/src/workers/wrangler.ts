@@ -17,9 +17,14 @@
  */
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Database } from "../core/types.js";
+
+const MIN_REMOTE_WRANGLER_MAJOR = 4;
+const MIN_REMOTE_WRANGLER_MINOR = 37;
+const MIN_REMOTE_WRANGLER_VERSION = `${MIN_REMOTE_WRANGLER_MAJOR}.${MIN_REMOTE_WRANGLER_MINOR}.0`;
 
 const WRANGLER_CONFIG_CANDIDATES = [
   "wrangler.jsonc",
@@ -65,6 +70,7 @@ export interface WranglerModuleLike {
     config?: string;
     env?: string;
   }) => WranglerResolvedConfig;
+  startRemoteProxySession?: unknown;
 }
 
 export interface OpenWranglerD1Options {
@@ -82,6 +88,8 @@ export interface OpenWranglerD1Options {
   logger?: Pick<Console, "log" | "warn" | "error">;
   /** @internal Test seam to inject a mock `wrangler` module. */
   _wrangler?: WranglerModuleLike;
+  /** @internal Test seam to override the detected `wrangler` version string. */
+  _wranglerVersion?: string;
 }
 
 export interface OpenedWranglerD1 {
@@ -93,7 +101,66 @@ export interface OpenedWranglerD1 {
   dispose: () => Promise<void>;
 }
 
-/** Locate a Wrangler config file from an explicit path or project root. */
+/** Check whether a semver string meets the minimum Wrangler version with
+ * `getPlatformProxy({ remoteBindings: true })` support (`>= 4.37.0`). */
+export function supportsWranglerRemoteBindings(version: string): boolean {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return (
+    major > MIN_REMOTE_WRANGLER_MAJOR ||
+    (major === MIN_REMOTE_WRANGLER_MAJOR && minor >= MIN_REMOTE_WRANGLER_MINOR)
+  );
+}
+
+function readInstalledWranglerVersion(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("wrangler/package.json") as { version?: unknown };
+    return typeof pkg?.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function assertRemoteWranglerSupport(
+  wrangler: WranglerModuleLike,
+  explicitVersion: string | undefined,
+  isMock: boolean,
+): void {
+  if (typeof wrangler.unstable_readConfig !== "function") {
+    throw new Error(
+      `Cannot use --remote: installed wrangler does not expose unstable_readConfig (requires wrangler >= ${MIN_REMOTE_WRANGLER_VERSION}).`,
+    );
+  }
+  const version =
+    explicitVersion !== undefined
+      ? explicitVersion
+      : isMock
+        ? undefined
+        : readInstalledWranglerVersion();
+  if (version !== undefined) {
+    if (!supportsWranglerRemoteBindings(version)) {
+      throw new Error(
+        `Cannot use --remote: installed wrangler ${version} does not support remoteBindings ` +
+          `(requires wrangler >= ${MIN_REMOTE_WRANGLER_VERSION}). Upgrade wrangler so --remote cannot silently fall back to local storage.`,
+      );
+    }
+    return;
+  }
+  if (!isMock && typeof wrangler.startRemoteProxySession !== "function") {
+    throw new Error(
+      `Cannot use --remote: could not verify remoteBindings support in the installed wrangler ` +
+        `(requires wrangler >= ${MIN_REMOTE_WRANGLER_VERSION}).`,
+    );
+  }
+}
+
+/** Locate a Wrangler config file from an explicit path or project root.
+ * An explicit `--wrangler-config` fails closed if missing; `--root` falls back
+ * to Wrangler's own CWD discovery when no Wrangler config sits at `--root`
+ * (supporting split monorepo layouts where Contrail config is at repo root). */
 export function findWranglerConfigPath(options: {
   wranglerConfig?: string;
   root?: string;
@@ -111,9 +178,6 @@ export function findWranglerConfigPath(options: {
       const fullPath = join(rootDir, candidate);
       if (existsSync(fullPath)) return fullPath;
     }
-    throw new Error(
-      `No Wrangler config (${WRANGLER_CONFIG_CANDIDATES.join(", ")}) found in ${rootDir}`,
-    );
   }
   return undefined;
 }
@@ -204,12 +268,12 @@ export async function openWranglerD1(
   });
 
   if (opts.remote) {
-    if (typeof wrangler.unstable_readConfig !== "function") {
-      throw new Error(
-        "Cannot use --remote: installed wrangler version does not expose unstable_readConfig (requires wrangler v4+).",
-      );
-    }
-    const resolved = wrangler.unstable_readConfig({
+    assertRemoteWranglerSupport(
+      wrangler,
+      opts._wranglerVersion,
+      opts._wrangler !== undefined,
+    );
+    const resolved = wrangler.unstable_readConfig!({
       config: configPath,
       env: opts.env,
     });
@@ -228,7 +292,8 @@ export async function openWranglerD1(
       (opts.logger ?? console).log(
         `[wrangler] connecting to remote D1 binding "${binding}" ` +
           `(${databaseName ?? databaseId}, id=${databaseId}` +
-          `${opts.env ? `, env=${opts.env}` : ""})`,
+          `${opts.env ? `, env=${opts.env}` : ""}` +
+          `${resolved.configPath ? `, config=${resolved.configPath}` : ""})`,
       );
 
       let proxy: Awaited<ReturnType<WranglerModuleLike["getPlatformProxy"]>>;

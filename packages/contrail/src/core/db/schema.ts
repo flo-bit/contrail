@@ -986,6 +986,9 @@ export async function initSchema(
       // the CREATE VIRTUAL TABLE DDL in `schema_fingerprint`; rebuild only the
       // collections whose FTS fingerprint changed.
       await applyFtsTables(db, config, dialect, storedFtsRaw);
+      if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
+        await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
+      }
     } else if (
       storedFtsRaw === undefined ||
       storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION

@@ -130,7 +130,7 @@
   "peerDependencies": {
     "pg": "^8.0.0",
     "@electric-sql/pglite": "^0.5.11",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.37.0"
   },
   "peerDependenciesMeta": {
     "pg": {

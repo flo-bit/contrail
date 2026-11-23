@@ -8,6 +8,7 @@ import {
   buildRemoteD1ProxyConfig,
   findWranglerConfigPath,
   openWranglerD1,
+  supportsWranglerRemoteBindings,
   type WranglerModuleLike,
 } from "../src/workers/wrangler";
 
@@ -271,15 +272,44 @@ describe("Wrangler D1 remote binding resolution", () => {
     await opened.dispose();
   });
 
-  it("rejects a nonexistent explicit --wrangler-config path and a --root directory with no wrangler config", async () => {
+  it("rejects a nonexistent explicit --wrangler-config path, while --root without a wrangler config falls back to Wrangler CWD discovery", async () => {
     expect(() =>
       findWranglerConfigPath({ wranglerConfig: "/nonexistent/wrangler.jsonc" }),
     ).toThrow(/Wrangler config file not found/);
 
+    // Split monorepo layout: Contrail config lives at --root, Wrangler config lives in CWD.
     const emptyDir = await makeTempDir();
-    expect(() => findWranglerConfigPath({ root: emptyDir })).toThrow(
-      /No Wrangler config .* found in/,
-    );
+    expect(findWranglerConfigPath({ root: emptyDir })).toBeUndefined();
+  });
+
+  it("fails closed in --remote mode when installed Wrangler is older than 4.37.0", async () => {
+    expect(supportsWranglerRemoteBindings("3.99.0")).toBe(false);
+    expect(supportsWranglerRemoteBindings("4.0.0")).toBe(false);
+    expect(supportsWranglerRemoteBindings("4.20.0")).toBe(false);
+    expect(supportsWranglerRemoteBindings("4.36.9")).toBe(false);
+    expect(supportsWranglerRemoteBindings("4.37.0")).toBe(true);
+    expect(supportsWranglerRemoteBindings("4.123.0")).toBe(true);
+    expect(supportsWranglerRemoteBindings("5.0.0")).toBe(true);
+
+    const getPlatformProxy = vi.fn();
+    await expect(
+      openWranglerD1({
+        remote: true,
+        binding: "DB",
+        _wranglerVersion: "4.20.0",
+        _wrangler: {
+          unstable_readConfig: () => ({
+            name: "app",
+            configPath: "/tmp/wrangler.jsonc",
+            d1_databases: [
+              { binding: "DB", database_id: "2e4b6ea4-6c67-444a-b37d-73594c5b2c01" },
+            ],
+          }),
+          getPlatformProxy,
+        },
+      }),
+    ).rejects.toThrow(/installed wrangler 4\.20\.0 does not support remoteBindings.*>= 4\.37\.0/);
+    expect(getPlatformProxy).not.toHaveBeenCalled();
   });
 
   it("exposes --remote, --binding, --env, and --wrangler-config on backfill and changes CLI commands", async () => {
