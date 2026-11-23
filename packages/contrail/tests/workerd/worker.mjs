@@ -2,30 +2,43 @@ import { createWorker } from "../../dist/worker/index.js";
 
 const JETSTREAM_V2_SEQ_THRESHOLD = 1_000_000_000_000_000;
 
-const config = {
-  namespace: "com.example",
-  profiles: [],
-  constellation: false,
-  jetstreams: ["https://jetstream.us-east.bsky.network"],
-  orderedSource: {
-    source: "jetstream",
-    epoch: "contrail-workerd-runtime-smoke-v1",
-  },
-  collections: {
-    post: { collection: "app.bsky.feed.post" },
-  },
-  logger: console,
-};
+let cachedWorker = null;
+let cachedJetstream = null;
 
-const worker = createWorker(config, {
-  scheduledIngest: {
-    maxDrainMs: 8_000,
-    maxCandidates: 1,
-    maxIdentityUpdates: 1,
-    maxSerializedBytes: 1024 * 1024,
-  },
-  backfillRetries: false,
-});
+function getWorker(env) {
+  const jetstream = env.JETSTREAM_URL;
+  if (!jetstream) {
+    throw new Error("Missing JETSTREAM_URL var in workerd smoke worker");
+  }
+  if (cachedWorker && cachedJetstream === jetstream) return cachedWorker;
+  cachedJetstream = jetstream;
+  cachedWorker = createWorker(
+    {
+      namespace: "com.example",
+      profiles: [],
+      constellation: false,
+      jetstreams: [jetstream],
+      orderedSource: {
+        source: "jetstream",
+        epoch: "contrail-workerd-runtime-smoke-v1",
+      },
+      collections: {
+        post: { collection: "app.bsky.feed.post" },
+      },
+      logger: console,
+    },
+    {
+      scheduledIngest: {
+        maxDrainMs: 8_000,
+        maxCandidates: 1,
+        maxIdentityUpdates: 1,
+        maxSerializedBytes: 1024 * 1024,
+      },
+      backfillRetries: false,
+    },
+  );
+  return cachedWorker;
+}
 
 function cpuUsageCapability() {
   const runtimeProcess = globalThis.process;
@@ -41,6 +54,7 @@ function cpuUsageCapability() {
 
 export default {
   async fetch(request, env, ctx) {
+    const worker = getWorker(env);
     const url = new URL(request.url);
     if (url.pathname === "/__contrail_workerd_smoke") {
       // Exercise the built Worker's lazy initialization before inspecting its
@@ -63,5 +77,7 @@ export default {
     }
     return worker.fetch(request, env, ctx);
   },
-  scheduled: worker.scheduled,
+  async scheduled(event, env, ctx) {
+    return getWorker(env).scheduled(event, env, ctx);
+  },
 };

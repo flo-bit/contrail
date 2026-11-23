@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { createTestDb, makeEvent, TEST_CONFIG } from "./helpers";
+import { createTestDb, makeEvent, TEST_CONFIG, TEST_POSTGRES } from "./helpers";
 import {
   applyLabels,
   applyModerationPolicy,
@@ -18,13 +18,15 @@ const moderator = "did:plc:moderator";
 const external = "did:plc:external";
 const actors = ["did:plc:a1", "did:plc:a2", "did:plc:a3", "did:plc:a4", "did:plc:a5"];
 // CI's Node 22 SQLite lacks FTS5; policy coverage must still run there.
-let hasFts = false;
-try {
-  await createTestDb().prepare("CREATE VIRTUAL TABLE __moderation_policy_fts USING fts5(content)").run();
-  hasFts = true;
-} catch {}
+let hasFts = TEST_POSTGRES;
+if (!TEST_POSTGRES) {
+  try {
+    await createTestDb().prepare("CREATE VIRTUAL TABLE __moderation_policy_fts USING fts5(content)").run();
+    hasFts = true;
+  } catch {}
+}
 
-const base = {
+const base: ContrailConfig = {
   ...TEST_CONFIG,
   collections: {
     ...TEST_CONFIG.collections,

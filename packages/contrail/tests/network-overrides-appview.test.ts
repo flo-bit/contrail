@@ -46,7 +46,7 @@ function overrideConfig(): ContrailConfig {
 }
 
 describe("networkOverrides — appview entry points thread config", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();

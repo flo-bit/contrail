@@ -6,7 +6,7 @@ import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";
 
 describe("validatePdsUrl via resolvePDS — regression baseline", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch");
@@ -70,7 +70,7 @@ describe("validatePdsUrl via resolvePDS — regression baseline", () => {
 });
 
 describe("validatePdsUrl via resolvePDS — additionalAllowedHosts allowlist", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch");
@@ -142,7 +142,7 @@ describe("validatePdsUrl via resolvePDS — additionalAllowedHosts allowlist", (
 });
 
 describe("getPDSViaDidDoc — resolver override", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();
@@ -184,7 +184,7 @@ describe("getPDSViaDidDoc — resolver override", () => {
 });
 
 describe("getClient + getPDS — config plumb-through", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
   beforeEach(() => {
     __resetPdsCachesForTests();

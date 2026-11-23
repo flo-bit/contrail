@@ -42,7 +42,7 @@ describe("Database.dialect", () => {
   it("sqlite adapter exposes sqliteDialect", () => {
     const db = createSqliteDatabase(":memory:");
     expect(db.dialect).toBeDefined();
-    expect(db.dialect.recordColumnType).toBe("TEXT");
+    expect(db.dialect!.recordColumnType).toBe("TEXT");
   });
 
   it("serializes concurrent SQLite batches without nested transactions", async () => {

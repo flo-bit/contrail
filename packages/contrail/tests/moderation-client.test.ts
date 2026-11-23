@@ -69,7 +69,7 @@ describe("moderation client", () => {
     );
     expect(options.redirect).toBe("manual");
     // Server runtimes get no browser-only options (some reject them).
-    expect(options.credentials).toBeUndefined();
+    expect((options as { credentials?: string }).credentials).toBeUndefined();
     expect(JSON.parse(options.body as string).reason).toBe("private");
   });
 
@@ -125,7 +125,7 @@ describe("moderation client", () => {
     } finally {
       delete (globalThis as any).document;
     }
-    expect(init?.credentials).toBe("omit");
+    expect((init as { credentials?: string } | undefined)?.credentials).toBe("omit");
     expect(init?.cache).toBe("no-store");
   });
 

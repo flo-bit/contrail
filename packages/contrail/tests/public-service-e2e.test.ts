@@ -113,7 +113,7 @@ describe("public service consumer integration", () => {
       lexicons,
       publicService: { endpoint: "https://api.example.com" },
     });
-    const fetcher: typeof fetch = (input, init) =>
+    const fetcher: typeof fetch = async (input, init) =>
       app.fetch(new Request(input, init));
 
     const connection = await connectPublicService({

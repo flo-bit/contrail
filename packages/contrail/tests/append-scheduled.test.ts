@@ -262,7 +262,7 @@ describe("append-scheduled", () => {
       app = mkdtempSync(join(tmpdir(), "contrail-cron-sveltekit-"));
       // Build with installed SvelteKit 3, not a copy of its CSRF predicate or
       // Vitest's development-mode module transforms. The example still uses v2.
-      const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+      const packageRoot = fileURLToPath(new URL("../", import.meta.url).href);
       const require = createRequire(join(packageRoot, "package.json"));
       symlinkSync(
         join(packageRoot, "node_modules"),

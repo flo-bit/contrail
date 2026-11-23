@@ -29,6 +29,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("parseAtUri", () => {
@@ -116,7 +117,6 @@ describe("POST notifyOfUpdate", () => {
     await ingestRecords(
       db,
       [makeEvent({ uri, did, rkey, cid: "local-cid", record: { name } })],
-      TEST_CONFIG,
     );
   }
 
@@ -134,7 +134,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.error).toMatch(/uri/);
   });
 
@@ -148,7 +148,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uris }),
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.error).toMatch(/max 25/);
   });
 
@@ -168,7 +168,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uri: "not-a-valid-uri" }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.errors).toContain("invalid AT URI: not-a-valid-uri");
     expect(body.indexed).toBe(0);
   });
@@ -182,7 +182,7 @@ describe("POST notifyOfUpdate", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.errors).toContain("collection not tracked: app.bsky.feed.post");
   });
 
@@ -201,7 +201,7 @@ describe("POST notifyOfUpdate", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(1);
     expect(body.deleted).toBe(0);
     expect(body.errors).toBeUndefined();
@@ -257,7 +257,7 @@ describe("POST notifyOfUpdate", () => {
     // Pre-populate a record
     await ingestRecords(db, [
       makeEvent({ uri, did, rkey: "evt1", record: { name: "Old" } }),
-    ], TEST_CONFIG);
+    ]);
 
     await seedIdentity(did, "https://pds.example.com");
     mockFetch({}); // PDS returns 404 for everything
@@ -269,7 +269,7 @@ describe("POST notifyOfUpdate", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(0);
     expect(body.deleted).toBe(1);
 
@@ -297,7 +297,7 @@ describe("POST notifyOfUpdate", () => {
         ),
       );
 
-      const body = await (await notify(uri)).json();
+      const body = await (await notify(uri)).json<any>();
       expect(body).toMatchObject({ indexed: 0, deleted: 0 });
       expect(body.errors?.[0]).toContain(`PDS returned ${status}`);
       expect(await getLocalRecord(uri)).toBeDefined();
@@ -316,7 +316,7 @@ describe("POST notifyOfUpdate", () => {
       }),
     );
 
-    const body = await (await notify(uri)).json();
+    const body = await (await notify(uri)).json<any>();
     expect(body).toMatchObject({ indexed: 0, deleted: 0 });
     expect(body.errors?.[0]).toContain("network failure");
     expect(await getLocalRecord(uri)).toBeDefined();
@@ -345,7 +345,7 @@ describe("POST notifyOfUpdate", () => {
 
       const response = notify(uri);
       await vi.advanceTimersByTimeAsync(5_000);
-      const body = await (await response).json();
+      const body = await (await response).json<any>();
       expect(body).toMatchObject({ indexed: 0, deleted: 0 });
       expect(body.errors?.[0]).toContain("timed out");
       expect(await getLocalRecord(uri)).toBeDefined();
@@ -384,7 +384,7 @@ describe("POST notifyOfUpdate", () => {
 
       const response = notify(uri);
       await vi.advanceTimersByTimeAsync(5_000);
-      const body = await (await response).json();
+      const body = await (await response).json<any>();
       expect(body).toMatchObject({ indexed: 0, deleted: 0 });
       expect(body.errors?.[0]).toContain("timed out");
       expect(await getLocalRecord(uri)).toBeDefined();
@@ -403,7 +403,7 @@ describe("POST notifyOfUpdate", () => {
       vi.fn(async () => new Response("not json", { status: 200 })),
     );
 
-    const body = await (await notify(uri)).json();
+    const body = await (await notify(uri)).json<any>();
     expect(body).toMatchObject({ indexed: 0, deleted: 0 });
     expect(body.errors?.[0]).toContain("malformed JSON response");
     expect(await getLocalRecord(uri)).toBeDefined();
@@ -424,7 +424,7 @@ describe("POST notifyOfUpdate", () => {
       ),
     );
 
-    const body = await (await notify(uri)).json();
+    const body = await (await notify(uri)).json<any>();
     expect(body).toMatchObject({ indexed: 0, deleted: 1 });
     expect(body.errors).toBeUndefined();
     expect(await getLocalRecord(uri)).toBeUndefined();
@@ -459,7 +459,7 @@ describe("POST notifyOfUpdate", () => {
       }),
     );
 
-    const body = await (await notify([failedUri, foundUri])).json();
+    const body = await (await notify([failedUri, foundUri])).json<any>();
     expect(body).toMatchObject({ indexed: 1, deleted: 0 });
     expect(body.errors).toHaveLength(1);
     expect(await getLocalRecord(failedUri)).toBeDefined();
@@ -484,7 +484,7 @@ describe("POST notifyOfUpdate", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(2);
 
     const result = await queryRecords(db, TEST_CONFIG, {
@@ -514,7 +514,7 @@ describe("POST notifyOfUpdate", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(1);
 
     const result = await queryRecords(db, TEST_CONFIG, {
@@ -581,8 +581,7 @@ describe("POST notifyOfUpdate", () => {
           record: rsvpRecord,
           time_us: 2000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
 
     // Verify count is 1
@@ -603,7 +602,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uri: rsvpUri }),
     });
 
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(0); // skipped, nothing changed
     expect(body.deleted).toBe(0);
 
@@ -635,8 +634,7 @@ describe("POST notifyOfUpdate", () => {
           record: { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" },
           time_us: 2000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
 
     // Now notify with updated record (different CID)
@@ -654,7 +652,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uri: rsvpUri }),
     });
 
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(1);
 
     // Record should be updated
@@ -684,7 +682,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uri }),
     });
 
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.indexed).toBe(0);
     expect(body.deleted).toBe(0);
     expect(
@@ -728,7 +726,7 @@ describe("POST notifyOfUpdate", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json<any>();
     // The collection must NOT be rejected as "not tracked", and must ingest.
     expect(body.errors).toBeUndefined();
     expect(body.indexed).toBe(1);
@@ -762,8 +760,7 @@ describe("POST notifyOfUpdate", () => {
           record: { subject: { uri: eventUri }, status: "community.lexicon.calendar.rsvp#going" },
           time_us: 2000000,
         }),
-      ],
-      TEST_CONFIG
+      ]
     );
 
     // Verify count is 1
@@ -782,7 +779,7 @@ describe("POST notifyOfUpdate", () => {
       body: JSON.stringify({ uri: rsvpUri }),
     });
 
-    const body = await res.json();
+    const body = await res.json<any>();
     expect(body.deleted).toBe(1);
 
     // Count should be back to 0

@@ -79,7 +79,7 @@ if (!PG_URL) {
     });
 
     it("inserts and queries records", async () => {
-      await ingestRecords(db, [makeEvent({ record: { name: "PG Test", mode: "online" } })]);
+      await ingestRecords(db, [makeEvent({ record: { name: "PG Test", mode: "online" } })], TEST_CONFIG);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
       });
@@ -90,7 +90,7 @@ if (!PG_URL) {
       await ingestRecords(db, [
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/1", rkey: "1", record: { name: "A", mode: "online" }, time_us: 2000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/2", rkey: "2", record: { name: "B", mode: "in-person" }, time_us: 1000 }),
-      ]);
+      ], TEST_CONFIG);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
         filters: { mode: "online" },
@@ -100,7 +100,7 @@ if (!PG_URL) {
 
     it("counts relations", async () => {
       const eventUri = "at://did:plc:test/community.lexicon.calendar.event/evt1";
-      await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })]);
+      await ingestRecords(db, [makeEvent({ uri: eventUri, rkey: "evt1" })], TEST_CONFIG);
       await ingestRecords(db, [
         makeEvent({
           uri: "at://did:plc:user1/community.lexicon.calendar.rsvp/r1",

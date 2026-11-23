@@ -182,7 +182,7 @@ describe("interrupted moderator reconciliation", () => {
       await ingestRecords(db, [{
         ...action("raced", { subject: actor, action: "!takedown" }),
         cid: "new-live-cid",
-        source: { id: "jetstream", time_us: Date.now() * 1000 + 1_000_000 },
+        source: { id: "jetstream", time_us: Date.now() * 1000 + 1_000_000, revision: null, cursor: null },
       }], config);
       return Response.json({ records: [] });
     });

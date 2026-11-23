@@ -120,7 +120,7 @@ describe("resolveHydrates", () => {
 
     expect(result[eventUri]).toBeDefined();
     expect(result[eventUri].rsvps).toBeDefined();
-    expect(result[eventUri].rsvps["going"]).toHaveLength(3);
+    expect((result[eventUri].rsvps as Record<string, any[]>)["going"]).toHaveLength(3);
   });
 
   it("respects hydrate limit", async () => {
@@ -148,7 +148,7 @@ describe("resolveHydrates", () => {
     const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 2 }, [eventRow!]);
 
-    expect(result[eventUri].rsvps["going"].length).toBeLessThanOrEqual(2);
+    expect((result[eventUri].rsvps as Record<string, any[]>)["going"].length).toBeLessThanOrEqual(2);
   });
 
   it("hydrates with match: 'did'", async () => {
@@ -183,7 +183,7 @@ describe("resolveHydrates", () => {
 
     expect(result[eventUri]).toBeDefined();
     expect(result[eventUri].rsvps).toBeDefined();
-    expect(result[eventUri].rsvps["going"]).toHaveLength(1);
+    expect((result[eventUri].rsvps as Record<string, any[]>)["going"]).toHaveLength(1);
   });
 
   it("resolves reference: event onto rsvp (child→parent via subject.uri)", async () => {
@@ -293,7 +293,7 @@ describe("resolveHydrates", () => {
     const result = await resolveHydrates(db, relations, { rsvps: 10 }, [eventRow!]);
 
     expect(result[eventUri].rsvps).toBeDefined();
-    expect(result[eventUri].rsvps["other"]).toHaveLength(1);
+    expect((result[eventUri].rsvps as Record<string, any[]>)["other"]).toHaveLength(1);
   });
 
   it("does not let one popular parent starve other parents in the same hydrate batch", async () => {
@@ -343,8 +343,8 @@ describe("resolveHydrates", () => {
     const relations = TEST_CONFIG.collections["event"].relations!;
     const result = await resolveHydrates(db, relations, { rsvps: 2 }, eventRows);
 
-    expect(result[popularUri]?.rsvps["going"]).toHaveLength(2);
-    expect(result[quietUri]?.rsvps["going"]).toHaveLength(2);
+    expect((result[popularUri]?.rsvps as Record<string, any[]>)["going"]).toHaveLength(2);
+    expect((result[quietUri]?.rsvps as Record<string, any[]>)["going"]).toHaveLength(2);
   });
 
   it("includes hydrated reference authors when profiles=true", async () => {

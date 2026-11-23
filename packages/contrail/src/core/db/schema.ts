@@ -373,7 +373,7 @@ function isDuplicateColumnError(error: unknown): boolean {
 function isConcurrentCreateError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
-  if (code === "42P07" || code === "42P06") return true;
+  if (code === "42P07" || code === "42P06" || code === "42710") return true;
   if (code !== "23505") return false;
   const constraint = (error as { constraint?: unknown }).constraint;
   return (
@@ -409,7 +409,7 @@ export async function applyCountColumns(
       const [, table, column, columnDef] = match;
       await addColumnIfNotExists(db, table, column, columnDef);
     } else {
-      await db.prepare(statement).run();
+      await runIdempotentDdl(db, statement);
     }
   }
 }
@@ -615,7 +615,7 @@ async function applyFtsTables(
 ): Promise<void> {
   if (dialect.ftsStrategy === "generated-column") {
     for (const statement of buildFtsTables(config, dialect)) {
-      await db.prepare(statement).run();
+      await runIdempotentDdl(db, statement);
     }
     return;
   }

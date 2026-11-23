@@ -138,7 +138,7 @@ if (!PG_URL) {
         "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'idx_community_lexicon_calendar_event_%'"
       );
       const names = result.rows.map((r: any) => r.indexname);
-      expect(names).toContain("idx_community_lexicon_calendar_event_mode");
+      expect(names).toContain("idx_community_lexicon_calendar_event_mode_time_uri");
       // PostgreSQL lowercases unquoted identifiers
       expect(names).toContain("idx_community_lexicon_calendar_event_startsat");
     });
@@ -167,7 +167,7 @@ if (!PG_URL) {
     it("inserts create events", async () => {
       await ingestRecords(db, [
         makeEvent({ record: { name: "Event 1", mode: "online" } }),
-      ]);
+      ], TEST_CONFIG);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
       });
@@ -179,10 +179,10 @@ if (!PG_URL) {
       const uri = "at://did:plc:test/community.lexicon.calendar.event/1";
       await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", cid: "cid1", record: { name: "V1", mode: "online" } }),
-      ]);
+      ], TEST_CONFIG);
       await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", cid: "cid2", record: { name: "V2", mode: "online" } }),
-      ]);
+      ], TEST_CONFIG);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
       });
@@ -194,10 +194,10 @@ if (!PG_URL) {
       const uri = "at://did:plc:test/community.lexicon.calendar.event/1";
       await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", record: { name: "Gone", mode: "online" } }),
-      ]);
+      ], TEST_CONFIG);
       await ingestRecords(db, [
         makeEvent({ uri, rkey: "1", operation: "delete", record: null, cid: null }),
-      ]);
+      ], TEST_CONFIG);
       const result = await queryRecords(db, TEST_CONFIG, {
         collection: "community.lexicon.calendar.event",
       });
@@ -280,7 +280,7 @@ if (!PG_URL) {
     });
 
     it("does nothing for empty events", async () => {
-      await ingestRecords(db, []);
+      await ingestRecords(db, [], TEST_CONFIG);
       const cursor = await getLastCursor(db);
       expect(cursor).toBeNull();
     });
@@ -294,7 +294,7 @@ if (!PG_URL) {
     beforeEach(async () => {
       await ingestRecords(db, [
         makeEvent({ uri: eventUri, rkey: "evt1", record: { name: "Counted Event", mode: "online" } }),
-      ]);
+      ], TEST_CONFIG);
     });
 
     it("increments counts on RSVP create", async () => {
@@ -383,7 +383,7 @@ if (!PG_URL) {
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/2", rkey: "2", did: "did:plc:bob", record: { name: "Beta", mode: "in-person", startsAt: "2026-05-01T10:00:00Z" }, time_us: 2000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/3", rkey: "3", did: "did:plc:alice", record: { name: "Gamma", mode: "online", startsAt: "2026-06-01T10:00:00Z" }, time_us: 3000 }),
         makeEvent({ uri: "at://a/community.lexicon.calendar.event/4", rkey: "4", did: "did:plc:carol", record: { name: "Delta", mode: "hybrid", startsAt: "2026-03-01T10:00:00Z" }, time_us: 4000 }),
-      ]);
+      ], TEST_CONFIG);
     });
 
     it("returns records ordered by time_us desc", async () => {
@@ -536,7 +536,7 @@ if (!PG_URL) {
       await ingestRecords(db, [
         makeEvent({ uri: eventUri1, rkey: "evt1", record: { name: "Event 1", mode: "online" }, time_us: 1000 }),
         makeEvent({ uri: eventUri2, rkey: "evt2", record: { name: "Event 2", mode: "online" }, time_us: 2000 }),
-      ]);
+      ], TEST_CONFIG);
       await ingestRecords(db, [
         makeEvent({
           uri: "at://did:plc:u1/community.lexicon.calendar.rsvp/r1",

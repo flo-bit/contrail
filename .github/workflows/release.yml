@@ -2,58 +2,42 @@ name: Release
 
 on:
   push:
-    branches: ['main']
+    branches: [main]
 
 permissions:
-  id-token: write # OIDC for npm trusted publishing
-  contents: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
-    name: Build and Release
-    runs-on: ubuntu-latest
+    name: Version or publish
+    needs: test
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write # OIDC for npm trusted publishing
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Cache turbo build setup
-        uses: actions/cache@v4
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
         with:
-          path: .turbo
-          key: ${{ runner.os }}-turbo-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.17
-          cache: 'pnpm'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install npm with OIDC support
-        run: npm install -g npm@11.5.1
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
-
-      - name: Run tests
-        run: pnpm test
-
-      - name: Test built Worker in workerd
-        run: pnpm test:workerd
+      - run: pnpm install --frozen-lockfile
 
       - name: Create Release Pull Request or Publish to npm
         uses: changesets/action@v1
