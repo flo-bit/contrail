@@ -27,8 +27,18 @@ async function main() {
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url!, `http://localhost:${PORT}`);
+    const method = req.method ?? "GET";
+    const hasBody = method !== "GET" && method !== "HEAD";
+    let body: Buffer | undefined;
+    if (hasBody) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+      }
+      body = Buffer.concat(chunks);
+    }
     const request = new Request(url.toString(), {
-      method: req.method,
+      method,
       headers: Object.entries(req.headers).reduce(
         (h, [k, v]) => {
           if (v) h[k] = Array.isArray(v) ? v.join(", ") : v;
@@ -36,11 +46,12 @@ async function main() {
         },
         {} as Record<string, string>,
       ),
+      ...(body && body.length > 0 ? { body: new Uint8Array(body) } : {}),
     });
 
     const response = await handle(request);
     res.writeHead(response.status, Object.fromEntries(response.headers));
-    res.end(await response.text());
+    res.end(Buffer.from(await response.arrayBuffer()));
   });
 
   server.listen(PORT, () => {

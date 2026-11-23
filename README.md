@@ -1,23 +1,14 @@
 # Contrail
 
-> **Pre-alpha.** Expect breaking changes.
+> Pre-alpha. Expect breaking changes.
 
 Contrail turns public AT Protocol records into a queryable AppView.
 
-It provides:
+- Backfill from relays/PDSes or [Alluvium](https://backfill.atmo.tools) exports, then stream live updates from Jetstream
+- Runs on Cloudflare Workers + D1, or Node.js + SQLite / PostgreSQL / PGlite
+- Generates typed `getRecord` and `listRecords` XRPC endpoints with filters, range queries, sorting, full-text search, pagination, relation counts, hydration, and profile/label hydration
 
-- historical backfill from relays and PDSes;
-- current updates from Jetstream;
-- D1, SQLite, PostgreSQL, and embedded PGlite storage;
-- `getRecord` and `listRecords` HTTP endpoints;
-- filters, sorting, search, and pagination;
-- custom queries;
-- relationship counts and hydration; and
-- profile and label hydration.
-
-Cloudflare Workers with D1 is the primary deployment target. Node.js with SQLite, PostgreSQL, or [PGlite](packages/contrail/README.md#pglite) is also supported.
-
-## Quick start from a Lexicon prefix
+## Quick start
 
 ```bash
 pnpx @atmo-dev/contrail init my-appview \
@@ -27,17 +18,17 @@ cd my-appview
 pnpx @atmo-dev/contrail dev
 ```
 
-`--prefix` selects the source record Lexicons to import; `--namespace` sets the
-separate XRPC namespace for the generated AppView methods. See the
-[prefix setup guide](docs/01-getting-started.md#initialize-from-your-lexicon-prefix)
-for choosing a prefix, generated files, and import options.
+`--prefix` imports your source record Lexicons; `--namespace` sets the XRPC namespace for the generated AppView methods.
 
-## Documentation
+## Docs
 
 1. [Get started locally](docs/01-getting-started.md)
 2. [Add the typed client](docs/02-client.md)
 3. [Configure and query](docs/03-configure-and-query.md)
-4. [Deploy to Cloudflare Workers](docs/04-deploy-cloudflare.md)
+4. [Deploy to Cloudflare Workers & Node](docs/04-deploy-cloudflare.md)
 
-Experimental, workspace-private: [PDS-hosted Spaces and invitation operations](packages/contrail-spaces-alpha/README.md).
-Try the [local private-event prototype](apps/spaces-prototype/README.md) with two accounts on a Spaces-enabled alpha PDS.
+**Advanced:** [Feeds](docs/advanced/feeds.md) · [Labels](docs/advanced/labels.md) · [Moderation](docs/advanced/moderation.md) · [Outbox](docs/advanced/outbox.md)
+
+**Examples:** [Cloudflare Workers + D1](apps/cloudflare-workers/README.md) · [Node + SQLite](apps/sqlite/README.md) · [Node + PostgreSQL](apps/postgres/README.md)
+
+**Contributing:** [Development guide](development.md) · [Spaces alpha (workspace-private)](packages/contrail-spaces-alpha/README.md)

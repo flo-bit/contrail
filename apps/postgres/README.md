@@ -1,112 +1,28 @@
-# Contrail — PostgreSQL Example
+# Node.js + PostgreSQL example
 
-A complete example of using Contrail to index AT Protocol calendar events and RSVPs with PostgreSQL. Includes persistent Jetstream ingestion (long-running listener) and user discovery/backfill.
+Minimal Contrail AppView backed by PostgreSQL (`pg`) with persistent Jetstream ingestion.
 
 ## Setup
 
-```bash
-# Copy this folder to a new project
-cp -r examples/postgres my-contrail-app
-cd my-contrail-app
-
-# Install dependencies
-pnpm install
-```
-
-> **Note:** The `contrail` dependency in `package.json` points at `github:flo-bit/contrail`.
-> If you're using a fork with PostgreSQL support that hasn't been merged yet, update the
-> dependency to point at your fork's branch:
->
-> ```bash
-> pnpm add github:your-username/contrail#your-branch
-> ```
->
-> Or install from a local checkout:
->
-> ```bash
-> pnpm add /path/to/your/contrail
-> ```
-
-### Start PostgreSQL
-
-**Option A: Docker (recommended)**
+Start PostgreSQL (Docker on port `5433`, or set `DATABASE_URL` to your own instance):
 
 ```bash
 docker compose up -d
 ```
 
-This starts PostgreSQL on port 5433 (to avoid conflicts with a local instance) with a `contrail` database ready to use. Override the port with `PG_PORT=5432 docker compose up -d`.
-
-**Option B: Native PostgreSQL**
-
-```bash
-createdb contrail
-```
-
-Set `DATABASE_URL` to point at your local instance:
-
-```bash
-export DATABASE_URL="postgresql://user:password@localhost:5432/contrail"
-```
-
-## Configure
-
-Edit `config.ts` to define your collections, queryable fields, relations, and references. See the [Contrail README](https://github.com/flo-bit/contrail) for all options.
+Edit `contrail.config.ts` to customize collections.
 
 ## Run
 
-### 1. Discover users and backfill records
+```bash
+pnpm sync    # discover repos and backfill historical records
+pnpm ingest  # long-lived Jetstream listener
+pnpm serve   # HTTP XRPC server (default http://localhost:3000)
+```
+
+Verify:
 
 ```bash
-pnpm run sync
-```
-
-This finds users from ATProto relays and backfills their existing records from PDS. Safe to interrupt and restart — progress is saved per-DID in the database.
-
-### 2. Start persistent ingestion
-
-```bash
-pnpm run ingest
-```
-
-This opens a long-lived Jetstream connection and continuously indexes new records as they appear on the network. Events are batched and flushed every 5 seconds (or every 50 events, whichever comes first). Handles reconnection automatically.
-
-Press `Ctrl+C` for graceful shutdown — the current batch is flushed and the cursor is saved so the next run picks up where it left off.
-
-### 3. Serve the XRPC API
-
-```bash
-pnpm run serve
-```
-
-Your XRPC API is now available at `http://localhost:3000`:
-
-```
-# List events sorted by RSVP count
-/xrpc/rsvp.atmo.event.listRecords?sort=rsvpsCount
-
-# Upcoming events with 10+ going RSVPs
-/xrpc/rsvp.atmo.event.listRecords?startsAtMin=2026-03-16&rsvpsGoingCountMin=10
-
-# Single event with hydrated RSVPs and profiles
-/xrpc/rsvp.atmo.event.getRecord?uri=at://...&hydrateRsvps=10&profiles=true
-
-# Search events
-/xrpc/rsvp.atmo.event.listRecords?search=meetup
-
-# RSVPs for a specific event
-/xrpc/rsvp.atmo.rsvp.listRecords?subjectUri=at://...
-```
-
-## Running everything together
-
-In production you'd typically run sync once (or periodically), then keep `ingest` and `serve` running as separate processes:
-
-```bash
-# Initial sync (run once, or periodically to discover new users)
-pnpm run sync
-
-# In separate terminals (or use a process manager)
-pnpm run ingest
-pnpm run serve
+curl 'http://localhost:3000/xrpc/com.example.event.listRecords?limit=10'
+curl 'http://localhost:3000/health'
 ```

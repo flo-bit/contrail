@@ -1,445 +1,88 @@
-# `@atmo-dev/contrail`
+# @atmo-dev/contrail
 
 > Pre-alpha. Expect breaking changes.
 
-One package for indexing and querying public AT Protocol records.
+Turn public AT Protocol records into a queryable AppView on Cloudflare Workers + D1, or Node.js with SQLite, PostgreSQL, or PGlite.
 
-## Basic use
+## Quick start
+
+```bash
+pnpx @atmo-dev/contrail init my-appview \
+  --prefix community.lexicon.calendar. \
+  --namespace com.example.calendar
+cd my-appview
+pnpx @atmo-dev/contrail dev
+```
+
+Or install into an existing project:
+
+```bash
+pnpm add @atmo-dev/contrail
+```
 
 ```ts
-import { Contrail } from "@atmo-dev/contrail";
+// contrail.config.ts
+import type { ContrailConfig } from "@atmo-dev/contrail";
 
-const contrail = new Contrail({
+export default {
   namespace: "com.example",
-  db,
+  orderedSource: { source: "jetstream", epoch: "my-app-v1" },
   collections: {
     event: {
       collection: "community.lexicon.calendar.event",
-      queryable: {
-        mode: {},
-        startsAt: { type: "range" },
-      },
+      queryable: { mode: {}, startsAt: { type: "range" } },
       searchable: ["name", "description"],
-      relations: {
-        rsvps: {
-          collection: "rsvp",
-          field: "subject.uri",
-          groupBy: "status",
-          groups: {
-            going: "community.lexicon.calendar.rsvp#going",
-          },
-        },
-      },
-    },
-    rsvp: {
-      collection: "community.lexicon.calendar.rsvp",
-      references: {
-        event: { collection: "event", field: "subject.uri" },
-      },
-    },
-  },
-});
-
-await contrail.init();
-await contrail.backfillAll({ concurrency: 100 });
-```
-
-## Repository-scoped collections
-
-Set `repos` on a collection to backfill and index only explicit publishing DIDs:
-
-```ts
-listItem: {
-  collection: "app.bsky.graph.listitem",
-  repos: ["did:plc:yourbot"],
-  queryable: { list: {}, subject: {} },
-}
-```
-
-Unlike `discover: false` (dependent records from known repositories), this is an
-exclusive publisher allowlist with its own exact backfill pairs. It requires
-unique DIDs, cannot be combined with `discover`, and applies across ingestion,
-backfill and notify. Changing a registered allowlist requires a projection
-rebuild. See [repository scope configuration](../../docs/03-configure-and-query.md#repository-scoped-collections)
-for lifecycle, transport and freshness guarantees.
-
-## Record filters
-
-`recordFilter` drops creates and updates whose body fails a predicate. A
-rejection normally leaves a tombstone, so an older version that passes cannot be
-admitted later and an indexed record that stops matching is removed. On a
-high-volume collection where the filter rejects most records on fields that do
-not change, set `recordFilterTombstones: false`: a rejected record with no
-stored version then writes nothing at all. A rejected update to an indexed
-record is still removed.
-
-## Query
-
-```ts
-const result = await contrail.query("event", {
-  filters: { mode: "in-person" },
-  sort: { countType: "rsvp", direction: "desc" },
-  limit: 20,
-});
-```
-
-HTTP routes expose the same pipeline, including relationship/reference hydration, counts, profiles, search, and custom queries.
-
-## Keep records current
-
-```ts
-await contrail.ingest(); // bounded Jetstream cycle
-
-// Optional per-cycle overrides (defaults: 25s, 250 candidates,
-// 250 distinct identity updates, and 4 MiB). `maxActorLookups` (default 20)
-// caps the known-account queries made for profile/follow-type collections.
-await contrail.ingest({
-  maxDrainMs: 20_000,
-  maxCandidates: 200,
-  maxIdentityUpdates: 200,
-  maxSerializedBytes: 3 * 1024 * 1024,
-});
-
-await contrail.runPersistent({
-  signal: abortController.signal,
-  batchSize: 50,
-  flushIntervalMs: 5_000,
-});
-```
-
-After a write to a user's PDS, `contrail.notify(uri)` can fetch the authoritative record immediately. Only an authoritative not-found response deletes local state; rate limits, server errors, timeouts, malformed responses, and network failures leave it unchanged. Authentication and abuse controls for the public HTTP operation remain under design.
-
-Contrail stores source event time, repository revision, source cursor, CID, and local index time separately from record/application time. Live ingestion speaks Jetstream v2 and checkpoints its unique monotonic `seq`; the RFC 3339 event time remains display/source metadata and is never used as the resume coordinate. Scheduled collection drops exact observations before admission, counts UTF-8 record bodies plus a fixed 512-byte metadata allowance, and retains the threshold-crossing candidate before stopping. Identity updates have an independent retained-count limit, coalesce by DID, and commit in database batches; excess global identity traffic is accounted but omitted so it cannot starve record progress. Source-filtered observations consume neither candidate nor byte limits, but their yielded seqs remain accounted. Durable actor scope comes from identities, relay discovery, and visible discoverable records. Existing v1 timestamp cursors cross a bounded overlap bridge and atomically transition once to the v2 seq domain. If either a timestamp or seq cursor has already fallen outside the hosted live-retention window, ingestion fails rather than accepting the server's timestamp clamp and silently skipping a gap; rebuild/backfill from a fresh boundary until archive replay is added. Durable tombstones reject stale resurrection, and live projection commits its exact accounted seq in the same transaction. Both scheduled and persistent modes require one pinned Jetstream v2 service because seqs are instance-local. Persistent ingestion retains its streaming batch lifecycle and does not inherit the scheduled count/byte defaults. Historical acquisition still uses the existing PDS or optional Alluvium paths; Jetstream v2 archive replay is not used yet. A successful PDS `listRecords` page is a current authoritative observation, so it supersedes older durable state without a redundant version read; its version writes and page cursor still commit atomically. Tombstones are retained indefinitely; authoritative rebuild/retention tooling is planned separately.
-
-When upgrading an existing database, point `jetstreams` at one v2 service and change `orderedSource.epoch` to identify the new continuity history. The normalized service origin is durably bound before the timestamp-to-seq transition because seqs are instance-local; changing it later is a hard error. Initialization permits the ordered-source epoch change only while the durable cursor is still in the legacy timestamp domain; the first fully handled v2 event then installs the seq domain one-way. Once a database is in the seq domain, an epoch mismatch remains a hard error. An already-seq-domain database with no durable service binding is also rejected because its originating instance cannot be inferred safely.
-
-Projection winner selection is guarded again inside the write transaction. Overlapping cron, persistent, notify, or backfill writers cannot commit a stale canonical row, derived projection, tombstone, or source checkpoint; a changed predecessor rolls the complete attempt back and retries from fresh durable state.
-
-## Transactional change log (experimental)
-
-Fresh empty generations may opt into a compact transactional projection change log:
-
-```ts
-const config = {
-  // ...
-  changes: {
-    consumers: {
-      search: {
-        collections: ["community.lexicon.calendar.event"],
-        phases: ["historical", "live"],
-        initial: "current",
-        requiredForActivation: true,
-      },
     },
   },
 } satisfies ContrailConfig;
 ```
 
-Static definitions contain no handlers, URLs, clients, credentials, or secrets. Contrail registers them with a random database-generation ID and collection/phase coverage ledger. A winning logical put/delete appends one compact URI/version reference in the same transaction as canonical and derived state plus the source checkpoint. Duplicate, stale, same-CID, absent-delete, rejected, and rolled-back mutations append nothing. Record bodies are hydrated from current state by the later delivery layer rather than copied into the log.
-
-Cloudflare Workers bind handlers and runtime-only secrets separately from static policy:
-
 ```ts
-export default createWorker(config, {
-  deliveries: {
-    search: async (batch, { env, signal }) => {
-      await updateSearch(env.SEARCH_KEY, batch, signal);
-    },
-  },
-  changeBootstraps: {
-    search: {
-      snapshot: async (page, { env, signal }) => {
-        await writeCandidateIndex(env.SEARCH_KEY, page, signal);
-      },
-      activate: async (activation, { env, signal }) => {
-        await activateCandidateIdempotently(
-          env.SEARCH_KEY,
-          activation.bootstrapToken,
-          signal,
-        );
-      },
-    },
-  },
-});
-```
+// worker.ts
+import { createWorker } from "@atmo-dev/contrail/worker";
+import config from "./contrail.config";
+import { lexicons } from "./lexicons/generated";
 
-Scheduled execution runs ingestion, due historical retries, then bounded fair delivery rounds. One consumer failure is persisted with backoff and does not stop ingestion or another consumer. A successful notify request schedules a best-effort one-round wake through `ExecutionContext`; projection success never depends on it. Persistent deployments run `contrail.runPersistentDeliveries()` alongside `runPersistent()`.
-
-Low-level delivery uses bounded leases and compare-and-swap acknowledgement:
-
-```ts
-const claim = await contrail.changes.claim("webhooks", {
-  maxBatches: 20,
-  maxChanges: 500,
-  maxBytes: 512_000,
-  leaseMs: 30_000,
-});
-if (claim) {
-  try {
-    const batch = await contrail.changes.hydrate(claim);
-    await deliverIdempotently(batch);
-    await contrail.changes.ack(claim);
-  } catch {
-    await contrail.changes.fail(claim, {
-      code: "destination_unavailable",
-      nextAttemptAt: Date.now() + 30_000,
-    });
-  }
-}
-```
-
-Claims coalesce repeated URIs, hydrate in set-oriented collection queries, and resolve delete/recreate races from newest canonical state. Consumers lease and progress independently; irrelevant position ranges advance without invoking a handler. Delivery is intentionally at least once—a destination success followed by an acknowledgement crash causes duplicate delivery. Handlers must be idempotent by stable record/document key.
-
-`initial: "current"` uses a durable snapshot-plus-tail coordinator and must observe both `historical` and `live` phases so every mutation racing the keyset scan is retained for reconciliation. Repeatedly claim and idempotently acknowledge `contrail.changes.claimSnapshotPage()`, then drain `claimBootstrapChanges()` through its fixed target using ordinary hydrate/ack. Snapshot and bootstrap-tail deliveries carry the candidate destination token; ordinary deliveries after activation do not. Finally claim the stable generation-scoped activation token with `claimActivation()`, perform an idempotent destination swap, and call `completeActivation()`. A crash replays the same URI page, tail range, or activation token. Records updated or deleted while the keyset scan races are corrected by the anchored tail.
-
-A consumer can be added to a populated log when all of its collection/phase pairs were already covered; its current/future anchor is the atomic current head, while history starts at the retained floor. Expanding coverage still fails closed without a fresh generation or explicit old-writer quiet boundary. `contrail changes status`, `retry`, `prune`, and explicitly confirmed `skip` expose private operations for SQLite or Wrangler D1 deployments. Status includes a conservative projection/head/batch/ack write plan. Pruning is bounded by the slowest durable consumer/bootstrap anchor. Skip records a bounded private audit reason and never occurs implicitly. Disabling or removing an existing log remains fail-closed. With no configured consumers, no change-log tables or append writes exist.
-
-Backups retain the database's change-log generation ID, positions, leases, bootstrap token, and consumer progress. Restoring that backup as the same generation is resumable and may redeliver an in-flight lease after expiry. Do not clone it as a new deployment generation while reusing destination cursors: build a fresh projection database and run current-state bootstrap. Restoring projection tables without the matching change tables is an unrecoverable delivery gap and must enter reset/bootstrap rather than silently continuing numeric positions.
-
-## Local development
-
-Seed a project from proof-verified record Lexicons, then start a complete local service:
-
-```bash
-contrail init my-appview \
-  --prefix community.lexicon.calendar. \
-  --namespace com.example.calendar
-cd my-appview
-contrail dev
-```
-
-The prefix is matched literally against source Lexicon NSIDs. Include a trailing
-`.` to select a namespace boundary. `--namespace` is independent: it controls
-the generated AppView XRPC method IDs and defaults to `com.example`.
-
-| Init option | Purpose |
-|---|---|
-| `--prefix <prefix>` | Import verified record Lexicons matching an NSID prefix |
-| `--namespace <namespace>` | Set the generated AppView XRPC namespace |
-| `--lexicon-api <url>` | Select a registry (default: `https://lex.atmo.tools`) |
-| `--timeout <seconds>` | Set the readiness/dependency budget (default: `60`) |
-| `--allow-partial` | Explicitly accept incomplete prefix discovery |
-| `--no-interactive` | Leave ambiguous references unconfigured |
-
-Prefix initialization requires a stable, fully verified and indexed catalog
-snapshot, pins each root and transitive dependency by CID under
-`lexicons/pinned/`, writes provenance to `lexicons/pinned.lock`, and generates
-equality/range fields which are safe on all supported databases. Missing
-required dependencies always fail, including with `--allow-partial`.
-
-In an interactive terminal, reference-shaped fields can be connected to an
-imported target collection and optionally exposed as inverse relations. These
-choices are never guessed from descriptions. `--no-interactive` leaves all
-ambiguous references unconfigured. strongRef hydration resolves the current
-indexed record by URI; it does not retrieve the historical version named by the
-embedded CID.
-
-Run `contrail init my-appview` without `--prefix` to create the original offline
-example config without a network request. Run either form without a directory to
-write into the current directory. The command refuses to replace a config or
-pinned import in any standard owned location.
-
-Without a Wrangler config this creates or resumes `.contrail/dev.sqlite`, resolves missing configured record/ref Lexicons from the AT Protocol network without overwriting project-owned schemas, runs PDS backfill, serves the complete public Contrail discovery/XRPC/Lexicon surface at `http://127.0.0.1:8787`, and runs bounded Jetstream ingestion every minute. It never creates or changes a deployment provider lock. Add `.contrail/` to the project ignore file. Existing Wrangler projects retain the prior D1 development behavior automatically.
-
-When a configured Lexicon does not exist yet or cannot be resolved, interactive `contrail dev` and config-backed `contrail connect` warn and ask whether to continue with an incomplete local bundle. Unresolved documents and schemas that depend on them are omitted, and directly affected record values are generated as `unknown`; collections using `validate: true` still require their complete Lexicon closure. The prompt defaults to no, and non-interactive use fails closed unless `--yes` is passed.
-
-Useful SQLite options include:
-
-```bash
-contrail dev --fresh                          # reset local SQLite first
-contrail dev --temporary                      # delete SQLite when stopped
-contrail dev --sqlite ./tmp/dev.sqlite        # explicit durable path
-contrail dev --alluvium                       # fast bootstrap from an Alluvium export
-contrail dev --no-backfill                    # serve existing state only
-```
-
-Generate the typed consumer API directly from an owned config or its containing directory:
-
-```bash
-contrail connect ./contrail.config.ts
-contrail connect ../api
-```
-
-A config source generates Lexicons, Atcute types, `contrailApi`, `createContrailClient()`, and `createLocalContrailClient()` without creating or changing `contrail.lock.json`. If a production lock already exists, the generated default client keeps that deployment target while the local factory uses the current source API. `contrail dev --config ../api/src/contrail.config.ts` can then run the same config locally.
-
-SQLite dev mode exposes configured protected methods only on loopback without inheriting a production service-auth audience. When `notify` is omitted, it also enables open loopback-only `notifyOfUpdate`. `createLocalContrailClient()` has no OAuth scope and permits plain HTTP only for a validated loopback endpoint.
-
-## Alluvium export bootstrap
-
-An optional Alluvium adapter loads a fresh database from a hosted export instead of crawling PDSes. [Alluvium](https://backfill.atmo.tools) keeps a snapshot of every current record outside the Bluesky app, rebuilt about hourly, and streams a whole collection in one response. The CLI supports either Wrangler/D1 or an explicit SQLite file:
-
-```bash
-contrail backfill --sqlite ./data/contrail.sqlite --alluvium
-```
-
-`--alluvium-endpoint` selects another instance and `--alluvium-token` (or the `ALLUVIUM_TOKEN` environment variable) supplies a bearer token if it requires one. The command rejects a populated database unless it is resuming an interrupted Alluvium bootstrap. With `--sqlite` the record tables have no secondary indexes until the bootstrap completes, so finish or discard an interrupted one before serving from that file. The equivalent programmatic API is:
-
-```ts
-import { loadAlluviumExport } from "@atmo-dev/contrail/alluvium";
-
-await loadAlluviumExport(db, config, {
-  collections: ["community.lexicon.calendar.event"],
-  source: { id: "jetstream", epoch: "my-app-v1" },
-  deferIndexes: true,
-});
-```
-
-For Wrangler/D1 or SQLite defaults (including optional SQLite index deferral), use `bootstrapAlluvium()` or `bootstrapAlluviumDatabase()` from `@atmo-dev/contrail/workers`. Call `getAlluviumBootstrapState(db)` from `@atmo-dev/contrail/alluvium` to inspect resumable bootstrap status.
-
-The export holds current state as of its snapshot, so nothing is replayed during bootstrap. The loader persists a timestamp cursor five minutes before the snapshot's last event, and ordinary scheduled ingestion resumes from it on whichever Jetstream service `config.jetstreams` names: it replays the hour or so since the snapshot, and the overlap is applied idempotently. Because the cursor is a time, not a sequence number, the live service does not have to be the Alluvium host.
-
-With `--sqlite`, the record tables' secondary indexes are dropped while the export loads and built once at the end, which is much cheaper than maintaining them per row; the dropped set is recorded first, so an interrupted run restores exactly those indexes when it completes. D1 keeps them, since one statement there cannot index a large table within its time limit.
-
-An interrupted export continues after the last record projected, within one run or after a restart, even if the service has published a newer snapshot meanwhile; the live cursor stays the one fixed when the bootstrap began. Running the command again on a database it has finished loading does nothing, so `contrail dev --alluvium` can be restarted freely.
-
-The adapter refuses instead of loading a wrong answer when:
-
-- the service does not carry a collection (it reports the namespaces it excludes, such as `app.bsky.*`);
-- the service's snapshot is more than six hours old (`maxAgeUs`);
-- an export response is for an older snapshot than the one the bootstrap began with, or does not name its snapshot;
-- an unfinished bootstrap is resumed more than 24 hours after its snapshot (`replayWindowUs`). A Jetstream service only replays its last 36 hours, so the records already loaded could miss later updates and deletes; start again with a fresh database;
-- an export line is malformed. It does not fall back to PDS acquisition; profile and follow enrichment remain separately accounted PDS work. Coverage is whatever the service holds: a repository its collection directories never listed is absent until that account writes again.
-
-## Generate Lexicons
-
-Generate XRPC query Lexicons from the Contrail config and check them for drift:
-
-```bash
-pnpm contrail lexicons generate
-pnpm contrail lexicons check
-```
-
-`contrail lexicons all` also pulls referenced record Lexicons and runs Atcute TypeScript generation. Use `--public` when generating only methods advertised by the remote service contract, including explicitly protected service-auth methods. Generated `lex.config.js` files carry an ownership marker; existing user-owned Atcute configuration is never replaced. Pass `--no-atcute-config` to manage that file yourself. The generator is also exported from `@atmo-dev/contrail/lexicons` for programmatic use.
-
-## Public read-through service
-
-```ts
 export default createWorker(config, {
   lexicons,
-  publicService: { endpoint: "https://api.example.com" },
+  publicService: { endpoint: "https://my-appview.example.com" },
 });
 ```
 
-Discovery at `/.well-known/contrail` advertises a validated API description and content-addressed Lexicon bundle. Anonymous collection reads, profiles, feeds, and authored custom queries may acquire public AT Protocol data and improve the cache behind the response.
-
-Personalized feeds and `notifyOfUpdate` can instead require method-bound AT Protocol service tokens:
-
-```ts
-const config = {
-  notify: true,
-  serviceAuth: {
-    audience: "did:web:api.example.com#contrail",
-    methods: ["getFeed", "notifyOfUpdate"],
-  },
-  // ...
-};
-```
-
-The service description advertises the base service DID, exact fragmented audience, canonical OAuth scope, and each protected query/procedure separately from anonymous methods. `contrail connect` generates `src/contrail/index.ts`; anonymous calls go directly to the configured endpoint, while protected calls lazily discover and validate all service-auth fields. Its exported `contrail.scope` contains one sorted `lxm` parameter per protected method, such as `rpc?aud=did:web:api.example.com%23contrail&lxm=<namespace>.getFeed&lxm=<namespace>.notifyOfUpdate`. `contrail.authenticated(authenticatedClient)` returns one Atcute client: advertised provider methods route to Contrail, ordinary methods route to the PDS, and successful tracked `createRecord`, `putRecord`, and `deleteRecord` calls automatically notify Contrail. Handle-form deletes are resolved to canonical DID URIs. Protected methods use cached exact method-bound tokens, while transient discovery failures remain retryable. Feed actors must resolve to the token issuer, and every notified AT URI must belong to the issuer. When the base DID resolves to the public endpoint's `/.well-known/did.json`, the Worker publishes a DID document whose service entry ID is the exact audience.
-
-Public-service mode requires a primary ordered source so `getCursor` can expose its committed position. Configure that continuity identity explicitly; non-public deployments without it expose only the unscoped numeric live cursor as `{ cursor }`:
-
-```ts
-const config = {
-  orderedSource: {
-    source: "jetstream",
-    epoch: "primary-2026", // change whenever cursor continuity changes
-  },
-  // ...
-};
-```
-
-The ordered-source cursor is opaque. Compare the complete `{ source, epoch, cursor }` value for equality; never order cursors from different epochs. Consumers can read the position before and after a query, retry if it changed, then poll it as a refetch/invalidation signal.
-
-Connect an independent consumer with `contrail connect <https-origin>`. The version-2 provider lock records the deployment and exact Lexicon bundle, but generated clients do not pin the provider's complete method set at runtime. Existing anonymous methods therefore continue working when a provider adds methods. A repeated connection to the same endpoint and provider-owned output root requires `--update`; provider files and the lock are staged and swapped without deleting consumer-owned Lexicons. Version-1 locks must be removed and reconnected.
-
-
-## Runtime record validation
-
-Opt collections into validation where their indexing policy is declared:
-
-```ts
-const config: ContrailConfig = {
-  namespace: "com.example",
-  collections: {
-    event: {
-      collection: "community.example.event",
-      validate: true,
-    },
-    legacy: {
-      collection: "community.example.legacy",
-      // Omitted or false: compatibility mode, no runtime validation.
-    },
-  },
-  validation: {
-    strict: true, // default: enforce blob size/MIME constraints too
-    verifyCid: true, // default: canonical DAG-CBOR CID verification
-  },
-};
-```
-
-`createWorker(config, { lexicons })` binds each opted-in collection to the exact generated/pinned bundle already shipped with the deployment. `contrail dev` resolves and binds its exact temporary bundle, while CLI backfill loads the standard checked-in generated bundle. There is no second validation-specific Lexicon array.
-
-Direct runtimes use the same explicit separation between policy and material:
-
-```ts
-const contrail = new Contrail({ ...config, db, lexicons });
-```
-
-Validation applies identically to Jetstream, PDS backfill, notify, on-demand enrichment, Alluvium, and direct `ingestRecords()` calls. Startup fails when an opted-in collection or transitive reference is absent from the bound bundle. Authoritative sources must provide matching CIDs; local and Constellation synthetic records may be CID-less by default. Override `allowCidlessSources` only for explicitly trusted synthetic adapters.
-
-Private aggregate-only rejection counters are available without exposing DIDs, URIs, errors, or record bodies. Concurrent bulk backfill accumulates these bounded counters in memory and flushes once per run, so diagnostics cannot turn into a hot D1 row on every source page:
-
-```ts
-const diagnostics = await contrail.diagnostics();
-```
-
-## HTTP
-
-```ts
-import { createHandler } from "@atmo-dev/contrail/server";
-
-const handle = createHandler(contrail);
-const response = await handle(request, db);
-```
-
-For Workers, use `createWorker` from `@atmo-dev/contrail/worker`.
-
-## Adapters
-
-```ts
-import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
-import { createPostgresDatabase } from "@atmo-dev/contrail/postgres";
-import { createPgliteDatabase } from "@atmo-dev/contrail/pglite";
-```
-
-Contrail requires Node.js 22.15 or newer. The SQLite adapter uses the built-in `node:sqlite` module; D1 implements Contrail's database interface directly.
-
-### PGlite
-
-Run embedded PostgreSQL without a server or containers. Install the optional peer dependency:
+## CLI
 
 ```bash
-pnpm add @electric-sql/pglite@^0.5.11
+contrail init [dir] [--prefix <nsid.>] [--namespace <nsid>]
+contrail dev [--alluvium] [--wrangler] [--port 8787]
+contrail backfill [--remote] [--alluvium] [--sqlite <path>]
+contrail connect <config-dir-or-url> [--update]
+contrail lexicons all [--public]
+contrail lexicons check
+contrail changes status|retry|prune|skip [--remote]
 ```
 
-```ts
-import { PGlite } from "@electric-sql/pglite";
-import { Contrail } from "@atmo-dev/contrail";
-import { createPgliteDatabase } from "@atmo-dev/contrail/pglite";
+## Entrypoints
 
-const pglite = new PGlite("./data/contrail"); // omit the path for an in-memory database
-const contrail = new Contrail({
-  namespace: "com.example",
-  db: createPgliteDatabase(pglite),
-  collections: {
-    event: { collection: "community.lexicon.calendar.event" },
-  },
-});
-await contrail.init();
+| Import | Purpose |
+| --- | --- |
+| `@atmo-dev/contrail` | Core `Contrail` class, config types, queries, ingestion, moderation |
+| `@atmo-dev/contrail/worker` | `createWorker()` for Cloudflare Workers + D1 |
+| `@atmo-dev/contrail/server` | `createHandler()` and `createServerClient()` for custom servers / SvelteKit |
+| `@atmo-dev/contrail/client` | Public XRPC client helpers |
+| `@atmo-dev/contrail/moderation` | Client helpers for reports, actions, and moderation OAuth scopes |
+| `@atmo-dev/contrail/sqlite` | Node.js `node:sqlite` adapter |
+| `@atmo-dev/contrail/postgres` | `pg` Pool adapter |
+| `@atmo-dev/contrail/pglite` | Embedded PGlite adapter |
+| `@atmo-dev/contrail/alluvium` | Resumable Alluvium export bootstrap |
+| `@atmo-dev/contrail/workers` | Wrangler-backed `backfillAll`, `bootstrapAlluvium`, `labelsBackfillAll` |
+| `@atmo-dev/contrail/lexicons` | Programmatic Lexicon generator |
 
-// After stopping ingestion and finishing pending queries:
-await pglite.close();
-```
+## Docs
 
-PGlite uses the same PostgreSQL dialect, JSON handling, and full-text search as the Postgres adapter. Batches are atomic and PGlite serializes transactions on its single connection; it is not a multi-connection PostgreSQL server. The caller owns the PGlite instance and its storage lifecycle. This is a programmatic adapter; `contrail dev` still uses SQLite.
+Full guides live in the [repository](https://github.com/flo-bit/contrail):
+
+- [Get started locally](https://github.com/flo-bit/contrail/blob/main/docs/01-getting-started.md)
+- [Add the typed client](https://github.com/flo-bit/contrail/blob/main/docs/02-client.md)
+- [Configure and query](https://github.com/flo-bit/contrail/blob/main/docs/03-configure-and-query.md)
+- [Deploy to Cloudflare Workers & Node](https://github.com/flo-bit/contrail/blob/main/docs/04-deploy-cloudflare.md)
+- Advanced: [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/advanced/feeds.md) · [Labels](https://github.com/flo-bit/contrail/blob/main/docs/advanced/labels.md) · [Moderation](https://github.com/flo-bit/contrail/blob/main/docs/advanced/moderation.md) · [Outbox](https://github.com/flo-bit/contrail/blob/main/docs/advanced/outbox.md)

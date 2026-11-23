@@ -1,10 +1,10 @@
 # Get started locally
 
-Run a local AppView for a public AT Protocol collection with Node.js 22.15 or newer.
+Requires Node.js 22.15 or newer (Node 24 includes SQLite FTS5 for local full-text search).
 
-## Initialize from your Lexicon prefix
+## 1. Initialize an AppView
 
-Pass the prefix to `contrail init`:
+Import verified record Lexicons from your NSID prefix (include the trailing `.` for a namespace boundary):
 
 ```bash
 pnpx @atmo-dev/contrail init my-appview \
@@ -13,76 +13,44 @@ pnpx @atmo-dev/contrail init my-appview \
 cd my-appview
 ```
 
-Replace `community.lexicon.calendar.` with your source Lexicon prefix. The value
-is matched as a literal NSID prefix, so include the trailing `.` when you mean a
-namespace boundary. For example, this prefix selects record Lexicons such as
-`community.lexicon.calendar.event` and
-`community.lexicon.calendar.rsvp`.
+- `--prefix` selects the source record Lexicons to import from `https://lex.atmo.tools`.
+- `--namespace` sets the XRPC namespace for generated AppView methods (defaults to `com.example`).
+- Omit `--prefix` for an offline starter config with no network calls.
 
-The two namespace options serve different purposes:
+This creates `contrail.config.ts`, pins the imported Lexicons + dependency graph in `lexicons/pinned/`, and writes `lexicons/pinned.lock`. Commit all three. On an interactive TTY, Contrail prompts before wiring ambiguous `strongRef`/AT-URI references; pass `--no-interactive` to skip prompts.
 
-- `--prefix` selects the record Lexicons Contrail imports.
-- `--namespace` sets the generated AppView XRPC method namespace. It is optional,
-  defaults to `com.example`, and does not need to match the imported prefix.
+| Flag | Purpose | Default |
+| --- | --- | --- |
+| `--prefix <prefix>` | Import record Lexicons matching this NSID prefix | none (offline starter) |
+| `--namespace <nsid>` | XRPC namespace for generated methods | `com.example` |
+| `--lexicon-api <url>` | Alternate Lexicon registry | `https://lex.atmo.tools` |
+| `--timeout <seconds>` | Registry lookup budget | `60` |
+| `--allow-partial` | Continue if prefix verification/indexing is incomplete | off |
+| `--no-interactive` | Skip reference/relation prompts | off |
 
-Omit `my-appview` to initialize the current directory. Contrail refuses to
-replace an existing config or pinned import.
-
-### What initialization creates
-
-Contrail queries `https://lex.atmo.tools`, selects record Lexicons matching the
-prefix, pins their complete dependency graph under `lexicons/pinned/`, and
-creates `contrail.config.ts`. Every imported schema is recorded with its CID and
-authority in `lexicons/pinned.lock`; commit the pinned schemas and lock alongside
-the config.
-
-String fields become equality filters and sort options; datetime fields become
-range filters and chronological sort options. Arrays, unions, numeric fields,
-and other unsupported shapes are reported rather than configured incorrectly.
-
-When a strongRef or AT URI could point at another imported collection, an
-interactive terminal asks whether to add forward hydration and an inverse
-relation. The schema does not encode its target, so non-interactive runs leave
-ambiguous references unconfigured. Use `--no-interactive` to request that
-behavior explicitly.
-
-### Import options
-
-| Option | Purpose | Default |
-|---|---|---|
-| `--prefix <prefix>` | Import verified record Lexicons matching this NSID prefix | none (uses the offline starter) |
-| `--namespace <namespace>` | Namespace for generated AppView XRPC methods | `com.example` |
-| `--lexicon-api <url>` | Use another Lexicon registry | `https://lex.atmo.tools` |
-| `--timeout <seconds>` | Readiness and dependency lookup budget | `60` |
-| `--allow-partial` | Accept incomplete prefix verification or catalog indexing | off |
-| `--no-interactive` | Skip reference and inverse-relation questions | off |
-
-The default import requires complete verification and catalog indexing. Use
-`--allow-partial` only when you deliberately accept that some prefix documents
-may be absent; required dependencies must always resolve.
-
-## Offline starter
-
-For an example config with no registry request, omit `--prefix`:
-
-```bash
-pnpx @atmo-dev/contrail init my-appview
-cd my-appview
-```
-
-## Run the local AppView
-
-Then run:
+## 2. Run locally
 
 ```bash
 pnpx @atmo-dev/contrail dev
 ```
 
-Contrail resolves the Lexicons, backfills existing records, follows new records, and serves a resumable SQLite AppView at `http://127.0.0.1:8787`.
+Contrail creates a resumable SQLite database, backfills historical records from relays/PDSes, streams live Jetstream updates, and serves XRPC at `http://127.0.0.1:8787`:
 
 ```bash
 curl 'http://127.0.0.1:8787/xrpc/com.example.calendar.event.listRecords?limit=10'
+curl 'http://127.0.0.1:8787/status'
 ```
 
-If you used the offline starter instead, its method is
-`com.example.event.listRecords`. Next: [add the typed client to your app](./02-client.md).
+*(If you used the offline starter, the method is `com.example.event.listRecords`.)*
+
+### Fast bootstrap with Alluvium
+
+For non-Bluesky collections, load a pre-built snapshot from [Alluvium](https://backfill.atmo.tools) instead of crawling PDSes:
+
+```bash
+pnpx @atmo-dev/contrail dev --alluvium
+```
+
+Useful `dev` flags: `--temporary` (disposable DB), `--fresh` (wipe DB on start), `--no-backfill` (serve existing data only), `--port <n>`.
+
+Next: [Add the typed client](./02-client.md).
