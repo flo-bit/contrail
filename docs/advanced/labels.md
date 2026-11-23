@@ -37,12 +37,12 @@ Atproto-Accept-Labelers: did:plc:ar7c4by46qjdydhdevvrndac
 
 Without either, Contrail uses `labels.defaults` (or all configured sources; set `defaults: []` to require opt-in). Applied labelers are echoed in `Atproto-Content-Labelers`, and attached on `record.labels` (including account labels and hydrated previews) and hydrated `profiles`.
 
-Expired labels are dropped, CID-pinned labels only match that version, and newer `neg: true` labels retract prior ones. Label signatures are stored but not currently verified.
+Expired labels are dropped, CID-pinned labels only match that version, newer `neg: true` labels retract prior ones, and labels with `cts` more than five minutes in the future are rejected. With `backfill: false` on a quiet labeler (no frame received on first connect), the next cycle replays from the beginning while keeping only labels created after the first connection (allowing five minutes of clock skew). Label signatures are stored but not currently verified.
 
 ## Author self-labels
 
-Records and profiles with canonical `com.atproto.label.defs#selfLabels` expose `selfLabels: [{ val: "nudity" }]` automatically at read time — no labeler config or migration needed.
+Records and profiles with canonical `com.atproto.label.defs#selfLabels` expose `selfLabels: [{ val: "nudity" }]` automatically at read time — no labeler config or migration needed. Contrail admits up to 10 nonempty entries per record (max 128 UTF-8 bytes each), deduplicates exact duplicates, and ignores oversized containers; custom handlers can call `extractSelfLabels(value)`.
 
-Self-labels are author declarations, not trusted labeler claims: they never affect SQL visibility, counts, or pagination, and `!hide`/`!takedown` self-labels do nothing. Use `@atmo-dev/kit` moderation components to render disclosure gates for both `labels` and `selfLabels`.
+Self-labels are author declarations, not trusted labeler claims: they never affect SQL visibility, counts, or pagination, and `!hide`/`!takedown` self-labels do nothing. Contrail returns `labels` and `selfLabels` separately so client UIs can render disclosure gates with author attribution.
 
 For SQL enforcement, moderator actions, overrides, account lifecycle, and private reports, see [Moderation](./moderation.md).

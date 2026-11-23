@@ -57,9 +57,16 @@ Publish `tools.atmo.moderation.action` records to a configured moderator's repo:
 
 Jetstream account events apply automatically for any actor this instance holds data for:
 
-- `active: false` (`deleted`, `deactivated`, `takendown`, `suspended`) hides the actor and all their records in SQL without purging rows.
+- `active: false` (`deleted`, `deactivated`, `takendown`, `suspended`) hides the actor and all their records in SQL. Deletion retains rows invisibly rather than treating an unverified event as a permanent purge.
 - Reactivation restores visibility unless another hide/takedown applies.
+- Alluvium exports omit inactive/deleted accounts as of their head, but a fresh export alone does not establish ongoing account state.
 - Built-in queries enforce visibility automatically. In custom raw-SQL queries, filter with `visibleRecordSql(alias)`.
+
+## Enforcement & counts
+
+- `moderation_hidden` is materialized in the same transaction as each hide, takedown, override, or account-state change. Time bounds (`starts_at <= now < exp`) are checked on read, so expiry needs no cron.
+- Visibility changes queue affected parents in `moderation_recount_queue` and recount them in bounded pages. Stored relation counts stay consistent with count filters, sorts, and cursors, and can lag a takedown by one moderation cycle.
+- A record-scoped hide on a profile URI suppresses PDS read-through and identity-only fallback entries (other visible profile collections may still return). CID-pinned hides match only the indexed version.
 
 ## Private reports
 
@@ -118,7 +125,7 @@ await submitReport({
 });
 ```
 
-Use `@atmo-dev/kit` for moderation UI components (`ModerationGate`, `ReportDialog`, `ModerationConsole`).
+Record and profile views return trusted `labels` and author `selfLabels` separately for client disclosure UI; wire your app's report dialog (for example `ReportDialog` from `@atmo-dev/kit`) and moderator inbox UI to the `@atmo-dev/contrail/moderation` helpers above.
 
 ## Operational caveats
 

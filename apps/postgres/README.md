@@ -23,6 +23,6 @@ pnpm serve   # HTTP XRPC server (default http://localhost:3000)
 Verify:
 
 ```bash
-curl 'http://localhost:3000/xrpc/com.example.event.listRecords?limit=10'
+curl 'http://localhost:3000/xrpc/rsvp.atmo.event.listRecords?limit=10'
 curl 'http://localhost:3000/health'
 ```

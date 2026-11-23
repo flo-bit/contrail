@@ -112,7 +112,7 @@ D1 is the default backend. Use `--backend sqlite` for a fresh in-memory native S
 pnpm bench --backend sqlite --config calendar-records-only.config.json
 ```
 
-`calendar.config.json` mirrors the retained indexing shape from `11-atproto/02-atmo-rsvp`: calendar events, RSVPs, profiles, follows/feeds, query indexes, relation counts, and event full-text search. Removed product modules and read-only pipeline handlers are intentionally absent because they do not participate in indexing.
+`calendar.config.json` mirrors a full event/RSVP AppView indexing shape: calendar events, RSVPs, profiles, follows/feeds, query indexes, relation counts, and event full-text search. Removed product modules and read-only pipeline handlers are intentionally absent because they do not participate in indexing.
 
 To run the same full workload with strict runtime Lexicon validation and canonical DAG-CBOR CID verification enabled:
 

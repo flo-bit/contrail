@@ -2,9 +2,10 @@
 
 ## Standalone Cloudflare Worker + D1
 
-From the directory containing `contrail.config.ts`:
+From the directory containing `contrail.config.ts` (run `pnpm init` first if there is no `package.json` yet):
 
 ```bash
+pnpm init
 pnpm add @atmo-dev/contrail
 pnpm add -D @atcute/lex-cli wrangler typescript
 ```
@@ -65,7 +66,7 @@ Provision D1, deploy, and backfill:
 ```bash
 pnpm wrangler d1 create my-appview   # paste database_id into wrangler.jsonc
 pnpm wrangler deploy
-pnpm contrail backfill --remote      # or --alluvium on an empty DB
+pnpm contrail backfill --remote      # or add --alluvium on an empty D1 database
 ```
 
 Verify and connect your consumer app:

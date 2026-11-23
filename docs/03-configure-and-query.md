@@ -86,6 +86,8 @@ Each item in `records` has `uri`, `cid`, `value` (the raw record body), plus any
 | `validate: true` | Validate incoming records against your bundled Lexicons before indexing |
 | `timeField` | Record field used for default chronological ordering (defaults to `"createdAt"`, or `false` to use ingest time) |
 
+**`repos` semantics:** `repos` is an exclusive publisher allowlist, not a seed list. Initialization queues only those DID/collection pairs for backfill without relay discovery or enqueuing dependent collections, and `notify`, actor read-through, and Alluvium imports enforce the same allowlist. Reordering the same DIDs or adding a new empty scoped collection is allowed; changing or removing an existing allowlist requires rebuilding the database.
+
 ## Profiles & custom queries
 
 - `profiles`: defaults to `["app.bsky.actor.profile"]`. Pass `[]` to disable profile hydration or pass custom profile NSIDs.
