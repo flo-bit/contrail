@@ -111,8 +111,8 @@ export async function prepareDevLexicons(
       join(root, "lexicons", "pinned"),
       join(root, "lexicons", "pulled"),
     ]),
-    // A prior source connection places the complete local bundle here. Reuse
-    // unpublished documents from that stable path before network resolution.
+    // Reuse local client/unpublished Lexicons from this path before network
+    // resolution.
     clientLexiconRoot,
   ];
   const sourceDirs = [...localSourceDirs, pulled];
