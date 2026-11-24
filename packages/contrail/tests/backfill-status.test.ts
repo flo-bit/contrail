@@ -4,15 +4,14 @@ import {
   backfillUser,
   createApp,
   discoverDIDs,
-  finishBackfillRun,
   getBackfillStatus,
   getIngestDiagnostics,
   initSchema,
   queryRecords,
   resolveConfig,
   retryPendingBackfills,
-  tryStartBackfillRun
 } from "../src/index";
+import { finishBackfillRun, tryStartBackfillRun } from "../src/core/status";
 import { __resetPdsCachesForTests } from "../src/core/client";
 import { TEST_CONFIG, TEST_POSTGRES, createTestDb, createTestDbWithSchema, ingestRecords, makeEvent } from "./helpers";
 

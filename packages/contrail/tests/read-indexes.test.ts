@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildDynamicIndexes, getMeta, ingestRecords, initSchema, queryRecords, resolveConfig,
-  setMeta, sqliteDialect, postgresDialect,
+  ingestRecords,
+  initSchema,
+  queryRecords,
+  resolveConfig,
+  sqliteDialect,
+  postgresDialect,
 } from "../src/index";
+import { buildDynamicIndexes } from "../src/core/db/schema";
+import { getMeta, setMeta } from "../src/core/db/meta";
 import type { Database, Statement } from "../src/index";
 import { createTestDb, makeEvent, TEST_POSTGRES } from "./helpers";
 

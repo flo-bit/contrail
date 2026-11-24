@@ -1,13 +1,80 @@
-/** Contrail's public API. */
+/** Contrail's curated public API. */
 export type { LexiconDoc } from "@atcute/lexicon-doc";
 export { Contrail } from "./contrail";
-export type { AppOptions, ContrailInitOptions, ContrailOptions } from "./contrail";
-export * from "./public-service";
+export type {
+  AppOptions,
+  ContrailInitOptions,
+  ContrailOptions,
+} from "./contrail";
 
-// Configuration, storage, identity, and dialects.
-export * from "./core/types";
-export * from "./core/dialect";
-export * from "./core/identity";
+// Configuration, schema helpers, and dialects.
+export {
+  DEFAULT_COLLECTION_METHODS,
+  DEFAULT_CONSTELLATION_URL,
+  DEFAULT_FEED_MAX_ITEMS,
+  DEFAULT_FOLLOW_NSID,
+  DEFAULT_FOLLOW_SHORT,
+  DEFAULT_JETSTREAMS,
+  DEFAULT_PROFILES,
+  DEFAULT_RELAYS,
+  countColumnName,
+  getNestedValue,
+  getRelationField,
+  groupedCountColumnName,
+  normalizeProfileConfig,
+  nsidForShortName,
+  recordsTableName,
+  resolveCollectionKey,
+  resolveConfig,
+  shortNameForNsid,
+  validateConfig,
+} from "./core/types";
+export type {
+  AtprotoServiceAuthConfig,
+  AtprotoServiceAuthMethod,
+  CollectionAcquisition,
+  CollectionConfig,
+  CollectionMethod,
+  ConstellationConfig,
+  ContrailConfig,
+  CustomQueryHandler,
+  Database,
+  FeedConfig,
+  FeedTargetConfig,
+  IngestEvent,
+  IngestValidationConfig,
+  Logger,
+  MaintenanceConfig,
+  MaintenanceOptimizeConfig,
+  MutationSource,
+  OrderedSourceConfig,
+  PipelineQueryHandler,
+  ProfileConfig,
+  QueryableField,
+  RecordRow,
+  RecordSource,
+  ReferenceConfig,
+  RelationConfig,
+  ResolvedContrailConfig,
+  SourcePosition,
+  Statement,
+} from "./core/types";
+export {
+  buildFtsSchema,
+  ftsQueryClause,
+  getDialect,
+  postgresDialect,
+  sqliteDialect,
+} from "./core/dialect";
+export type { SqlDialect } from "./core/dialect";
+export { buildFtsContent, getSearchableFields } from "./core/search";
+
+// Identity and PDS HTTP helpers.
+export {
+  resolveActor,
+  resolveIdentities,
+  resolveIdentity,
+} from "./core/identity";
 export {
   getClient,
   getPDS,
@@ -16,78 +83,159 @@ export {
 } from "./core/client";
 export type { ResolvedIdentity } from "./core/client";
 
-// Ingestion and maintenance.
-export * from "./core/ingest";
-export * from "./core/jetstream";
-export {
-  JetstreamLiveHistoryExpiredError,
-} from "./core/jetstream-live";
-export type { JetstreamLiveEvent } from "./core/jetstream-live";
-export * from "./core/persistent";
-export * from "./core/backfill";
-export * from "./core/status";
-export * from "./core/diagnostics";
-export * from "./core/service-auth";
-export { formatServiceOAuthScope } from "./service-auth-contract";
-export * from "./core/isolated-projection";
-export * from "./core/validation";
-export * from "./core/search";
-export * from "./core/constellation";
-
-// Database.
-export * from "./core/db/schema";
+// Database schema, queries, cursors, and maintenance.
+export { initSchema } from "./core/db/schema";
+export type { InitSchemaOptions, SchemaModule } from "./core/db/schema";
 export {
   assertServingSourceCompatibility,
-  getFeedPruneCursor,
+  compareRecordVersions,
   getLastCursor,
   getServingSourcePosition,
-  lookupExistingRecords,
-  pruneActorFeed,
-  pruneFeedItems,
-  pruneGrownFeeds,
+  orderedSourcePosition,
   queryRecords,
   saveCursor,
-  saveCursorStatement,
-  saveOrderedSourcePositionStatement,
-  saveServingSourcePositionStatement,
-  orderedSourcePosition,
-  saveFeedPruneCursor,
-  sweepFeedItems,
 } from "./core/db/records";
 export type {
-  ExistingRecordInfo,
-  FeedSweepResult,
-  GrownFeedPruneResult,
+  MutationSelection,
   QueryOptions,
-  SortOption,
+  RecordVersionInfo,
   ServingSourcePosition,
+  SortOption,
 } from "./core/db/records";
-export * from "./core/db/meta";
-export * from "./core/db/optimize";
+export { optimizeDatabase } from "./core/db/optimize";
 
-// HTTP and query pipeline.
-export * from "./core/router";
-export * from "./core/router/notify";
-export * from "./core/router/profiles";
-export * from "./core/router/feed";
-export * from "./core/router/diagnostics";
-export * from "./core/router/collection";
-export * from "./core/router/hydrate";
-export * from "./core/router/helpers";
+// Ingestion, backfill, diagnostics, validation, and service auth.
+export {
+  createIngestEvent,
+  ingestRecords,
+  recordTimeUs,
+} from "./core/ingest";
+export type {
+  IngestDropCounts,
+  IngestProjection,
+  IngestRecordsOptions,
+  IngestRecordsResult,
+  RecordEventInput,
+} from "./core/ingest";
+export {
+  createIngestState,
+  ingestEvents,
+  runIngestCycle,
+} from "./core/jetstream";
+export type { IngestState, ScheduledIngestOptions } from "./core/jetstream";
+export { JetstreamLiveHistoryExpiredError } from "./core/jetstream-live";
+export type { JetstreamLiveEvent } from "./core/jetstream-live";
+export { runPersistent } from "./core/persistent";
+export type { PersistentIngestOptions } from "./core/persistent";
+export {
+  backfillPending,
+  backfillUser,
+  discoverAndBackfill,
+  discoverDIDs,
+  retryPendingBackfills,
+} from "./core/backfill";
+export type {
+  BackfillAllOptions,
+  BackfillRetryOptions,
+  BackfillRetryResult,
+} from "./core/backfill";
+export { getBackfillStatus } from "./core/status";
+export type { BackfillStatus } from "./core/status";
+export { getIngestDiagnostics } from "./core/diagnostics";
+export type { IngestDiagnosticCounts } from "./core/diagnostics";
+export {
+  bindRecordValidationLexicons,
+  bindRecordValidationProvider,
+  prepareRecordValidation,
+  validateCanonicalRecord,
+} from "./core/validation";
+export type {
+  RecordValidationFailure,
+  RecordValidationProvider,
+} from "./core/validation";
+export {
+  createExactServiceAuthGate,
+  createServiceAuthGate,
+} from "./core/service-auth";
+export type {
+  ExactServiceAuthConfig,
+  ExactServiceAuthGate,
+  ServiceAuthGate,
+  ServiceAuthResult,
+} from "./core/service-auth";
+export { formatServiceOAuthScope } from "./service-auth-contract";
+export {
+  describePublicService,
+  normalizePublicServiceEndpoint,
+  validateServiceManifest,
+} from "./public-service";
+export type {
+  LexiconDocument,
+  PublicServiceAuthContract,
+  PublicServiceCollection,
+  PublicServiceDescription,
+  PublicServiceManifest,
+  PublicServiceOptions,
+  PublicServiceProtectedMethod,
+} from "./public-service";
 
-// Moderation and account lifecycle.
-export * from "./core/moderation";
-export * from "./core/moderation-reports";
-export * from "./core/moderation-sync";
-export * from "./core/moderation-policy";
+// HTTP router and query helpers.
+export { createApp } from "./core/router";
+export type { CreateAppOptions } from "./core/router";
+export { getCursorStatus, getStatusOverview } from "./core/router/diagnostics";
+export type {
+  CollectionOverview,
+  CursorStatus,
+} from "./core/router/diagnostics";
+export {
+  MAX_NOTIFY_URIS,
+  parseAtUri,
+  processNotifyUris,
+} from "./core/router/notify";
+export type { NotifyResult } from "./core/router/notify";
+export { resolveProfiles } from "./core/router/profiles";
+export { batchedInQuery } from "./core/router/helpers";
+
+// Moderation and labels.
+export {
+  BLUESKY_MODERATION_DID,
+  MODERATION_ACTION_NSID,
+  activeHiddenSql,
+  hiddenSubjects,
+  initModerationReports,
+  isAccountHidden,
+  parseModerationAction,
+  visibleRecordSql,
+} from "./core/moderation";
+export type {
+  AccountUpdate,
+  ModerationAction,
+  ModerationConfig,
+} from "./core/moderation";
+export {
+  ModerationReportError,
+  createModerationReports,
+} from "./core/moderation-reports";
+export type {
+  ListModerationReportsInput,
+  ModerationReportsOptions,
+} from "./core/moderation-reports";
 export { moderationActionLexicon } from "./lexicons/moderation";
-
-// Labels.
-export * from "./core/labels/types";
-export * from "./core/labels/self";
-export * from "./core/labels/hydrate";
-export * from "./core/labels/select";
-export * from "./core/labels/apply";
-export * from "./core/labels/subscribe";
-export * from "./core/labels/resolve";
-export * from "./core/labels/schema";
+export { extractSelfLabels } from "./core/labels/self";
+export type { SelfLabel } from "./core/labels/self";
+export { hydrateLabels } from "./core/labels/hydrate";
+export type { HydratedLabel } from "./core/labels/hydrate";
+export { selectAcceptedLabelers } from "./core/labels/select";
+export { applyLabels } from "./core/labels/apply";
+export type { IncomingLabel } from "./core/labels/apply";
+export {
+  runLabelIngestCycle,
+  runPersistentLabels,
+} from "./core/labels/subscribe";
+export type { PersistentLabelsOptions } from "./core/labels/subscribe";
+export type {
+  LabelRow,
+  LabelerCursorRow,
+  LabelerSource,
+  LabelsConfig,
+} from "./core/labels/types";

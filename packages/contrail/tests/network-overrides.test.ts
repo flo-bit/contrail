@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolvePDS, getClient } from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
-import { refreshStaleIdentities } from "../src/index";
+import { refreshStaleIdentities } from "../src/core/identity";
 import { createTestDbWithSchema } from "./helpers";
 import type { ContrailConfig } from "../src/index";
 import type { Did } from "@atcute/lexicons";

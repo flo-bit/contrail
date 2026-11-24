@@ -1,12 +1,14 @@
 import { P256Keypair } from "@atproto/crypto";
 import { lexToJson } from "@atproto/lex-json";
 import {
-  activateIsolatedPartitionStatement,
   bindRecordValidationProvider,
-  queryIsolatedRecords,
   resolveConfig,
 } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import {
+  activateIsolatedPartitionStatement,
+  queryIsolatedRecords,
+} from "../src/isolated-projection";
 import {
   RepoCommit,
   serializeRecord,

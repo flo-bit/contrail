@@ -9,8 +9,8 @@ import {
   runPersistent,
   queryRecords,
   getLastCursor,
-  accountUpdateStatements,
 } from "../src/index";
+import { accountUpdateStatements } from "../src/core/moderation";
 let events: JetstreamLiveEvent[] = [];
 vi.mock("../src/core/jetstream-live", async (original) => ({
   ...(await original<typeof import("../src/core/jetstream-live")>()),

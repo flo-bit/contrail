@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { initSchema, addColumnIfNotExists } from "../src/index";
+import { initSchema } from "../src/index";
+import { addColumnIfNotExists } from "../src/core/db/schema";
 import type { Database } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { createTestDb, TEST_CONFIG } from "./helpers";

@@ -2,7 +2,6 @@ import { encode } from "@atcute/cbor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestDb, makeEvent, TEST_CONFIG } from "./helpers";
 import {
-  applyModerationPolicy,
   ingestRecords,
   initSchema,
   queryRecords,
@@ -11,6 +10,7 @@ import {
   runPersistentLabels,
   type Database,
 } from "../src/index";
+import { applyModerationPolicy } from "../src/core/moderation-policy";
 
 const src = "did:plc:external";
 const did = "did:plc:test";

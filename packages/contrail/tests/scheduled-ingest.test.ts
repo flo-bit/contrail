@@ -53,11 +53,11 @@ import {
   getLastCursor,
   initSchema,
   resolveConfig,
-  runGatedFeedPrune,
   runIngestCycle,
   type Database,
   type Logger,
 } from "../src/index";
+import { runGatedFeedPrune } from "../src/core/maintenance";
 import {
   loadKnownActorDids,
   lookupKnownActorDids,

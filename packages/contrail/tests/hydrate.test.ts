@@ -6,10 +6,12 @@ import {
   initSchema,
   recordsTableName,
   resolveConfig,
+} from "../src/index";
+import {
   parseHydrateParams,
   resolveHydrates,
   resolveReferences,
-} from "../src/index";
+} from "../src/core/router/hydrate";
 import { createTestDb, createTestDbWithSchema, makeEvent, TEST_CONFIG } from "./helpers";
 import { ingestRecords } from "./helpers";
 

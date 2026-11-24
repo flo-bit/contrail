@@ -2,12 +2,12 @@ import {
   bindRecordValidationProvider,
   createExactServiceAuthGate,
   prepareRecordValidation,
-  queryIsolatedRecords,
   resolveConfig,
   validateConfig,
   type ContrailConfig,
   type Database,
 } from "@atmo-dev/contrail";
+import { queryIsolatedRecords } from "./isolated-projection";
 import { delegationFailure, type DelegationFailure } from "./crypto";
 import { exchangeSpaceCredential, SpaceProtocolError } from "./protocol";
 import {

@@ -19,7 +19,7 @@ import {
 } from "../src/index";
 import { resolveConfig } from "../src/index";
 import type { Database, Statement } from "../src/index";
-import { resolveHydrates, resolveReferences } from "../src/index";
+import { resolveHydrates, resolveReferences } from "../src/core/router/hydrate";
 import { makeEvent } from "./helpers";
 
 const TEST_CONFIG = resolveConfig({

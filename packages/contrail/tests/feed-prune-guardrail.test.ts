@@ -8,13 +8,13 @@ import type {
 } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { initSchema } from "../src/index";
+import { ingestRecords } from "../src/index";
 import {
-  ingestRecords,
   sweepFeedItems,
   pruneActorFeed,
   pruneFeedItems,
   pruneGrownFeeds,
-} from "../src/index";
+} from "../src/core/db/records";
 
 // ---------------------------------------------------------------------------
 // Guardrail: no contrail-issued maintenance statement may be unbounded-O(n)

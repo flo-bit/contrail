@@ -2,30 +2,31 @@ import type {
   ContrailConfig,
   Database,
   IngestEvent,
+  IngestProjection,
+  IngestRecordsOptions,
+  MutationSelection,
   RecordRow,
+  RecordVersionInfo,
   RelationConfig,
   ResolvedContrailConfig,
+  SortOption,
   Statement,
-} from "./types";
+} from "@atmo-dev/contrail";
 import {
+  buildFtsContent,
+  buildFtsSchema,
+  compareRecordVersions,
   countColumnName,
+  getDialect,
   getNestedValue,
   getRelationField,
+  getSearchableFields,
   groupedCountColumnName,
   nsidForShortName,
   recordsTableName,
   resolveCollectionKey,
   shortNameForNsid,
-} from "./types";
-import type { IngestProjection, IngestRecordsOptions } from "./ingest";
-import {
-  compareRecordVersions,
-  type MutationSelection,
-  type RecordVersionInfo,
-  type SortOption,
-} from "./db/records";
-import { buildFtsSchema, getDialect } from "./dialect";
-import { buildFtsContent, getSearchableFields } from "./search";
+} from "@atmo-dev/contrail";
 
 /** A protocol-neutral projection boundary. Core deliberately does not interpret
  * isolated keys; an extension maps its authority/generation identity to one. */

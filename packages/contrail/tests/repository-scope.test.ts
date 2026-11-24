@@ -1,10 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  backfillPending, backfillUser, createApp, discoverDIDs, getDependentNsids,
-  getDiscoverableNsids, getLastCursor, ingestRecords, initSchema,
-  processNotifyUris, queryRecords, resolveConfig, retryPendingBackfills,
-  type CollectionConfig, type Database,
+  backfillPending,
+  backfillUser,
+  createApp,
+  discoverDIDs,
+  getLastCursor,
+  ingestRecords,
+  initSchema,
+  processNotifyUris,
+  queryRecords,
+  resolveConfig,
+  retryPendingBackfills,
+  type CollectionConfig,
+  type Database,
 } from "../src/index";
+import { getDependentNsids, getDiscoverableNsids } from "../src/core/types";
 import { __resetPdsCachesForTests } from "../src/core/client";
 import { loadKnownActorDids } from "../src/core/db/records";
 import { createTestDb, makeEvent } from "./helpers";

@@ -1,4 +1,5 @@
 export * from "./crypto";
+export * from "./isolated-projection";
 export * from "./protocol";
 export * from "./policy";
 export * from "./storage";

@@ -14,7 +14,8 @@ import {
 import { initSchema } from "../src/index";
 import { parseAtUri } from "../src/index";
 import { createApp } from "../src/index";
-import { processNotifyUris, queryRecords, runGatedFeedPrune } from "../src/index";
+import { processNotifyUris, queryRecords } from "../src/index";
+import { runGatedFeedPrune } from "../src/core/maintenance";
 import type { Hono } from "hono";
 
 const NOTIFY_CONFIG = { ...TEST_CONFIG, notify: true };

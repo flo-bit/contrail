@@ -3,7 +3,8 @@ import { createPgliteDatabase } from "./pglite";
 import type { Database, IngestEvent, ResolvedContrailConfig } from "../src/index";
 import { resolveConfig } from "../src/index";
 import { initSchema } from "../src/index";
-import { ingestRecords as coreIngestRecords, type ExistingRecordInfo } from "../src/index";
+import { ingestRecords as coreIngestRecords } from "../src/index";
+import { type ExistingRecordInfo } from "../src/core/db/records";
 
 /** `CONTRAIL_TEST_DIALECT=postgres` runs suites on in-process PostgreSQL. */
 export const TEST_POSTGRES = process.env.CONTRAIL_TEST_DIALECT === "postgres";

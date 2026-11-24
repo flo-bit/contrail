@@ -2,15 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestDb, makeEvent, TEST_CONFIG } from "./helpers";
 import {
   applyLabels,
-  applyModerationPolicy,
   ingestRecords,
   initSchema,
-  labelBackfillEnqueueStatements,
   queryRecords,
   resolveConfig,
-  runLabelBackfillQueue,
-  runModerationPolicyJob,
 } from "../src/index";
+import { applyModerationPolicy, runModerationPolicyJob } from "../src/core/moderation-policy";
+import { labelBackfillEnqueueStatements } from "../src/core/moderation";
+import { runLabelBackfillQueue } from "../src/core/moderation-sync";
 import type { Database } from "../src/index";
 
 const src = "did:plc:external";

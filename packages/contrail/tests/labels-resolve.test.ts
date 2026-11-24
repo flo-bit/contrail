@@ -9,7 +9,7 @@ import {
   resolveLabelerEndpoint,
   validateEndpointUrl,
   getLabelerState,
-} from "../src/index";
+} from "../src/core/labels/resolve";
 import { createTestDbWithSchema } from "./helpers";
 
 describe("getLabelerState endpoint overrides", () => {

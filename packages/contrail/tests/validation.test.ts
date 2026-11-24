@@ -11,10 +11,10 @@ import {
   prepareRecordValidation,
   queryRecords,
   resolveConfig,
-  saveCursorStatement,
   type ContrailConfig,
   type Database,
 } from "../src/index";
+import { saveCursorStatement } from "../src/core/db/records";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 
 const COLLECTION = "com.example.event";

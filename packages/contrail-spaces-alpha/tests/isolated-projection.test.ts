@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   createIngestEvent,
-  createIsolatedProjection,
-  hideIsolatedPartitionStatement,
   getIngestDiagnostics,
   ingestRecords,
-  initIsolatedProjection,
   initSchema,
-  queryIsolatedRecords,
   queryRecords,
-  rebuildIsolatedCountsStatements,
   resolveConfig,
-} from "../src/index";
-import { createTestDb } from "./helpers";
+} from "@atmo-dev/contrail";
+import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import {
+  createIsolatedProjection,
+  hideIsolatedPartitionStatement,
+  initIsolatedProjection,
+  queryIsolatedRecords,
+  rebuildIsolatedCountsStatements,
+} from "../src/isolated-projection";
+
+const createTestDb = () => createSqliteDatabase(":memory:");
 
 let hasFts5 = false;
 try {
