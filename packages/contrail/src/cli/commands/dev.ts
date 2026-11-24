@@ -301,10 +301,7 @@ async function runSqliteDev(
   console.log(`\ncontrail dev ready: ${endpoint}`);
   console.log(`  status:    ${endpoint}/status`);
   console.log(`  discovery: ${endpoint}/.well-known/contrail`);
-  console.log(`  sqlite:    ${databasePath}`);
-  console.log(
-    "  client:    run `contrail connect <config-path>` to generate\n",
-  );
+  console.log(`  sqlite:    ${databasePath}\n`);
 
   let ingesting = false;
   const ingest = async () => {

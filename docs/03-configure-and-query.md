@@ -98,7 +98,6 @@ Each item in `records` has `uri`, `cid`, `value` (the raw record body), plus any
 Checked-in Lexicons resolve in this order (first match wins):
 
 1. `lexicons/custom/` — hand-edited schemas
-2. `lexicons/pinned/` — CID-pinned schemas from `contrail init --prefix` (keep `lexicons/pinned.lock`)
-3. `lexicons/pulled/` — schemas fetched by `contrail lexicons all`
+2. `lexicons/pulled/` — schemas fetched by `contrail lexicons all`
 
 Next: [Deploy to Cloudflare Workers & Node](./04-deploy-cloudflare.md).

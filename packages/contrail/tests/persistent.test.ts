@@ -1,14 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type {
-  ContrailConfig,
-  Database,
-  PersistentJetstreamSubscription,
-} from "../src/index";
-import {
-  FEED_PRUNE_RECOVERY_INTERVAL_MS,
-  FEED_PRUNE_SWEEP_ACTORS,
-  resolveConfig,
-} from "../src/index";
+import type { ContrailConfig, Database } from "../src/index";
+import type { PersistentJetstreamSubscription } from "../src/core/persistent";
+import { resolveConfig } from "../src/index";
+import { FEED_PRUNE_RECOVERY_INTERVAL_MS, FEED_PRUNE_SWEEP_ACTORS } from "../src/core/maintenance";
 import {
   createTestDb,
   createTestDbWithSchema,

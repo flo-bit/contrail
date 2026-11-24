@@ -3,8 +3,8 @@ import {
   resolveIdentity,
   resolveIdentities,
   resolveActor,
-  refreshStaleIdentities,
 } from "../src/index";
+import { refreshStaleIdentities } from "../src/core/identity";
 import { __resetPdsCachesForTests } from "../src/core/client";
 import { createTestDbWithSchema } from "./helpers";
 import type { Did } from "@atcute/lexicons";

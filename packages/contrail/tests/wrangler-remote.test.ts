@@ -312,21 +312,17 @@ describe("Wrangler D1 remote binding resolution", () => {
     expect(getPlatformProxy).not.toHaveBeenCalled();
   });
 
-  it("exposes --remote, --binding, --env, and --wrangler-config on backfill and changes CLI commands", async () => {
+  it("exposes --remote, --binding, --env, and --wrangler-config on backfill CLI command", async () => {
     const { cac } = await import("cac");
     const { registerBackfill } = await import("../src/cli/commands/backfill");
-    const { registerChanges } = await import("../src/cli/commands/changes");
     const cli = cac("contrail");
     registerBackfill(cli);
-    registerChanges(cli);
 
-    for (const name of ["backfill", "changes"]) {
-      const command = cli.commands.find((c) => c.name === name);
-      expect(command).toBeDefined();
-      const optionNames = command!.options.map((opt) => opt.name);
-      expect(optionNames).toEqual(
-        expect.arrayContaining(["remote", "binding", "env", "wranglerConfig"]),
-      );
-    }
+    const command = cli.commands.find((c) => c.name === "backfill");
+    expect(command).toBeDefined();
+    const optionNames = command!.options.map((opt) => opt.name);
+    expect(optionNames).toEqual(
+      expect.arrayContaining(["remote", "binding", "env", "wranglerConfig"]),
+    );
   });
 });

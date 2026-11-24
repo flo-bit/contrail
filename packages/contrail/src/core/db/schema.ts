@@ -26,16 +26,6 @@ import {
 import { buildLabelsSchema } from "../labels/schema";
 import { buildModerationSchema, moderationLockStatements } from "../moderation";
 import { applyModerationPolicy, MODERATION_POLICY_META_KEYS } from "../moderation-policy";
-import {
-  assertFreshChangeLogGeneration,
-  buildChangeLogSchema,
-  initializeChangeLog,
-  probeChangeLogSchema,
-} from "../change-log";
-import {
-  canonicalChangeDefinitions,
-  changesEnabled,
-} from "../types";
 import { getMetaValues, setMeta } from "./meta";
 import { populateVirtualFtsStatements } from "./projections";
 import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY } from "../repository-scope";
@@ -869,7 +859,6 @@ function schemaFingerprint(
     indexes: string[];
     feeds: string[];
     fts: string[];
-    changes: string[];
   },
 ): string {
   return hashStrings([
@@ -881,8 +870,9 @@ function schemaFingerprint(
     ...ddl.indexes,
     ...ddl.feeds,
     ...ddl.fts,
-    ...ddl.changes,
-    canonicalChangeDefinitions(config),
+    // Keep the empty-array slot previously produced by canonicalChangeDefinitions
+    // so existing databases without changes retain their exact schema_fingerprint.
+    "[]",
     ...buildCountColumns(config),
     ...buildLabelsSchema(dialect),
     ...buildModerationSchema(dialect),
@@ -922,14 +912,12 @@ export async function initSchema(
   const indexes = buildDynamicIndexes(config, dialect);
   const feeds = buildFeedTables(config, dialect);
   const fts = buildFtsTables(config, dialect);
-  const changes = buildChangeLogSchema(config, dialect);
   const baseFingerprint = schemaFingerprint(config, dialect, {
     base,
     collections,
     indexes,
     feeds,
     fts,
-    changes,
   });
   const cursorObservationsFingerprint = `${baseFingerprint}:cursor-observations-v1`;
   const fingerprint = `${cursorObservationsFingerprint}:backfills-pending-v1`;
@@ -1001,7 +989,6 @@ export async function initSchema(
     indexes,
     feeds,
     fts,
-    changes,
   });
   if (
     storedFingerprint === baseFingerprint ||
@@ -1027,7 +1014,7 @@ export async function initSchema(
     base: priorBase, collections,
     indexes: buildVersionedDynamicIndexes(config, dialect, true),
     feeds: buildFeedTables(config, dialect, true),
-    fts, changes,
+    fts,
   });
   if (storedFingerprint === legacyFingerprint || storedFingerprint === `${legacyFingerprint}:cursor-observations-v1`) {
     // Only the read indexes changed. Do not turn this upgrade into a corpus
@@ -1044,13 +1031,6 @@ export async function initSchema(
     await stampDecoupledMarkers();
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
     return;
-  }
-
-  const priorChangeLog = await probeChangeLogSchema(db);
-  if (!changesEnabled(config) && priorChangeLog.exists) {
-    throw new Error(
-      "Durable change logging cannot be disabled or removed during ordinary initialization",
-    );
   }
 
   for (const statement of [...base, ...collections, ...indexes, ...feeds]) {
@@ -1093,37 +1073,6 @@ export async function initSchema(
       )
       .run();
     await seedLegacyRecordVersions(db, config);
-  }
-
-  if (changesEnabled(config)) {
-    const concurrentChangeLog = await probeChangeLogSchema(db);
-    if (!priorChangeLog.state && !concurrentChangeLog.state) {
-      await assertFreshChangeLogGeneration(db);
-    }
-    for (const statement of changes) await runIdempotentDdl(db, statement);
-    const addedEncodedBytes = await addColumnIfNotExists(
-      db,
-      "change_batches",
-      "encoded_bytes",
-      "INTEGER",
-    );
-    await addColumnIfNotExists(
-      db,
-      "change_consumers",
-      "lease_through_position",
-      dialect.bigintType,
-    );
-    if (priorChangeLog.exists && (addedEncodedBytes || needsLegacyMigrations)) {
-      await db
-        .prepare(
-          "UPDATE change_batches SET encoded_bytes = LENGTH(changes_json) WHERE encoded_bytes IS NULL",
-        )
-        .run();
-    }
-    await initializeChangeLog(db, config);
-  }
-
-  if (needsLegacyMigrations) {
     await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
   }
   for (const apply of options.extraSchemas ?? []) await apply(db);

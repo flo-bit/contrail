@@ -81,24 +81,6 @@ describe("createWorker", () => {
     ).not.toThrow();
   });
 
-  it("rejects configured consumers without matching runtime handlers", () => {
-    const config: ContrailConfig = {
-      ...MINIMAL_CONFIG,
-      changes: {
-        consumers: {
-          webhook: {
-            collections: ["community.lexicon.calendar.event"],
-            initial: "history",
-          },
-        },
-      },
-    };
-    expect(() => createWorker(config)).toThrow(
-      "Missing runtime delivery handler",
-    );
-    expect(() => createWorker(config, { delivery: false })).not.toThrow();
-  });
-
   it("returns an object with fetch + scheduled handlers", () => {
     const worker = createWorker(MINIMAL_CONFIG);
     expect(typeof worker.fetch).toBe("function");
@@ -522,7 +504,7 @@ describe("createWorker", () => {
     ).toThrow("public method requires a matching query Lexicon");
   });
 
-  it("scheduled handler isolates ingest failure before retry and delivery", async () => {
+  it("scheduled handler isolates ingest failure before retry", async () => {
     const order: string[] = [];
     const ingest = vi
       .spyOn(Contrail.prototype, "ingest")
@@ -549,43 +531,13 @@ describe("createWorker", () => {
       collections: {
         event: { collection: "community.lexicon.calendar.event" },
       },
-      changes: {
-        consumers: {
-          webhook: {
-            collections: ["community.lexicon.calendar.event"],
-            initial: "history",
-          },
-        },
-      },
     };
 
     try {
       const db = createSqliteDatabase(":memory:");
-      const worker = createWorker(config, {
-        deliveries: {
-          webhook: async () => {
-            order.push("delivery");
-          },
-        },
-      });
+      const worker = createWorker(config);
       const env = { DB: db };
       await worker.fetch(new Request("http://localhost/health"), env);
-      const resolved = resolveConfig(config);
-      await ingestRecords(
-        db,
-        [
-          createIngestEvent({
-            did: "did:plc:alice",
-            collection: "community.lexicon.calendar.event",
-            rkey: "one",
-            operation: "create",
-            cid: "cid-one",
-            value: { name: "one" },
-            timeUs: 1,
-          }),
-        ],
-        resolved,
-      );
       const waitUntil = vi.fn();
       const ctx = {
         waitUntil,
@@ -594,76 +546,10 @@ describe("createWorker", () => {
 
       await worker.scheduled({} as ScheduledEvent, env, ctx);
       await waitUntil.mock.calls[0][0];
-      expect(order).toEqual(["ingest", "retry", "delivery"]);
+      expect(order).toEqual(["ingest", "retry"]);
     } finally {
       ingest.mockRestore();
       retry.mockRestore();
-    }
-  });
-
-  it("schedules a best-effort delivery wake after successful notify", async () => {
-    const config: ContrailConfig = {
-      namespace: "com.example",
-      profiles: [],
-      notify: true,
-      collections: {
-        event: { collection: "community.lexicon.calendar.event" },
-      },
-      changes: {
-        consumers: {
-          webhook: {
-            collections: ["community.lexicon.calendar.event"],
-            initial: "history",
-          },
-        },
-      },
-    };
-    const delivered = vi.fn(async () => {});
-    const db = createSqliteDatabase(":memory:");
-    const worker = createWorker(config, {
-      deliveries: { webhook: delivered },
-    });
-    const env = { DB: db };
-    await worker.fetch(new Request("http://localhost/health"), env);
-    await ingestRecords(
-      db,
-      [
-        createIngestEvent({
-          did: "did:plc:alice",
-          collection: "community.lexicon.calendar.event",
-          rkey: "one",
-          operation: "create",
-          cid: "cid-one",
-          value: { name: "one" },
-          timeUs: 1,
-        }),
-      ],
-      resolveConfig(config),
-    );
-
-    const handler = vi
-      .spyOn(Contrail.prototype, "handler")
-      .mockReturnValue(async () => Response.json({ ok: true }));
-    try {
-      const waitUntil = vi.fn();
-      const ctx = {
-        waitUntil,
-        passThroughOnException: vi.fn(),
-      } as unknown as ExecutionContext;
-      const response = await worker.fetch(
-        new Request("http://localhost/xrpc/com.example.notifyOfUpdate", {
-          method: "POST",
-          body: JSON.stringify({ uri: "at://did:plc:alice/community.lexicon.calendar.event/one" }),
-        }),
-        env,
-        ctx,
-      );
-      expect(response.status).toBe(200);
-      expect(waitUntil).toHaveBeenCalledTimes(1);
-      await waitUntil.mock.calls[0][0];
-      expect(delivered).toHaveBeenCalledTimes(1);
-    } finally {
-      handler.mockRestore();
     }
   });
 

@@ -3,12 +3,12 @@ import { createServiceJwt } from "@atcute/xrpc-server/auth";
 import {
   bindRecordValidationLexicons,
   createIngestEvent,
-  createIsolatedProjection,
   ingestRecords,
   resolveConfig,
 } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { createIsolatedProjection } from "../src/isolated-projection";
 import { createSpacesWorker } from "../src/worker";
 import {
   ensureSpaceWatch,

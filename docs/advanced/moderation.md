@@ -129,6 +129,5 @@ Record and profile views return trusted `labels` and author `selfLabels` separat
 
 ## Operational caveats
 
-- **Outbox is not moderation-filtered:** outbox consumers still receive records for hidden actors and do not receive account-lifecycle/label events — check visibility before republishing in downstream search/mirrors.
 - **Purge external caches:** clear app-owned CDN / OG-image caches when hiding a subject.
 - **No silent report migration:** without `reportsDb`/`reportsBinding`, reports fall back to the projection DB and are lost if you replace it.

@@ -5,9 +5,9 @@ import {
   initSchema,
   resolveConfig,
   ingestRecords,
-  pruneGrownFeeds,
-  runGatedFeedPrune,
 } from "../src/index";
+import { pruneGrownFeeds } from "../src/core/db/records";
+import { runGatedFeedPrune } from "../src/core/maintenance";
 import type { Database, IngestEvent, Statement } from "../src/index";
 
 // The grown-feed prune on Postgres: the same cases as feed-prune.test.ts, plus

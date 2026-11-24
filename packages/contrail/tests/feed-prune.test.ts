@@ -9,13 +9,10 @@ import {
   pruneFeedItems,
   getFeedPruneCursor,
   saveFeedPruneCursor,
-} from "../src/index";
-import {
-  runGatedFeedPrune,
-  pruneGrownFeeds,
-  ingestRecords,
-  FEED_PRUNE_RECOVERY_INTERVAL_MS,
-} from "../src/index";
+} from "../src/core/db/records";
+import { ingestRecords } from "../src/index";
+import { runGatedFeedPrune, FEED_PRUNE_RECOVERY_INTERVAL_MS } from "../src/core/maintenance";
+import { pruneGrownFeeds } from "../src/core/db/records";
 import type { IngestEvent, Statement } from "../src/index";
 
 const EVENT = "community.lexicon.calendar.event";

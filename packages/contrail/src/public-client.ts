@@ -133,7 +133,7 @@ function configuredServiceAuth(
   if (supplied.every(absent)) return null;
   if (supplied.some(absent)) {
     throw new Error(
-      "Contrail service auth configuration is incomplete; run `contrail connect --update` and reauthorize",
+      "Contrail service auth configuration is incomplete; update the client service-auth configuration and reauthorize",
     );
   }
 
@@ -163,7 +163,7 @@ function configuredServiceAuth(
     };
   } catch (error) {
     throw new Error(
-      `Contrail service auth configuration is invalid; run \`contrail connect --update\` and reauthorize: ${(error as Error).message}`,
+      `Contrail service auth configuration is invalid; update the client service-auth configuration and reauthorize: ${(error as Error).message}`,
     );
   }
 }
@@ -258,7 +258,7 @@ export function publicServiceFetchHandler(
       }
       if (!configuredAuth) {
         throw new PublicServiceContractError(
-          "Contrail protected methods are not configured; run `contrail connect --update` and reauthorize",
+          "Contrail protected methods are not configured; update the client service-auth configuration and reauthorize",
         );
       }
       if (serviceAuth.serviceDid !== configuredAuth.serviceDid) {
@@ -281,7 +281,7 @@ export function publicServiceFetchHandler(
         .sort(compareCanonical);
       if (!sameMethods(discoveredMethods, configuredAuth.protectedMethods)) {
         throw new PublicServiceContractError(
-          "Contrail protected-method mismatch; run `contrail connect --update` and reauthorize",
+          "Contrail protected-method mismatch; update the client service-auth configuration and reauthorize",
         );
       }
       return serviceAuth;

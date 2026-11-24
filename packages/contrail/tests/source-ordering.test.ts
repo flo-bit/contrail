@@ -6,12 +6,11 @@ import {
   getServingSourcePosition,
   queryRecords,
   resolveConfig,
-  saveCursorStatement,
-  saveOrderedSourcePositionStatement,
   type ContrailConfig,
   type Database,
   type IngestEvent,
 } from "../src/index";
+import { saveCursorStatement, saveOrderedSourcePositionStatement } from "../src/core/db/records";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 
 const COLLECTION = "com.example.event";

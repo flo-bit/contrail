@@ -96,9 +96,6 @@ export function createRouterApp(
     const overview = await getStatusOverview(getDb(c), config);
     if (!options.publicService) return c.json(overview);
     c.header("cache-control", "public, max-age=15, stale-while-revalidate=45");
-    const hasRequiredDelivery = Object.values(
-      config.changes?.consumers ?? {},
-    ).some((consumer) => consumer.requiredForActivation === true);
     return c.json({
       status: overview.status,
       serving: "ready",
@@ -109,9 +106,6 @@ export function createRouterApp(
         seconds_ago: overview.ingestion.seconds_ago,
       },
       backfill: overview.backfill,
-      ...(hasRequiredDelivery
-        ? { required_delivery: overview.delivery.required }
-        : {}),
     });
   });
   app.get("/health", (c) => c.json({ status: "ok" }));

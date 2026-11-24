@@ -1,6 +1,7 @@
 import { P256Keypair } from "@atproto/crypto";
-import { queryIsolatedRecords, resolveConfig } from "@atmo-dev/contrail";
+import { resolveConfig } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
+import { queryIsolatedRecords } from "../src/isolated-projection";
 import {
   RepoCommit,
   serializeRecord,

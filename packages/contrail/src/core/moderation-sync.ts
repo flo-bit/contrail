@@ -225,7 +225,6 @@ export async function reconcileModeratorActions(
       // page failed. Missed deletions still require a complete fresh listing.
       if (events.length)
         await ingestRecords(db, events, config, {
-          phase: "historical",
           trailingStatements: progress,
         });
       else if (progress.length) await db.batch(progress);

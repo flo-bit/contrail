@@ -1,18 +1,7 @@
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  connectPublicService,
-  ensureConsumerClientModule,
-  ensureConsumerLexiconConfig,
-} from "../src/cli/commands/connect";
 import { generateLexiconTypesWithAtcute } from "../src/cli/atcute";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 import { createApp } from "../src/core/router";
@@ -22,6 +11,7 @@ import {
   initSchema,
   resolveConfig,
   type ContrailConfig,
+  type PublicServiceManifest,
 } from "../src/index";
 import { generateLexicons } from "../src/lexicons/generate";
 
@@ -44,7 +34,7 @@ function writeJson(path: string, value: unknown): void {
 }
 
 describe("public service consumer integration", () => {
-  it("discovers, connects, generates types, compiles, and queries", async () => {
+  it("discovers, generates types, compiles, and queries", async () => {
     const serviceRoot = temporaryRoot("public-service");
     const consumerRoot = temporaryRoot("public-consumer");
     const sourceLexicon = {
@@ -113,55 +103,60 @@ describe("public service consumer integration", () => {
       lexicons,
       publicService: { endpoint: "https://api.example.com" },
     });
-    const fetcher: typeof fetch = async (input, init) =>
-      app.fetch(new Request(input, init));
 
-    const connection = await connectPublicService({
-      endpoint: "https://api.example.com",
-      root: consumerRoot,
-      out: "src/contrail/lexicons",
-      lock: "contrail.lock.json",
-      fetcher,
-    });
-    const generatedConfig = await ensureConsumerLexiconConfig({
-      root: consumerRoot,
-      out: "src/contrail/lexicons",
-      api: connection.lock,
-    });
-    expect(generatedConfig.created).toBe(true);
-    generateLexiconTypesWithAtcute(consumerRoot);
-    const generatedClient = await ensureConsumerClientModule({
-      root: consumerRoot,
-      api: connection.lock,
-      notifyMethod: "com.example.notifyOfUpdate",
-    });
-    expect(generatedClient.created).toBe(true);
-    expect(connection.lock.serviceAuth).toEqual({
+    const manifestRes = await app.fetch(
+      new Request("https://api.example.com/.well-known/contrail"),
+    );
+    expect(manifestRes.status).toBe(200);
+    const manifest = (await manifestRes.json()) as PublicServiceManifest;
+    expect(manifest.serviceAuth).toEqual({
       type: "atproto-service-auth",
       serviceDid: "did:web:api.example.com",
       audience: "did:web:api.example.com#contrail",
       scope:
         "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate",
-      methods: [
-        { id: "com.example.notifyOfUpdate", type: "procedure" },
-      ],
+      methods: [{ id: "com.example.notifyOfUpdate", type: "procedure" }],
     });
-    expect(connection.lock.methods).not.toContain("com.example.notifyOfUpdate");
-    const generatedClientSource = readFileSync(generatedClient.path, "utf8");
-    expect(generatedClientSource).toContain(
-      'notifyMethod: "com.example.notifyOfUpdate"',
+    expect(manifest.methods).not.toContain("com.example.notifyOfUpdate");
+
+    const bundleRes = await app.fetch(new Request(manifest.lexicons.url));
+    expect(bundleRes.status).toBe(200);
+    const bundle = (await bundleRes.json()) as {
+      lexicons: Array<{ id: string }>;
+    };
+    for (const doc of bundle.lexicons) {
+      writeJson(
+        join(consumerRoot, "src/contrail/lexicons", ...doc.id.split(".")) +
+          ".json",
+        doc,
+      );
+    }
+    writeFileSync(
+      join(consumerRoot, "lex.config.js"),
+      `export default {
+  generate: {
+    files: ["src/contrail/lexicons/**/*.json"],
+    outdir: "src/contrail/types/",
+  },
+};
+`,
     );
-    expect(generatedClientSource).toContain(
-      'serviceAudience: "did:web:api.example.com#contrail"',
-    );
-    expect(generatedClientSource).toContain(
-      'scope: "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate"',
-    );
+    generateLexiconTypesWithAtcute(consumerRoot);
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });
     writeFileSync(
       join(consumerRoot, "src", "consumer.ts"),
-      `import { contrail } from "./contrail/index.js";
+      `import type {} from "./contrail/types/index.js";
+import { createPublicServiceClient } from "@atmo-dev/contrail/client";
+const contrail = createPublicServiceClient({
+  endpoint: "https://api.example.com",
+  serviceDid: "did:web:api.example.com",
+  serviceAudience: "did:web:api.example.com#contrail",
+  scope: "rpc?aud=did:web:api.example.com%23contrail&lxm=com.example.notifyOfUpdate",
+  protectedMethods: ["com.example.notifyOfUpdate"],
+  notifyMethod: "com.example.notifyOfUpdate",
+  collections: ["community.example.event"],
+});
 const response = await contrail.get("com.example.event.listRecords", {
   params: { name: "Typed event", limit: 1 },
 });

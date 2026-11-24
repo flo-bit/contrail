@@ -2,12 +2,10 @@ import type {
   ContrailConfig,
   Database,
   IngestEvent,
-  ProjectionPhase,
   RelationConfig,
   Statement,
 } from "../types";
 import {
-  changesEnabled,
   getFeedFollowShortNames,
   recordsTableName,
   resolveCollectionKey,
@@ -23,7 +21,6 @@ import {
   isPostgresDialect,
   sqliteFtsContentExpression,
 } from "../dialect";
-import { appendChangeLogStatements } from "../change-log";
 import {
   actionProjectionStatements,
   labelBackfillEnqueueStatements,
@@ -265,8 +262,6 @@ export async function projectEvents(
     sourceOrderingChecked?: boolean;
     /** Durable versions observed while selecting source winners. */
     predecessors?: ReadonlyMap<string, RecordVersionInfo>;
-    /** Acquisition phase persisted on an optional change batch. */
-    phase?: ProjectionPhase;
   },
 ): Promise<MutationSelection> {
   if (events.length === 0) return { applied: [], superseded: 0 };
@@ -302,18 +297,13 @@ export async function projectEvents(
       ),
     );
   const needRecordContent =
-    followCollections.length > 0 ||
-    hasCountingRelations ||
-    changesEnabled(config);
+    followCollections.length > 0 || hasCountingRelations;
 
   // Existing state must be read after predecessor selection. A caller-provided
   // map can predate that selection and would make derived changes incorrect
   // even when the optimistic token guard itself succeeds.
   const needExistingState =
-    !freshBulk &&
-    (!options?.skipReplayDetection ||
-      needRecordContent ||
-      changesEnabled(config));
+    !freshBulk && (!options?.skipReplayDetection || needRecordContent);
   const existingMap = needExistingState
     ? await lookupExistingRecords(db, events, needRecordContent, config)
     : new Map<string, ExistingRecordInfo>();
@@ -419,8 +409,8 @@ export async function projectEvents(
     ),
   );
 
-  // Build deduplicated count statements, then append the compact change batch.
-  // Caller-provided source checkpoints deliberately remain last.
+  // Build deduplicated count statements. Caller-provided source checkpoints
+  // deliberately remain last.
   // Counts (parent rows) precede moderation writes (moderation lock, then
   // recount queue rows). PostgreSQL writers then share one lock order: parent
   // rows -> moderation lock -> recount queue, matching moderation recounts and
@@ -433,15 +423,6 @@ export async function projectEvents(
       db,
       events.filter((e) => e.operation !== "delete").map((e) => e.did),
       config,
-    ),
-  );
-  batch.push(
-    ...appendChangeLogStatements(
-      db,
-      events,
-      existingMap,
-      config,
-      options?.phase ?? "live",
     ),
   );
   if (options?.trailingStatements?.length) {

@@ -3,7 +3,6 @@ import { CODEC_DCBOR, create, toString } from "@atcute/cid";
 import { create as createTid } from "@atcute/tid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  backfillFollowersFromConstellation,
   bindRecordValidationLexicons,
   createIngestEvent,
   ingestRecords,
@@ -11,6 +10,7 @@ import {
   queryRecords,
   resolveConfig,
 } from "../src/index";
+import { backfillFollowersFromConstellation } from "../src/core/constellation";
 import type { Database } from "../src/index";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
 

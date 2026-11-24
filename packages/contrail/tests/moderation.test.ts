@@ -6,18 +6,19 @@ import {
   ingestRecords,
   queryRecords,
   MODERATION_ACTION_NSID,
-  accountUpdateStatements,
   applyLabels,
   hydrateLabels,
   createApp,
-  reconcileModeratorActions,
-  runLabelBackfillQueue,
-  runModerationRecounts,
-  labelBackfillEnqueueStatements,
   visibleRecordSql,
   parseModerationAction,
   moderationActionLexicon,
 } from "../src/index";
+import { accountUpdateStatements, labelBackfillEnqueueStatements } from "../src/core/moderation";
+import {
+  reconcileModeratorActions,
+  runLabelBackfillQueue,
+  runModerationRecounts,
+} from "../src/core/moderation-sync";
 import type { Database } from "../src/index";
 
 const moderator = "did:plc:moderator";

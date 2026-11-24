@@ -20,13 +20,6 @@ import type { ContrailConfig, Database } from "../core/types.js";
 import type { BackfillRetryOptions } from "../core/backfill.js";
 import type { ScheduledIngestOptions } from "../core/jetstream.js";
 import {
-  runChangeDeliverySlice,
-  validateDeliveryHandlers,
-  type CurrentBootstrapRuntimeHandlers,
-  type DeliveryHandlers,
-  type DeliveryRuntimeOptions,
-} from "../core/delivery.js";
-import {
   normalizePublicServiceEndpoint,
   validatePublicServiceAuthEndpoint,
   validatePublicServiceLexicons,
@@ -53,13 +46,6 @@ export interface CreateWorkerOptions<Env extends WorkerEnv = WorkerEnv> {
   /** Bounded pending-account retry slice after each scheduled ingest. Enabled
    *  by default; pass `false` to disable or options to tune its budget. */
   backfillRetries?: BackfillRetryOptions | false;
-  /** Runtime delivery handlers, kept separate from static consumer policy. */
-  deliveries?: DeliveryHandlers<Env>;
-  /** Snapshot and activation handlers for `initial: "current"` consumers. */
-  changeBootstraps?: CurrentBootstrapRuntimeHandlers<Env>;
-  /** Bounded scheduled delivery policy. Set false only when another runtime
-   * owns all configured consumers. */
-  delivery?: DeliveryRuntimeOptions | false;
   /** Runs once per isolate, after schema init, before handling the first
    *  request. Use for app-specific setup that needs a live DB handle. */
   onInit?: (env: Env, db: Database) => void | Promise<void>;
@@ -70,16 +56,6 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
   options: CreateWorkerOptions<Env> = {}
 ) {
   const binding = options.binding ?? "DB";
-  const deliveryEnabled =
-    options.delivery !== false &&
-    Object.keys(config.changes?.consumers ?? {}).length > 0;
-  if (deliveryEnabled) {
-    validateDeliveryHandlers(
-      config,
-      options.deliveries ?? {},
-      options.changeBootstraps ?? {},
-    );
-  }
   if (options.publicService) {
     normalizePublicServiceEndpoint(
       options.publicService.endpoint,
@@ -131,7 +107,7 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
     ): Promise<Response> {
       const db = env[binding] as Database;
       await ensureReady(env, db, true);
-      const response = (await handle(
+      return (await handle(
         request,
         db,
         options.reportsBinding
@@ -139,40 +115,6 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
           : undefined,
         ctx,
       )) as Response;
-      const notifyPath = `/xrpc/${contrail.config.namespace}.notifyOfUpdate`;
-      if (
-        deliveryEnabled &&
-        ctx &&
-        response.ok &&
-        request.method === "POST" &&
-        new URL(request.url).pathname === notifyPath
-      ) {
-        ctx.waitUntil(
-          runChangeDeliverySlice({
-            changes: contrail.changes,
-            config: contrail.config,
-            db,
-            env,
-            deliveries: options.deliveries!,
-            bootstraps: options.changeBootstraps,
-            runtime: {
-              ...(options.delivery || {}),
-              maxRounds: 1,
-              maxDurationMs: Math.min(
-                options.delivery && options.delivery.maxDurationMs
-                  ? options.delivery.maxDurationMs
-                  : 5_000,
-                5_000,
-              ),
-            },
-          }).catch((error) => {
-            contrail.config.logger?.error(
-              `[changes] immediate delivery wake failed: ${error}`,
-            );
-          }),
-        );
-      }
-      return response;
     },
     async scheduled(
       _event: ScheduledEvent,
@@ -198,23 +140,6 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
             } catch (error) {
               contrail.config.logger?.error(
                 `[backfill] scheduled retry slice failed: ${error}`,
-              );
-            }
-          }
-          if (deliveryEnabled) {
-            try {
-              await runChangeDeliverySlice({
-                changes: contrail.changes,
-                config: contrail.config,
-                db,
-                env,
-                deliveries: options.deliveries!,
-                bootstraps: options.changeBootstraps,
-                runtime: options.delivery || undefined,
-              });
-            } catch (error) {
-              contrail.config.logger?.error(
-                `[changes] scheduled delivery slice failed: ${error}`,
               );
             }
           }

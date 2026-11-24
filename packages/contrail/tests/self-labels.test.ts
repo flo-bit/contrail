@@ -4,7 +4,6 @@ import {
   createApp,
   createIngestEvent,
   extractSelfLabels,
-  formatRecord,
   ingestRecords,
   initSchema,
   MODERATION_ACTION_NSID,
@@ -12,6 +11,7 @@ import {
   resolveProfiles,
   type LabelsConfig,
 } from "../src/index";
+import { formatRecord } from "../src/core/router/helpers";
 import { createTestDb, makeEvent, TEST_CONFIG } from "./helpers";
 
 const actor = "did:plc:test";

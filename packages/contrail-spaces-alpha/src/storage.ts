@@ -2,7 +2,7 @@ import type { ContrailConfig, Database, Statement } from "@atmo-dev/contrail";
 import {
   deleteIsolatedScope,
   initIsolatedProjection,
-} from "@atmo-dev/contrail";
+} from "./isolated-projection";
 import { decryptJson, encryptJson, type EncryptedValue } from "./crypto";
 import type { StoredSpaceCredential } from "./protocol";
 import { parseSpaceUri, spaceProjectionKey } from "./uri";

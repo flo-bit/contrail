@@ -39,11 +39,8 @@ vi.mock("../src/core/jetstream-live", async (importOriginal) => {
   return { ...actual, JetstreamLiveSubscription: MockJetstreamSubscription };
 });
 
-import {
-  ingestEvents,
-  resolveScheduledIngestBudget,
-  SCHEDULED_INGEST_METADATA_BYTES,
-} from "../src/index";
+import { ingestEvents } from "../src/index";
+import { resolveScheduledIngestBudget, SCHEDULED_INGEST_METADATA_BYTES } from "../src/core/jetstream";
 import { resolveConfig } from "../src/index";
 import type { ContrailConfig } from "../src/index";
 

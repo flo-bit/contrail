@@ -7,10 +7,10 @@ import {
   initSchema,
   MODERATION_ACTION_NSID,
   queryRecords,
-  reconcileModeratorActions,
   resolveConfig,
   type Database,
 } from "../src/index";
+import { reconcileModeratorActions } from "../src/core/moderation-sync";
 
 const moderator = "did:plc:moderator";
 const actor = "did:plc:test";

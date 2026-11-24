@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
-import { initSchema, optimizeDatabase, getMetaNumber } from "../src/index";
-import { maybeOptimize } from "../src/index";
+import { initSchema, optimizeDatabase } from "../src/index";
+import { getMetaNumber } from "../src/core/db/meta";
+import { maybeOptimize } from "../src/core/maintenance";
 import { resolveConfig } from "../src/index";
 
 const BASE = {

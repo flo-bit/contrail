@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getPDS } from "../src/index";
 import { __resetPdsCachesForTests } from "../src/core/client";
-import { refreshStaleIdentities } from "../src/index";
+import { refreshStaleIdentities } from "../src/core/identity";
 import { createTestDbWithSchema } from "./helpers";
 import type { Database } from "../src/index";
 import type { Did } from "@atcute/lexicons";

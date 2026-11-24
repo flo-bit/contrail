@@ -292,7 +292,7 @@ export async function processNotifyUris(
   }
 
   const appliedEvents = events.length > 0
-    ? (await ingestRecords(db, events, config, { phase: "live" })).accepted
+    ? (await ingestRecords(db, events, config)).accepted
     : [];
 
   // The shared ingest path fans these records into feed_items exactly like the cron and

@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import { createPostgresDatabase } from "../src/adapters/postgres";
 import {
-  accountUpdateStatements,
   ingestRecords,
   initSchema,
   MODERATION_ACTION_NSID,
   queryRecords,
   resolveConfig,
 } from "../src/index";
+import { accountUpdateStatements } from "../src/core/moderation";
 import { makeEvent, TEST_CONFIG } from "./helpers";
 
 it("locks moderation before account rows in PostgreSQL lifecycle batches", async () => {

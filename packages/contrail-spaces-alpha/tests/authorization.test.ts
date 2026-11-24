@@ -1,12 +1,12 @@
 import {
   bindRecordValidationLexicons,
   createIngestEvent,
-  createIsolatedProjection,
   ingestRecords,
   resolveConfig,
 } from "@atmo-dev/contrail";
 import { createSqliteDatabase } from "@atmo-dev/contrail/sqlite";
 import { describe, expect, it } from "vitest";
+import { createIsolatedProjection } from "../src/isolated-projection";
 import {
   ensureSpaceWatch,
   getSpaceWatch,

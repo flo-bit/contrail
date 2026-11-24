@@ -49,7 +49,7 @@ Costs are separated into **setup**, **workload** and **verification**. Seed cons
 
 Units matter: update phases count **observations**, which can coalesce repeated mutations to a small set of targets; accepted-mutation counts are reported separately. Query phases count requests. Hydration includes its base list query, so do not double-count it as another list request in projections.
 
-The fixture intentionally uses opaque synthetic CIDs and no runtime Lexicon validators. It preloads identities/profiles and calls core ingestion directly. Live acquisition, identity discovery/enrichment after publisher admission, authenticated DID resolution, remote labeler backfill, durable change-log consumers and public-query rate limits are not modeled. Flood ingestion costs are therefore a **lower bound on the complete pipeline**, not a claim that publisher floods are safe.
+The fixture intentionally uses opaque synthetic CIDs and no runtime Lexicon validators. It preloads identities/profiles and calls core ingestion directly. Live acquisition, identity discovery/enrichment after publisher admission, authenticated DID resolution, remote labeler backfill, and public-query rate limits are not modeled. Flood ingestion costs are therefore a **lower bound on the complete pipeline**, not a claim that publisher floods are safe.
 
 ### Guardrails and current findings
 

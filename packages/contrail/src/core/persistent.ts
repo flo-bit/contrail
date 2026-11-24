@@ -260,7 +260,6 @@ async function streamAndFlush(
       try {
         const accounts = await relevantAccounts(accountBatch, batch);
         ingestResult = await ingestRecords(db, batch, config, {
-          phase: "live",
           knownDids,
           trailingStatements: [
             ...accountUpdateStatements(db, accounts, config),

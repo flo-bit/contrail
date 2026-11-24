@@ -7,9 +7,7 @@ Turn public AT Protocol records into a queryable AppView on Cloudflare Workers +
 ## Quick start
 
 ```bash
-pnpx @atmo-dev/contrail init my-appview \
-  --prefix community.lexicon.calendar. \
-  --namespace com.example.calendar
+pnpx @atmo-dev/contrail init my-appview
 cd my-appview
 pnpx @atmo-dev/contrail dev
 ```
@@ -52,13 +50,11 @@ export default createWorker(config, {
 ## CLI
 
 ```bash
-contrail init [dir] [--prefix <nsid.>] [--namespace <nsid>]
+contrail init [dir]
 contrail dev [--alluvium] [--wrangler] [--port 8787]
 contrail backfill [--remote] [--alluvium] [--env <name>] [--sqlite <path>]
-contrail connect <config-dir-or-url> [--update]
 contrail lexicons all [--public]
 contrail lexicons check
-contrail changes status|retry|prune|skip [--remote] [--env <name>]
 ```
 
 ## Entrypoints
@@ -85,4 +81,4 @@ Full guides live in the [repository](https://github.com/flo-bit/contrail):
 - [Add the typed client](https://github.com/flo-bit/contrail/blob/main/docs/02-client.md)
 - [Configure and query](https://github.com/flo-bit/contrail/blob/main/docs/03-configure-and-query.md)
 - [Deploy to Cloudflare Workers & Node](https://github.com/flo-bit/contrail/blob/main/docs/04-deploy-cloudflare.md)
-- Advanced: [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/advanced/feeds.md) · [Labels](https://github.com/flo-bit/contrail/blob/main/docs/advanced/labels.md) · [Moderation](https://github.com/flo-bit/contrail/blob/main/docs/advanced/moderation.md) · [Outbox](https://github.com/flo-bit/contrail/blob/main/docs/advanced/outbox.md) · [Remote D1](https://github.com/flo-bit/contrail/blob/main/docs/advanced/remote-d1.md)
+- Advanced: [Feeds](https://github.com/flo-bit/contrail/blob/main/docs/advanced/feeds.md) · [Labels](https://github.com/flo-bit/contrail/blob/main/docs/advanced/labels.md) · [Moderation](https://github.com/flo-bit/contrail/blob/main/docs/advanced/moderation.md) · [Remote D1](https://github.com/flo-bit/contrail/blob/main/docs/advanced/remote-d1.md)

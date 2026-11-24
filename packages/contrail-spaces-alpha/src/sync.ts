@@ -8,13 +8,8 @@ import {
   type Commit,
 } from "@atproto/space";
 import {
-  activateIsolatedPartitionStatement,
   createIngestEvent,
-  createIsolatedProjection,
-  deleteIsolatedPartitionGeneration,
-  hideIsolatedPartitionStatement,
   ingestRecords,
-  rebuildIsolatedCountsStatements,
   recordTimeUs,
   validateCanonicalRecord,
   type ContrailConfig,
@@ -22,6 +17,13 @@ import {
   type IngestEvent,
   type Statement,
 } from "@atmo-dev/contrail";
+import {
+  activateIsolatedPartitionStatement,
+  createIsolatedProjection,
+  deleteIsolatedPartitionGeneration,
+  hideIsolatedPartitionStatement,
+  rebuildIsolatedCountsStatements,
+} from "./isolated-projection";
 import { delegationFailure } from "./crypto";
 import {
   exchangeSpaceCredential,

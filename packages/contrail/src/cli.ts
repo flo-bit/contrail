@@ -9,9 +9,7 @@ import { cac } from "cac";
 import { registerBackfill } from "./cli/commands/backfill.js";
 import { registerDev } from "./cli/commands/dev.js";
 import { registerAppendScheduled } from "./cli/commands/append-scheduled.js";
-import { registerConnect } from "./cli/commands/connect.js";
 import { registerLexicons } from "./cli/commands/lexicons.js";
-import { registerChanges } from "./cli/commands/changes.js";
 import { registerInit } from "./cli/commands/init.js";
 
 const cli = cac("contrail");
@@ -20,9 +18,7 @@ registerInit(cli);
 registerBackfill(cli);
 registerDev(cli);
 registerAppendScheduled(cli);
-registerConnect(cli);
 registerLexicons(cli);
-registerChanges(cli);
 
 cli.help();
 

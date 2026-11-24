@@ -12,8 +12,7 @@ assert.equal(row?.ok, 1);
 
 const contrail = new Contrail({ namespace: "smoke", collections: {}, db });
 await contrail.init();
-assert.equal(typeof contrail.changes.claim, "function");
-assert.equal((await contrail.changes.status()).enabled, false);
+assert.equal("changes" in contrail, false);
 const statusResponse = await contrail
   .app()
   .fetch(new Request("http://localhost/status"));

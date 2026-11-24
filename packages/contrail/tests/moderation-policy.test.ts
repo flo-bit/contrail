@@ -2,16 +2,18 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb, makeEvent, TEST_CONFIG, TEST_POSTGRES } from "./helpers";
 import {
   applyLabels,
-  applyModerationPolicy,
-  getMeta,
   ingestRecords,
   initSchema,
   MODERATION_ACTION_NSID,
-  moderationPolicyFingerprint,
   queryRecords,
   resolveConfig,
-  runModerationPolicyJob,
 } from "../src/index";
+import {
+  applyModerationPolicy,
+  moderationPolicyFingerprint,
+  runModerationPolicyJob,
+} from "../src/core/moderation-policy";
+import { getMeta } from "../src/core/db/meta";
 import type { ContrailConfig, Database } from "../src/index";
 
 const moderator = "did:plc:moderator";

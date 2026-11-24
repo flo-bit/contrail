@@ -11,14 +11,12 @@ Contrail turns public AT Protocol records into a queryable AppView.
 ## Quick start
 
 ```bash
-pnpx @atmo-dev/contrail init my-appview \
-  --prefix community.lexicon.calendar. \
-  --namespace com.example.calendar
+pnpx @atmo-dev/contrail init my-appview
 cd my-appview
 pnpx @atmo-dev/contrail dev
 ```
 
-`--prefix` imports your source record Lexicons; `--namespace` sets the XRPC namespace for the generated AppView methods.
+Edit `contrail.config.ts` to pick the collections, queryable fields, relations, and search fields you want to index.
 
 ## Docs
 
@@ -27,7 +25,7 @@ pnpx @atmo-dev/contrail dev
 3. [Configure and query](docs/03-configure-and-query.md)
 4. [Deploy to Cloudflare Workers & Node](docs/04-deploy-cloudflare.md)
 
-**Advanced:** [Feeds](docs/advanced/feeds.md) · [Labels](docs/advanced/labels.md) · [Moderation](docs/advanced/moderation.md) · [Outbox](docs/advanced/outbox.md) · [Remote D1](docs/advanced/remote-d1.md)
+**Advanced:** [Feeds](docs/advanced/feeds.md) · [Labels](docs/advanced/labels.md) · [Moderation](docs/advanced/moderation.md) · [Remote D1](docs/advanced/remote-d1.md)
 
 **Examples:** [Cloudflare Workers + D1](apps/cloudflare-workers/README.md) · [Node + SQLite](apps/sqlite/README.md) · [Node + PostgreSQL](apps/postgres/README.md)
 

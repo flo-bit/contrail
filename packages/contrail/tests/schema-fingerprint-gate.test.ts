@@ -4,13 +4,11 @@ import {
   initSchema,
   ingestRecords,
   queryRecords,
-  getMeta,
-  setMeta,
   saveCursor,
   getLastCursor,
-  FTS_FINGERPRINTS_KEY,
-  LEGACY_MIGRATIONS_KEY,
 } from "../src/index";
+import { getMeta, setMeta } from "../src/core/db/meta";
+import { FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY } from "../src/core/db/schema";
 import { resolveConfig } from "../src/index";
 import type { Database, Statement } from "../src/index";
 import { makeEvent } from "./helpers";
