@@ -809,6 +809,12 @@ export function validateConfig(config: ContrailConfig): void {
       }
     }
   }
+
+  if ((config as { changes?: unknown }).changes !== undefined) {
+    throw new Error(
+      "config.changes has been removed from Contrail; remove the `changes` key from your configuration",
+    );
+  }
 }
 
 // Helpers

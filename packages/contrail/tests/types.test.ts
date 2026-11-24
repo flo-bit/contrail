@@ -255,6 +255,16 @@ describe("NSID-keyed collections (no short alias / omitted `collection`)", () =>
     ).not.toThrow();
   });
 
+  it("validateConfig rejects a leftover changes key", () => {
+    expect(() =>
+      validateConfig({
+        namespace: "com.example",
+        collections: { "com.example.event": {} },
+        changes: { consumers: {} },
+      } as any)
+    ).toThrow(/config\.changes has been removed/);
+  });
+
   it("getCollectionNsids returns the config key as the NSID", () => {
     const nsids = getCollectionNsids(config);
     expect(nsids).toContain("com.example.event");
