@@ -56,6 +56,8 @@ export type {
   ReferenceConfig,
   RelationConfig,
   ResolvedContrailConfig,
+  ResolvedMaps,
+  ResolvedRelation,
   SourcePosition,
   Statement,
 } from "./core/types";
@@ -75,6 +77,7 @@ export {
   resolveIdentities,
   resolveIdentity,
 } from "./core/identity";
+export type { Identity } from "./core/identity";
 export {
   getClient,
   getPDS,
@@ -96,6 +99,7 @@ export {
   saveCursor,
 } from "./core/db/records";
 export type {
+  ExistingRecordInfo,
   MutationSelection,
   QueryOptions,
   RecordVersionInfo,
@@ -115,6 +119,7 @@ export type {
   IngestProjection,
   IngestRecordsOptions,
   IngestRecordsResult,
+  IngestWarningSamples,
   RecordEventInput,
 } from "./core/ingest";
 export {
@@ -122,7 +127,11 @@ export {
   ingestEvents,
   runIngestCycle,
 } from "./core/jetstream";
-export type { IngestState, ScheduledIngestOptions } from "./core/jetstream";
+export type {
+  IngestState,
+  ScheduledIngestBudget,
+  ScheduledIngestOptions,
+} from "./core/jetstream";
 export { JetstreamLiveHistoryExpiredError } from "./core/jetstream-live";
 export type { JetstreamLiveEvent } from "./core/jetstream-live";
 export { runPersistent } from "./core/persistent";
@@ -136,13 +145,28 @@ export {
 } from "./core/backfill";
 export type {
   BackfillAllOptions,
+  BackfillCollectionMetrics,
+  BackfillOptions,
+  BackfillProgress,
   BackfillRetryOptions,
   BackfillRetryResult,
+  BackfillRunMetrics,
+  DiscoverAndBackfillResult,
+  DiscoverDIDsOptions,
 } from "./core/backfill";
 export { getBackfillStatus } from "./core/status";
-export type { BackfillStatus } from "./core/status";
+export type {
+  BackfillAccountCounts,
+  BackfillCollectionStatus,
+  BackfillRetryStatus,
+  BackfillStatus,
+} from "./core/status";
 export { getIngestDiagnostics } from "./core/diagnostics";
-export type { IngestDiagnosticCounts } from "./core/diagnostics";
+export type {
+  IngestDiagnostic,
+  IngestDiagnosticCategory,
+  IngestDiagnosticCounts,
+} from "./core/diagnostics";
 export {
   bindRecordValidationLexicons,
   bindRecordValidationProvider,
@@ -194,6 +218,7 @@ export {
 } from "./core/router/notify";
 export type { NotifyResult } from "./core/router/notify";
 export { resolveProfiles } from "./core/router/profiles";
+export type { ProfileEntry } from "./core/router/profiles";
 export { batchedInQuery } from "./core/router/helpers";
 
 // Moderation and labels.
@@ -211,6 +236,7 @@ export type {
   AccountUpdate,
   ModerationAction,
   ModerationConfig,
+  ModerationWriteGuard,
 } from "./core/moderation";
 export {
   ModerationReportError,
@@ -226,6 +252,7 @@ export type { SelfLabel } from "./core/labels/self";
 export { hydrateLabels } from "./core/labels/hydrate";
 export type { HydratedLabel } from "./core/labels/hydrate";
 export { selectAcceptedLabelers } from "./core/labels/select";
+export type { SelectedLabelers } from "./core/labels/select";
 export { applyLabels } from "./core/labels/apply";
 export type { IncomingLabel } from "./core/labels/apply";
 export {
