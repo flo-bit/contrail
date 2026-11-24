@@ -1046,7 +1046,7 @@ export async function initSchema(
   if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
     await upgradeModerationCreationTimestamps(db);
   }
-  await syncModerationSources(db, config);
+  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
 
   await runIdempotentDdl(db, cursorObservationsDdl);
   await applyFtsTables(db, config, dialect, storedFtsRaw);

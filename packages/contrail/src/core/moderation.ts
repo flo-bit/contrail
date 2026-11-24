@@ -159,6 +159,14 @@ export async function syncModerationSources(
 ): Promise<void> {
   const fp = moderationSourcesFingerprint(config);
   if (storedFingerprint === fp) return;
+  if (storedFingerprint !== undefined) {
+    (config.logger ?? console).warn(
+      "[moderation] moderation/label source configuration changed on an existing database; " +
+        "existing moderation_hidden state, historical moderator actions, and known-subject " +
+        "label backfills are not retroactively rebuilt. Use a fresh database and backfill " +
+        "to apply trust changes across existing records.",
+    );
+  }
   const sources = new Map<string, { moderator: number; enforced: number }>();
   for (const s of config.labels?.sources ?? []) {
     if (!s.records) {
@@ -260,6 +268,7 @@ export function buildModerationSchema(d: SqlDialect): string[] {
           "DROP VIEW IF EXISTS moderation_effective_labels",
           `CREATE VIEW IF NOT EXISTS ${effectiveLabels}`,
         ]),
+    // Retained in DDL to preserve schema_fingerprint for existing databases; unused.
     `CREATE TABLE IF NOT EXISTS label_backfill_sources (src TEXT PRIMARY KEY, policy TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS label_backfill_queue (
       src TEXT NOT NULL, did TEXT NOT NULL, cursor TEXT, completed INTEGER NOT NULL DEFAULT 0,
