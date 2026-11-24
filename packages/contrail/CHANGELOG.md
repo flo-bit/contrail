@@ -1,5 +1,25 @@
 # @atmo-dev/contrail
 
+## 0.34.0
+
+### Minor Changes
+
+- 06acc6e: Move the experimental Spaces `isolated-projection` engine out of core `@atmo-dev/contrail` into the workspace-private `@atmo-dev/contrail-spaces-alpha` package, and replace wildcard `export *` re-exports in `@atmo-dev/contrail`'s root entrypoint with a curated explicit public API.
+
+  - Removes ~170 internal-only root exports (DDL builders, migration keys, route registrars, metadata/feed-prune/moderation internals); the package `exports` map continues to block deep imports.
+  - All symbols and referenced types used by the documented public API and downstream apps remain exported from `@atmo-dev/contrail`.
+
+- 743663d: Remove the transactional change-log / outbox delivery subsystem (`config.changes`, `contrail.changes`, `createWorker` `deliveries` / `changeBootstraps` / `delivery` options, `runPersistentDeliveries`, and `contrail changes` CLI commands).
+
+  - Passing a leftover `changes` key in `ContrailConfig` now throws in `validateConfig()`.
+  - Existing databases that never configured `changes.consumers` keep an unchanged `schema_fingerprint` and continue working without migration.
+  - Existing databases that previously enabled `changes.consumers` will run a one-time schema check on first `init` and leave the unused `change_*` tables behind (you can drop them manually once upgraded).
+
+- ef7a949: Remove the `contrail init --prefix` Lexicon registry wizard and the `contrail connect` consumer lockfile/scaffolding CLI command.
+
+  - `contrail init [dir]` remains as a lightweight offline starter-config generator (`contrail.config.ts`).
+  - Projects that previously ran `contrail connect` can run `contrail lexicons all --config <path>` when `contrail.config.ts` is available locally, or fetch `/.well-known/contrail` and its `lexicons.url` bundle and run `@atcute/lex-cli generate` with `@atmo-dev/contrail/client` (`createPublicServiceClient`; see `docs/02-client.md`).
+
 ## 0.33.0
 
 ### Minor Changes
