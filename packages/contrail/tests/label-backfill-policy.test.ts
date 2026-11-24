@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestDb, makeEvent, TEST_CONFIG } from "./helpers";
 import {
-  applyLabels,
   ingestRecords,
   initSchema,
   queryRecords,
   resolveConfig,
 } from "../src/index";
-import { applyModerationPolicy, runModerationPolicyJob } from "../src/core/moderation-policy";
 import { labelBackfillEnqueueStatements } from "../src/core/moderation";
 import { runLabelBackfillQueue } from "../src/core/moderation-sync";
 import type { Database } from "../src/index";
@@ -66,100 +64,8 @@ async function storedLabels(db: Database) {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("label backfill policy and queue generations", () => {
-  it.each([false, true])("does not reinsert a removed hide value (pending policy job: %s)", async (pendingJob) => {
-    const { db, config } = await setup(["spam", "!hide"]);
-    await applyLabels(db, [label], { config });
-    expect(await visible(db, config)).toBe(0);
-    const delayed = delayedFetch();
-    const work = runLabelBackfillQueue(db, config);
-    await delayed.started;
-    const next = policy(["spam"]);
-    await applyModerationPolicy(db, next, pendingJob ? { maxPages: 0 } : {});
-    const reset = await queue(db);
-    delayed.response.resolve(Response.json({ labels: [label] }));
-    await work;
-    // A stale response must not even change the reset row's generation.
-    expect(await queue(db)).toEqual(reset);
-    expect(await runLabelBackfillQueue(db, config)).toBe(0);
-    await runModerationPolicyJob(db, next);
-    expect(await storedLabels(db)).toEqual([]);
-    expect(await visible(db, next)).toBe(1);
-    await runLabelBackfillQueue(db, next);
-    expect((await queue(db)).completed).toBe(1);
-    expect(await storedLabels(db)).toEqual([]);
-  });
-
-  it.each([false, true])("does not complete a newly expanded backfill (pending policy job: %s)", async (pendingJob) => {
-    const { db, config } = await setup(["spam"]);
-    const delayed = delayedFetch();
-    const work = runLabelBackfillQueue(db, config);
-    await delayed.started;
-    const next = policy(["spam", "!hide"]);
-    await applyModerationPolicy(db, next, pendingJob ? { maxPages: 0 } : {});
-    const reset = await queue(db);
-    delayed.response.resolve(Response.json({ labels: [label] }));
-    await work;
-    expect(await queue(db)).toEqual(reset);
-    await runModerationPolicyJob(db, next);
-    expect((await queue(db)).completed).toBe(0);
-    await runLabelBackfillQueue(db, next);
-    expect(delayed.fetch).toHaveBeenCalledTimes(2);
-    expect((await queue(db)).completed).toBe(1);
-    expect(await visible(db, next)).toBe(0);
-  });
-
-  it("invalidates old responses immediately even when a policy is reverted before its job runs", async () => {
-    const { db, config } = await setup(["spam", "!hide"]);
-    const delayed = delayedFetch();
-    const work = runLabelBackfillQueue(db, config);
-    await delayed.started;
-    const before = await queue(db);
-    await applyModerationPolicy(db, policy(["spam"]), { maxPages: 0 });
-    await applyModerationPolicy(db, config, { maxPages: 0 });
-    // The queue row has not changed yet; a fingerprint-only check would let
-    // this old request through (the A -> B -> A problem).
-    expect(await queue(db)).toEqual(before);
-    delayed.response.resolve(Response.json({ labels: [label] }));
-    await work;
-    expect(await queue(db)).toEqual(before);
-    expect(await storedLabels(db)).toEqual([]);
-    await runModerationPolicyJob(db, config);
-    await runLabelBackfillQueue(db, config);
-    expect(await visible(db, config)).toBe(0);
-  });
-
-  it("checks the policy inside the write batch, not just after network I/O", async () => {
-    const { db, config } = await setup(["spam", "!hide"]);
-    const next = policy(["spam"]);
-    let prepared = false;
-    let replaced = false;
-    let reset: any;
-    const racing: Database = {
-      dialect: db.dialect,
-      prepare(sql) {
-        if (sql.startsWith("INSERT INTO labels")) prepared = true;
-        return db.prepare(sql);
-      },
-      async batch(statements) {
-        if (prepared && !replaced) {
-          replaced = true;
-          await applyModerationPolicy(db, next);
-          reset = await queue(db);
-        }
-        return db.batch(statements);
-      },
-    };
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ labels: [label] }));
-    await runLabelBackfillQueue(racing, config);
-    expect(replaced).toBe(true);
-    expect(await queue(db)).toEqual(reset);
-    expect(await storedLabels(db)).toEqual([]);
-    expect(await visible(db, next)).toBe(1);
-    expect((await db.prepare("SELECT * FROM moderation_recount_queue").all()).results).toEqual([]);
-  });
-
-  it("preserves a same-policy first-identity reset, including an unchanged null cursor", async () => {
+describe("label backfill queue", () => {
+  it("preserves a first-identity reset, including an unchanged null cursor", async () => {
     const { db, config } = await setup(["!hide"]);
     const delayed = delayedFetch();
     const work = runLabelBackfillQueue(db, config);
@@ -176,12 +82,12 @@ describe("label backfill policy and queue generations", () => {
     delayed.response.resolve(Response.json({ labels: [label] }));
     await work;
     expect(await queue(db)).toEqual(reset);
-    expect(await storedLabels(db)).toEqual([]);
     await runLabelBackfillQueue(db, config);
+    expect((await queue(db)).completed).toBe(1);
     expect(await visible(db, config)).toBe(0);
   });
 
-  it("does not apply a duplicate worker's late labels or checkpoint", async () => {
+  it("does not overwrite a newer worker's checkpoint on late completion", async () => {
     const { db, config } = await setup(["!hide"]);
     const first = deferred<Response>();
     const second = deferred<Response>();
@@ -197,29 +103,14 @@ describe("label backfill policy and queue generations", () => {
     second.resolve(Response.json({ labels: [label], cursor: "page2" }));
     await newWork;
     const advanced = await queue(db);
-    first.resolve(Response.json({ labels: [{ ...label, neg: true, cts: "2026-02-01T00:00:00Z" }] }));
+    first.resolve(Response.json({ labels: [] }));
     await oldWork;
     expect(await queue(db)).toEqual(advanced);
     expect(advanced.cursor).toBe("page2");
-    expect(await storedLabels(db)).toEqual([{ val: "!hide", neg: 0 }]);
     expect(await visible(db, config)).toBe(0);
   });
 
-  it("does not back off a newly reset row when the old request fails", async () => {
-    const { db, config } = await setup(["!hide"]);
-    const delayed = delayedFetch();
-    const work = runLabelBackfillQueue(db, config);
-    await delayed.started;
-    await applyModerationPolicy(db, policy(["spam"]));
-    const reset = await queue(db);
-    delayed.response.reject(new Error("old request failed"));
-    await work;
-    expect(await queue(db)).toEqual(reset);
-    expect(reset.retries).toBe(0);
-    expect(reset.next_attempt_at).toBe(0);
-  });
-
-  it("still checkpoints successful pages and backs off current failures", async () => {
+  it("checkpoints successful pages and backs off current failures", async () => {
     const { db, config } = await setup(["!hide"]);
     const fetch = vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(async () => { throw new Error("temporary failure"); })
@@ -284,21 +175,20 @@ describe("label backfill policy and queue generations", () => {
     expect((await queue(db)).next_attempt_at).toBeGreaterThan(Date.now());
   });
 
-  it.each(["policy", "pending-policy", "worker"])("does not reset a newer %s checkpoint for a stale invalid cursor", async (changedBy) => {
+  it("does not reset a newer worker's checkpoint for a stale invalid cursor", async () => {
     const { db, config } = await setup(["!hide"]);
     await db.prepare("UPDATE label_backfill_queue SET cursor = 'expired'").run();
     const delayed = delayedFetch();
     const oldWork = runLabelBackfillQueue(db, config);
     await delayed.started;
-    if (changedBy === "worker") await runLabelBackfillQueue(db, config);
-    else await applyModerationPolicy(db, policy(["spam"]), changedBy === "pending-policy" ? { maxPages: 0 } : {});
+    await runLabelBackfillQueue(db, config);
     const advanced = await queue(db);
     delayed.response.resolve(Response.json({ error: "InvalidCursor" }, { status: 400 }));
     await oldWork;
     expect(await queue(db)).toEqual(advanced);
   });
 
-  it("adds a generation to pre-existing queues before policy maintenance", async () => {
+  it("adds a generation column to pre-existing queues on schema init", async () => {
     const db = createTestDb();
     await db.prepare(`CREATE TABLE label_backfill_queue (
       src TEXT NOT NULL, did TEXT NOT NULL, cursor TEXT, completed INTEGER NOT NULL DEFAULT 0,
@@ -309,8 +199,5 @@ describe("label backfill policy and queue generations", () => {
       .bind(src, did, "saved-page", 3).run();
     await initSchema(db, TEST_CONFIG);
     expect(await queue(db)).toMatchObject({ cursor: "saved-page", retries: 3, generation: 0 });
-    // Also exercise the upgrade path with an enabled known-subject source.
-    await initSchema(db, policy(["!hide"]));
-    expect(await queue(db)).toMatchObject({ cursor: null, retries: 0, generation: 1 });
   });
 });

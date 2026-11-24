@@ -5,15 +5,6 @@ import { applyLabels, type IncomingLabel } from "./apply";
 import { getLabelerState } from "./resolve";
 import { getMeta, setMeta } from "../db/meta";
 import { sleepAbortable } from "../scheduling";
-import {
-  getModerationPolicyGeneration,
-  lockModerationPolicyStatement,
-  moderationPolicyGenerationSql,
-} from "../moderation-policy";
-
-/** Stop an obsolete subscription rather than advancing the shared cursor or
- * reconnecting forever with a superseded deployment's admission rules. */
-class ObsoleteLabelPolicyError extends Error {}
 
 const DEFAULT_CYCLE_TIMEOUT_MS = 25_000;
 const DEFAULT_BATCH_SIZE = 100;
@@ -56,7 +47,6 @@ export async function runLabelIngestCycle(
           config,
         );
       } catch (err) {
-        if (err instanceof ObsoleteLabelPolicyError) return;
         log.warn(`[labels] cycle for ${source.did} failed: ${err}`);
       }
     }),
@@ -113,7 +103,7 @@ async function runOneLabelerForever(
       );
       attempts = 0;
     } catch (err) {
-      if (signal?.aborted || err instanceof ObsoleteLabelPolicyError) break;
+      if (signal?.aborted) break;
       log.error(`[labels] ${source.did} stream error: ${err}`);
       const delay = Math.min(1_000 * 2 ** attempts, 30_000);
       attempts++;
@@ -146,14 +136,6 @@ async function pumpOneLabeler(
   config: ContrailConfig,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  // Capture before any endpoint resolution/network I/O. The nonce also rejects
-  // a buffered batch from before a policy change that was subsequently reverted.
-  const policyGeneration = await getModerationPolicyGeneration(db, config);
-  if (!policyGeneration) throw new ObsoleteLabelPolicyError("Label policy is no longer current");
-  const writeGuard = {
-    sql: moderationPolicyGenerationSql(),
-    bindings: [policyGeneration],
-  };
   if (Date.now() >= deadline) return;
   const state = await getLabelerState(db, source.did, source.endpoint, {
     ...config.networkOverrides,
@@ -199,7 +181,6 @@ async function pumpOneLabeler(
 
   const buffer: IncomingLabel[] = [];
   let highestSeq = state.cursor;
-  let obsoletePolicy = false;
   let flushPending: Promise<void> = Promise.resolve();
   let resolveDone!: () => void;
   let rejectDone!: (err: unknown) => void;
@@ -210,7 +191,6 @@ async function pumpOneLabeler(
 
   const flush = (): Promise<void> => {
     const work = flushPending.catch(() => {}).then(async () => {
-      if (obsoletePolicy) return;
       // Freeze the seq with this exact batch, never checkpoint newer frames
       // received while SQL is in flight. Filter-only frames still advance.
       const seq = highestSeq;
@@ -220,30 +200,18 @@ async function pumpOneLabeler(
         const kept = await applyLabels(db, batch, {
           source,
           config,
-          // Consistent lock order with policy replacement and backfill commits:
-          // policy -> moderation -> label rows. Every write, including a
-          // filter-only frame's checkpoint, uses the same transaction guard.
-          leadingStatements: [lockModerationPolicyStatement(db)],
-          writeGuard,
           trailingStatements: [
             db.prepare(`INSERT INTO labeler_cursors (did, cursor)
-              SELECT CAST(? AS TEXT), CAST(? AS BIGINT) WHERE ${writeGuard.sql}
+              VALUES (?, ?)
               ON CONFLICT(did) DO UPDATE SET cursor = excluded.cursor
               WHERE excluded.cursor > labeler_cursors.cursor`)
-              .bind(source.did, seq, ...writeGuard.bindings),
+              .bind(source.did, seq),
           ],
         });
-        if (await getModerationPolicyGeneration(db, config) !== policyGeneration)
-          throw new ObsoleteLabelPolicyError("Label policy changed during subscription");
         state.cursor = seq;
         log.log(`[labels] ${source.did} flushed ${kept}/${batch.length} labels, cursor=${seq}`);
       } catch (err) {
-        if (err instanceof ObsoleteLabelPolicyError) {
-          obsoletePolicy = true;
-          buffer.length = 0;
-          cleanup();
-          rejectDone(err);
-        } else buffer.unshift(...batch);
+        buffer.unshift(...batch);
         throw err;
       }
     });
@@ -254,8 +222,7 @@ async function pumpOneLabeler(
   const batchSize = pumpOpts.batchSize ?? DEFAULT_BATCH_SIZE;
   const flushInterval = pumpOpts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
   const flushFailed = (err: unknown) => {
-    if (!(err instanceof ObsoleteLabelPolicyError))
-      log.error(`[labels] ${source.did} flush failed (${buffer.length} buffered): ${err}`);
+    log.error(`[labels] ${source.did} flush failed (${buffer.length} buffered): ${err}`);
   };
   const flushTimer = setInterval(() => {
     flush().catch(flushFailed);
@@ -339,13 +306,14 @@ async function pumpOneLabeler(
         // caller (or the persistent loop) will pick up the reset on retry.
         try {
           await flush();
-          await db.batch([
-            lockModerationPolicyStatement(db),
-            db.prepare(`INSERT INTO labeler_cursors (did, cursor)
-              SELECT CAST(? AS TEXT), 0 WHERE ${writeGuard.sql}
-              ON CONFLICT(did) DO UPDATE SET cursor = 0`)
-              .bind(source.did, ...writeGuard.bindings),
-          ]);
+          await db
+            .prepare(
+              `INSERT INTO labeler_cursors (did, cursor)
+              VALUES (?, 0)
+              ON CONFLICT(did) DO UPDATE SET cursor = 0`,
+            )
+            .bind(source.did)
+            .run();
           highestSeq = state.cursor = 0;
           cleanup();
         } catch (err) {

@@ -211,21 +211,6 @@ describe("moderation enforcement", () => {
     await ingestRecords(db, [action(null, "b", moderator, "delete")], config);
     expect(await rows()).toHaveLength(1);
   });
-  it("rebuilds action enforcement on policy changes and cleans up legacy label summaries", async () => {
-    await ingestRecords(db, [
-      action({ subject: actor, action: "!hide", createdAt: "2025-01-01T00:00:00Z" }, "a"),
-      action({ subject: actor, action: "!hide", expiresAt: "2026-01-02T00:00:00Z" }, "b"),
-    ], config);
-    // Simulate a lossy label summary from the old projector.
-    await applyLabels(db, [{ src: moderator, uri: actor, val: "!hide", cts: "2026-01-01T00:00:00Z", exp: "2026-01-02T00:00:00Z" }]);
-    const untrusted = resolveConfig({ ...config, moderation: { moderators: [], reports: false } });
-    await initSchema(db, untrusted);
-    expect(await rows()).toHaveLength(1);
-    expect(await db.prepare("SELECT 1 FROM labels WHERE src = ?").bind(moderator).first()).toBeNull();
-    await initSchema(db, config);
-    expect(await rows()).toHaveLength(0);
-    expect((await hydrateLabels(db, [actor], [moderator]))[actor]).toHaveLength(1);
-  });
   it("rejects a moderator DID that is also configured as a labels source", () => {
     expect(() =>
       resolveConfig({
@@ -238,13 +223,6 @@ describe("moderation enforcement", () => {
     expect(() => resolveConfig(config)).not.toThrow();
   });
   it("removes implicitly derived moderator trust when re-resolving a changed config", async () => {
-    await ingestRecords(
-      db,
-      [action({ subject: actor, action: "!hide" })],
-      config,
-      { knownDids: new Set([actor]) },
-    );
-    expect(await rows()).toHaveLength(0);
     const c = resolveConfig({
       ...config,
       moderation: { moderators: [], reports: false },
@@ -252,8 +230,11 @@ describe("moderation enforcement", () => {
     expect(c.labels?.sources.some((s) => s.did === moderator)).toBe(false);
     await initSchema(db, c);
     expect(
-      (await queryRecords(db, c, { collection: "event" })).records,
-    ).toHaveLength(1);
+      await db
+        .prepare("SELECT 1 FROM moderation_sources WHERE did = ? AND moderator = 1")
+        .bind(moderator)
+        .first(),
+    ).toBeNull();
   });
   it("CID-pinned hides only affect that version and record hides do not hide the actor", async () => {
     await ingestRecords(
@@ -722,50 +703,6 @@ describe("label admission and recovery", () => {
         .first<{ completed: number }>())!.completed,
     ).toBe(1);
   });
-  it("requeues a changed value allowlist and removes labels no longer admitted", async () => {
-    await db
-      .prepare("INSERT INTO identities (did, resolved_at) VALUES (?, 0)")
-      .bind(actor)
-      .run();
-    const c = resolveConfig({
-      ...config,
-      labels: {
-        sources: [
-          {
-            did: external,
-            subjects: "known",
-            enforce: true,
-            values: ["spam", "!hide"],
-          },
-        ],
-      },
-    });
-    await initSchema(db, c);
-    await applyLabels(db, [
-      { src: external, uri: actor, val: "!hide", cts: "2026-01-01T00:00:00Z" },
-    ]);
-    await db.prepare("UPDATE label_backfill_queue SET completed = 1").run();
-    expect(await rows()).toHaveLength(0);
-    const next = resolveConfig({
-      ...c,
-      labels: {
-        sources: [
-          {
-            ...c.labels!.sources.find((s) => s.did === external)!,
-            values: ["spam"],
-          },
-        ],
-      },
-    });
-    await initSchema(db, next);
-    expect(await rows()).toHaveLength(1);
-    expect(
-      (await db
-        .prepare("SELECT completed FROM label_backfill_queue WHERE src = ?")
-        .bind(external)
-        .first<{ completed: number }>())!.completed,
-    ).toBe(0);
-  });
   it("filters values and unknown subjects but always retains stored retractions", async () => {
     const source = {
       did: external,
@@ -803,7 +740,7 @@ describe("label admission and recovery", () => {
     ).toBe(1);
     expect(await hydrateLabels(db, [actor], [external])).toEqual({});
   });
-  it("seeds old DIDs, queues newly admitted DIDs, and checkpoints backfill pages", async () => {
+  it("queues newly admitted DIDs and checkpoints backfill pages", async () => {
     const c = resolveConfig({
       ...config,
       labels: {
@@ -817,17 +754,20 @@ describe("label admission and recovery", () => {
         ],
       },
     });
-    await db
-      .prepare("INSERT INTO identities (did, resolved_at) VALUES (?, 0)")
-      .bind(actor)
-      .run();
     await initSchema(db, c);
     await ingestRecords(
       db,
       [
         makeEvent({
+          did: actor,
+          uri: `at://${actor}/community.lexicon.calendar.event/b`,
+          rkey: "b",
+          time_us: ++time,
+        }),
+        makeEvent({
           did: "did:plc:new",
           uri: "at://did:plc:new/community.lexicon.calendar.event/a",
+          time_us: ++time,
         }),
       ],
       c,

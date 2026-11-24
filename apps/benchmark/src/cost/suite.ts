@@ -5,7 +5,6 @@ import {
 import { saveCursorStatement, getLastCursor, sweepFeedItems } from "../../../../packages/contrail/src/core/db/records";
 import { buildFeedTargetCaps } from "../../../../packages/contrail/src/core/types";
 import { applyLabels, type IncomingLabel } from "../../../../packages/contrail/src/core/labels/apply";
-import { applyModerationPolicy } from "../../../../packages/contrail/src/core/moderation-policy";
 import { accountUpdateStatements, initModerationReports } from "../../../../packages/contrail/src/core/moderation";
 import { runModerationCycle, runModerationRecounts } from "../../../../packages/contrail/src/core/moderation-sync";
 import { runPipeline } from "../../../../packages/contrail/src/core/router/collection";
@@ -292,23 +291,6 @@ export async function runCostSuite(raw: Database, options: FixtureOptions) {
       });
       await verify("action-restore", () => visible(posts[0]!.uri, true));
 
-      // Stored labels grow with the corpus. Policy replacement is allowed to do
-      // paged work over that corpus; report it separately from ordinary writes.
-      await measure("moderation.policy-hide-fixture", "setup", 1, "label", () => labels([label(posts[0]!.uri)]));
-      const unenforced: ContrailConfig = { ...config, labels: { ...config.labels!, sources: config.labels!.sources.map((source) => ({ ...source, enforce: false })) } };
-      for (const [name, activeConfig, hidden] of [["disable", unenforced, false], ["enable", config, true]] as const) {
-        await measure(`moderation.policy-${name}`, "workload", 1, "policy-change", async () => {
-          // Bound pages but require completion, rather than silently reporting only the cheap first slice.
-          await applyModerationPolicy(db, activeConfig, { maxPages: 100_000, pageSize: 100, deadline: Date.now() + 60_000 });
-          await drainRecounts(activeConfig);
-        });
-        await verify(`policy-${name}`, async () => {
-          check(!await db.prepare("SELECT 1 FROM _contrail_meta WHERE key = 'moderation_policy_job'").first(), "policy job completed");
-          assertions++;
-          await visible(posts[0]!.uri, !hidden);
-          await countsCorrect();
-        });
-      }
       await measure("moderation.expiry-fixture", "setup", 1, "label", () => labels([
         label(posts[0]!.uri, { cts: new Date(now).toISOString(), exp: new Date(now + 60_000).toISOString() }),
       ]));
@@ -322,7 +304,7 @@ export async function runCostSuite(raw: Database, options: FixtureOptions) {
     await measure("maintenance.moderation-idle", "workload", options.operations, "cycle", async () => {
       for (let i = 0; i < options.operations; i++) {
         const result = await runModerationCycle(db, config, Date.now() + 60_000, { reconcile: false });
-        check(!result.policyPages && !result.backfilled && !result.recountPages, "idle maintenance has no pending work");
+        check(!result.backfilled && !result.recountPages, "idle maintenance has no pending work");
       }
     });
     if (full) await measure("maintenance.feed-sweep", "workload", 1, "page", async () => {

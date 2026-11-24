@@ -71,15 +71,10 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
   });
 
   let readyPromise: Promise<void> | null = null;
-  const ensureReady = (
-    env: Env,
-    db: Database,
-    request = false,
-  ): Promise<void> => {
+  const ensureReady = (env: Env, db: Database): Promise<void> => {
     if (!readyPromise) {
       const pending = (async () => {
-        // Requests never wait on a moderation policy job; cron cycles finish it.
-        await contrail.init(db, { deferModerationPolicyJob: request });
+        await contrail.init(db);
         if (options.reportsBinding) {
           const reportsDb = env[options.reportsBinding] as Database | undefined;
           if (!reportsDb) {
@@ -106,7 +101,7 @@ export function createWorker<Env extends WorkerEnv = WorkerEnv>(
       ctx?: ExecutionContext,
     ): Promise<Response> {
       const db = env[binding] as Database;
-      await ensureReady(env, db, true);
+      await ensureReady(env, db);
       return (await handle(
         request,
         db,

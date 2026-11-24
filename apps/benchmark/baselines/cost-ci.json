@@ -373,39 +373,6 @@
           }
         },
         {
-          "name": "moderation.policy-hide-fixture",
-          "kind": "setup",
-          "units": 1,
-          "unit": "label",
-          "ceilings": {
-            "rowsRead": 75,
-            "rowsWritten": 26,
-            "statements": 22
-          }
-        },
-        {
-          "name": "moderation.policy-disable",
-          "kind": "workload",
-          "units": 1,
-          "unit": "policy-change",
-          "ceilings": {
-            "rowsRead": 118,
-            "rowsWritten": 51,
-            "statements": 59
-          }
-        },
-        {
-          "name": "moderation.policy-enable",
-          "kind": "workload",
-          "units": 1,
-          "unit": "policy-change",
-          "ceilings": {
-            "rowsRead": 490,
-            "rowsWritten": 82,
-            "statements": 64
-          }
-        },
-        {
           "name": "moderation.expiry-fixture",
           "kind": "setup",
           "units": 1,
@@ -909,39 +876,6 @@
             "rowsRead": 89,
             "rowsWritten": 34,
             "statements": 33
-          }
-        },
-        {
-          "name": "moderation.policy-hide-fixture",
-          "kind": "setup",
-          "units": 1,
-          "unit": "label",
-          "ceilings": {
-            "rowsRead": 75,
-            "rowsWritten": 26,
-            "statements": 22
-          }
-        },
-        {
-          "name": "moderation.policy-disable",
-          "kind": "workload",
-          "units": 1,
-          "unit": "policy-change",
-          "ceilings": {
-            "rowsRead": 118,
-            "rowsWritten": 51,
-            "statements": 59
-          }
-        },
-        {
-          "name": "moderation.policy-enable",
-          "kind": "workload",
-          "units": 1,
-          "unit": "policy-change",
-          "ceilings": {
-            "rowsRead": 1547,
-            "rowsWritten": 99,
-            "statements": 163
           }
         },
         {

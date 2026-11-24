@@ -129,10 +129,64 @@ export function moderationLockStatements(db: Database): Statement[] {
     : [];
 }
 
-/** SQL predicate evaluated inside the same write transaction as its writes. */
-export interface ModerationWriteGuard {
-  sql: string;
-  bindings: unknown[];
+export const MODERATION_SOURCES_KEY = "moderation_policy_applied";
+
+/** Normalized fingerprint of configured moderators and external label sources. */
+export function moderationSourcesFingerprint(config: ContrailConfig): string {
+  return JSON.stringify({
+    v: 1,
+    moderators: [...(config.moderation?.moderators ?? [])].sort(),
+    sources: (config.labels?.sources ?? [])
+      .filter((s) => !s.records)
+      .map((s) => ({
+        did: s.did,
+        enforce: !!s.enforce,
+        values: s.values ? [...s.values].sort() : null,
+        known: s.subjects === "known",
+      }))
+      .sort((a, b) => (a.did < b.did ? -1 : a.did > b.did ? 1 : 0)),
+  });
+}
+
+/** Sync `moderation_sources` from config when moderators or label sources
+ * change. Tracked outside `schema_fingerprint` so config edits never rerun DDL
+ * or rebuild FTS; changing moderators or labeler trust on an existing populated
+ * database requires a fresh DB and backfill. */
+export async function syncModerationSources(
+  db: Database,
+  config: ContrailConfig,
+  storedFingerprint?: string,
+): Promise<void> {
+  const fp = moderationSourcesFingerprint(config);
+  if (storedFingerprint === fp) return;
+  const sources = new Map<string, { moderator: number; enforced: number }>();
+  for (const s of config.labels?.sources ?? []) {
+    if (!s.records) {
+      sources.set(s.did, { moderator: 0, enforced: s.enforce ? 1 : 0 });
+    }
+  }
+  for (const did of config.moderation?.moderators ?? []) {
+    sources.set(did, { moderator: 1, enforced: 1 });
+  }
+  await db.batch([
+    ...moderationLockStatements(db),
+    db.prepare("DELETE FROM moderation_sources"),
+    ...[...sources].map(([did, s]) =>
+      db
+        .prepare(
+          "INSERT INTO moderation_sources (did, moderator, enforced) VALUES (?, ?, ?)",
+        )
+        .bind(did, s.moderator, s.enforced),
+    ),
+    db.prepare(
+      "DELETE FROM _contrail_meta WHERE key IN ('moderation_policy_job', 'moderation_policy_generation')",
+    ),
+    db
+      .prepare(
+        "INSERT INTO _contrail_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .bind(MODERATION_SOURCES_KEY, fp),
+  ]);
 }
 
 export function buildModerationSchema(d: SqlDialect): string[] {
@@ -299,7 +353,7 @@ export async function isAccountHidden(
   return (await hiddenSubjects(db, [did])).has(did);
 }
 
-function hasCountedRelations(config: ContrailConfig): boolean {
+export function hasCountedRelations(config: ContrailConfig): boolean {
   return Object.values(config.collections).some((c) =>
     Object.values(c.relations ?? {}).some((r) => r.count !== false),
   );
@@ -314,7 +368,6 @@ export function markModerationDirtyStatements(
   db: Database,
   token: string,
   subjects: Iterable<string>,
-  guard?: ModerationWriteGuard,
 ): Statement[] {
   const unique = [...new Set(subjects)];
   const out: Statement[] = [];
@@ -324,10 +377,10 @@ export function markModerationDirtyStatements(
       db
         .prepare(
           `INSERT INTO moderation_dirty (token, subject)
-          ${guard ? "SELECT * FROM (" : ""}VALUES ${chunk.map(() => "(?, ?)").join(", ")}${guard ? `) AS dirty_subjects WHERE ${guard.sql}` : ""}
+          VALUES ${chunk.map(() => "(?, ?)").join(", ")}
           ON CONFLICT(token, subject) DO NOTHING`,
         )
-        .bind(...chunk.flatMap((subject) => [token, subject]), ...(guard?.bindings ?? [])),
+        .bind(...chunk.flatMap((subject) => [token, subject])),
     );
   }
   return out;
@@ -453,13 +506,12 @@ export function recomputeModerationStatements(
   db: Database,
   config: ContrailConfig | undefined,
   subjects: Iterable<string>,
-  guard?: ModerationWriteGuard,
 ): Statement[] {
   const marks = [...new Set(subjects)];
   if (!marks.length) return [];
   const token = moderationDirtyToken();
   return [
-    ...markModerationDirtyStatements(db, token, marks, guard),
+    ...markModerationDirtyStatements(db, token, marks),
     ...flushModerationDirtyStatements(db, config, token),
   ];
 }
