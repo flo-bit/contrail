@@ -24,8 +24,12 @@ import {
   getSearchableFields,
 } from "../search";
 import { buildLabelsSchema } from "../labels/schema";
-import { buildModerationSchema, moderationLockStatements } from "../moderation";
-import { applyModerationPolicy, MODERATION_POLICY_META_KEYS } from "../moderation-policy";
+import {
+  buildModerationSchema,
+  MODERATION_SOURCES_KEY,
+  moderationLockStatements,
+  syncModerationSources,
+} from "../moderation";
 import { getMetaValues, setMeta } from "./meta";
 import { populateVirtualFtsStatements } from "./projections";
 import { ensureRepositoryScopes, seedRepositoryBackfills, REPOSITORY_SCOPES_KEY } from "../repository-scope";
@@ -808,10 +812,6 @@ export type SchemaModule = (db: Database) => Promise<void>;
 
 export interface InitSchemaOptions {
   extraSchemas?: SchemaModule[];
-  /** Apply moderation policy trust immediately but leave its paged job to
-   * moderation cycles. Use on request paths, so a large policy change never
-   * delays a response. */
-  deferModerationPolicyJob?: boolean;
 }
 
 /**
@@ -934,7 +934,7 @@ export async function initSchema(
     LEGACY_MIGRATIONS_KEY,
     MODERATION_CTS_UNIT_KEY,
     REPOSITORY_SCOPES_KEY,
-    ...MODERATION_POLICY_META_KEYS,
+    MODERATION_SOURCES_KEY,
   ]);
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
   const storedFtsRaw = meta.get(FTS_FINGERPRINTS_KEY);
@@ -973,9 +973,7 @@ export async function initSchema(
       await stampDecoupledMarkers();
     }
     await applyRepositoryScopes();
-    // Moderation policy has its own fingerprint: editing moderators or label
-    // sources must not rerun DDL or rebuild FTS.
-    await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
+    await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
     return;
   }
@@ -1003,7 +1001,7 @@ export async function initSchema(
     await runIdempotentDdl(db, cursorObservationsDdl);
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyRepositoryScopes();
-    await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
+    await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await stampDecoupledMarkers();
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
@@ -1026,7 +1024,7 @@ export async function initSchema(
     await applyRepositoryScopes();
     await runIdempotentDdl(db, cursorObservationsDdl);
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
-    await applyModerationPolicy(db, config, { meta, ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
+    await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await stampDecoupledMarkers();
     await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
@@ -1042,13 +1040,13 @@ export async function initSchema(
   for (const statement of [...buildLabelsSchema(dialect), ...buildModerationSchema(dialect)]) {
     await runIdempotentDdl(db, statement);
   }
-  // Existing queues need the generation column before policy jobs can reset
-  // them. CREATE TABLE IF NOT EXISTS only covers fresh databases.
+  // Existing queues need the generation column for concurrent worker guards.
+  // CREATE TABLE IF NOT EXISTS only covers fresh databases.
   await addColumnIfNotExists(db, "label_backfill_queue", "generation", "INTEGER NOT NULL DEFAULT 0");
   if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
     await upgradeModerationCreationTimestamps(db);
   }
-  await applyModerationPolicy(db, config, { ...(options.deferModerationPolicyJob ? { maxPages: 0 } : {}) });
+  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
 
   await runIdempotentDdl(db, cursorObservationsDdl);
   await applyFtsTables(db, config, dialect, storedFtsRaw);

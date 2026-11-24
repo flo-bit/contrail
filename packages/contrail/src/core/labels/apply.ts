@@ -5,7 +5,6 @@ import {
   moderationLockStatements,
   recomputeModerationStatements,
   subjectDid,
-  type ModerationWriteGuard,
 } from "../moderation";
 import { batchedInQuery } from "../router/helpers";
 
@@ -35,25 +34,15 @@ export async function applyLabels(
   labels: IncomingLabel[],
   options: {
     source?: LabelerSource;
-    /** Locks acquired before any guarded writes (never held over network I/O). */
-    leadingStatements?: Statement[];
-    /** Guard label writes and dirty marks. Trailing checkpoints must use the
-     * same predicate so labels and progress are accepted or rejected together. */
-    writeGuard?: ModerationWriteGuard;
     trailingStatements?: Statement[];
     knownDids?: ReadonlySet<string>;
     /** Enables relation recounts when enforcement changes. */
     config?: ContrailConfig;
   } = {},
 ): Promise<number> {
-  // Lock before label rows, matching guarded backfill commits. Taking this
-  // only during the later recompute can deadlock a live labeler against a
-  // backfill holding the moderation lock while updating the same label tuple.
-  const stmts: Statement[] = [
-    ...(options.leadingStatements ?? []),
-    ...moderationLockStatements(db),
-  ];
-  const guard = options.writeGuard;
+  // Lock before label rows so concurrent labelers and backfill commits share
+  // one lock order on PostgreSQL.
+  const stmts: Statement[] = [...moderationLockStatements(db)];
   const valid = labels.filter(
     (l) =>
       l &&
@@ -124,7 +113,7 @@ export async function applyLabels(
       db
         .prepare(
           `INSERT INTO labels (src, uri, val, cid, neg, exp, cts, sig)
-             ${guard ? "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE " + guard.sql : "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"}
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(src, uri, val, cts) DO UPDATE SET
                cid = excluded.cid,
                neg = excluded.neg,
@@ -140,7 +129,6 @@ export async function applyLabels(
           exp,
           cts,
           decodeSignature(l.sig),
-          ...(guard?.bindings ?? []),
         ),
     );
     kept++;
@@ -148,7 +136,7 @@ export async function applyLabels(
       hideSubjects.add(l.uri);
   }
   stmts.push(
-    ...recomputeModerationStatements(db, options.config, hideSubjects, guard),
+    ...recomputeModerationStatements(db, options.config, hideSubjects),
     ...(options.trailingStatements ?? []),
   );
   if (stmts.length > 0) await db.batch(stmts);

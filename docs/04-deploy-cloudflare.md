@@ -91,7 +91,7 @@ export const contrail = new Contrail(config);
 export const handleContrail = createHandler(contrail);
 ```
 
-- Forward `/xrpc/[...path]` to `handleContrail(request, platform.env.DB)` after `await contrail.init(platform.env.DB, { deferModerationPolicyJob: true })`.
+- Forward `/xrpc/[...path]` to `handleContrail(request, platform.env.DB)` after `await contrail.init(platform.env.DB)`.
 - Run `await contrail.ingest({}, platform.env.DB)` from a protected cron endpoint, or use `contrail append-scheduled` on the built Worker bundle so Cloudflare's `scheduled` trigger calls it.
 
 ## Node.js (SQLite, PostgreSQL, PGlite)

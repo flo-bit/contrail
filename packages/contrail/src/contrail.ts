@@ -52,17 +52,11 @@ import {
 } from "./core/labels/subscribe";
 import { createApp, createRouterApp, type CreateAppOptions } from "./core/router";
 import {
+  needsModerationCycle,
   runModerationCycle,
   runPersistentModeration,
 } from "./core/moderation-sync";
 import type { Hono } from "hono";
-
-export interface ContrailInitOptions {
-  /** Leave a changed moderation policy's paged job (label pruning, hidden
-   * state, backfill requeues) to `ingest()`/`runPersistent()` instead of
-   * running a bounded slice inline. Trust changes still apply immediately. */
-  deferModerationPolicyJob?: boolean;
-}
 
 export interface ContrailOptions extends ContrailConfig {
   db?: Database;
@@ -98,11 +92,11 @@ export class Contrail {
   }
 
   /** Initialize the database schema. */
-  async init(db?: Database, options: ContrailInitOptions = {}): Promise<void> {
+  async init(db?: Database): Promise<void> {
     const database = this.getDb(db);
     const ready = (async () => {
       prepareRecordValidation(this.config);
-      await initSchema(database, this.config, options);
+      await initSchema(database, this.config);
       await assertServingSourceCompatibility(
         database,
         this.config.orderedSource,
@@ -161,11 +155,11 @@ export class Contrail {
     if (this.config.labels) {
       tasks.push(runLabelIngestCycle(d, this.config, budget.maxDrainMs));
     }
-    // Moderator reconciliation, first-seen label backfill and visibility
-    // recounts (account lifecycle needs recounts even without labels).
-    tasks.push(
-      runModerationCycle(d, this.config, Date.now() + Math.min(budget.maxDrainMs, 10_000)).then(() => {}),
-    );
+    if (needsModerationCycle(this.config)) {
+      tasks.push(
+        runModerationCycle(d, this.config, Date.now() + Math.min(budget.maxDrainMs, 10_000)).then(() => {}),
+      );
+    }
     await Promise.all(tasks);
   }
 
@@ -191,7 +185,9 @@ export class Contrail {
         }),
       );
     }
-    tasks.push(runPersistentModeration(d, this.config, { signal: options?.signal }));
+    if (needsModerationCycle(this.config)) {
+      tasks.push(runPersistentModeration(d, this.config, { signal: options?.signal }));
+    }
     await Promise.all(tasks);
   }
 

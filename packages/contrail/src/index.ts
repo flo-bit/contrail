@@ -1,11 +1,7 @@
 /** Contrail's curated public API. */
 export type { LexiconDoc } from "@atcute/lexicon-doc";
 export { Contrail } from "./contrail";
-export type {
-  AppOptions,
-  ContrailInitOptions,
-  ContrailOptions,
-} from "./contrail";
+export type { AppOptions, ContrailOptions } from "./contrail";
 
 // Configuration, schema helpers, and dialects.
 export {
@@ -236,7 +232,6 @@ export type {
   AccountUpdate,
   ModerationAction,
   ModerationConfig,
-  ModerationWriteGuard,
 } from "./core/moderation";
 export {
   ModerationReportError,

@@ -32,7 +32,7 @@ const contrail = new Contrail({
 await contrail.init();
 ```
 
-Run `contrail lexicons generate` after enabling moderation. Don't list moderator DIDs inside `labels.sources` — they are added automatically as records-backed sources. Changing `moderators` or label trust (`enforce`, `values`, `subjects`) runs a paged background policy job without rebuilding DDL or FTS; pass `{ deferModerationPolicyJob: true }` to `init()` on request paths (`createWorker` does this automatically).
+Run `contrail lexicons generate` after enabling moderation. Don't list moderator DIDs inside `labels.sources` — they are added automatically as records-backed sources. Note: changing `moderators` or labeler trust settings (`enforce`, `values`, `subjects`) on an already-populated database does not rewrite previously stored labels or hidden state — start with a fresh database and backfill when changing moderation policy.
 
 ## Public moderator actions & overrides
 

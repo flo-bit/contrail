@@ -1,29 +1,29 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createTestDb, makeEvent, TEST_CONFIG, TEST_POSTGRES } from "./helpers";
 import {
-  applyLabels,
   ingestRecords,
   initSchema,
   MODERATION_ACTION_NSID,
   queryRecords,
   resolveConfig,
 } from "../src/index";
-import {
-  applyModerationPolicy,
-  moderationPolicyFingerprint,
-  runModerationPolicyJob,
-} from "../src/core/moderation-policy";
 import { getMeta } from "../src/core/db/meta";
+import {
+  MODERATION_SOURCES_KEY,
+  moderationSourcesFingerprint,
+} from "../src/core/moderation";
+import { needsModerationCycle } from "../src/core/moderation-sync";
 import type { ContrailConfig, Database } from "../src/index";
 
 const moderator = "did:plc:moderator";
 const external = "did:plc:external";
-const actors = ["did:plc:a1", "did:plc:a2", "did:plc:a3", "did:plc:a4", "did:plc:a5"];
-// CI's Node 22 SQLite lacks FTS5; policy coverage must still run there.
+
 let hasFts = TEST_POSTGRES;
 if (!TEST_POSTGRES) {
   try {
-    await createTestDb().prepare("CREATE VIRTUAL TABLE __moderation_policy_fts USING fts5(content)").run();
+    await createTestDb()
+      .prepare("CREATE VIRTUAL TABLE __moderation_sources_fts USING fts5(content)")
+      .run();
     hasFts = true;
   } catch {}
 }
@@ -35,55 +35,38 @@ const base: ContrailConfig = {
     event: { ...TEST_CONFIG.collections.event, searchable: hasFts ? ["name"] : false },
   },
 };
-const trusted = resolveConfig({ ...base, moderation: { moderators: [moderator], reports: false } });
-const untrusted = resolveConfig({
-  ...base,
-  moderation: { moderators: [], reports: false },
-  labels: { sources: [{ did: external, subjects: "known" }] },
-});
-let db: Database;
-let time = 100;
 
-function hide(subject: string, rkey: string) {
-  return makeEvent({
-    uri: `at://${moderator}/${MODERATION_ACTION_NSID}/${rkey}`,
-    did: moderator,
-    collection: MODERATION_ACTION_NSID,
-    rkey,
-    record: { subject, action: "!hide", createdAt: "2026-01-01T00:00:00Z" },
-    cid: `cid${time}`,
-    time_us: ++time,
-  });
-}
+describe("moderation sources sync", () => {
+  it("updates moderation_sources without rerunning DDL or rebuilding FTS, and does zero writes on warm init", async () => {
+    const db = createTestDb();
+    const warn = vi.fn();
+    const quietLogger = { log: () => {}, warn, error: () => {} };
+    const initial = resolveConfig({
+      ...base,
+      logger: quietLogger,
+      moderation: { moderators: [moderator], reports: false },
+    });
+    await initSchema(db, initial);
+    expect(warn).not.toHaveBeenCalled();
 
-async function visible(config: ContrailConfig) {
-  return (await queryRecords(db, config, { collection: "event" })).records.length;
-}
+    expect(
+      (await db.prepare("SELECT did, moderator, enforced FROM moderation_sources ORDER BY did").all()).results,
+    ).toEqual([{ did: moderator, moderator: 1, enforced: 1 }]);
+    expect(await getMeta(db, MODERATION_SOURCES_KEY)).toBe(
+      moderationSourcesFingerprint(initial),
+    );
 
-beforeEach(async () => {
-  db = createTestDb();
-  time = 100;
-  await initSchema(db, trusted);
-  await ingestRecords(
-    db,
-    actors.map((did) =>
-      makeEvent({
-        uri: `at://${did}/community.lexicon.calendar.event/e`,
-        did,
-        record: { name: "party" },
-        time_us: ++time,
-      }),
-    ),
-    trusted,
-  );
-  for (const did of actors)
-    await db.prepare("INSERT INTO identities (did, resolved_at) VALUES (?, 0)").bind(did).run();
-  await ingestRecords(db, actors.map((did, i) => hide(did, `h${i}`)), trusted);
-  expect(await visible(trusted)).toBe(0);
-});
+    // Seed legacy keys from earlier versions to verify cleanup on sync.
+    await db
+      .prepare("INSERT INTO _contrail_meta (key, value) VALUES ('moderation_policy_job', '{}'), ('moderation_policy_generation', '{}')")
+      .run();
 
-describe("moderation policy changes", () => {
-  it("never rerun DDL or rebuild FTS", async () => {
+    const updated = resolveConfig({
+      ...base,
+      logger: quietLogger,
+      moderation: { moderators: [], reports: false },
+      labels: { sources: [{ did: external, enforce: true, subjects: "known" }] },
+    });
     const statements: string[] = [];
     const recording: Database = {
       ...db,
@@ -94,215 +77,99 @@ describe("moderation policy changes", () => {
       batch: (stmts) => db.batch(stmts),
       dialect: db.dialect,
     };
-    await initSchema(recording, untrusted);
+
+    await initSchema(recording, updated);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/fresh database and backfill/i);
     expect(statements.filter((s) => /\bCREATE\b|fts_/i.test(s))).toEqual([]);
-    expect(await visible(untrusted)).toBe(actors.length);
-    expect(await getMeta(db, "moderation_policy_applied")).toBe(
-      moderationPolicyFingerprint(untrusted),
-    );
+    expect(
+      (await db.prepare("SELECT did, moderator, enforced FROM moderation_sources ORDER BY did").all()).results,
+    ).toEqual([{ did: external, moderator: 0, enforced: 1 }]);
+    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
+    expect(await getMeta(db, "moderation_policy_generation")).toBeNull();
+
+    // Warm init with unchanged config performs zero writes and does not warn.
+    warn.mockClear();
+    statements.length = 0;
+    await initSchema(recording, updated);
+    expect(warn).not.toHaveBeenCalled();
+    expect(statements.filter((s) => /\b(INSERT|UPDATE|DELETE)\b/i.test(s))).toEqual([]);
   });
 
-  it("prunes against allowlists larger than the bound-parameter limit", async () => {
-    const source = (values?: string[]) => resolveConfig({
+  it("warns without rewriting existing moderation_hidden state when moderation config changes", async () => {
+    const db = createTestDb();
+    const warn = vi.fn();
+    const logger = { log: () => {}, warn, error: () => {} };
+    const initial = resolveConfig({
       ...base,
+      logger,
+      moderation: { moderators: [moderator], reports: false },
+    });
+    await initSchema(db, initial);
+
+    const post = makeEvent({
+      cid: "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5yvzh5lsjbsmwu4",
+    });
+    const hideAction = makeEvent({
+      uri: `at://${moderator}/${MODERATION_ACTION_NSID}/hide1`,
+      did: moderator,
+      collection: MODERATION_ACTION_NSID,
+      rkey: "hide1",
+      record: {
+        subject: post.did,
+        action: "!hide",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      cid: "bafyreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+      time_us: 200,
+      indexed_at: 200,
+    });
+    await ingestRecords(db, [post, hideAction], initial);
+    expect((await queryRecords(db, initial, { collection: "event" })).records).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+
+    const removed = resolveConfig({
+      ...base,
+      logger,
       moderation: { moderators: [], reports: false },
-      labels: { sources: [{ did: external, ...(values ? { values } : {}) }] },
     });
-    const open = source();
-    await applyModerationPolicy(db, open);
-    await applyLabels(
-      db,
-      ["keep", "drop"].map((val) => ({ src: external, uri: actors[0]!, val, cts: new Date().toISOString() })),
-      { source: open.labels!.sources[0], config: open },
-    );
-    const values = ["keep", ...Array.from({ length: 149 }, (_, i) => `value-${i}`)];
-    await applyModerationPolicy(db, source(values));
-    expect((await db.prepare("SELECT val FROM labels WHERE src = ?").bind(external).all()).results)
-      .toEqual([{ val: "keep" }]);
+    await initSchema(db, removed);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // Trade-off is explicit: existing moderation_hidden rows remain until a fresh DB + backfill.
+    expect((await queryRecords(db, removed, { collection: "event" })).records).toEqual([]);
   });
 
-  it("can leave the paged job to moderation cycles on request paths", async () => {
-    await initSchema(db, untrusted, { deferModerationPolicyJob: true });
-    // Trust changed immediately; materialized hiding catches up in the job.
-    expect(
-      (await db.prepare("SELECT * FROM moderation_sources WHERE moderator = 1").all()).results,
-    ).toEqual([]);
-    expect(await visible(untrusted)).toBe(0);
-    expect(await getMeta(db, "moderation_policy_job")).not.toBeNull();
-    expect(await runModerationPolicyJob(db, untrusted)).toBeGreaterThan(0);
-    expect(await visible(untrusted)).toBe(actors.length);
-    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
-  });
-
-  it("apply in bounded, resumable pages", async () => {
-    await applyModerationPolicy(db, untrusted, { maxPages: 1, pageSize: 2 });
-    // Trust is rewritten immediately; materialized state catches up in pages.
-    expect(
-      await db.prepare("SELECT 1 FROM moderation_sources WHERE did = ?").bind(moderator).first(),
-    ).toBeNull();
-    expect(await visible(untrusted)).toBeLessThan(actors.length);
-    let runs = 0;
-    while (await runModerationPolicyJob(db, untrusted, { maxPages: 1, pageSize: 2 })) runs++;
-    expect(runs).toBeGreaterThan(3);
-    expect(await visible(untrusted)).toBe(actors.length);
-    expect(
-      (await db
-        .prepare("SELECT COUNT(*) AS n FROM label_backfill_queue WHERE src = ? AND completed = 0")
-        .bind(external)
-        .first<{ n: number }>())!.n,
-    ).toBe(actors.length);
-    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
-    expect(await getMeta(db, "moderation_policy_applied")).toBe(
-      moderationPolicyFingerprint(untrusted),
-    );
-  });
-
-  function externalPolicy(enforce: boolean, values?: string[]) {
-    return resolveConfig({
-      ...base,
-      labels: { sources: [{ did: external, subjects: "known", enforce, values }] },
+  it("gates background moderation cycles when no moderators, known labelers, or counted relations are configured", () => {
+    const plain = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: { post: { collection: "com.example.post" } },
     });
-  }
-
-  async function enforceExternalLabels() {
-    const config = externalPolicy(true);
-    await initSchema(db, config);
-    // Isolate label enforcement: unrelated moderator actions would cause an
-    // extra subject scan and accidentally mask missing label recomputation.
-    await db.prepare("DELETE FROM moderation_actions").run();
-    await applyLabels(
-      db,
-      actors.map((uri) => ({ src: external, uri, val: "!hide", cts: "2026-01-01T00:00:00Z" })),
-      { config },
-    );
-    expect(await visible(config)).toBe(0);
-    return config;
-  }
-
-  it.each(["disable", "remove"])(
-    "restores external hiding after partially applying a source %s and reverting",
-    async (change) => {
-      const enabled = await enforceExternalLabels();
-      const changed = change === "disable" ? externalPolicy(false) : resolveConfig(base);
-      await applyModerationPolicy(db, changed, { maxPages: 1, pageSize: 2 });
-      expect(await visible(enabled)).toBe(2);
-
-      await applyModerationPolicy(db, enabled);
-      expect(await visible(enabled)).toBe(0);
-      expect(await getMeta(db, "moderation_policy_job")).toBeNull();
-      expect(await getMeta(db, "moderation_policy_applied")).toBe(
-        moderationPolicyFingerprint(enabled),
-      );
-    },
-  );
-
-  it("requeues known-source backfill after reverting partially pruned values", async () => {
-    const enabled = await enforceExternalLabels();
-    await db.prepare("UPDATE label_backfill_queue SET completed = 1").run();
-    await applyModerationPolicy(db, externalPolicy(true, ["custom"]), { maxPages: 1, pageSize: 2 });
-    expect((await db.prepare("SELECT * FROM labels").all()).results).toHaveLength(3);
-
-    await applyModerationPolicy(db, enabled);
+    expect(needsModerationCycle(plain)).toBe(false);
     expect(
-      (await db.prepare("SELECT * FROM label_backfill_queue WHERE completed = 0").all()).results,
-    ).toHaveLength(actors.length);
-    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
-  });
-
-  it.each([
-    ["pruning labels", "DELETE FROM labels"],
-    ["recomputing hiding", "INSERT INTO moderation_dirty"],
-    ["resetting backfill", "UPDATE label_backfill_queue"],
-    ["enqueueing backfill", "INSERT INTO label_backfill_queue"],
-    ["recording backfill policy", "INSERT INTO label_backfill_sources"],
-    ["completing the job", "INSERT INTO _contrail_meta (key, value) SELECT"],
-  ])("a superseded worker cannot mutate state while %s", async (_name, mutation) => {
-    const enabled = await enforceExternalLabels();
-    await applyLabels(db, [
-      { src: external, uri: actors[0]!, val: "custom", cts: "2026-01-01T00:00:00Z" },
-    ], { config: enabled });
-    await db.prepare("UPDATE label_backfill_queue SET completed = 1, retries = 3").run();
-    await db.prepare("DELETE FROM label_backfill_queue WHERE did = ?").bind(actors.at(-1)).run();
-    const restricted = externalPolicy(true, ["!hide"]);
-    await applyModerationPolicy(db, restricted, { maxPages: 0 });
-
-    const snapshot = async () => ({
-      labels: (await db.prepare("SELECT * FROM labels ORDER BY src, uri, val, cts").all()).results,
-      hidden: (await db.prepare("SELECT * FROM moderation_hidden ORDER BY subject, kind, cid").all()).results,
-      queue: (await db.prepare("SELECT * FROM label_backfill_queue ORDER BY src, did").all()).results,
-      sources: (await db.prepare("SELECT * FROM label_backfill_sources ORDER BY src").all()).results,
-      recounts: (await db.prepare("SELECT * FROM moderation_recount_queue ORDER BY subject, due_at").all()).results,
-      trust: (await db.prepare("SELECT * FROM moderation_sources ORDER BY did").all()).results,
-      job: await getMeta(db, "moderation_policy_job"),
-      applied: await getMeta(db, "moderation_policy_applied"),
-    });
-    let before: Awaited<ReturnType<typeof snapshot>> | undefined;
-    let prepared = false;
-    const racing: Database = {
-      dialect: db.dialect,
-      prepare(sql) {
-        if (sql.startsWith(mutation)) prepared = true;
-        return db.prepare(sql);
-      },
-      async batch(statements) {
-        if (prepared && !before) {
-          // Another deployment replaces this job after the page was prepared,
-          // but before its transaction begins. Removed sources must not have
-          // their labels, hiding or backfill state changed by the old runner.
-          await applyModerationPolicy(db, resolveConfig(base), { maxPages: 0 });
-          before = await snapshot();
-        }
-        return db.batch(statements);
-      },
-    };
-    await runModerationPolicyJob(racing, restricted);
-    expect(before).toBeDefined();
-    expect(await snapshot()).toEqual(before);
-    expect((await db.prepare("SELECT * FROM moderation_dirty").all()).results).toEqual([]);
-  });
-
-  it("a stale page cannot reset backfill completed by another runner of the same job", async () => {
-    await enforceExternalLabels();
-    const restricted = externalPolicy(true, ["!hide"]);
-    await applyModerationPolicy(db, restricted, { maxPages: 0 });
-    let prepared = false;
-    let completed = false;
-    const racing: Database = {
-      dialect: db.dialect,
-      prepare(sql) {
-        if (sql.startsWith("UPDATE label_backfill_queue")) prepared = true;
-        return db.prepare(sql);
-      },
-      async batch(statements) {
-        if (prepared && !completed) {
-          completed = true;
-          await runModerationPolicyJob(db, restricted);
-          // Simulate a backfill consumer finishing the freshly requeued work.
-          await db.prepare("UPDATE label_backfill_queue SET completed = 1, retries = 3").run();
-        }
-        return db.batch(statements);
-      },
-    };
-    await runModerationPolicyJob(racing, restricted);
-    expect(completed).toBe(true);
+      needsModerationCycle(
+        resolveConfig({
+          ...plain,
+          moderation: { moderators: [moderator], reports: false },
+        }),
+      ),
+    ).toBe(true);
     expect(
-      (await db.prepare("SELECT * FROM label_backfill_queue WHERE completed = 1 AND retries = 3").all()).results,
-    ).toHaveLength(actors.length);
-    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
-    expect(await getMeta(db, "moderation_policy_applied")).toBe(
-      moderationPolicyFingerprint(restricted),
-    );
-  });
-
-  it("a reverted policy replaces an unfinished job", async () => {
-    await applyModerationPolicy(db, untrusted, { maxPages: 0 });
-    await applyModerationPolicy(db, trusted);
-    // The superseded job is never advanced under the old config.
-    expect(await runModerationPolicyJob(db, untrusted)).toBe(0);
+      needsModerationCycle(
+        resolveConfig({
+          ...plain,
+          labels: { sources: [{ did: external, subjects: "known" }] },
+        }),
+      ),
+    ).toBe(true);
     expect(
-      await db.prepare("SELECT 1 FROM moderation_sources WHERE did = ?").bind(moderator).first(),
-    ).not.toBeNull();
-    expect(await visible(trusted)).toBe(0);
-    expect(await getMeta(db, "moderation_policy_job")).toBeNull();
+      needsModerationCycle(
+        resolveConfig({
+          ...plain,
+          labels: { sources: [{ did: external }] },
+        }),
+      ),
+    ).toBe(false);
+    expect(needsModerationCycle(resolveConfig(TEST_CONFIG))).toBe(true);
   });
 });

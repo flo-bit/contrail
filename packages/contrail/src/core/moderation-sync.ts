@@ -3,7 +3,11 @@ import { parseResourceUri } from "@atcute/lexicons/syntax";
 import type { ContrailConfig, Database, IngestEvent } from "./types";
 import { recordsTableName, resolveCollectionKey } from "./types";
 import { getPDS } from "./client";
-import { MODERATION_ACTION_NSID, moderationLockStatements, parseModerationAction } from "./moderation";
+import {
+  MODERATION_ACTION_NSID,
+  hasCountedRelations,
+  parseModerationAction,
+} from "./moderation";
 import { createIngestEvent, ingestRecords } from "./ingest";
 import { childRecountStatements } from "./db/records";
 import { getMeta, setMeta } from "./db/meta";
@@ -11,12 +15,6 @@ import { getDialect, isPostgresDialect } from "./dialect";
 import { batchedInQuery } from "./router/helpers";
 import { getLabelerState } from "./labels/resolve";
 import { applyLabels, type IncomingLabel } from "./labels/apply";
-import {
-  getModerationPolicyGeneration,
-  lockModerationPolicyStatement,
-  moderationPolicyGenerationSql,
-  runModerationPolicyJob,
-} from "./moderation-policy";
 
 const LAST_RECONCILED_MODERATOR_KEY = "moderation_last_attempted_moderator";
 /** Per-moderator listRecords cursor of a sweep paused by its budget. */
@@ -262,8 +260,6 @@ export async function runLabelBackfillQueue(
       .map((s) => [s.did, s]),
   );
   if (!sources.size) return 0;
-  const policyGeneration = await getModerationPolicyGeneration(db, config);
-  if (!policyGeneration) return 0;
   const rows = await db
     .prepare(
       `SELECT src, did, cursor, retries, generation FROM label_backfill_queue
@@ -278,7 +274,7 @@ export async function runLabelBackfillQueue(
     for (let row = queue.shift(); row; row = queue.shift()) {
       if (Date.now() >= deadline) return;
       attempted++;
-      await backfillOne(db, config, sources.get(row.src)!, row, policyGeneration, deadline);
+      await backfillOne(db, config, sources.get(row.src)!, row, deadline);
     }
   };
   await Promise.all(
@@ -292,25 +288,10 @@ async function backfillOne(
   config: ContrailConfig,
   source: NonNullable<ContrailConfig["labels"]>["sources"][number],
   row: LabelBackfillRow,
-  policyGeneration: string,
   deadline: number,
 ): Promise<void> {
-  const queueGuard = `src = ? AND did = ? AND generation = ? AND completed = 0
-    AND ${moderationPolicyGenerationSql()}`;
-  const guardArgs = [row.src, row.did, row.generation, policyGeneration];
-  const writeGuard = {
-    sql: `EXISTS (SELECT 1 FROM label_backfill_queue WHERE ${queueGuard})`,
-    bindings: guardArgs,
-  };
-  // Consistent lock order: policy -> moderation -> queue. Each following
-  // statement gets a fresh PostgreSQL snapshot; SQLite/D1 serialize batches.
-  // The queue lock also serializes first-identity resets with this commit.
-  const locks = () => [
-    lockModerationPolicyStatement(db),
-    ...moderationLockStatements(db),
-    db.prepare("UPDATE label_backfill_queue SET generation = generation WHERE src = ? AND did = ?")
-      .bind(row.src, row.did),
-  ];
+  const queueGuard = "src = ? AND did = ? AND generation = ? AND completed = 0";
+  const guardArgs = [row.src, row.did, row.generation];
   let resetCursor = false;
   try {
     const state = await getLabelerState(db, row.src, source.endpoint, {
@@ -359,8 +340,6 @@ async function backfillOne(
       source,
       config,
       knownDids: new Set([row.did]),
-      leadingStatements: locks(),
-      writeGuard,
       trailingStatements: [
         db
           .prepare(
@@ -371,17 +350,17 @@ async function backfillOne(
       ],
     });
   } catch (error) {
-    await db.batch([
-      ...locks(),
-      db.prepare(
+    await db
+      .prepare(
         `UPDATE label_backfill_queue SET cursor = CASE WHEN CAST(? AS INTEGER) = 1 THEN NULL ELSE cursor END,
           retries = retries + 1, next_attempt_at = ?, generation = generation + 1 WHERE ${queueGuard}`,
-      ).bind(
+      )
+      .bind(
         resetCursor ? 1 : 0,
         Date.now() + Math.min(3_600_000, 30_000 * 2 ** Math.min(row.retries, 7)),
         ...guardArgs,
-      ),
-    ]);
+      )
+      .run();
     (config.logger ?? console).warn(
       `[labels] first-seen backfill ${row.did} failed: ${error}`,
     );
@@ -493,23 +472,26 @@ export async function runModerationRecounts(
   return pages;
 }
 
-/** Bounded moderation maintenance for one scheduled tick: pending policy
- * changes, moderator action reconciliation, first-seen label backfill and
- * visibility recounts. */
+/** Whether this config can have any background moderation work (moderator
+ * action reconciliation, first-seen label backfill, or visibility recounts). */
+export function needsModerationCycle(config: ContrailConfig): boolean {
+  const hasModerators = (config.moderation?.moderators.length ?? 0) > 0;
+  const hasKnownLabelSources = (config.labels?.sources ?? []).some(
+    (s) => s.subjects === "known" && !s.records,
+  );
+  return hasModerators || hasKnownLabelSources || hasCountedRelations(config);
+}
+
+/** Bounded moderation maintenance for one scheduled tick: moderator action
+ * reconciliation, first-seen label backfill, and visibility recounts. */
 export async function runModerationCycle(
   db: Database,
   config: ContrailConfig,
   deadline = Date.now() + 10_000,
   options: { reconcile?: boolean } = {},
-): Promise<{ policyPages: number; backfilled: number; recountPages: number }> {
+): Promise<{ backfilled: number; recountPages: number }> {
   const log = config.logger ?? console;
   const step = (ms: number) => Math.min(deadline, Date.now() + ms);
-  let policyPages = 0;
-  try {
-    policyPages = await runModerationPolicyJob(db, config, { deadline: step(3_000) });
-  } catch (error) {
-    log.warn(`[moderation] policy job failed: ${error}`);
-  }
   if (options.reconcile !== false)
     await reconcileModeratorActions(db, config, step(3_000));
   let backfilled = 0;
@@ -524,7 +506,7 @@ export async function runModerationCycle(
   } catch (error) {
     log.warn(`[moderation] recount cycle failed: ${error}`);
   }
-  return { policyPages, backfilled, recountPages };
+  return { backfilled, recountPages };
 }
 
 /** Long-lived equivalent of `runModerationCycle`. Loops immediately while
@@ -540,13 +522,13 @@ export async function runPersistentModeration(
   while (!signal?.aborted) {
     const reconcile = Date.now() - lastReconcile >= idleMs;
     if (reconcile) lastReconcile = Date.now();
-    const { policyPages, backfilled, recountPages } = await runModerationCycle(
+    const { backfilled, recountPages } = await runModerationCycle(
       db,
       config,
       Date.now() + 10_000,
       { reconcile },
     );
-    if (policyPages || backfilled || recountPages) continue;
+    if (backfilled || recountPages) continue;
     await new Promise<void>((resolve) => {
       const finish = () => {
         clearTimeout(timer);
