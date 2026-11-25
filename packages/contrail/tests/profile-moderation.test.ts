@@ -133,15 +133,14 @@ describe("record-scoped profile moderation", () => {
   });
 
   it.each([
-    { starts: null, expires: null, hidden: true },
-    { starts: 3_600, expires: null, hidden: false },
-    { starts: null, expires: -1, hidden: false },
-    { starts: -3_600, expires: 3_600, hidden: true },
-  ])("evaluates visibility boundaries in the joined read: %j", async ({ starts, expires, hidden }) => {
+    { expires: null, hidden: true },
+    { expires: -1, hidden: false },
+    { expires: 3_600, hidden: true },
+  ])("evaluates expiry boundaries in the joined read: %j", async ({ expires, hidden }) => {
     const { db, config, fetch } = await setup();
     const now = Math.floor(Date.now() / 1_000);
-    await db.prepare("INSERT INTO moderation_hidden (subject, kind, cid, starts_at, exp) VALUES (?, 'action', ?, ?, ?)")
-      .bind(uri, cid, starts === null ? null : now + starts, expires === null ? null : now + expires).run();
+    await db.prepare("INSERT INTO moderation_hidden (subject, kind, cid, exp) VALUES (?, 'action', ?, ?)")
+      .bind(uri, cid, expires === null ? null : now + expires).run();
     const profiles = await resolveProfiles(db, config, [did]);
     expect(!!profiles[did]).toBe(!hidden);
     expect(fetch).not.toHaveBeenCalled();

@@ -23,7 +23,7 @@ import {
   ftsTableName,
   getSearchableFields,
 } from "../search";
-import { buildLabelsSchema } from "../labels/schema";
+import { buildLabelsSchema } from "../labels";
 import {
   buildModerationSchema,
   MODERATION_SOURCES_KEY,
@@ -891,7 +891,7 @@ async function upgradeModerationCreationTimestamps(db: Database): Promise<void> 
     db.prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, 'seconds') ON CONFLICT(key) DO NOTHING").bind(key),
     db.prepare("UPDATE _contrail_meta SET value = value WHERE key = ?").bind(key),
     ...moderationLockStatements(db),
-    ...["labels", "moderation_actions", "moderation_overrides"].map((table) =>
+    ...["labels", "moderation_actions"].map((table) =>
       db.prepare(`UPDATE ${table} SET cts = cts * 1000 WHERE ${pending}`).bind(key),
     ),
     db.prepare("UPDATE _contrail_meta SET value = 'milliseconds' WHERE key = ?").bind(key),

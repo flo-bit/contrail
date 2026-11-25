@@ -242,12 +242,20 @@ export type {
   ModerationReportsOptions,
 } from "./core/moderation-reports";
 export { moderationActionLexicon } from "./lexicons/moderation";
-export { extractSelfLabels } from "./core/labels/self";
-export type { SelfLabel } from "./core/labels/self";
-export { hydrateLabels } from "./core/labels/hydrate";
-export type { HydratedLabel } from "./core/labels/hydrate";
-export { selectAcceptedLabelers } from "./core/labels/select";
-export type { SelectedLabelers } from "./core/labels/select";
+export {
+  extractSelfLabels,
+  hydrateLabels,
+  selectAcceptedLabelers,
+} from "./core/labels";
+export type {
+  HydratedLabel,
+  LabelRow,
+  LabelerCursorRow,
+  LabelerSource,
+  LabelsConfig,
+  SelectedLabelers,
+  SelfLabel,
+} from "./core/labels";
 export { applyLabels } from "./core/labels/apply";
 export type { IncomingLabel } from "./core/labels/apply";
 export {
@@ -255,9 +263,3 @@ export {
   runPersistentLabels,
 } from "./core/labels/subscribe";
 export type { PersistentLabelsOptions } from "./core/labels/subscribe";
-export type {
-  LabelRow,
-  LabelerCursorRow,
-  LabelerSource,
-  LabelsConfig,
-} from "./core/labels/types";

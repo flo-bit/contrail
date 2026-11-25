@@ -1,5 +1,5 @@
 import type { ContrailConfig, Database, Statement } from "../types";
-import type { LabelerSource } from "./types";
+import type { LabelerSource } from "./index";
 import {
   HIDE_LABEL_VALUES,
   moderationLockStatements,
@@ -104,8 +104,6 @@ export async function applyLabels(
     // Keep subsecond ordering: historical replay must not overwrite a later
     // live assertion/retraction merely because both occurred in one second.
     const cts = Date.parse(l.cts);
-    // Overrides only suppress labels created before them, so a forward-dated
-    // cts would make a label immune to moderator overrides.
     if (!Number.isFinite(cts) || cts > maxCts) continue;
     const exp = l.exp ? isoToUnixSec(l.exp) : null;
     if (l.exp !== undefined && exp === null) continue;

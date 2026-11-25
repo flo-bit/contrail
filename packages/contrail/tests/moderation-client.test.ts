@@ -9,7 +9,6 @@ import {
   createModerationAction,
   deleteModerationAction,
   listReports,
-  loadReportInboxes,
   moderationOAuthScope,
   resolveReport,
   submitReport,
@@ -154,29 +153,6 @@ describe("moderation client", () => {
     ]);
   });
 
-  it("fans out with source provenance and reports partial failures", async () => {
-    const { client } = fakeClient();
-    const second = {
-      ...service,
-      endpoint: "https://second.example",
-      audience: "did:web:second.example#contrail" as AtprotoAudience,
-    };
-    const result = await loadReportInboxes({
-      client,
-      services: [service, second],
-      fetch: async (url) =>
-        (url as URL).hostname === "second.example"
-          ? Response.json({ error: "Forbidden" }, { status: 403 })
-          : Response.json({
-              reports: [{ id: 1, subject, createdAt: "2026-01-01T00:00:00Z" }],
-              cursor: "next",
-            }),
-    });
-    expect(result.reports[0]!.service.endpoint).toBe(service.endpoint);
-    expect(result.failures[0]!.service.endpoint).toBe(second.endpoint);
-    expect(result.cursors[service.endpoint]).toBe("next");
-  });
-
   it("never publishes private fields and only undoes own action records", async () => {
     const { calls, client } = fakeClient();
     await createModerationAction({
@@ -187,16 +163,6 @@ describe("moderation client", () => {
       // Extra fields a caller might spread in from a report.
       ...({ reason: "must not leak", notes: "private" } as object),
     });
-    for (const labels of [[], [""]])
-      await expect(
-        createModerationAction({
-          client,
-          did: subject.did,
-          subject: subject.did,
-          action: "override",
-          labels,
-        }),
-      ).rejects.toThrow("Override labels must be nonempty");
     expect(calls).toHaveLength(1);
     const record = calls[0]!.options.input.record;
     expect(record.reason).toBeUndefined();

@@ -10,29 +10,18 @@ import {
 } from "./moderation";
 import { createIngestEvent, ingestRecords } from "./ingest";
 import { childRecountStatements } from "./db/records";
-import { getMeta, setMeta } from "./db/meta";
 import { getDialect, isPostgresDialect } from "./dialect";
 import { batchedInQuery } from "./router/helpers";
-import { getLabelerState } from "./labels/resolve";
+import { getLabelerState } from "./labels/subscribe";
 import { applyLabels, type IncomingLabel } from "./labels/apply";
 
-const LAST_RECONCILED_MODERATOR_KEY = "moderation_last_attempted_moderator";
-/** Per-moderator listRecords cursor of a sweep paused by its budget. */
-const RECONCILE_CURSOR_PREFIX = "moderation_reconcile_cursor:";
 const MAX_RECONCILE_RECORDS = 1000;
 const MAX_RECONCILE_PAGES = 10;
 
-/** Missed deletions are retracted only from a COMPLETE listing fetched within
- * one cycle. A partial page, timeout or malformed response never retracts
- * local actions. Pagination and work per cycle are bounded: a listing that
- * exceeds the budget applies the creates/updates seen so far and resumes from
- * a durable cursor next cycle, so large repos still converge on changes (their
- * deletions rely on live ingestion and fail closed). Local lookups are bounded
- * too, and inferred deletions share the 1000-mutation budget with updates.
- * A large local deletion backlog drains over repeated complete fresh listings.
- * Persist the last attempt
- * so timeouts cannot starve later moderators, even across scheduled
- * invocations in different Worker isolates. */
+/** Best-effort PDS safety net for moderator actions (live changes arrive via
+ * Jetstream and `notify`). Fetches up to 1,000 records per moderator and
+ * ingests only diffs; missed deletions are retracted only when the full
+ * listing completes cleanly without error or truncation. */
 export async function reconcileModeratorActions(
   db: Database,
   config: ContrailConfig,
@@ -40,21 +29,12 @@ export async function reconcileModeratorActions(
 ): Promise<void> {
   const moderators = config.moderation?.moderators ?? [];
   if (!moderators.length || Date.now() >= deadline) return;
-  const last = moderators.length > 1
-    ? await getMeta(db, LAST_RECONCILED_MODERATOR_KEY)
-    : null;
-  const start = (moderators.indexOf(last ?? "") + 1) % moderators.length;
-  for (let offset = 0; offset < moderators.length; offset++) {
+  const table = recordsTableName(
+    resolveCollectionKey(config, MODERATION_ACTION_NSID) ?? "moderationAction",
+  );
+  for (const did of moderators) {
     if (Date.now() >= deadline) break;
-    const did = moderators[(start + offset) % moderators.length]!;
-    // Advance before network I/O so failed/interrupted listings rotate too.
-    // A single moderator needs no scheduling metadata writes.
-    if (moderators.length > 1)
-      await setMeta(db, LAST_RECONCILED_MODERATOR_KEY, did);
-    const cursorKey = `${RECONCILE_CURSOR_PREFIX}${did}`;
-    let resumed: string | undefined;
     try {
-      resumed = (await getMeta(db, cursorKey)) ?? undefined;
       const timeUs = Date.now() * 1000;
       const pds = await getPDS(
         did as Did,
@@ -67,18 +47,17 @@ export async function reconcileModeratorActions(
         string,
         { uri: string; cid: string; value: unknown }
       >();
-      let cursor = resumed;
-      const cursors = new Set<string>(resumed ? [resumed] : []);
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
       let pages = 0;
-      let paused = false;
-      let resetCursor = false;
+      let complete = true;
       do {
         if (
           Date.now() >= deadline ||
           records.size >= MAX_RECONCILE_RECORDS ||
           pages >= MAX_RECONCILE_PAGES
         ) {
-          paused = true;
+          complete = false;
           break;
         }
         pages++;
@@ -92,9 +71,6 @@ export async function reconcileModeratorActions(
             signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
           });
           if (!response.ok) {
-            // A rejected cursor may be stale. Timeouts, rate limits and server
-            // failures must keep the last successfully validated position.
-            resetCursor = !!cursor && response.status === 400;
             throw new Error(`Moderator listing HTTP ${response.status}`);
           }
           const data = (await response.json()) as {
@@ -113,36 +89,26 @@ export async function reconcileModeratorActions(
             )
               throw new Error("Invalid moderator record");
           }
-          if (data.cursor !== undefined &&
-              (typeof data.cursor !== "string" || !data.cursor || cursors.has(data.cursor))) {
-            resetCursor = true;
+          if (
+            data.cursor !== undefined &&
+            (typeof data.cursor !== "string" ||
+              !data.cursor ||
+              cursors.has(data.cursor))
+          ) {
             throw new Error("Invalid moderator cursor");
           }
-          // Accept only whole validated pages. In particular, a malformed
-          // final page must never turn this into a complete deletion sweep.
           for (const r of data.records) records.set(r.uri, r);
           cursor = data.cursor;
           if (cursor) cursors.add(cursor);
         } catch (error) {
-          paused = true;
+          complete = false;
           (config.logger ?? console).warn(
             `[moderation] reconcile ${did} page failed: ${error}`,
           );
           break;
         }
       } while (cursor);
-      // Deletions can only be inferred from one complete, fresh listing.
-      const complete = !paused && !resumed;
-      if (paused && !resumed && records.size >= MAX_RECONCILE_RECORDS)
-        (config.logger ?? console).warn(
-          `[moderation] ${did} has more than ${MAX_RECONCILE_RECORDS} actions; reconciling across cycles. Missed deletions are only applied from live ingestion.`,
-        );
-      // Only send what differs from local state: unchanged actions cost no
-      // writes, so a frequent reconcile stays cheap.
-      const table = recordsTableName(
-        resolveCollectionKey(config, MODERATION_ACTION_NSID) ??
-          "moderationAction",
-      );
+
       const local = new Map(
         (
           await batchedInQuery<{ uri: string; cid: string | null }>(
@@ -156,7 +122,6 @@ export async function reconcileModeratorActions(
       const events: IngestEvent[] = [];
       for (const r of records.values()) {
         if (local.get(r.uri) === r.cid) continue;
-        // Invalid remote actions are retracted by ingest; skip if absent.
         if (!parseModerationAction(r.value) && !local.has(r.uri)) continue;
         events.push(
           createIngestEvent({
@@ -174,13 +139,6 @@ export async function reconcileModeratorActions(
       }
       const deletionBudget = MAX_RECONCILE_RECORDS - events.length;
       if (complete && deletionBudget > 0) {
-        // The listing is a complete absence proof, but the local corpus may
-        // be much larger than it. Fetch only this cycle's remaining budget.
-        // No ORDER BY: the did index can stop after enough missing rows,
-        // without sorting/scanning the entire moderator's local history.
-        // A single JSON parameter keeps even a full listing below D1's bind
-        // limit. A subsequent cycle obtains a fresh complete absence proof
-        // before draining more; partial/resumed listings never undo actions.
         const listedUris = isPostgresDialect(getDialect(db))
           ? "SELECT jsonb_array_elements_text(CAST(? AS jsonb))"
           : "SELECT value FROM json_each(?)";
@@ -204,31 +162,8 @@ export async function reconcileModeratorActions(
             }),
           );
       }
-      // The sweep position commits with the changes it covers.
-      const progress =
-        resetCursor
-          ? [db.prepare("DELETE FROM _contrail_meta WHERE key = ? AND value = ?").bind(cursorKey, resumed ?? "")]
-          : paused && cursor !== resumed
-          ? [
-              db
-                .prepare(
-                  "INSERT INTO _contrail_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                )
-                .bind(cursorKey, cursor),
-            ]
-          : !paused && resumed
-            ? [db.prepare("DELETE FROM _contrail_meta WHERE key = ?").bind(cursorKey)]
-            : [];
-      // Validated pages and their cursor commit together, even when a later
-      // page failed. Missed deletions still require a complete fresh listing.
-      if (events.length)
-        await ingestRecords(db, events, config, {
-          trailingStatements: progress,
-        });
-      else if (progress.length) await db.batch(progress);
+      if (events.length) await ingestRecords(db, events, config);
     } catch (error) {
-      // Resolution/storage failures leave durable progress untouched. Only
-      // an explicitly rejected or malformed pagination cursor resets a sweep.
       (config.logger ?? console).warn(
         `[moderation] reconcile ${did} failed: ${error}`,
       );

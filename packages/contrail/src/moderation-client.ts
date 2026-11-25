@@ -257,49 +257,6 @@ export function resolveReport(options: {
   );
 }
 
-/** One bounded page from each instance. Preserve provenance for resolving back
- * to the correct inbox, and surface partial failures instead of hiding them. */
-export async function loadReportInboxes(options: {
-  client: Client;
-  services: ModerationService[];
-  cursors?: Record<string, string>;
-  signal?: AbortSignal;
-  fetch?: typeof globalThis.fetch;
-}) {
-  if (
-    options.services.length > 20 ||
-    new Set(options.services.map((s) => s.endpoint)).size !==
-      options.services.length
-  ) {
-    throw new TypeError("Use at most 20 unique moderation services");
-  }
-  const pages = await Promise.allSettled(
-    options.services.map((service) =>
-      listReports({
-        ...options,
-        service,
-        cursor: options.cursors?.[service.endpoint],
-      }),
-    ),
-  );
-  const reports: Array<ModerationReport & { service: ModerationService }> = [];
-  const cursors: Record<string, string> = {};
-  const failures: Array<{ service: ModerationService; error: unknown }> = [];
-  pages.forEach((page, index) => {
-    const service = options.services[index]!;
-    if (page.status === "rejected") {
-      failures.push({ service, error: page.reason });
-      return;
-    }
-    reports.push(
-      ...page.value.reports.map((report) => ({ ...report, service })),
-    );
-    if (page.value.cursor) cursors[service.endpoint] = page.value.cursor;
-  });
-  reports.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  return { reports, cursors, failures };
-}
-
 /** Deliberately whitelist public fields. Private report reasons/notes can
  * never be copied into a moderator's public repository by object spreading. */
 export async function createModerationAction(options: {
@@ -308,8 +265,6 @@ export async function createModerationAction(options: {
   subject: string;
   action: string;
   subjectCid?: string;
-  labels?: string[];
-  src?: Did;
   expiresAt?: string;
 }) {
   if (
@@ -317,9 +272,6 @@ export async function createModerationAction(options: {
     !options.subject.startsWith("at://did:")
   ) {
     throw new TypeError("Expected a DID or DID-authority record URI");
-  }
-  if (options.labels && (!options.labels.length || options.labels.some((v) => !v))) {
-    throw new TypeError("Override labels must be nonempty; omit them for all values");
   }
   const result = await options.client.post("com.atproto.repo.createRecord", {
     input: {
@@ -331,12 +283,6 @@ export async function createModerationAction(options: {
         subject: options.subject,
         action: options.action,
         ...(options.subjectCid ? { subjectCid: options.subjectCid } : {}),
-        ...(options.action === "override"
-          ? {
-              ...(options.labels ? { labels: options.labels } : {}),
-              ...(options.src ? { src: options.src } : {}),
-            }
-          : {}),
         ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
         createdAt: new Date().toISOString(),
       },

@@ -329,7 +329,7 @@ export interface ContrailConfig {
    *  configured labelers, indexes their labels into a single `labels` table,
    *  and hydrates `record.labels` onto `listRecords` / `getRecord` / profile
    *  responses gated by the caller's `atproto-accept-labelers` header. */
-  labels?: import("./labels/types").LabelsConfig;
+  labels?: import("./labels").LabelsConfig;
   moderation?: import("./moderation").ModerationConfig;
   /** Constellation-backed reverse-follower lookup (default: enabled).
    *  When a DID is first seen producing a discoverable record, contrail
