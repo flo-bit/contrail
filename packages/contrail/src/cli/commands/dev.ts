@@ -242,6 +242,27 @@ async function runSqliteDev(
     surface: "public",
     quiet: true,
   });
+  const loadedIds = new Set(
+    lexicons
+      .map((doc) => (doc as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const missingNsids = [
+    ...new Set([
+      ...Object.values(config.collections).map((c) => c.collection),
+      ...(config.profiles ?? []).map((p) =>
+        typeof p === "string" ? p : p.collection,
+      ),
+    ]),
+  ].filter(
+    (nsid): nsid is string => typeof nsid === "string" && !loadedIds.has(nsid),
+  );
+  if (missingNsids.length > 0) {
+    console.warn(
+      `warning: missing source Lexicons for ${missingNsids.join(", ")}; ` +
+        `record values will be typed as unknown. Pull them into lexicons/pulled/ with @atcute/lex-cli.`,
+    );
+  }
   const db = createSqliteDatabase(databasePath);
   const contrail = new Contrail({ ...config, db, lexicons });
   await contrail.init();

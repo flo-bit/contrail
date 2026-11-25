@@ -32,8 +32,12 @@ export async function reconcileModeratorActions(
   const table = recordsTableName(
     resolveCollectionKey(config, MODERATION_ACTION_NSID) ?? "moderationAction",
   );
+  const log = config.logger ?? console;
   for (const did of moderators) {
-    if (Date.now() >= deadline) break;
+    if (Date.now() >= deadline) {
+      log.warn(`[moderation] reconcile hit deadline before ${did}; remaining moderators skipped`);
+      break;
+    }
     try {
       const timeUs = Date.now() * 1000;
       const pds = await getPDS(
@@ -51,13 +55,16 @@ export async function reconcileModeratorActions(
       const cursors = new Set<string>();
       let pages = 0;
       let complete = true;
+      let truncatedReason: "cap" | "deadline" | null = null;
       do {
-        if (
-          Date.now() >= deadline ||
-          records.size >= MAX_RECONCILE_RECORDS ||
-          pages >= MAX_RECONCILE_PAGES
-        ) {
+        if (Date.now() >= deadline) {
           complete = false;
+          truncatedReason = "deadline";
+          break;
+        }
+        if (records.size >= MAX_RECONCILE_RECORDS || pages >= MAX_RECONCILE_PAGES) {
+          complete = false;
+          truncatedReason = "cap";
           break;
         }
         pages++;
@@ -102,12 +109,22 @@ export async function reconcileModeratorActions(
           if (cursor) cursors.add(cursor);
         } catch (error) {
           complete = false;
-          (config.logger ?? console).warn(
+          log.warn(
             `[moderation] reconcile ${did} page failed: ${error}`,
           );
           break;
         }
       } while (cursor);
+      if (truncatedReason === "cap") {
+        log.warn(
+          `[moderation] reconcile ${did} hit the ${MAX_RECONCILE_RECORDS}-record / ${MAX_RECONCILE_PAGES}-page cap ` +
+            `(${records.size} records listed); remaining actions and deletion checks skipped`,
+        );
+      } else if (truncatedReason === "deadline") {
+        log.warn(
+          `[moderation] reconcile ${did} hit deadline after ${records.size} records; deletion checks skipped`,
+        );
+      }
 
       const local = new Map(
         (

@@ -600,12 +600,33 @@ async function applyFtsTables(
   config: ContrailConfig,
   dialect: SqlDialect,
   storedFtsRaw: string | undefined,
+  hasExistingV17Schema: boolean,
 ): Promise<void> {
   if (dialect.ftsStrategy === "generated-column") {
     const nextJson = JSON.stringify(buildFtsFingerprintsMap(config));
     if (storedFtsRaw === nextJson) return;
-    for (const statement of buildFtsTables(config, dialect)) {
-      await runIdempotentDdl(db, statement);
+    if (hasExistingV17Schema && storedFtsRaw === undefined) {
+      for (const [collection, colConfig] of Object.entries(config.collections)) {
+        const fields = getSearchableFields(collection, colConfig);
+        if (!fields || fields.length === 0) continue;
+        const table = recordsTableName(collection);
+        const existing = await db
+          .prepare(
+            `SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = ? AND column_name = 'search_vector'`,
+          )
+          .bind(table)
+          .first();
+        const statements = buildFtsSchema(dialect, table, fields);
+        for (const statement of statements) {
+          if (existing && /^ALTER TABLE\b/i.test(statement)) continue;
+          await runIdempotentDdl(db, statement);
+        }
+      }
+    } else {
+      for (const statement of buildFtsTables(config, dialect)) {
+        await runIdempotentDdl(db, statement);
+      }
     }
     await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
     return;
@@ -636,11 +657,16 @@ async function applyFtsTables(
       continue;
     }
 
-    if (columns.length > 0 && storedFts[collection] === expectedFp) {
+    if (
+      columns.length > 0 &&
+      (storedFts[collection] === expectedFp ||
+        (hasExistingV17Schema && storedFtsRaw === undefined))
+    ) {
       const rowsColumns = await virtualFtsColumns(db, rowsTable);
       if (rowsColumns.length > 0) {
-        // Collection's FTS tables exist in content-only form and match its
-        // searchable fields — never rebuild just because unrelated config changed.
+        // Collection's FTS tables exist in content-only form and either match
+        // its recorded searchable fields or belong to an initialized pre-marker
+        // v17 database — never rebuild just because unrelated schema changed.
         activeFts[collection] = expectedFp;
         continue;
       }
@@ -749,16 +775,25 @@ const MIGRATIONS: MigrationOp[] = [
 async function runMigrations(
   db: Database,
   hasFeeds: boolean,
-): Promise<void> {
+): Promise<boolean> {
+  let migratedProjectionToken = false;
   for (const operation of MIGRATIONS) {
     if (operation.target === "feeds" && !hasFeeds) continue;
-    await addColumnIfNotExists(
+    const added = await addColumnIfNotExists(
       db,
       operation.table,
       operation.column,
       operation.columnDef,
     );
+    if (
+      added &&
+      operation.table === "record_versions" &&
+      operation.column === "projection_token"
+    ) {
+      migratedProjectionToken = true;
+    }
   }
+  return migratedProjectionToken;
 }
 
 /** Pluggable schema extension retained for applications with their own tables. */
@@ -887,6 +922,11 @@ export async function initSchema(
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
   const storedFtsRaw = meta.get(FTS_FINGERPRINTS_KEY);
   const storedLegacyVersion = meta.get(LEGACY_MIGRATIONS_KEY) ?? null;
+  // Databases initialized by v0.24–v0.32 already completed v17 setup (content-only
+  // FTS5, `record_versions.projection_token`, legacy version seeding) before the
+  // decoupled `fts_fingerprints` / `legacy_migrations_version` markers existed.
+  const hasExistingV17Schema =
+    storedFingerprint !== null && meta.get(MODERATION_CTS_UNIT_KEY) === "milliseconds";
   const expectedFtsJson = JSON.stringify(buildFtsFingerprintsMap(config));
   const ftsChanged = storedFtsRaw !== undefined && storedFtsRaw !== expectedFtsJson;
   const applyRepositoryScopes = async () => {
@@ -907,7 +947,7 @@ export async function initSchema(
       // On SQLite/D1, changing a collection's searchable fields does not alter
       // the CREATE VIRTUAL TABLE DDL in `schema_fingerprint`; rebuild only the
       // collections whose FTS fingerprint changed.
-      await applyFtsTables(db, config, dialect, storedFtsRaw);
+      await applyFtsTables(db, config, dialect, storedFtsRaw, hasExistingV17Schema);
       if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
         await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
       }
@@ -949,15 +989,11 @@ export async function initSchema(
   // Existing queues need the generation column for concurrent worker guards.
   // CREATE TABLE IF NOT EXISTS only covers fresh databases.
   await addColumnIfNotExists(db, "label_backfill_queue", "generation", "INTEGER NOT NULL DEFAULT 0");
-  if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
-    await upgradeModerationCreationTimestamps(db);
-  }
-  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
 
-  await applyFtsTables(db, config, dialect, storedFtsRaw);
+  await applyFtsTables(db, config, dialect, storedFtsRaw, hasExistingV17Schema);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
-  await runMigrations(db, hasFeeds);
+  const migratedProjectionToken = await runMigrations(db, hasFeeds);
   // After the migrations: older databases gain `retry_exhausted` there.
   await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
   await db
@@ -968,7 +1004,9 @@ export async function initSchema(
     .run();
   await applyCountColumns(db, config);
 
-  const needsLegacyMigrations = storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION;
+  const needsLegacyMigrations =
+    storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION &&
+    (!hasExistingV17Schema || migratedProjectionToken);
   if (needsLegacyMigrations) {
     await db
       .prepare(
@@ -976,8 +1014,16 @@ export async function initSchema(
       )
       .run();
     await seedLegacyRecordVersions(db, config);
+  }
+  if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
     await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
   }
+  // Run after FTS/legacy migrations succeed so a retried interrupted bootstrap
+  // cannot prematurely stamp `moderation_cts_unit = 'milliseconds'`.
+  if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
+    await upgradeModerationCreationTimestamps(db);
+  }
+  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
   for (const apply of options.extraSchemas ?? []) await apply(db);
   await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
 }

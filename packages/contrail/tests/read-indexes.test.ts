@@ -7,7 +7,11 @@ import {
   sqliteDialect,
   postgresDialect,
 } from "../src/index";
-import { buildDynamicIndexes } from "../src/core/db/schema";
+import {
+  buildDynamicIndexes,
+  FTS_FINGERPRINTS_KEY,
+  LEGACY_MIGRATIONS_KEY,
+} from "../src/core/db/schema";
 import { getMeta, setMeta } from "../src/core/db/meta";
 import type { Database, Statement } from "../src/index";
 import { createTestDb, makeEvent, TEST_POSTGRES } from "./helpers";
@@ -187,6 +191,10 @@ describe("bounded record read indexes", () => {
     await db.prepare("INSERT INTO moderation_hidden (subject, kind) VALUES (?, 'label')").bind(posts[1]!.uri).run();
     await downgradeIndexes(db);
     await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT);
+    await db
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
     if (variant === "interrupted") {
       await db.prepare(buildDynamicIndexes(CONFIG, TEST_POSTGRES ? postgresDialect : sqliteDialect)[0]!).run();
       await db.prepare("DROP INDEX idx_post_category").run();
@@ -251,6 +259,10 @@ describe("bounded record read indexes", () => {
     await initSchema(db, CONFIG);
     await downgradeIndexes(db);
     await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT);
+    await db
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
     await Promise.all([initSchema(db, CONFIG), initSchema(db, CONFIG), initSchema(db, CONFIG)]);
     await expectReadIndexes(db);
   });

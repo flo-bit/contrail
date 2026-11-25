@@ -12,7 +12,46 @@ pnpm contrail lexicons generate
 pnpm contrail lexicons generate --config ../my-appview/contrail.config.ts
 ```
 
-Point your `lex.config.js` at `lexicons/generated/**/*.json` alongside your source Lexicons and run `pnpm exec lex-cli generate` (and `lex-cli pull` when fetching upstream schemas).
+Point your user-managed `lex.config.js` at `lexicons/generated/**/*.json` alongside your source Lexicons (listing upstream collection/profile NSIDs, plus `com.atproto.label.defs` / `com.atproto.repo.strongRef` if referenced, under `pull.sources`):
+
+```js
+// lex.config.js
+import { defineLexiconConfig } from "@atcute/lex-cli";
+
+export default defineLexiconConfig({
+  generate: {
+    files: [
+      "lexicons/custom/**/*.json",
+      "lexicons/pulled/**/*.json",
+      "lexicons/generated/**/*.json",
+    ],
+    outdir: "src/lexicon-types/",
+  },
+  pull: {
+    outdir: "lexicons/pulled/",
+    clean: true,
+    sources: [
+      {
+        type: "atproto",
+        mode: "nsids",
+        nsids: [
+          "app.bsky.actor.profile",
+          "com.atproto.label.defs",
+          "com.atproto.repo.strongRef",
+          "community.lexicon.calendar.event",
+        ],
+      },
+    ],
+  },
+});
+```
+
+Then pull upstream schemas (whenever collections change) and generate ambient TypeScript types:
+
+```bash
+pnpm exec lex-cli pull
+pnpm exec lex-cli generate
+```
 
 ## Separate consumer app (deployed AppView)
 

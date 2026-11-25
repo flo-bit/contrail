@@ -465,4 +465,92 @@ describe("schema fingerprint gate", () => {
         .records,
     ).toHaveLength(1);
   });
+
+  it("upgrades a pre-marker v17 database (0.28–0.32) without rebuilding FTS or reseeding record_versions", async () => {
+    const real = createSqliteDatabase(":memory:");
+    const searchConfig = resolveConfig({
+      namespace: "com.example",
+      profiles: [],
+      collections: {
+        event: {
+          collection: "community.lexicon.calendar.event",
+          queryable: { mode: {} },
+          searchable: ["name"],
+        },
+      },
+    });
+    await initSchema(real, searchConfig);
+    await ingestRecords(
+      real,
+      [
+        makeEvent({
+          uri: "at://did:plc:alice/community.lexicon.calendar.event/e1",
+          did: "did:plc:alice",
+          collection: "community.lexicon.calendar.event",
+          rkey: "e1",
+          record: { name: "LegacyUpgradeEvent", mode: "in-person" },
+          time_us: 1000,
+        }),
+      ],
+      searchConfig,
+    );
+    await saveCursor(real, 77_000);
+
+    // Simulate a database created by 0.28–0.31: prior schema_fingerprint,
+    // moderation_cts_unit='milliseconds', no decoupled FTS/legacy markers,
+    // no idx_backfills_pending, and legacy moderation_effective_labels view
+    // referencing moderation_overrides.
+    await setMeta(real, "schema_fingerprint", "legacy-0.29.1-fp:cursor-observations-v1");
+    await real
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
+    await real.prepare("DROP INDEX idx_backfills_pending").run();
+    await real
+      .prepare(
+        "CREATE TABLE moderation_overrides (uri TEXT PRIMARY KEY, moderator TEXT NOT NULL, subject TEXT NOT NULL, val TEXT NOT NULL, cts INTEGER NOT NULL)",
+      )
+      .run();
+    await real.prepare("DROP VIEW moderation_effective_labels").run();
+    await real
+      .prepare(
+        `CREATE VIEW moderation_effective_labels AS
+         SELECT l.* FROM labels l
+         WHERE NOT EXISTS (SELECT 1 FROM moderation_overrides o WHERE o.subject = l.uri)`,
+      )
+      .run();
+
+    const upgraded = recordingDb(real);
+    await initSchema(upgraded.db, searchConfig);
+
+    const sqlLog = upgraded.prepares.join("\n");
+    expect(sqlLog).not.toMatch(/DELETE FROM fts_|INSERT INTO fts_/i);
+    expect(sqlLog).not.toMatch(/UPDATE record_versions|INSERT INTO record_versions/i);
+    expect(sqlLog).not.toMatch(/UPDATE labels SET cts/i);
+
+    // Additive index and refreshed moderation view are installed.
+    expect(
+      await real
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_backfills_pending'")
+        .first(),
+    ).toBeTruthy();
+    await real.prepare("DROP TABLE moderation_overrides").run();
+    expect(
+      (await real.prepare("SELECT * FROM moderation_effective_labels").all()).results,
+    ).toEqual([]);
+
+    // Decoupled markers are stamped and existing data/search/cursor survive.
+    expect(await getMeta(real, FTS_FINGERPRINTS_KEY)).toBeTruthy();
+    expect(await getMeta(real, LEGACY_MIGRATIONS_KEY)).toBeTruthy();
+    expect(await getLastCursor(real)).toBe(77_000);
+    expect(
+      (await queryRecords(real, searchConfig, { collection: "event", search: "LegacyUpgradeEvent" }))
+        .records,
+    ).toHaveLength(1);
+
+    // Subsequent init returns to the 1-query steady state.
+    const steady = recordingDb(real);
+    await initSchema(steady.db, searchConfig);
+    expect(steady.prepares).toHaveLength(1);
+  });
 });

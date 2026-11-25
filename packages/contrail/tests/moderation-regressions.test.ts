@@ -184,4 +184,28 @@ describe("interrupted moderator reconciliation", () => {
       expect(await actions(db)).toEqual([remote("a").uri, remote("retained").uri]);
     } finally { fetchMock.mockRestore(); }
   });
+
+  it("warns and skips deletion inference when a moderator listing exceeds the 1,000-record cap", async () => {
+    const db = await setupReconcile();
+    await ingestRecords(db, [action("retained", { subject: actor, action: "!hide" })], config);
+    const warnings: string[] = [];
+    let page = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      const start = page * 100;
+      page++;
+      return Response.json({
+        records: Array.from({ length: 100 }, (_, i) => remote(`r-${start + i}`)),
+        cursor: `page-${page}`,
+      });
+    });
+    try {
+      await reconcileModeratorActions(db, {
+        ...config,
+        logger: { log() {}, warn: (msg: string) => warnings.push(msg), error() {} },
+      });
+      expect(page).toBe(10);
+      expect(warnings.some((w) => w.includes("1000-record") && w.includes("deletion checks skipped"))).toBe(true);
+      expect(await actions(db)).toContain(action("retained", { subject: actor, action: "!hide" }).uri);
+    } finally { fetchMock.mockRestore(); }
+  });
 });
