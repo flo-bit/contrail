@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runtimeCpuUsage } from "../src/core/runtime-telemetry";
+import { runtimeCpuUsage } from "../src/core/jetstream";
 
 describe("optional runtime CPU telemetry", () => {
   it("returns null when process or process.cpuUsage is absent", () => {

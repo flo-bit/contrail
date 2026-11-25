@@ -647,13 +647,12 @@ async function applyFtsTables(
   storedFtsRaw: string | undefined,
 ): Promise<void> {
   if (dialect.ftsStrategy === "generated-column") {
+    const nextJson = JSON.stringify(buildFtsFingerprintsMap(config));
+    if (storedFtsRaw === nextJson) return;
     for (const statement of buildFtsTables(config, dialect)) {
       await runIdempotentDdl(db, statement);
     }
-    const nextJson = JSON.stringify(buildFtsFingerprintsMap(config));
-    if (storedFtsRaw !== nextJson) {
-      await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
-    }
+    await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
     return;
   }
 
@@ -919,13 +918,7 @@ export async function initSchema(
     feeds,
     fts,
   });
-  const cursorObservationsFingerprint = `${baseFingerprint}:cursor-observations-v1`;
-  const fingerprint = `${cursorObservationsFingerprint}:backfills-pending-v1`;
-  const cursorObservationsDdl = `CREATE TABLE IF NOT EXISTS cursor_observations (
-    time_us ${dialect.bigintType} NOT NULL,
-    observation TEXT NOT NULL,
-    PRIMARY KEY (time_us, observation)
-  )`;
+  const fingerprint = `${baseFingerprint}:backfills-pending-v1`;
   // One steady-state read covers the schema, FTS, legacy migration, and
   // moderation policy gates.
   const meta = await getMetaValues(db, [
@@ -990,15 +983,11 @@ export async function initSchema(
   });
   if (
     storedFingerprint === baseFingerprint ||
-    storedFingerprint === cursorObservationsFingerprint ||
     storedFingerprint === priorBaseFingerprint ||
-    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1` ||
-    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1:backfills-pending-v1`
+    storedFingerprint === `${priorBaseFingerprint}:backfills-pending-v1`
   ) {
-    // These independent additive/removal changes must not force an otherwise-current
-    // deployment through the FTS rebuild path. Upgrade the prior fingerprint
-    // directly after their idempotent DDL succeeds.
-    await runIdempotentDdl(db, cursorObservationsDdl);
+    // Additive index upgrades must not force an otherwise-current deployment
+    // through the full schema path.
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyRepositoryScopes();
     await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
@@ -1014,7 +1003,7 @@ export async function initSchema(
     feeds: buildFeedTables(config, dialect, true),
     fts,
   });
-  if (storedFingerprint === legacyFingerprint || storedFingerprint === `${legacyFingerprint}:cursor-observations-v1`) {
+  if (storedFingerprint === legacyFingerprint) {
     // Only the read indexes changed. Do not turn this upgrade into a corpus
     // rewrite (FTS rebuild, legacy version seeding or relation recount).
     for (const statement of [...indexes, ...feeds.filter((sql) => sql.startsWith("CREATE INDEX"))]) {
@@ -1022,7 +1011,6 @@ export async function initSchema(
     }
     await retireSupersededQueryableIndexes(db, config);
     await applyRepositoryScopes();
-    await runIdempotentDdl(db, cursorObservationsDdl);
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
@@ -1048,7 +1036,6 @@ export async function initSchema(
   }
   await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
 
-  await runIdempotentDdl(db, cursorObservationsDdl);
   await applyFtsTables(db, config, dialect, storedFtsRaw);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
