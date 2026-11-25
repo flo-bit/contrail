@@ -6,11 +6,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+const require = createRequire(import.meta.url);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cli = join(packageRoot, "dist", "cli.js");
+const lexCli = join(dirname(require.resolve("@atcute/lex-cli")), "..", "cli.mjs");
 const root = mkdtempSync(join(packageRoot, ".built-lexicons-"));
 
 function run(command, args, cwd = packageRoot) {
@@ -116,7 +119,21 @@ try {
     throw new Error("generated CLI fixture is missing its query parameter");
   }
 
-  run(process.execPath, [cli, "lexicons", "types", "--root", root]);
+  writeFileSync(
+    join(root, "lex.config.js"),
+    `export default {
+  generate: {
+    files: [
+      "lexicons/custom/**/*.json",
+      "lexicons/pulled/**/*.json",
+      "lexicons/generated/**/*.json",
+    ],
+    outdir: "src/lexicon-types/",
+  },
+};
+`,
+  );
+  run(process.execPath, [lexCli, "generate"], root);
   const generatedTypes = join(
     root,
     "src",

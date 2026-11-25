@@ -2,16 +2,17 @@
 
 ## Same repo / monorepo
 
-When your app has access to `contrail.config.ts`, install Contrail and Atcute and generate the AppView Lexicons and TypeScript types directly:
+When your app has access to `contrail.config.ts`, install Contrail and Atcute, generate Contrail's XRPC Lexicons, and run `@atcute/lex-cli` to pull source schemas and generate TypeScript types:
 
 ```bash
 pnpm add @atmo-dev/contrail @atcute/client @atcute/lexicons
-pnpm contrail lexicons all
+pnpm add -D @atcute/lex-cli
+pnpm contrail lexicons generate
 # or point at a sibling AppView config:
-pnpm contrail lexicons all --config ../my-appview/contrail.config.ts
+pnpm contrail lexicons generate --config ../my-appview/contrail.config.ts
 ```
 
-`contrail lexicons all` generates your AppView XRPC Lexicons into `lexicons/generated/`, pulls referenced source Lexicons, and runs Atcute type generation into `src/lexicon-types/`.
+Point your `lex.config.js` at `lexicons/generated/**/*.json` alongside your source Lexicons and run `pnpm exec lex-cli generate` (and `lex-cli pull` when fetching upstream schemas).
 
 ## Separate consumer app (deployed AppView)
 
@@ -92,6 +93,6 @@ await contrail.post("com.example.notifyOfUpdate", {
 
 ## Updating
 
-Re-run `pnpm contrail lexicons all` whenever `contrail.config.ts` changes (or re-fetch `/.well-known/contrail` + `lexicons.url` and re-run `@atcute/lex-cli generate` for a separate consumer app). Use `pnpm contrail lexicons check` in CI to verify generated Lexicons stay in sync.
+Re-run `pnpm contrail lexicons generate` and `pnpm exec lex-cli generate` whenever `contrail.config.ts` changes (or re-fetch `/.well-known/contrail` + `lexicons.url` and re-run `@atcute/lex-cli generate` for a separate consumer app). Use `pnpm contrail lexicons check` in CI to verify generated Lexicons stay in sync.
 
 Next: [Configure and query](./03-configure-and-query.md).

@@ -53,7 +53,7 @@ export default createWorker(config, {
 contrail init [dir]
 contrail dev [--alluvium] [--wrangler] [--port 8787]
 contrail backfill [--remote] [--alluvium] [--env <name>] [--sqlite <path>]
-contrail lexicons all [--public]
+contrail lexicons generate [--public]
 contrail lexicons check
 ```
 

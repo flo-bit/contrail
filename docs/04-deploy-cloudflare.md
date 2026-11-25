@@ -27,7 +27,7 @@ export default {
 Generate the Lexicons:
 
 ```bash
-pnpm contrail lexicons all --public
+pnpm contrail lexicons generate --public
 ```
 
 Create `worker.ts`:
@@ -75,7 +75,7 @@ Verify the deployment:
 curl https://my-appview.example.com/status
 ```
 
-When changing config later: re-run `contrail lexicons all`, redeploy, and run `contrail backfill --remote` for new collections.
+When changing config later: re-run `contrail lexicons generate --public`, redeploy, and run `contrail backfill --remote` for new collections.
 
 ## Embedding in SvelteKit (Cloudflare Workers)
 
