@@ -85,42 +85,7 @@ function getResolved(config: ContrailConfig): ResolvedMaps {
   );
 }
 
-function buildBaseSchema(
-  dialect: SqlDialect,
-  includeLegacyBootstrapTables = false,
-): string {
-  // Retained strictly for computing prior schema fingerprints so existing
-  // databases upgrade without triggering a full FTS/version/count rebuild.
-  const legacyBootstrapTables = includeLegacyBootstrapTables
-    ? `
-CREATE TABLE IF NOT EXISTS bootstrap_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  phase TEXT NOT NULL CHECK (phase IN ('snapshot', 'catchup', 'complete')),
-  snapshot_json TEXT NOT NULL,
-  capture_source TEXT NOT NULL,
-  capture_epoch TEXT NOT NULL,
-  capture_cursor TEXT NOT NULL,
-  snapshot_complete INTEGER NOT NULL DEFAULT 0,
-  catchup_source TEXT,
-  catchup_epoch TEXT,
-  catchup_cursor TEXT,
-  change_source TEXT,
-  change_epoch TEXT,
-  change_cursor TEXT,
-  started_at ${dialect.bigintType} NOT NULL,
-  updated_at ${dialect.bigintType} NOT NULL,
-  finished_at ${dialect.bigintType}
-);
-CREATE TABLE IF NOT EXISTS bootstrap_snapshot_progress (
-  bootstrap_id INTEGER NOT NULL,
-  partition TEXT NOT NULL,
-  cursor TEXT,
-  completed INTEGER NOT NULL DEFAULT 0,
-  updated_at ${dialect.bigintType} NOT NULL,
-  PRIMARY KEY (bootstrap_id, partition),
-  FOREIGN KEY (bootstrap_id) REFERENCES bootstrap_state(id)
-);`
-    : "";
+function buildBaseSchema(dialect: SqlDialect): string {
   return `
 CREATE TABLE IF NOT EXISTS _contrail_meta (
   key TEXT PRIMARY KEY,
@@ -167,7 +132,7 @@ CREATE TABLE IF NOT EXISTS backfill_state (
   started_at ${dialect.bigintType},
   heartbeat_at ${dialect.bigintType},
   finished_at ${dialect.bigintType}
-);${legacyBootstrapTables}
+);
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
@@ -283,16 +248,6 @@ export function buildDynamicIndexes(
   config: ContrailConfig,
   dialect: SqlDialect,
 ): string[] {
-  return buildVersionedDynamicIndexes(config, dialect, false);
-}
-
-/** The old DDL is retained only to recognize an index-only upgrade without
- * rebuilding FTS, counts or source-ordering state on an existing database. */
-function buildVersionedDynamicIndexes(
-  config: ContrailConfig,
-  dialect: SqlDialect,
-  legacy: boolean,
-): string[] {
   const resolved = getResolved(config);
   const equality = equalityIndexNames(config);
   const orderedNames = orderedQueryableIndexNames(config);
@@ -302,7 +257,7 @@ function buildVersionedDynamicIndexes(
     const queryable =
       resolved.queryable[collection] ?? colConfig.queryable ?? {};
     for (const [field, fieldConfig] of Object.entries(queryable)) {
-      const ordered = !legacy && fieldConfig.type !== "range";
+      const ordered = fieldConfig.type !== "range";
       const baseName = queryableIndexName(collection, field);
       const name = ordered ? orderedNames.get(baseName)! : baseName;
       const expression = dialect.indexExpression(dialect.jsonExtract("record", field));
@@ -316,7 +271,7 @@ function buildVersionedDynamicIndexes(
       const childTable = recordsTableName(relation.collection);
       const name = queryableIndexName(relation.collection, on);
       // The ordered equality index already supports relation lookups by its prefix.
-      if (!legacy && equality.has(name)) continue;
+      if (equality.has(name)) continue;
       indexes.push(
         `CREATE INDEX IF NOT EXISTS ${name} ON ${childTable}(${dialect.indexExpression(dialect.jsonExtract("record", on))})`,
       );
@@ -476,7 +431,7 @@ export async function applyCountColumns(
   }
 }
 
-function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = false): string[] {
+function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   if (!config.feeds || Object.keys(config.feeds).length === 0) return [];
   const statements = [
     `CREATE TABLE IF NOT EXISTS feed_items (
@@ -488,7 +443,7 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = f
     )`,
     "CREATE INDEX IF NOT EXISTS idx_feed_actor_coll_time ON feed_items(actor, collection, time_us DESC)",
     "CREATE INDEX IF NOT EXISTS idx_feed_actor_time ON feed_items(actor, time_us DESC)",
-    ...(legacy ? [] : ["CREATE INDEX IF NOT EXISTS idx_feed_uri ON feed_items(uri)"]),
+    "CREATE INDEX IF NOT EXISTS idx_feed_uri ON feed_items(uri)",
     `CREATE TABLE IF NOT EXISTS feed_prune_cursor (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       actor TEXT
@@ -509,7 +464,7 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = f
   );
   const equality = equalityIndexNames(config);
   for (const collection of followCollections) {
-    if (!legacy && equality.has(queryableIndexName(collection, "subject"))) continue;
+    if (equality.has(queryableIndexName(collection, "subject"))) continue;
     statements.push(
       `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_subject ON ${recordsTableName(collection)}(${dialect.indexExpression(dialect.jsonExtract("record", "subject"))})`,
     );
@@ -970,48 +925,11 @@ export async function initSchema(
     for (const apply of options.extraSchemas ?? []) await apply(db);
     return;
   }
-  const priorBase = buildBaseSchema(dialect, true)
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
-  const priorBaseFingerprint = schemaFingerprint(config, dialect, {
-    base: priorBase,
-    collections,
-    indexes,
-    feeds,
-    fts,
-  });
-  if (
-    storedFingerprint === baseFingerprint ||
-    storedFingerprint === priorBaseFingerprint ||
-    storedFingerprint === `${priorBaseFingerprint}:backfills-pending-v1`
-  ) {
+  if (storedFingerprint === baseFingerprint) {
     // Additive index upgrades must not force an otherwise-current deployment
     // through the full schema path.
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyRepositoryScopes();
-    await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
-    for (const apply of options.extraSchemas ?? []) await apply(db);
-    await stampDecoupledMarkers();
-    await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
-    return;
-  }
-
-  const legacyFingerprint = schemaFingerprint(config, dialect, {
-    base: priorBase, collections,
-    indexes: buildVersionedDynamicIndexes(config, dialect, true),
-    feeds: buildFeedTables(config, dialect, true),
-    fts,
-  });
-  if (storedFingerprint === legacyFingerprint) {
-    // Only the read indexes changed. Do not turn this upgrade into a corpus
-    // rewrite (FTS rebuild, legacy version seeding or relation recount).
-    for (const statement of [...indexes, ...feeds.filter((sql) => sql.startsWith("CREATE INDEX"))]) {
-      await runIdempotentDdl(db, statement);
-    }
-    await retireSupersededQueryableIndexes(db, config);
-    await applyRepositoryScopes();
-    await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await stampDecoupledMarkers();

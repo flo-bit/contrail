@@ -1,6 +1,7 @@
 import { isDid, isNsid, isRecordKey } from "@atcute/lexicons/syntax";
 import { getDialect, isPostgresDialect } from "../core/dialect";
 import { setMeta } from "../core/db/meta";
+import { sleepAbortable } from "../core/scheduling";
 import {
   getLastCursor,
   loadKnownActorDids,
@@ -213,12 +214,26 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function safeInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new TypeError(`${label} must be a non-negative safe integer`);
+function checkInt(
+  value: unknown,
+  label: string,
+  min: 0 | 1,
+  fallback?: number,
+): number {
+  if (value === undefined && fallback !== undefined) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
+    throw new TypeError(
+      `${label} must be a ${min === 1 ? "positive" : "non-negative"} safe integer`,
+    );
   }
   return value;
 }
+
+const safeInteger = (value: unknown, label: string) => checkInt(value, label, 0);
+const positiveInteger = (value: number | undefined, fallback: number, label: string) =>
+  checkInt(value, label, 1, fallback);
+const nonNegative = (value: number | undefined, fallback: number, label: string) =>
+  checkInt(value, label, 0, fallback);
 
 function nonEmpty(value: string, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
@@ -239,7 +254,6 @@ function normalizeEndpoint(
   allowInsecureHttp: boolean,
 ): URL {
   const url = new URL(value ?? DEFAULT_ALLUVIUM_ENDPOINT);
-  // Plain HTTP is for a service on this machine, or an explicit opt-in.
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (
     url.protocol !== "https:" &&
@@ -252,22 +266,6 @@ function normalizeEndpoint(
   }
   if (!url.pathname.endsWith("/")) url.pathname += "/";
   return url;
-}
-
-function positiveInteger(value: number | undefined, fallback: number, label: string): number {
-  if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${label} must be a positive safe integer`);
-  }
-  return value;
-}
-
-function nonNegative(value: number | undefined, fallback: number, label: string): number {
-  if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new TypeError(`${label} must be a non-negative safe integer`);
-  }
-  return value;
 }
 
 function excluded(patterns: string[], collection: string): boolean {
@@ -295,40 +293,22 @@ function retryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, milliseconds);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+async function backoff(attempt: number, signal?: AbortSignal): Promise<void> {
+  if (attempt <= 0) return;
+  await sleepAbortable(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
+  signal?.throwIfAborted();
 }
 
-function insertInitialStateStatement(
+function saveStateStatement(
   db: Database,
   state: AlluviumBootstrapState,
+  initial = false,
 ): Statement {
-  return db
-    .prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)")
-    .bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
-}
-
-function saveStateStatement(db: Database, state: AlluviumBootstrapState): Statement {
-  return db
-    .prepare(
-      `INSERT INTO _contrail_meta (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    )
-    .bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
+  const sql = initial
+    ? "INSERT INTO _contrail_meta (key, value) VALUES (?, ?)"
+    : `INSERT INTO _contrail_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
+  return db.prepare(sql).bind(ALLUVIUM_BOOTSTRAP_META_KEY, JSON.stringify(state));
 }
 
 /** Read a `_contrail_meta` value without swallowing database errors. */
@@ -340,98 +320,12 @@ async function readMetaStrict(db: Database, key: string): Promise<string | null>
   return row?.value ?? null;
 }
 
-function isMissingLegacyBootstrapTable(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code = (error as { code?: unknown }).code;
-  if (code === "42P01") return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    /no such table:\s*bootstrap_state/i.test(message) ||
-    /relation "bootstrap_state" does not exist/i.test(message)
-  );
-}
-
-/** Translate a completed pre-v0.32 `bootstrap_state` Alluvium row so existing
- * dev databases keep restarting cleanly under `contrail dev --alluvium`. */
-async function readLegacyBootstrapState(
-  db: Database,
-): Promise<AlluviumBootstrapState | null> {
-  let row: {
-    phase: string;
-    snapshot_json: string;
-    capture_source: string;
-    capture_epoch: string;
-    capture_cursor: string;
-    change_source: string | null;
-    change_epoch: string | null;
-    change_cursor: string | null;
-    started_at: number | string;
-    updated_at: number | string;
-    finished_at: number | string | null;
-  } | null;
-  try {
-    row = await db
-      .prepare(
-        `SELECT phase, snapshot_json, capture_source, capture_epoch, capture_cursor,
-                change_source, change_epoch, change_cursor, started_at, updated_at, finished_at
-         FROM bootstrap_state WHERE id = 1`,
-      )
-      .first();
-  } catch (error) {
-    if (isMissingLegacyBootstrapTable(error)) return null;
-    throw error;
-  }
-  if (!row) return null;
-  if (row.phase !== "complete") {
-    throw new Error(
-      "An interrupted bootstrap from an earlier Contrail version cannot be resumed; delete the database and start fresh.",
-    );
-  }
-  let snapshot: unknown;
-  try {
-    snapshot = JSON.parse(row.snapshot_json);
-  } catch {
-    return null;
-  }
-  const data = object(snapshot) ? snapshot.providerData : undefined;
-  if (
-    !object(snapshot) ||
-    snapshot.provider !== "alluvium" ||
-    !object(data) ||
-    data.v !== 4 ||
-    typeof data.endpoint !== "string" ||
-    !Array.isArray(data.collections) ||
-    !data.collections.every((item) => typeof item === "string")
-  ) {
-    return null;
-  }
-  const sourceId = row.change_source ?? row.capture_source;
-  const sourceEpoch = row.change_epoch ?? row.capture_epoch;
-  return {
-    v: 1,
-    phase: "complete",
-    endpoint: data.endpoint,
-    source: { id: sourceId, epoch: sourceEpoch },
-    collections: data.collections as string[],
-    cursor: safeInteger(data.cursor, "Legacy Alluvium cursor"),
-    timeUs: safeInteger(data.timeUs, "Legacy Alluvium timeUs"),
-    liveCursorUs: safeInteger(data.liveCursorUs, "Legacy Alluvium liveCursorUs"),
-    after: null,
-    startedAt: safeInteger(Number(row.started_at), "Legacy Alluvium startedAt"),
-    updatedAt: safeInteger(Number(row.updated_at), "Legacy Alluvium updatedAt"),
-    ...(row.finished_at != null
-      ? { finishedAt: safeInteger(Number(row.finished_at), "Legacy Alluvium finishedAt") }
-      : {}),
-  };
-}
-
-/** Read durable Alluvium bootstrap state from `_contrail_meta` (or a completed
- * legacy `bootstrap_state` row), if any. */
+/** Read durable Alluvium bootstrap state from `_contrail_meta`, if any. */
 export async function getAlluviumBootstrapState(
   db: Database,
 ): Promise<AlluviumBootstrapState | null> {
   const raw = await readMetaStrict(db, ALLUVIUM_BOOTSTRAP_META_KEY);
-  if (raw === null) return readLegacyBootstrapState(db);
+  if (raw === null) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -455,28 +349,24 @@ export async function getAlluviumBootstrapState(
     throw new Error("Durable Alluvium bootstrap state is malformed");
   }
   let rebuild: DerivedProjectionResumeCursor | null | undefined;
-  if (parsed.rebuild !== undefined) {
-    if (parsed.rebuild === null) {
-      rebuild = null;
-    } else if (
-      object(parsed.rebuild) &&
-      (parsed.rebuild.stage === "fts" || parsed.rebuild.stage === "counts") &&
-      typeof parsed.rebuild.collection === "string" &&
-      (parsed.rebuild.relation === undefined ||
-        typeof parsed.rebuild.relation === "string") &&
-      (parsed.rebuild.after === null || typeof parsed.rebuild.after === "string")
+  if (parsed.rebuild === null) {
+    rebuild = null;
+  } else if (parsed.rebuild !== undefined) {
+    if (
+      !object(parsed.rebuild) ||
+      (parsed.rebuild.stage !== "fts" && parsed.rebuild.stage !== "counts") ||
+      typeof parsed.rebuild.collection !== "string" ||
+      (parsed.rebuild.relation !== undefined && typeof parsed.rebuild.relation !== "string") ||
+      (parsed.rebuild.after !== null && typeof parsed.rebuild.after !== "string")
     ) {
-      rebuild = {
-        stage: parsed.rebuild.stage,
-        collection: parsed.rebuild.collection,
-        ...(parsed.rebuild.relation !== undefined
-          ? { relation: parsed.rebuild.relation }
-          : {}),
-        after: parsed.rebuild.after,
-      };
-    } else {
       throw new Error("Durable Alluvium bootstrap rebuild cursor is malformed");
     }
+    rebuild = {
+      stage: parsed.rebuild.stage,
+      collection: parsed.rebuild.collection,
+      ...(parsed.rebuild.relation !== undefined ? { relation: parsed.rebuild.relation } : {}),
+      after: parsed.rebuild.after,
+    };
   }
   return {
     v: 1,
@@ -818,9 +708,7 @@ export async function loadAlluviumExport(
     const url = new URL("alluvium/head", endpoint);
     let lastError: unknown;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      if (attempt > 0) {
-        await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
-      }
+      await backoff(attempt, signal);
       try {
         const body: unknown = await (await open(url)).json();
         if (!object(body)) throw new TypeError("Alluvium head must be an object");
@@ -911,7 +799,7 @@ export async function loadAlluviumExport(
       startedAt,
       updatedAt: startedAt,
     };
-    await insertInitialStateStatement(db, state).run();
+    await saveStateStatement(db, state, true).run();
   }
 
   if (options.deferIndexes && state.phase === "loading") {
@@ -1000,9 +888,7 @@ export async function loadAlluviumExport(
     let completedStream = false;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      if (attempt > 0) {
-        await delay(Math.min(1_000 * 2 ** (attempt - 1), 15_000), signal);
-      }
+      await backoff(attempt, signal);
       assertReplayable(state);
       const url = new URL("export", endpoint);
       for (const collection of state.collections) {
