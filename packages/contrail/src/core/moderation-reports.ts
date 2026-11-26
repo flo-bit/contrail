@@ -11,7 +11,7 @@ import {
   activeHiddenSql,
   knownAccountDids,
 } from "./moderation";
-import { hydrateLabels } from "./labels/hydrate";
+import { hydrateLabels } from "./labels";
 import { batchedInQuery, formatRecord } from "./router/helpers";
 import { REPORT_REASON_TYPES } from "../moderation-contract";
 import type { ReportPage } from "../moderation-client";

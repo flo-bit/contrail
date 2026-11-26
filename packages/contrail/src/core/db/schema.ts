@@ -23,7 +23,7 @@ import {
   ftsTableName,
   getSearchableFields,
 } from "../search";
-import { buildLabelsSchema } from "../labels/schema";
+import { buildLabelsSchema } from "../labels";
 import {
   buildModerationSchema,
   MODERATION_SOURCES_KEY,
@@ -85,42 +85,7 @@ function getResolved(config: ContrailConfig): ResolvedMaps {
   );
 }
 
-function buildBaseSchema(
-  dialect: SqlDialect,
-  includeLegacyBootstrapTables = false,
-): string {
-  // Retained strictly for computing prior schema fingerprints so existing
-  // databases upgrade without triggering a full FTS/version/count rebuild.
-  const legacyBootstrapTables = includeLegacyBootstrapTables
-    ? `
-CREATE TABLE IF NOT EXISTS bootstrap_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  phase TEXT NOT NULL CHECK (phase IN ('snapshot', 'catchup', 'complete')),
-  snapshot_json TEXT NOT NULL,
-  capture_source TEXT NOT NULL,
-  capture_epoch TEXT NOT NULL,
-  capture_cursor TEXT NOT NULL,
-  snapshot_complete INTEGER NOT NULL DEFAULT 0,
-  catchup_source TEXT,
-  catchup_epoch TEXT,
-  catchup_cursor TEXT,
-  change_source TEXT,
-  change_epoch TEXT,
-  change_cursor TEXT,
-  started_at ${dialect.bigintType} NOT NULL,
-  updated_at ${dialect.bigintType} NOT NULL,
-  finished_at ${dialect.bigintType}
-);
-CREATE TABLE IF NOT EXISTS bootstrap_snapshot_progress (
-  bootstrap_id INTEGER NOT NULL,
-  partition TEXT NOT NULL,
-  cursor TEXT,
-  completed INTEGER NOT NULL DEFAULT 0,
-  updated_at ${dialect.bigintType} NOT NULL,
-  PRIMARY KEY (bootstrap_id, partition),
-  FOREIGN KEY (bootstrap_id) REFERENCES bootstrap_state(id)
-);`
-    : "";
+function buildBaseSchema(dialect: SqlDialect): string {
   return `
 CREATE TABLE IF NOT EXISTS _contrail_meta (
   key TEXT PRIMARY KEY,
@@ -167,7 +132,7 @@ CREATE TABLE IF NOT EXISTS backfill_state (
   started_at ${dialect.bigintType},
   heartbeat_at ${dialect.bigintType},
   finished_at ${dialect.bigintType}
-);${legacyBootstrapTables}
+);
 CREATE TABLE IF NOT EXISTS identities (
   did TEXT PRIMARY KEY,
   handle TEXT,
@@ -283,16 +248,6 @@ export function buildDynamicIndexes(
   config: ContrailConfig,
   dialect: SqlDialect,
 ): string[] {
-  return buildVersionedDynamicIndexes(config, dialect, false);
-}
-
-/** The old DDL is retained only to recognize an index-only upgrade without
- * rebuilding FTS, counts or source-ordering state on an existing database. */
-function buildVersionedDynamicIndexes(
-  config: ContrailConfig,
-  dialect: SqlDialect,
-  legacy: boolean,
-): string[] {
   const resolved = getResolved(config);
   const equality = equalityIndexNames(config);
   const orderedNames = orderedQueryableIndexNames(config);
@@ -302,7 +257,7 @@ function buildVersionedDynamicIndexes(
     const queryable =
       resolved.queryable[collection] ?? colConfig.queryable ?? {};
     for (const [field, fieldConfig] of Object.entries(queryable)) {
-      const ordered = !legacy && fieldConfig.type !== "range";
+      const ordered = fieldConfig.type !== "range";
       const baseName = queryableIndexName(collection, field);
       const name = ordered ? orderedNames.get(baseName)! : baseName;
       const expression = dialect.indexExpression(dialect.jsonExtract("record", field));
@@ -316,7 +271,7 @@ function buildVersionedDynamicIndexes(
       const childTable = recordsTableName(relation.collection);
       const name = queryableIndexName(relation.collection, on);
       // The ordered equality index already supports relation lookups by its prefix.
-      if (!legacy && equality.has(name)) continue;
+      if (equality.has(name)) continue;
       indexes.push(
         `CREATE INDEX IF NOT EXISTS ${name} ON ${childTable}(${dialect.indexExpression(dialect.jsonExtract("record", on))})`,
       );
@@ -476,7 +431,7 @@ export async function applyCountColumns(
   }
 }
 
-function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = false): string[] {
+function buildFeedTables(config: ContrailConfig, dialect: SqlDialect): string[] {
   if (!config.feeds || Object.keys(config.feeds).length === 0) return [];
   const statements = [
     `CREATE TABLE IF NOT EXISTS feed_items (
@@ -488,7 +443,7 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = f
     )`,
     "CREATE INDEX IF NOT EXISTS idx_feed_actor_coll_time ON feed_items(actor, collection, time_us DESC)",
     "CREATE INDEX IF NOT EXISTS idx_feed_actor_time ON feed_items(actor, time_us DESC)",
-    ...(legacy ? [] : ["CREATE INDEX IF NOT EXISTS idx_feed_uri ON feed_items(uri)"]),
+    "CREATE INDEX IF NOT EXISTS idx_feed_uri ON feed_items(uri)",
     `CREATE TABLE IF NOT EXISTS feed_prune_cursor (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       actor TEXT
@@ -509,7 +464,7 @@ function buildFeedTables(config: ContrailConfig, dialect: SqlDialect, legacy = f
   );
   const equality = equalityIndexNames(config);
   for (const collection of followCollections) {
-    if (!legacy && equality.has(queryableIndexName(collection, "subject"))) continue;
+    if (equality.has(queryableIndexName(collection, "subject"))) continue;
     statements.push(
       `CREATE INDEX IF NOT EXISTS idx_${sanitizeName(collection)}_subject ON ${recordsTableName(collection)}(${dialect.indexExpression(dialect.jsonExtract("record", "subject"))})`,
     );
@@ -645,15 +600,35 @@ async function applyFtsTables(
   config: ContrailConfig,
   dialect: SqlDialect,
   storedFtsRaw: string | undefined,
+  hasExistingV17Schema: boolean,
 ): Promise<void> {
   if (dialect.ftsStrategy === "generated-column") {
-    for (const statement of buildFtsTables(config, dialect)) {
-      await runIdempotentDdl(db, statement);
-    }
     const nextJson = JSON.stringify(buildFtsFingerprintsMap(config));
-    if (storedFtsRaw !== nextJson) {
-      await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
+    if (storedFtsRaw === nextJson) return;
+    if (hasExistingV17Schema && storedFtsRaw === undefined) {
+      for (const [collection, colConfig] of Object.entries(config.collections)) {
+        const fields = getSearchableFields(collection, colConfig);
+        if (!fields || fields.length === 0) continue;
+        const table = recordsTableName(collection);
+        const existing = await db
+          .prepare(
+            `SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = ? AND column_name = 'search_vector'`,
+          )
+          .bind(table)
+          .first();
+        const statements = buildFtsSchema(dialect, table, fields);
+        for (const statement of statements) {
+          if (existing && /^ALTER TABLE\b/i.test(statement)) continue;
+          await runIdempotentDdl(db, statement);
+        }
+      }
+    } else {
+      for (const statement of buildFtsTables(config, dialect)) {
+        await runIdempotentDdl(db, statement);
+      }
     }
+    await setMeta(db, FTS_FINGERPRINTS_KEY, nextJson);
     return;
   }
 
@@ -682,11 +657,16 @@ async function applyFtsTables(
       continue;
     }
 
-    if (columns.length > 0 && storedFts[collection] === expectedFp) {
+    if (
+      columns.length > 0 &&
+      (storedFts[collection] === expectedFp ||
+        (hasExistingV17Schema && storedFtsRaw === undefined))
+    ) {
       const rowsColumns = await virtualFtsColumns(db, rowsTable);
       if (rowsColumns.length > 0) {
-        // Collection's FTS tables exist in content-only form and match its
-        // searchable fields — never rebuild just because unrelated config changed.
+        // Collection's FTS tables exist in content-only form and either match
+        // its recorded searchable fields or belong to an initialized pre-marker
+        // v17 database — never rebuild just because unrelated schema changed.
         activeFts[collection] = expectedFp;
         continue;
       }
@@ -795,16 +775,25 @@ const MIGRATIONS: MigrationOp[] = [
 async function runMigrations(
   db: Database,
   hasFeeds: boolean,
-): Promise<void> {
+): Promise<boolean> {
+  let migratedProjectionToken = false;
   for (const operation of MIGRATIONS) {
     if (operation.target === "feeds" && !hasFeeds) continue;
-    await addColumnIfNotExists(
+    const added = await addColumnIfNotExists(
       db,
       operation.table,
       operation.column,
       operation.columnDef,
     );
+    if (
+      added &&
+      operation.table === "record_versions" &&
+      operation.column === "projection_token"
+    ) {
+      migratedProjectionToken = true;
+    }
   }
+  return migratedProjectionToken;
 }
 
 /** Pluggable schema extension retained for applications with their own tables. */
@@ -891,7 +880,7 @@ async function upgradeModerationCreationTimestamps(db: Database): Promise<void> 
     db.prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, 'seconds') ON CONFLICT(key) DO NOTHING").bind(key),
     db.prepare("UPDATE _contrail_meta SET value = value WHERE key = ?").bind(key),
     ...moderationLockStatements(db),
-    ...["labels", "moderation_actions", "moderation_overrides"].map((table) =>
+    ...["labels", "moderation_actions"].map((table) =>
       db.prepare(`UPDATE ${table} SET cts = cts * 1000 WHERE ${pending}`).bind(key),
     ),
     db.prepare("UPDATE _contrail_meta SET value = 'milliseconds' WHERE key = ?").bind(key),
@@ -919,13 +908,7 @@ export async function initSchema(
     feeds,
     fts,
   });
-  const cursorObservationsFingerprint = `${baseFingerprint}:cursor-observations-v1`;
-  const fingerprint = `${cursorObservationsFingerprint}:backfills-pending-v1`;
-  const cursorObservationsDdl = `CREATE TABLE IF NOT EXISTS cursor_observations (
-    time_us ${dialect.bigintType} NOT NULL,
-    observation TEXT NOT NULL,
-    PRIMARY KEY (time_us, observation)
-  )`;
+  const fingerprint = `${baseFingerprint}:backfills-pending-v1`;
   // One steady-state read covers the schema, FTS, legacy migration, and
   // moderation policy gates.
   const meta = await getMetaValues(db, [
@@ -939,6 +922,11 @@ export async function initSchema(
   const storedFingerprint = meta.get(SCHEMA_FINGERPRINT_KEY) ?? null;
   const storedFtsRaw = meta.get(FTS_FINGERPRINTS_KEY);
   const storedLegacyVersion = meta.get(LEGACY_MIGRATIONS_KEY) ?? null;
+  // Databases initialized by v0.24–v0.32 already completed v17 setup (content-only
+  // FTS5, `record_versions.projection_token`, legacy version seeding) before the
+  // decoupled `fts_fingerprints` / `legacy_migrations_version` markers existed.
+  const hasExistingV17Schema =
+    storedFingerprint !== null && meta.get(MODERATION_CTS_UNIT_KEY) === "milliseconds";
   const expectedFtsJson = JSON.stringify(buildFtsFingerprintsMap(config));
   const ftsChanged = storedFtsRaw !== undefined && storedFtsRaw !== expectedFtsJson;
   const applyRepositoryScopes = async () => {
@@ -959,7 +947,7 @@ export async function initSchema(
       // On SQLite/D1, changing a collection's searchable fields does not alter
       // the CREATE VIRTUAL TABLE DDL in `schema_fingerprint`; rebuild only the
       // collections whose FTS fingerprint changed.
-      await applyFtsTables(db, config, dialect, storedFtsRaw);
+      await applyFtsTables(db, config, dialect, storedFtsRaw, hasExistingV17Schema);
       if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
         await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
       }
@@ -977,53 +965,11 @@ export async function initSchema(
     for (const apply of options.extraSchemas ?? []) await apply(db);
     return;
   }
-  const priorBase = buildBaseSchema(dialect, true)
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
-  const priorBaseFingerprint = schemaFingerprint(config, dialect, {
-    base: priorBase,
-    collections,
-    indexes,
-    feeds,
-    fts,
-  });
-  if (
-    storedFingerprint === baseFingerprint ||
-    storedFingerprint === cursorObservationsFingerprint ||
-    storedFingerprint === priorBaseFingerprint ||
-    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1` ||
-    storedFingerprint === `${priorBaseFingerprint}:cursor-observations-v1:backfills-pending-v1`
-  ) {
-    // These independent additive/removal changes must not force an otherwise-current
-    // deployment through the FTS rebuild path. Upgrade the prior fingerprint
-    // directly after their idempotent DDL succeeds.
-    await runIdempotentDdl(db, cursorObservationsDdl);
+  if (storedFingerprint === baseFingerprint) {
+    // Additive index upgrades must not force an otherwise-current deployment
+    // through the full schema path.
     await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await applyRepositoryScopes();
-    await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
-    for (const apply of options.extraSchemas ?? []) await apply(db);
-    await stampDecoupledMarkers();
-    await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
-    return;
-  }
-
-  const legacyFingerprint = schemaFingerprint(config, dialect, {
-    base: priorBase, collections,
-    indexes: buildVersionedDynamicIndexes(config, dialect, true),
-    feeds: buildFeedTables(config, dialect, true),
-    fts,
-  });
-  if (storedFingerprint === legacyFingerprint || storedFingerprint === `${legacyFingerprint}:cursor-observations-v1`) {
-    // Only the read indexes changed. Do not turn this upgrade into a corpus
-    // rewrite (FTS rebuild, legacy version seeding or relation recount).
-    for (const statement of [...indexes, ...feeds.filter((sql) => sql.startsWith("CREATE INDEX"))]) {
-      await runIdempotentDdl(db, statement);
-    }
-    await retireSupersededQueryableIndexes(db, config);
-    await applyRepositoryScopes();
-    await runIdempotentDdl(db, cursorObservationsDdl);
-    await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
     await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
     for (const apply of options.extraSchemas ?? []) await apply(db);
     await stampDecoupledMarkers();
@@ -1043,16 +989,11 @@ export async function initSchema(
   // Existing queues need the generation column for concurrent worker guards.
   // CREATE TABLE IF NOT EXISTS only covers fresh databases.
   await addColumnIfNotExists(db, "label_backfill_queue", "generation", "INTEGER NOT NULL DEFAULT 0");
-  if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
-    await upgradeModerationCreationTimestamps(db);
-  }
-  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
 
-  await runIdempotentDdl(db, cursorObservationsDdl);
-  await applyFtsTables(db, config, dialect, storedFtsRaw);
+  await applyFtsTables(db, config, dialect, storedFtsRaw, hasExistingV17Schema);
 
   const hasFeeds = !!(config.feeds && Object.keys(config.feeds).length > 0);
-  await runMigrations(db, hasFeeds);
+  const migratedProjectionToken = await runMigrations(db, hasFeeds);
   // After the migrations: older databases gain `retry_exhausted` there.
   await runIdempotentDdl(db, BACKFILLS_PENDING_INDEX_DDL);
   await db
@@ -1063,7 +1004,9 @@ export async function initSchema(
     .run();
   await applyCountColumns(db, config);
 
-  const needsLegacyMigrations = storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION;
+  const needsLegacyMigrations =
+    storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION &&
+    (!hasExistingV17Schema || migratedProjectionToken);
   if (needsLegacyMigrations) {
     await db
       .prepare(
@@ -1071,8 +1014,16 @@ export async function initSchema(
       )
       .run();
     await seedLegacyRecordVersions(db, config);
+  }
+  if (storedLegacyVersion !== LEGACY_MIGRATIONS_VERSION) {
     await setMeta(db, LEGACY_MIGRATIONS_KEY, LEGACY_MIGRATIONS_VERSION);
   }
+  // Run after FTS/legacy migrations succeed so a retried interrupted bootstrap
+  // cannot prematurely stamp `moderation_cts_unit = 'milliseconds'`.
+  if (meta.get(MODERATION_CTS_UNIT_KEY) !== "milliseconds") {
+    await upgradeModerationCreationTimestamps(db);
+  }
+  await syncModerationSources(db, config, meta.get(MODERATION_SOURCES_KEY));
   for (const apply of options.extraSchemas ?? []) await apply(db);
   await setMeta(db, SCHEMA_FINGERPRINT_KEY, fingerprint);
 }

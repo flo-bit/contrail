@@ -7,7 +7,11 @@ import {
   sqliteDialect,
   postgresDialect,
 } from "../src/index";
-import { buildDynamicIndexes } from "../src/core/db/schema";
+import {
+  buildDynamicIndexes,
+  FTS_FINGERPRINTS_KEY,
+  LEGACY_MIGRATIONS_KEY,
+} from "../src/core/db/schema";
 import { getMeta, setMeta } from "../src/core/db/meta";
 import type { Database, Statement } from "../src/index";
 import { createTestDb, makeEvent, TEST_POSTGRES } from "./helpers";
@@ -118,11 +122,10 @@ async function downgradeIndexes(db: Database) {
   }
 }
 
-async function snapshot(db: Database, hasObservations = true) {
+async function snapshot(db: Database) {
   return {
     records: (await db.prepare("SELECT * FROM records_post ORDER BY uri").all()).results,
     versions: (await db.prepare("SELECT * FROM record_versions ORDER BY uri").all()).results,
-    observations: hasObservations ? (await db.prepare("SELECT * FROM cursor_observations ORDER BY time_us, observation").all()).results : [],
     hidden: (await db.prepare("SELECT * FROM moderation_hidden ORDER BY subject").all()).results,
     cursor: await db.prepare("SELECT * FROM cursor").first(),
     feeds: (await db.prepare("SELECT * FROM feed_items ORDER BY actor, uri").all()).results,
@@ -133,8 +136,8 @@ async function snapshot(db: Database, hasObservations = true) {
   };
 }
 
-async function expectIndexOnlyUpgrade(db: Database, hasObservations = true) {
-  const before = await snapshot(db, hasObservations);
+async function expectIndexOnlyUpgrade(db: Database) {
+  const before = await snapshot(db);
   const recorded = recordingDb(db);
   let extraSchemas = 0;
   await initSchema(recorded.db, CONFIG, { extraSchemas: [async () => { extraSchemas++; }] });
@@ -145,7 +148,7 @@ async function expectIndexOnlyUpgrade(db: Database, hasObservations = true) {
   expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) record_versions|(?:DELETE FROM|INSERT INTO) fts_|ALTER TABLE|UPDATE records_/i);
   expect(sql).toContain("CREATE INDEX IF NOT EXISTS idx_feed_uri");
   const current = await getMeta(db, "schema_fingerprint");
-  expect(current).not.toBe(`${LEGACY_FINGERPRINT}:cursor-observations-v1`);
+  expect(current).not.toBe(LEGACY_FINGERPRINT);
   const warm = recordingDb(db);
   await initSchema(warm.db, CONFIG);
   expect(warm.calls).toHaveLength(1);
@@ -174,7 +177,7 @@ describe("bounded record read indexes", () => {
     expect(tableNames.has("bootstrap_snapshot_progress")).toBe(false);
   });
 
-  it.each(["current", "without-cursor-observations", "interrupted"])("upgrades the real previous fingerprint without rewriting data: %s", async (variant) => {
+  it.each(["current", "interrupted"])("upgrades the real previous fingerprint without rewriting data: %s", async (variant) => {
     const db = createTestDb();
     await initSchema(db, CONFIG);
     const posts = await seed(db);
@@ -185,18 +188,18 @@ describe("bounded record read indexes", () => {
     await db.prepare("INSERT INTO feed_items (actor, uri, collection, time_us) VALUES ('did:plc:reader', ?, 'com.example.post', 1)").bind(posts[0]!.uri).run();
     await db.prepare("INSERT INTO labels (src, uri, val, cts) VALUES ('did:plc:labeler', ?, 'warn', 1000)").bind(posts[0]!.uri).run();
     await db.prepare("INSERT INTO cursor (id, time_us) VALUES (1, 123)").run();
-    await db.prepare("INSERT INTO cursor_observations VALUES (123, 'preserve-me')").run();
     await db.prepare("INSERT INTO moderation_hidden (subject, kind) VALUES (?, 'label')").bind(posts[1]!.uri).run();
     await downgradeIndexes(db);
-    await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT + (variant === "without-cursor-observations" ? "" : ":cursor-observations-v1"));
-    if (variant === "without-cursor-observations") {
-      await db.prepare("DROP TABLE cursor_observations").run();
-    }
+    await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT);
+    await db
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
     if (variant === "interrupted") {
       await db.prepare(buildDynamicIndexes(CONFIG, TEST_POSTGRES ? postgresDialect : sqliteDialect)[0]!).run();
       await db.prepare("DROP INDEX idx_post_category").run();
     }
-    await expectIndexOnlyUpgrade(db, variant !== "without-cursor-observations");
+    await expectIndexOnlyUpgrade(db);
     if (hasSearch) {
       const search = await queryRecords(db, CONFIG, { collection: "post", search: "sample", limit: 5 });
       expect(search.records).toHaveLength(5);
@@ -236,7 +239,7 @@ describe("bounded record read indexes", () => {
     const db = createTestDb();
     await initSchema(db, CONFIG);
     await downgradeIndexes(db);
-    const prior = `${LEGACY_FINGERPRINT}:cursor-observations-v1`;
+    const prior = LEGACY_FINGERPRINT;
     await setMeta(db, "schema_fingerprint", prior);
     const broken: Database = {
       ...db,
@@ -255,7 +258,11 @@ describe("bounded record read indexes", () => {
     const db = createTestDb();
     await initSchema(db, CONFIG);
     await downgradeIndexes(db);
-    await setMeta(db, "schema_fingerprint", `${LEGACY_FINGERPRINT}:cursor-observations-v1`);
+    await setMeta(db, "schema_fingerprint", LEGACY_FINGERPRINT);
+    await db
+      .prepare("DELETE FROM _contrail_meta WHERE key IN (?, ?)")
+      .bind(FTS_FINGERPRINTS_KEY, LEGACY_MIGRATIONS_KEY)
+      .run();
     await Promise.all([initSchema(db, CONFIG), initSchema(db, CONFIG), initSchema(db, CONFIG)]);
     await expectReadIndexes(db);
   });

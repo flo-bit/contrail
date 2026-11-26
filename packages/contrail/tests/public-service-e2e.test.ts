@@ -1,9 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { generateLexiconTypesWithAtcute } from "../src/cli/atcute";
 import { createSqliteDatabase } from "../src/adapters/sqlite";
+
+const require = createRequire(import.meta.url);
+function runLexCliGenerate(cwd: string): void {
+  const cli = join(dirname(require.resolve("@atcute/lex-cli")), "..", "cli.mjs");
+  const result = spawnSync(process.execPath, [cli, "generate"], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`lex-cli generate failed:\n${result.stdout}\n${result.stderr}`);
+  }
+}
 import { createApp } from "../src/core/router";
 import {
   createIngestEvent,
@@ -141,7 +153,7 @@ describe("public service consumer integration", () => {
 };
 `,
     );
-    generateLexiconTypesWithAtcute(consumerRoot);
+    runLexCliGenerate(consumerRoot);
 
     mkdirSync(join(consumerRoot, "src"), { recursive: true });
     writeFileSync(

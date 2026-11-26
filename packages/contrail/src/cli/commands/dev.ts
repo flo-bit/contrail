@@ -16,12 +16,8 @@ import { configProjectRoot } from "../../cli-config.js";
 import { createHandler } from "../../server.js";
 import { bootstrapAlluviumDatabase } from "../../workers/backfill.js";
 import { DEFAULT_ALLUVIUM_ENDPOINT } from "../../adapters/alluvium.js";
+import { buildLexiconBundle } from "../../lexicons/generate.js";
 import {
-  defaultConsumerLexiconRoot,
-  prepareDevLexicons,
-} from "../dev-lexicons.js";
-import {
-  confirmUnresolvedLexicons,
   promptYesNo,
   resolveConfig,
   resolveValidationLexicons,
@@ -45,7 +41,6 @@ interface DevOpts {
   alluvium?: boolean;
   alluviumEndpoint: string;
   alluviumToken?: string;
-  clientLexicons?: string;
 }
 
 function hasWranglerConfig(root: string): boolean {
@@ -234,23 +229,40 @@ async function runSqliteDev(
   mkdirSync(dirname(databasePath), { recursive: true });
 
   const config = devConfig(input, options);
-  const lexiconWorkspace = temporaryRoot ?? join(root, ".contrail");
-  mkdirSync(lexiconWorkspace, { recursive: true });
-  const clientLexiconRoot = resolve(
-    root,
-    options.clientLexicons ?? defaultConsumerLexiconRoot(root),
-  );
-  const lexicons = await prepareDevLexicons(
+  const roots = [...new Set([root, sourceRoot])];
+  const sourceDirs = roots.flatMap((dir) => [
+    join(dir, "lexicons", "custom"),
+    join(dir, "lexicons", "pinned"),
+    join(dir, "lexicons", "pulled"),
+  ]);
+  const { lexicons } = buildLexiconBundle({
     config,
-    root,
-    lexiconWorkspace,
-    clientLexiconRoot,
-    sourceRoot,
-    {
-      confirmUnresolved: (nsids) =>
-        confirmUnresolvedLexicons(nsids, options.yes === true),
-    },
+    rootDir: root,
+    sourceDirs,
+    surface: "public",
+    quiet: true,
+  });
+  const loadedIds = new Set(
+    lexicons
+      .map((doc) => (doc as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === "string"),
   );
+  const missingNsids = [
+    ...new Set([
+      ...Object.values(config.collections).map((c) => c.collection),
+      ...(config.profiles ?? []).map((p) =>
+        typeof p === "string" ? p : p.collection,
+      ),
+    ]),
+  ].filter(
+    (nsid): nsid is string => typeof nsid === "string" && !loadedIds.has(nsid),
+  );
+  if (missingNsids.length > 0) {
+    console.warn(
+      `warning: missing source Lexicons for ${missingNsids.join(", ")}; ` +
+        `record values will be typed as unknown. Pull them into lexicons/pulled/ with @atcute/lex-cli.`,
+    );
+  }
   const db = createSqliteDatabase(databasePath);
   const contrail = new Contrail({ ...config, db, lexicons });
   await contrail.init();
@@ -357,10 +369,6 @@ export function registerDev(cli: CAC): void {
     .option("--temporary", "Use and delete an OS-temporary SQLite database")
     .option("--fresh", "Delete the selected SQLite database before starting")
     .option("--no-backfill", "Start without running or resuming backfill")
-    .option(
-      "--client-lexicons <path>",
-      "Additional stable local Lexicon directory used during resolution",
-    )
     .option("--port <n>", "SQLite HTTP service port", { default: 8787 })
     .option(
       "--ingest-interval <seconds>",

@@ -14,14 +14,6 @@ export const moderationActionLexicon = {
           subject: { type: "string", maxLength: 8192 },
           subjectCid: { type: "string", format: "cid" },
           action: { type: "string", maxLength: 128 },
-          // Omit for all values; an empty list or value would be ambiguous.
-          labels: {
-            type: "array",
-            minLength: 1,
-            maxLength: 128,
-            items: { type: "string", minLength: 1, maxLength: 128 },
-          },
-          src: { type: "string", format: "did" },
           expiresAt: { type: "string", format: "datetime" },
           createdAt: { type: "string", format: "datetime" },
         },

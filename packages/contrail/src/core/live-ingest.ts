@@ -6,14 +6,45 @@ import type {
   Statement,
 } from "./types";
 import {
-  saveJetstreamCursorObservationStatements,
+  assertJetstreamServiceCompatibility,
+  assertServingSourceCompatibility,
+  initSchema,
   saveJetstreamCursorStatement,
   saveOrderedSourcePositionStatement,
 } from "./db";
 import { createIngestEvent, recordTimeUs } from "./ingest";
 import { applyIdentityEventStatement } from "./identity";
+import type { AccountUpdate } from "./moderation";
 
 type JetstreamCommitEvent = Extract<JetstreamLiveEvent, { kind: "commit" }>;
+
+/** Ensure schema and source compatibility before live Jetstream ingestion. */
+export async function prepareLiveIngestSession(
+  db: Database,
+  config: ContrailConfig,
+  service: string,
+  state: { schemaInitialized: boolean },
+): Promise<void> {
+  if (!state.schemaInitialized) {
+    await initSchema(db, config);
+    state.schemaInitialized = true;
+  }
+  await assertServingSourceCompatibility(db, config.orderedSource);
+  await assertJetstreamServiceCompatibility(db, service);
+}
+
+/** Keep only the newest account lifecycle update per actor by cursor.
+ * Returns true if the map was updated. */
+export function upsertAccountUpdate(
+  map: Map<string, AccountUpdate>,
+  update: AccountUpdate,
+): boolean {
+  const prior = map.get(update.did);
+  if (prior && prior.cursor >= update.cursor) return false;
+  map.delete(update.did);
+  map.set(update.did, update);
+  return true;
+}
 
 /** Normalize one live Jetstream v2 commit event into Contrail's canonical
  * `IngestEvent` shape. Shared by scheduled (`jetstream.ts`) and long-lived
@@ -46,20 +77,18 @@ export function commitToIngestEvent(
   });
 }
 
-/** Statements that atomically advance the Jetstream v2 cursor, optional
- * `orderedSource` position, and cursor observations in a single batch. */
+/** Statements that atomically advance the Jetstream v2 cursor and optional
+ * `orderedSource` position in a single batch. */
 export function jetstreamCheckpointStatements(
   db: Database,
   config: ContrailConfig,
   cursor: number,
-  cursorObservations: Iterable<string> = [],
 ): Statement[] {
   return [
     saveJetstreamCursorStatement(db, cursor),
     ...(config.orderedSource
       ? [saveOrderedSourcePositionStatement(db, config.orderedSource, cursor)]
       : []),
-    ...saveJetstreamCursorObservationStatements(db, cursor, cursorObservations),
   ];
 }
 

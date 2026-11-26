@@ -112,28 +112,12 @@ describe("moderation enforcement", () => {
       (await db.prepare("SELECT * FROM moderation_actions").all()).results,
     ).toEqual([]);
   });
-  it("rejects ambiguous override label lists and retracts an override edited into one", async () => {
-    expect(parseModerationAction({ subject: actor, action: "override", labels: [], createdAt: "2026-01-01T00:00:00Z" })).toBeNull();
-    expect(parseModerationAction({ subject: actor, action: "override", labels: [""], createdAt: "2026-01-01T00:00:00Z" })).toBeNull();
+  it("rejects malformed subjectCid values and unsupported override actions", () => {
+    expect(parseModerationAction({ subject: actor, action: "override", createdAt: "2026-01-01T00:00:00Z" })).toBeNull();
     for (const subjectCid of ["not a cid", "bafy" + "a".repeat(300)])
       expect(parseModerationAction({ subject: post.uri, subjectCid, action: "!hide", createdAt: "2026-01-01T00:00:00Z" })).toBeNull();
     expect(parseModerationAction({ subject: post.uri, subjectCid: otherVersion, action: "!hide", createdAt: "2026-01-01T00:00:00Z" })).not.toBeNull();
-    expect(moderationActionLexicon.defs.main.record.properties.labels).toMatchObject({
-      minLength: 1,
-      items: { minLength: 1 },
-    });
-    await applyLabels(db, [
-      { src: external, uri: actor, val: "!hide", cts: "2025-01-01T00:00:00Z" },
-    ]);
-    await ingestRecords(db, [action({ subject: actor, action: "override", labels: ["!hide"] })], config);
-    expect(await rows()).toHaveLength(1);
-    await ingestRecords(
-      db,
-      [action({ subject: actor, action: "override", labels: [] }, "action", moderator, "update")],
-      config,
-    );
-    expect(await rows()).toHaveLength(0);
-    expect((await db.prepare("SELECT * FROM moderation_overrides").all()).results).toEqual([]);
+    expect(moderationActionLexicon.defs.main.record.properties.action).toBeDefined();
   });
   it("retracts the old subject on update and keeps duplicate action records until all are deleted", async () => {
     await ingestRecords(
@@ -286,7 +270,7 @@ describe("moderation enforcement", () => {
     expect(await rows()).toHaveLength(1);
     expect(await hydrateLabels(db, [actor], [external])).toEqual({});
   });
-  it("evaluates expired replacements and overrides without waiting for a cron sweep", async () => {
+  it("evaluates expired replacements without waiting for a cron sweep", async () => {
     await applyLabels(db, [
       { src: external, uri: actor, val: "!hide", cts: "2025-01-01T00:00:00Z" },
       {
@@ -301,66 +285,7 @@ describe("moderation enforcement", () => {
     await applyLabels(db, [
       { src: external, uri: actor, val: "!hide", cts: "2026-02-01T00:00:00Z" },
     ]);
-    await ingestRecords(
-      db,
-      [
-        action({
-          subject: actor,
-          action: "override",
-          createdAt: "2026-03-01T00:00:00Z",
-          expiresAt: "2026-03-02T00:00:00Z",
-        }),
-      ],
-      config,
-    );
     expect(await rows()).toHaveLength(0);
-  });
-  it("overrides older external labels, never moderator labels or account status, and restores on deletion", async () => {
-    await applyLabels(db, [
-      { src: external, uri: actor, val: "!hide", cts: "2025-01-01T00:00:00Z" },
-    ]);
-    await ingestRecords(
-      db,
-      [
-        action({
-          subject: actor,
-          action: "override",
-          labels: ["!hide"],
-          src: external,
-        }),
-      ],
-      config,
-    );
-    expect(await rows()).toHaveLength(1);
-    expect(await hydrateLabels(db, [actor], [external])).toEqual({});
-    await applyLabels(db, [
-      { src: external, uri: actor, val: "!hide", cts: "2026-02-01T00:00:00Z" },
-    ]);
-    expect(await rows()).toHaveLength(0);
-    await ingestRecords(
-      db,
-      [action(null, "action", moderator, "delete")],
-      config,
-    );
-    expect((await hydrateLabels(db, [actor], [external]))[actor]).toHaveLength(
-      1,
-    );
-    await ingestRecords(
-      db,
-      [
-        action({
-          subject: actor,
-          action: "override",
-          createdAt: "2026-03-01T00:00:00Z",
-        }),
-        action({ subject: actor, action: "!hide" }, "own"),
-      ],
-      config,
-    );
-    expect(await rows()).toHaveLength(0);
-    expect((await hydrateLabels(db, [actor], [moderator]))[actor]).toHaveLength(
-      1,
-    );
   });
   it("keeps counts and relation hydration consistent across deactivate/reactivate", async () => {
     const rsvp = makeEvent({
@@ -520,28 +445,17 @@ describe("moderation enforcement", () => {
     );
     expect(await rows()).toHaveLength(1);
   });
-  it("clamps a forward-dated override to its projection time", async () => {
-    await ingestRecords(
-      db,
-      [action({ subject: actor, action: "override", createdAt: "2999-01-01T00:00:00Z" })],
-      config,
-    );
-    await applyLabels(db, [
-      { src: external, uri: actor, val: "!hide", cts: new Date(Date.now() + 5_000).toISOString() },
-    ]);
-    expect(await rows()).toHaveLength(0);
-  });
   it("clamps forward-dated actions to their source observation time, stably", async () => {
     const observedUs = (Date.now() - 60_000) * 1000;
     const event = {
-      ...action({ subject: actor, action: "override", createdAt: "2999-01-01T00:00:00Z" }),
+      ...action({ subject: actor, action: "!hide", createdAt: "2999-01-01T00:00:00Z" }),
       source: { id: "jetstream", time_us: observedUs, revision: null, cursor: null },
     };
     const cts = async () =>
-      Number((await db.prepare("SELECT cts FROM moderation_overrides").first<{ cts: number }>())!.cts);
+      Number((await db.prepare("SELECT cts FROM moderation_actions").first<{ cts: number }>())!.cts);
     await ingestRecords(db, [event], config);
     expect(await cts()).toBe(observedUs / 1000);
-    // Re-projecting the same event later must not move the override forward.
+    // Re-projecting the same event later must not move the action forward.
     await db.prepare("DELETE FROM record_versions").run();
     await db.prepare(`DELETE FROM records_moderationAction`).run();
     await ingestRecords(db, [event], config);
@@ -625,29 +539,6 @@ describe("account lifecycle", () => {
       ),
     );
     expect(await rows()).toHaveLength(1);
-  });
-  it("account status wins over an override", async () => {
-    await ingestRecords(
-      db,
-      [action({ subject: actor, action: "override" })],
-      config,
-    );
-    await db.batch(
-      accountUpdateStatements(
-        db,
-        [
-          {
-            did: actor,
-            active: false,
-            status: "suspended",
-            timeUs: 2,
-            cursor: 2,
-          },
-        ],
-        config,
-      ),
-    );
-    expect(await rows()).toHaveLength(0);
   });
 });
 
@@ -828,59 +719,7 @@ describe("label admission and recovery", () => {
       mock.mockRestore();
     }
   });
-  it("durably rotates past a moderator that exhausts the listing budget", async () => {
-    const moderators = ["did:plc:slow", "did:plc:healthy", "did:plc:alsohealthy"];
-    const c = resolveConfig({
-      ...config,
-      moderation: { moderators, reports: false },
-    });
-    await initSchema(db, c);
-    const slow = action({ subject: "did:plc:other", action: "!hide" }, "slow", moderators[0]);
-    await ingestRecords(db, [
-      slow,
-      action({ subject: actor, action: "!hide" }, "healthy", moderators[1]),
-      action({ subject: actor, action: "!hide" }, "alsohealthy", moderators[2]),
-    ], c);
-    let now = Date.now();
-    for (const did of moderators)
-      await db.prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
-        .bind(did, "moderator.example", "https://pds.example", now).run();
-    const requested: string[] = [];
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-    const mock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const did = new URL(String(input)).searchParams.get("repo")!;
-      requested.push(did);
-      if (did === moderators[0]) {
-        now += 3_001;
-        // Incomplete listings must retain local actions, despite checkpointing
-        // scheduling progress before the network request.
-        return Response.json({ records: [], cursor: "next" });
-      }
-      return Response.json({ records: [] });
-    });
-    try {
-      await reconcileModeratorActions(db, c, now + 3_000);
-      expect(requested).toEqual([moderators[0]]);
-      expect(await rows()).toHaveLength(0);
-      // New DB/config objects simulate the next cron in another Worker isolate:
-      // fairness must come from durable state, not a process-local counter.
-      const nextDb: Database = {
-        dialect: db.dialect,
-        prepare: (sql) => db.prepare(sql),
-        batch: (stmts) => db.batch(stmts),
-      };
-      await reconcileModeratorActions(nextDb, resolveConfig(c), now + 3_000);
-      expect(requested).toEqual([moderators[0], moderators[1], moderators[2], moderators[0]]);
-      expect(await rows()).toHaveLength(1);
-      expect(await db.prepare("SELECT uri FROM moderation_actions").all()).toEqual({
-        results: [{ uri: slow.uri }],
-      });
-    } finally {
-      mock.mockRestore();
-      clock.mockRestore();
-    }
-  });
-  it("resumes listings that exceed the cycle budget without inferring deletions", async () => {
+  it("bounds listings at 10 pages without inferring deletions on truncation", async () => {
     const stale = action({ subject: actor, action: "!hide" }, "stale");
     await ingestRecords(db, [stale], config);
     await db
@@ -898,10 +737,8 @@ describe("label admission and recovery", () => {
         createdAt: "2026-01-01T00:00:00Z",
       },
     }));
-    const requestedCursors: Array<string | null> = [];
     const mock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const cursor = new URL(String(input)).searchParams.get("cursor");
-      requestedCursors.push(cursor);
       const index = cursor ? Number(cursor) : 0;
       return Response.json({
         records: [remote[index]],
@@ -913,40 +750,7 @@ describe("label admission and recovery", () => {
         .results.map((r) => r.uri);
     try {
       await reconcileModeratorActions(db, config);
-      expect(requestedCursors).toEqual([null, ...Array.from({ length: 9 }, (_, i) => String(i + 1))]);
       expect(await actions()).toEqual([...remote.slice(0, 10).map((r) => r.uri), stale.uri]);
-      await reconcileModeratorActions(db, config);
-      expect(requestedCursors.slice(10)).toEqual(["10", "11"]);
-      // The resumed sweep saw every change but cannot prove `stale` is gone.
-      expect(await actions()).toEqual([...remote.map((r) => r.uri), stale.uri]);
-      expect(
-        await db
-          .prepare("SELECT 1 FROM _contrail_meta WHERE key LIKE 'moderation_reconcile_cursor:%'")
-          .first(),
-      ).toBeNull();
-    } finally {
-      mock.mockRestore();
-    }
-  });
-  it("restarts a sweep whose resume cursor is rejected", async () => {
-    await db
-      .prepare("INSERT INTO identities (did, pds, resolved_at) VALUES (?, ?, ?)")
-      .bind(moderator, "https://pds.example", Date.now())
-      .run();
-    await db
-      .prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)")
-      .bind(`moderation_reconcile_cursor:${moderator}`, "expired")
-      .run();
-    const mock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("bad cursor", { status: 400 }));
-    try {
-      await reconcileModeratorActions(db, config);
-      expect(
-        await db
-          .prepare("SELECT 1 FROM _contrail_meta WHERE key LIKE 'moderation_reconcile_cursor:%'")
-          .first(),
-      ).toBeNull();
     } finally {
       mock.mockRestore();
     }

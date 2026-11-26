@@ -25,8 +25,6 @@ export interface ModerationAction {
   subject: string;
   subjectCid?: string;
   action: string;
-  labels?: string[];
-  src?: string;
   expiresAt?: string;
   createdAt: string;
 }
@@ -65,8 +63,6 @@ export function parseModerationAction(value: unknown): ModerationAction | null {
     "subject",
     "subjectCid",
     "action",
-    "labels",
-    "src",
     "expiresAt",
     "createdAt",
   ]);
@@ -75,6 +71,7 @@ export function parseModerationAction(value: unknown): ModerationAction | null {
     typeof r.subject !== "string" ||
     !subjectDid(r.subject) ||
     typeof r.action !== "string" ||
+    r.action === "override" ||
     !/^(?:![a-z-]+|[a-z][a-z0-9-]*)$/.test(r.action) ||
     r.action.length > 128 ||
     typeof r.createdAt !== "string" ||
@@ -93,21 +90,6 @@ export function parseModerationAction(value: unknown): ModerationAction | null {
     r.expiresAt !== undefined &&
     (typeof r.expiresAt !== "string" ||
       !Number.isFinite(Date.parse(r.expiresAt)))
-  )
-    return null;
-  if (r.src !== undefined && (typeof r.src !== "string" || !isDid(r.src)))
-    return null;
-  if (
-    r.labels !== undefined &&
-    (!Array.isArray(r.labels) ||
-      !r.labels.length ||
-      r.labels.length > 128 ||
-      r.labels.some((v) => typeof v !== "string" || !v || v.length > 128))
-  )
-    return null;
-  if (
-    r.action !== "override" &&
-    (r.src !== undefined || r.labels !== undefined)
   )
     return null;
   return r as unknown as ModerationAction;
@@ -205,11 +187,6 @@ export function buildModerationSchema(d: SqlDialect): string[] {
       AND l.neg = 0 AND (l.exp IS NULL OR l.exp > ${nowSql(d)})
       AND NOT EXISTS (SELECT 1 FROM labels newer
         WHERE newer.src = l.src AND newer.uri = l.uri AND newer.val = l.val AND newer.cts > l.cts)
-      AND NOT EXISTS (
-        SELECT 1 FROM moderation_overrides o
-        JOIN moderation_sources m ON m.did = o.moderator AND m.moderator = 1
-        WHERE ${overrideSuppressesSql("o", "l")} AND (o.exp IS NULL OR o.exp > ${nowSql(d)})
-      )
       UNION ALL
       SELECT a.src, a.subject, a.action, a.cid, 0, a.exp, a.cts, NULL
       FROM moderation_actions a
@@ -229,19 +206,12 @@ export function buildModerationSchema(d: SqlDialect): string[] {
       action TEXT NOT NULL, cid TEXT, exp ${d.bigintType}, cts ${d.bigintType} NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_moderation_actions_subject ON moderation_actions(subject)`,
-    `CREATE TABLE IF NOT EXISTS moderation_overrides (
-      uri TEXT NOT NULL, moderator TEXT NOT NULL, subject TEXT NOT NULL,
-      src TEXT, val TEXT NOT NULL, cid TEXT, exp ${d.bigintType}, cts ${d.bigintType} NOT NULL,
-      PRIMARY KEY (uri, val)
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_moderation_overrides_subject ON moderation_overrides(subject)`,
     // Materialized enforcement state. Rows are recomputed per subject in the
-    // same transaction as the label/action/override/account change. Time
-    // bounds are stored rather than swept: a row hides only while
-    // starts_at <= now < exp (an expiring override delays starts_at).
+    // same transaction as the label/action/account change. Expiry is checked
+    // on read rather than swept.
     `CREATE TABLE IF NOT EXISTS moderation_hidden (
       subject TEXT NOT NULL, kind TEXT NOT NULL, cid TEXT NOT NULL DEFAULT '',
-      starts_at ${d.bigintType}, exp ${d.bigintType}
+      exp ${d.bigintType}
     )`,
     `CREATE INDEX IF NOT EXISTS idx_moderation_hidden_subject ON moderation_hidden(subject)`,
     `CREATE TABLE IF NOT EXISTS moderation_dirty (
@@ -251,7 +221,7 @@ export function buildModerationSchema(d: SqlDialect): string[] {
     // Only subjects whose visibility actually changed are recounted.
     `CREATE TABLE IF NOT EXISTS moderation_hidden_snapshot (
       token TEXT NOT NULL, subject TEXT NOT NULL, cid TEXT NOT NULL,
-      starts_at ${d.bigintType}, exp ${d.bigintType}
+      exp ${d.bigintType}
     )`,
     `CREATE INDEX IF NOT EXISTS idx_moderation_hidden_snapshot_token ON moderation_hidden_snapshot(token)`,
     // Stored relation counts exclude hidden children; visibility changes
@@ -268,8 +238,6 @@ export function buildModerationSchema(d: SqlDialect): string[] {
           "DROP VIEW IF EXISTS moderation_effective_labels",
           `CREATE VIEW IF NOT EXISTS ${effectiveLabels}`,
         ]),
-    // Retained in DDL to preserve schema_fingerprint for existing databases; unused.
-    `CREATE TABLE IF NOT EXISTS label_backfill_sources (src TEXT PRIMARY KEY, policy TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS label_backfill_queue (
       src TEXT NOT NULL, did TEXT NOT NULL, cursor TEXT, completed INTEGER NOT NULL DEFAULT 0,
       retries INTEGER NOT NULL DEFAULT 0, next_attempt_at ${d.bigintType} NOT NULL DEFAULT 0,
@@ -279,13 +247,6 @@ export function buildModerationSchema(d: SqlDialect): string[] {
     `CREATE INDEX IF NOT EXISTS idx_label_backfill_pending ON label_backfill_queue(completed, next_attempt_at)`,
     ...buildModerationReportsSchema(d),
   ];
-}
-
-/** An override pinned to a CID only suppresses labels pinned to that CID. */
-function overrideSuppressesSql(o: string, l: string): string {
-  return `${o}.subject = ${l}.uri AND (${o}.src IS NULL OR ${o}.src = ${l}.src)
-    AND (${o}.val = '' OR ${o}.val = ${l}.val) AND ${o}.cts > ${l}.cts
-    AND (${o}.cid IS NULL OR ${o}.cid = ${l}.cid)`;
 }
 
 /** Instance-owned private state, bind separately from projection generations. */
@@ -326,8 +287,7 @@ function nowSeconds(): number {
  * when the SQL is built, so build query text per request. */
 export function activeHiddenSql(alias = "moderation_hidden"): string {
   const now = nowSeconds();
-  return `(${alias}.starts_at IS NULL OR ${alias}.starts_at <= ${now})
-    AND (${alias}.exp IS NULL OR ${alias}.exp > ${now})`;
+  return `(${alias}.exp IS NULL OR ${alias}.exp > ${now})`;
 }
 
 /** Public visibility predicate for a records-table alias. Indexed point
@@ -407,17 +367,14 @@ export function flushModerationDirtyStatements(
   const now = nowSeconds();
   const dirty = (column: string) =>
     `${column} IN (SELECT subject FROM moderation_dirty WHERE token = ?)`;
-  const suppressing = `FROM moderation_overrides o
-    JOIN moderation_sources m ON m.did = o.moderator AND m.moderator = 1
-    WHERE ${overrideSuppressesSql("o", "l")} AND s.moderator = 0`;
   const statements = moderationLockStatements(db);
   const recount = !!config && hasCountedRelations(config);
   if (recount)
     statements.push(
       db
         .prepare(
-          `INSERT INTO moderation_hidden_snapshot (token, subject, cid, starts_at, exp)
-          SELECT CAST(? AS TEXT), subject, cid, starts_at, exp FROM moderation_hidden
+          `INSERT INTO moderation_hidden_snapshot (token, subject, cid, exp)
+          SELECT CAST(? AS TEXT), subject, cid, exp FROM moderation_hidden
           WHERE ${dirty("subject")}`,
         )
         .bind(token, token),
@@ -426,23 +383,22 @@ export function flushModerationDirtyStatements(
     db.prepare(`DELETE FROM moderation_hidden WHERE ${dirty("subject")}`).bind(token),
     db
       .prepare(
-        `INSERT INTO moderation_hidden (subject, kind, cid, starts_at, exp)
-        SELECT l.uri, 'label', COALESCE(l.cid, ''), (SELECT MAX(o.exp) ${suppressing}), l.exp
+        `INSERT INTO moderation_hidden (subject, kind, cid, exp)
+        SELECT l.uri, 'label', COALESCE(l.cid, ''), l.exp
         FROM labels l JOIN moderation_sources s ON s.did = l.src AND s.enforced = 1
         WHERE ${dirty("l.uri")} AND s.moderator = 0
           AND l.val IN (${HIDE_VALUES_SQL}) AND l.neg = 0
           AND (l.exp IS NULL OR l.exp > ?)
           AND NOT EXISTS (SELECT 1 FROM labels newer
-            WHERE newer.src = l.src AND newer.uri = l.uri AND newer.val = l.val AND newer.cts > l.cts)
-          AND NOT EXISTS (SELECT 1 ${suppressing} AND o.exp IS NULL)`,
+            WHERE newer.src = l.src AND newer.uri = l.uri AND newer.val = l.val AND newer.cts > l.cts)`,
       )
       .bind(token, now),
     // Repository actions are independent assertions, not successive versions
     // of a label tuple. Preserve every applicable CID and expiry boundary.
     db
       .prepare(
-        `INSERT INTO moderation_hidden (subject, kind, cid, starts_at, exp)
-        SELECT a.subject, 'action', COALESCE(a.cid, ''), NULL, a.exp
+        `INSERT INTO moderation_hidden (subject, kind, cid, exp)
+        SELECT a.subject, 'action', COALESCE(a.cid, ''), a.exp
         FROM moderation_actions a
         JOIN moderation_sources s ON s.did = a.src AND s.moderator = 1
         WHERE ${dirty("a.subject")} AND a.action IN (${HIDE_VALUES_SQL})
@@ -451,19 +407,19 @@ export function flushModerationDirtyStatements(
       .bind(token, now),
     db
       .prepare(
-        `INSERT INTO moderation_hidden (subject, kind, cid, starts_at, exp)
-        SELECT did, 'account', '', NULL, NULL FROM account_state
+        `INSERT INTO moderation_hidden (subject, kind, cid, exp)
+        SELECT did, 'account', '', NULL FROM account_state
         WHERE ${dirty("did")} AND ${HIDDEN_ACCOUNT_SQL}`,
       )
       .bind(token),
   );
   if (recount) {
-    // Kinds collapse: only the set of (cid, time bounds) affects visibility.
-    // Unchanged subjects (routine account events, policy rechecks) would
-    // otherwise page through every child record for nothing.
+    // Kinds collapse: only the set of (cid, expiry) affects visibility.
+    // Unchanged subjects (routine account events) would otherwise page through
+    // every child record for nothing.
     const changed = `${token}:changed`;
     const rows = (from: string, where: string) =>
-      `SELECT subject, cid, starts_at, exp FROM ${from} WHERE ${where}`;
+      `SELECT subject, cid, exp FROM ${from} WHERE ${where}`;
     statements.push(
       db
         .prepare(
@@ -487,19 +443,14 @@ export function flushModerationDirtyStatements(
           ON CONFLICT(subject, due_at) DO UPDATE SET cursor = NULL`,
         )
         .bind(changed),
-    );
-    for (const column of ["starts_at", "exp"])
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO moderation_recount_queue (subject, due_at, cursor)
-            SELECT DISTINCT subject, ${column}, NULL FROM moderation_hidden
-            WHERE ${column} > ? AND ${dirty("subject")}
-            ON CONFLICT(subject, due_at) DO NOTHING`,
-          )
-          .bind(now, changed),
-      );
-    statements.push(
+      db
+        .prepare(
+          `INSERT INTO moderation_recount_queue (subject, due_at, cursor)
+          SELECT DISTINCT subject, exp, NULL FROM moderation_hidden
+          WHERE exp > ? AND ${dirty("subject")}
+          ON CONFLICT(subject, due_at) DO NOTHING`,
+        )
+        .bind(now, changed),
       db.prepare("DELETE FROM moderation_hidden_snapshot WHERE token = ?").bind(token),
       db.prepare("DELETE FROM moderation_dirty WHERE token = ?").bind(changed),
     );
@@ -668,68 +619,40 @@ export function actionProjectionStatements(
   const token = moderationDirtyToken();
   const stmts: Statement[] = [];
   for (const e of actions) {
-    for (const [table, column] of [
-      ["moderation_actions", "src"],
-      ["moderation_overrides", "moderator"],
-    ])
-      stmts.push(
-        db
-          .prepare(
-            `INSERT INTO moderation_dirty (token, subject)
-            SELECT DISTINCT CAST(? AS TEXT), subject FROM ${table} WHERE uri = ? AND ${column} = ?
-            ON CONFLICT(token, subject) DO NOTHING`,
-          )
-          .bind(token, e.uri, e.did),
-      );
     stmts.push(
+      db
+        .prepare(
+          `INSERT INTO moderation_dirty (token, subject)
+          SELECT DISTINCT CAST(? AS TEXT), subject FROM moderation_actions WHERE uri = ? AND src = ?
+          ON CONFLICT(token, subject) DO NOTHING`,
+        )
+        .bind(token, e.uri, e.did),
       db.prepare("DELETE FROM moderation_actions WHERE uri = ?").bind(e.uri),
-      db.prepare("DELETE FROM moderation_overrides WHERE uri = ?").bind(e.uri),
     );
     const a = e.record ? parseModerationAction(JSON.parse(e.record)) : null;
     if (!a || e.operation === "delete") continue;
     stmts.push(...markModerationDirtyStatements(db, token, [a.subject]));
-    // A forward-dated createdAt must not pre-empt labels issued before the
-    // action was observed. Clamp to the source's observation time rather than
-    // the projection time, so re-projecting the same event keeps its cts.
+    // Clamp to the source's observation time rather than projection time so
+    // re-projecting the same event keeps its cts stable.
     const observedMs = e.source?.time_us ? Math.floor(e.source.time_us / 1000) : Date.now();
     const cts = Math.min(Date.parse(a.createdAt), observedMs, Date.now());
     const exp = a.expiresAt ? Math.floor(Date.parse(a.expiresAt) / 1000) : null;
-    if (a.action === "override") {
-      for (const val of new Set(a.labels ?? [""]))
-        stmts.push(
-          db
-            .prepare(
-              `INSERT INTO moderation_overrides
-        (uri, moderator, subject, src, val, cid, exp, cts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .bind(
-              e.uri,
-              e.did,
-              a.subject,
-              a.src ?? null,
-              val,
-              a.subjectCid ?? null,
-              exp,
-              cts,
-            ),
-        );
-    } else
-      stmts.push(
-        db
-          .prepare(
-            `INSERT INTO moderation_actions (uri, src, subject, action, cid, exp, cts)
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO moderation_actions (uri, src, subject, action, cid, exp, cts)
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            e.uri,
-            e.did,
-            a.subject,
-            a.action,
-            a.subjectCid ?? null,
-            exp,
-            cts,
-          ),
-      );
+        )
+        .bind(
+          e.uri,
+          e.did,
+          a.subject,
+          a.action,
+          a.subjectCid ?? null,
+          exp,
+          cts,
+        ),
+    );
   }
   stmts.push(...flushModerationDirtyStatements(db, config, token));
   return stmts;

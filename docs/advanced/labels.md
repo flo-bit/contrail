@@ -45,4 +45,4 @@ Records and profiles with canonical `com.atproto.label.defs#selfLabels` expose `
 
 Self-labels are author declarations, not trusted labeler claims: they never affect SQL visibility, counts, or pagination, and `!hide`/`!takedown` self-labels do nothing. Contrail returns `labels` and `selfLabels` separately so client UIs can render disclosure gates with author attribution.
 
-For SQL enforcement, moderator actions, overrides, account lifecycle, and private reports, see [Moderation](./moderation.md).
+For SQL enforcement, moderator actions, account lifecycle, and private reports, see [Moderation](./moderation.md).

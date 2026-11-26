@@ -1,5 +1,5 @@
 import type { Database, RecordRow } from "../types";
-import { extractSelfLabels, type SelfLabel } from "../labels/self";
+import { extractSelfLabels, type SelfLabel } from "../labels";
 
 export interface FormattedRecord {
   uri: string;

@@ -21,7 +21,6 @@ const config = resolveConfig({
   labels: { sources: [{ did: external, enforce: true }] },
   logger: { log() {}, warn() {}, error() {} },
 });
-const cursorKey = `moderation_reconcile_cursor:${moderator}`;
 const remote = (rkey: string, subject = actor) => ({
   uri: `at://${moderator}/${MODERATION_ACTION_NSID}/${rkey}`,
   cid: `cid-${rkey}`,
@@ -42,10 +41,6 @@ async function setupReconcile() {
   await db.prepare("INSERT INTO identities (did, handle, pds, resolved_at) VALUES (?, ?, ?, ?)")
     .bind(moderator, "moderator.example", "https://pds.example", Date.now()).run();
   return db;
-}
-async function savedCursor(db: Database) {
-  return (await db.prepare("SELECT value FROM _contrail_meta WHERE key = ?")
-    .bind(cursorKey).first<{ value: string }>())?.value;
 }
 async function actions(db: Database) {
   return (await db.prepare("SELECT uri FROM moderation_actions ORDER BY uri").all<{ uri: string }>())
@@ -69,28 +64,13 @@ describe("moderation timestamp precision", () => {
     else expect(hydrated[actor]![0]!.cts).toBe("2026-01-01T00:00:00.900Z");
   });
 
-  it("compares overrides and external labels within the same second", async () => {
-    const db = await setup();
-    const label = { src: external, uri: actor, val: "!hide", cts: "2026-01-01T00:00:00.100Z" };
-    await applyLabels(db, [label], { config });
-    await ingestRecords(db, [action("override", {
-      subject: actor, action: "override", createdAt: "2026-01-01T00:00:00.500Z",
-    })], config);
-    expect((await queryRecords(db, config, { collection: "event" })).records).toHaveLength(1);
-    expect(await hydrateLabels(db, [actor], [external])).toEqual({});
-    await applyLabels(db, [{ ...label, cts: "2026-01-01T00:00:00.900Z" }], { config });
-    expect((await queryRecords(db, config, { collection: "event" })).records).toHaveLength(0);
-    expect((await hydrateLabels(db, [actor], [external]))[actor]![0]!.cts).toBe("2026-01-01T00:00:00.900Z");
-  });
-
-  it("upgrades legacy seconds once, atomically, before policy maintenance", async () => {
+  it("upgrades legacy seconds once, atomically", async () => {
     const db = await setup();
     await applyLabels(db, [{ src: external, uri: actor, val: "!hide", cts: "2026-01-01T00:00:00Z", exp: "2999-01-01T00:00:00Z" }], { config });
     await ingestRecords(db, [
       action("hide", { subject: actor, action: "!hide", expiresAt: "2999-01-01T00:00:00Z" }),
-      action("override", { subject: actor, action: "override", createdAt: "2026-01-01T00:00:01Z" }),
     ], config);
-    const tables = ["labels", "moderation_actions", "moderation_overrides"];
+    const tables = ["labels", "moderation_actions"];
     const original = await Promise.all(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all()));
     const hidden = await db.prepare("SELECT * FROM moderation_hidden").all();
     await db.batch([
@@ -111,7 +91,7 @@ describe("moderation timestamp precision", () => {
     expect(await Promise.all(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all()))).toEqual(original);
     expect(await db.prepare("SELECT * FROM moderation_hidden").all()).toEqual(hidden);
     expect((await hydrateLabels(db, [actor], [moderator]))[actor]![0]!.cts).toBe("2026-01-01T00:00:00.000Z");
-    expect(await hydrateLabels(db, [actor], [external])).toEqual({});
+    expect((await hydrateLabels(db, [actor], [external]))[actor]![0]!.cts).toBe("2026-01-01T00:00:00.000Z");
   });
 });
 
@@ -193,34 +173,6 @@ describe("interrupted moderator reconciliation", () => {
     } finally { fetchMock.mockRestore(); }
   });
 
-  it("commits valid pages and resumes after a later timeout without inferring deletions", async () => {
-    const db = await setupReconcile();
-    await ingestRecords(db, [action("retained", { subject: "did:plc:retained", action: "!hide" })], config);
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(Response.json({ records: [remote("a")], cursor: "next" }))
-      .mockRejectedValueOnce(new DOMException("Timed out", "TimeoutError"))
-      .mockResolvedValueOnce(Response.json({ records: [remote("b", "did:plc:b")] }));
-    try {
-      await reconcileModeratorActions(db, config);
-      expect(await savedCursor(db)).toBe("next");
-      expect(await actions(db)).toEqual([remote("a").uri, remote("retained").uri]);
-      await reconcileModeratorActions(db, config);
-      expect(new URL(String(fetchMock.mock.calls[2]![0])).searchParams.get("cursor")).toBe("next");
-      expect(await savedCursor(db)).toBeUndefined();
-      expect(await actions(db)).toEqual([remote("a").uri, remote("b").uri, remote("retained").uri]);
-    } finally { fetchMock.mockRestore(); }
-  });
-
-  it.each([429, 500, 503])("retains a saved resume cursor on HTTP %s", async (status) => {
-    const db = await setupReconcile();
-    await db.prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)").bind(cursorKey, "saved").run();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("retry", { status }));
-    try {
-      await reconcileModeratorActions(db, config);
-      expect(await savedCursor(db)).toBe("saved");
-    } finally { fetchMock.mockRestore(); }
-  });
-
   it("does not accept part of a malformed page or infer deletions from it", async () => {
     const db = await setupReconcile();
     await ingestRecords(db, [action("retained", { subject: actor, action: "!hide" })], config);
@@ -229,24 +181,31 @@ describe("interrupted moderator reconciliation", () => {
       .mockResolvedValueOnce(Response.json({ records: [remote("b"), null] }));
     try {
       await reconcileModeratorActions(db, config);
-      expect(await savedCursor(db)).toBe("next");
       expect(await actions(db)).toEqual([remote("a").uri, remote("retained").uri]);
     } finally { fetchMock.mockRestore(); }
   });
 
-  it("keeps the durable cursor when committing a page fails", async () => {
+  it("warns and skips deletion inference when a moderator listing exceeds the 1,000-record cap", async () => {
     const db = await setupReconcile();
-    await db.prepare("INSERT INTO _contrail_meta (key, value) VALUES (?, ?)").bind(cursorKey, "saved").run();
-    const broken: Database = {
-      dialect: db.dialect, prepare: (sql) => db.prepare(sql),
-      batch: async () => { throw new Error("Storage unavailable"); },
-    };
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(Response.json({ records: [remote("a")] }));
+    await ingestRecords(db, [action("retained", { subject: actor, action: "!hide" })], config);
+    const warnings: string[] = [];
+    let page = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      const start = page * 100;
+      page++;
+      return Response.json({
+        records: Array.from({ length: 100 }, (_, i) => remote(`r-${start + i}`)),
+        cursor: `page-${page}`,
+      });
+    });
     try {
-      await reconcileModeratorActions(broken, config);
-      expect(await savedCursor(db)).toBe("saved");
-      expect(await actions(db)).toEqual([]);
+      await reconcileModeratorActions(db, {
+        ...config,
+        logger: { log() {}, warn: (msg: string) => warnings.push(msg), error() {} },
+      });
+      expect(page).toBe(10);
+      expect(warnings.some((w) => w.includes("1000-record") && w.includes("deletion checks skipped"))).toBe(true);
+      expect(await actions(db)).toContain(action("retained", { subject: actor, action: "!hide" }).uri);
     } finally { fetchMock.mockRestore(); }
   });
 });

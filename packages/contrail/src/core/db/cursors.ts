@@ -281,39 +281,22 @@ export async function lookupKnownActorDids(
   return known;
 }
 
-/** Save a legacy timestamp cursor monotonically without allowing an old
- * writer to move a database that has transitioned to the v2 seq domain back
- * into the timestamp domain. */
-export function saveCursorStatement(db: Database, timeUs: number): Statement {
-  return db
-    .prepare(
-      `INSERT INTO cursor (id, time_us) VALUES (1, ?)
-       ON CONFLICT(id) DO UPDATE SET time_us = CASE
-         WHEN cursor.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
-          AND excluded.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
-           THEN cursor.time_us
-         WHEN excluded.time_us > cursor.time_us THEN excluded.time_us
-         ELSE cursor.time_us
-       END`,
-    )
-    .bind(timeUs);
-}
-
-/** Save a Jetstream v2 cursor monotonically while permitting the one-way
- * legacy timestamp -> v2 seq transition. A stale timestamp-domain writer can
- * never move an already-transitioned seq cursor back into the old domain. */
-export function saveJetstreamCursorStatement(
+function buildCursorUpsertStatement(
   db: Database,
   cursor: number,
+  allowDomainTransition: boolean,
 ): Statement {
+  const transitionClause = allowDomainTransition
+    ? `WHEN cursor.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
+          AND excluded.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
+           THEN excluded.time_us
+         `
+    : "";
   return db
     .prepare(
       `INSERT INTO cursor (id, time_us) VALUES (1, ?)
        ON CONFLICT(id) DO UPDATE SET time_us = CASE
-         WHEN cursor.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
-          AND excluded.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
-           THEN excluded.time_us
-         WHEN cursor.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
+         ${transitionClause}WHEN cursor.time_us < ${JETSTREAM_V2_SEQ_THRESHOLD}
           AND excluded.time_us >= ${JETSTREAM_V2_SEQ_THRESHOLD}
            THEN cursor.time_us
          WHEN excluded.time_us > cursor.time_us THEN excluded.time_us
@@ -323,68 +306,27 @@ export function saveJetstreamCursorStatement(
     .bind(cursor);
 }
 
-/** Legacy timestamp-domain observation hashes. V2 seqs are unique and live
- * ingestion clears these rows when it next commits; the reader remains for
- * schema/API compatibility during the transition. */
-export async function getCursorObservations(
-  db: Database,
-  timeUs: number,
-): Promise<Set<string>> {
-  const rows = await db
-    .prepare("SELECT observation FROM cursor_observations WHERE time_us = ?")
-    .bind(timeUs)
-    .all<{ observation: string }>();
-  return new Set((rows.results ?? []).map((row) => row.observation));
+/** Save a legacy timestamp cursor monotonically without allowing an old
+ * writer to move a database that has transitioned to the v2 seq domain back
+ * into the timestamp domain. */
+export function saveCursorStatement(db: Database, timeUs: number): Statement {
+  return buildCursorUpsertStatement(db, timeUs, false);
 }
 
-function buildCursorObservationStatements(
+/** Save a Jetstream v2 cursor monotonically while permitting the one-way
+ * legacy timestamp -> v2 seq transition. A stale timestamp-domain writer can
+ * never move an already-transitioned seq cursor back into the old domain. */
+export function saveJetstreamCursorStatement(
   db: Database,
   cursor: number,
-  observations: Iterable<string>,
-  pruneOperator: "<" | "<>",
-): Statement[] {
-  return [
-    db.prepare(
-      `DELETE FROM cursor_observations WHERE time_us ${pruneOperator} (SELECT time_us FROM cursor WHERE id = 1)`,
-    ),
-    ...[...new Set(observations)].map((observation) =>
-      db
-        .prepare(
-          "INSERT INTO cursor_observations (time_us, observation) SELECT ?, ? WHERE (SELECT time_us FROM cursor WHERE id = 1) = ? ON CONFLICT(time_us, observation) DO NOTHING",
-        )
-        .bind(cursor, observation, cursor),
-    ),
-  ];
-}
-
-/** Statements that atomically retire observations behind the monotonic cursor
- * and union observations accounted for at its current timestamp. Inserts are
- * conditional so an older concurrent cycle cannot attach hashes to a newer
- * checkpoint. */
-export function saveCursorObservationStatements(
-  db: Database,
-  timeUs: number,
-  observations: Iterable<string>,
-): Statement[] {
-  return buildCursorObservationStatements(db, timeUs, observations, "<");
-}
-
-/** V2 may move once from a large timestamp cursor to a smaller seq. Retain
- * observations only at the exact resulting cursor so timestamp-domain rows do
- * not survive that numeric decrease indefinitely. */
-export function saveJetstreamCursorObservationStatements(
-  db: Database,
-  cursor: number,
-  observations: Iterable<string>,
-): Statement[] {
-  return buildCursorObservationStatements(db, cursor, observations, "<>");
+): Statement {
+  return buildCursorUpsertStatement(db, cursor, true);
 }
 
 async function commitCursorBatch(
   db: Database,
   cursorStatement: Statement,
   cursor: number,
-  observationStatements: Statement[],
   orderedSource?: OrderedSourceConfig,
 ): Promise<void> {
   const statements = [cursorStatement];
@@ -393,7 +335,6 @@ async function commitCursorBatch(
       saveOrderedSourcePositionStatement(db, orderedSource, cursor),
     );
   }
-  statements.push(...observationStatements);
   await db.batch(statements);
 }
 
@@ -401,13 +342,11 @@ export async function saveCursor(
   db: Database,
   timeUs: number,
   orderedSource?: OrderedSourceConfig,
-  observations: Iterable<string> = [],
 ): Promise<void> {
   await commitCursorBatch(
     db,
     saveCursorStatement(db, timeUs),
     timeUs,
-    saveCursorObservationStatements(db, timeUs, observations),
     orderedSource,
   );
 }
@@ -416,13 +355,11 @@ export async function saveJetstreamCursor(
   db: Database,
   cursor: number,
   orderedSource?: OrderedSourceConfig,
-  observations: Iterable<string> = [],
 ): Promise<void> {
   await commitCursorBatch(
     db,
     saveJetstreamCursorStatement(db, cursor),
     cursor,
-    saveJetstreamCursorObservationStatements(db, cursor, observations),
     orderedSource,
   );
 }

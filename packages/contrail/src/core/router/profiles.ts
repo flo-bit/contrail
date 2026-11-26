@@ -10,7 +10,7 @@ import { getPDS } from "../client";
 import { createIngestEvent, ingestRecords, recordTimeUs } from "../ingest";
 import type { Did } from "@atcute/lexicons";
 import { batchedInQuery, formatRecord } from "./helpers";
-import type { SelfLabel } from "../labels/self";
+import type { SelfLabel } from "../labels";
 import { visibleRecordSql, hiddenSubjects } from "../moderation";
 
 export interface ProfileEntry {

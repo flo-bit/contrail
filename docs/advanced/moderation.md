@@ -34,7 +34,7 @@ await contrail.init();
 
 Run `contrail lexicons generate` after enabling moderation. Don't list moderator DIDs inside `labels.sources` — they are added automatically as records-backed sources. Note: changing `moderators` or labeler trust settings (`enforce`, `values`, `subjects`) on an already-populated database does not rewrite previously stored labels or hidden state — start with a fresh database and backfill when changing moderation policy.
 
-## Public moderator actions & overrides
+## Public moderator actions
 
 Publish `tools.atmo.moderation.action` records to a configured moderator's repo:
 
@@ -51,7 +51,6 @@ Publish `tools.atmo.moderation.action` records to a configured moderator's repo:
 - `!hide` / `!takedown` enforce in SQL (`404` on `getRecord`/`getProfile`, excluded from lists, search, feeds, and relation counts). Other values attach as presentation labels.
 - **Never put reasons, reporter identities, or notes in public actions** — the validator rejects extra fields; keep private context in reports.
 - Delete the action record to undo it. Live ingestion + periodic PDS reconciliation keep actions in sync.
-- **Overrides:** set `"action": "override"` (with optional `labels` and `src`) to suppress older external labeler claims on that subject. Overrides never affect moderator actions or account state.
 
 ## Account lifecycle
 
@@ -64,7 +63,7 @@ Jetstream account events apply automatically for any actor this instance holds d
 
 ## Enforcement & counts
 
-- `moderation_hidden` is materialized in the same transaction as each hide, takedown, override, or account-state change. Time bounds (`starts_at <= now < exp`) are checked on read, so expiry needs no cron.
+- `moderation_hidden` is materialized in the same transaction as each hide, takedown, or account-state change. Expiry (`exp > now`) is checked on read, so expiry needs no cron.
 - Visibility changes queue affected parents in `moderation_recount_queue` and recount them in bounded pages. Stored relation counts stay consistent with count filters, sorts, and cursors, and can lag a takedown by one moderation cycle.
 - A record-scoped hide on a profile URI suppresses PDS read-through and identity-only fallback entries (other visible profile collections may still return). CID-pinned hides match only the indexed version.
 
@@ -105,7 +104,7 @@ Your app owns session auth, CSRF protection, body limits, and `Cache-Control: no
 
 ### Client helpers (`@atmo-dev/contrail/moderation`)
 
-Browser- and server-safe helpers: `submitReport`, `listReports`, `resolveReport`, `loadReportInboxes`, `createModerationAction`, `deleteModerationAction`, `moderationOAuthScope`.
+Browser- and server-safe helpers: `submitReport`, `listReports`, `resolveReport`, `createModerationAction`, `deleteModerationAction`, `moderationOAuthScope`.
 
 ```ts
 import { moderationOAuthScope, submitReport } from "@atmo-dev/contrail/moderation";

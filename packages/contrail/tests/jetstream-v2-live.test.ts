@@ -207,12 +207,10 @@ describe("Jetstream v2 live cursor semantics", () => {
     const timestamp = 1_788_008_906_865_272;
     const source = { source: "jetstream", epoch: "v2" };
 
-    await saveCursor(db, timestamp, { source: "jetstream", epoch: "v1" }, [
-      "legacy-observation",
-    ]);
+    await saveCursor(db, timestamp, { source: "jetstream", epoch: "v1" });
     await assertServingSourceCompatibility(db, source);
 
-    await saveJetstreamCursor(db, 25_304_406_049, source, ["v2-observation"]);
+    await saveJetstreamCursor(db, 25_304_406_049, source);
     expect(await getLastCursor(db)).toBe(25_304_406_049);
     expect(await getServingSourcePosition(db)).toMatchObject({
       position: {
@@ -222,17 +220,8 @@ describe("Jetstream v2 live cursor semantics", () => {
       },
     });
 
-    await saveJetstreamCursor(db, timestamp + 1, source, ["stale-timestamp"]);
+    await saveJetstreamCursor(db, timestamp + 1, source);
     expect(await getLastCursor(db)).toBe(25_304_406_049);
-    expect(
-      (
-        await db
-          .prepare(
-            "SELECT time_us, observation FROM cursor_observations ORDER BY observation",
-          )
-          .all()
-      ).results,
-    ).toEqual([{ time_us: 25_304_406_049, observation: "v2-observation" }]);
   });
 
   it("prevents a legacy writer from rolling a v2 cursor and epoch back", async () => {
@@ -247,7 +236,6 @@ describe("Jetstream v2 live cursor semantics", () => {
       db,
       timestamp,
       { source: "jetstream", epoch: "stale-v1-epoch" },
-      ["stale-v1-observation"],
     );
 
     expect(await getLastCursor(db)).toBe(42);
@@ -258,13 +246,6 @@ describe("Jetstream v2 live cursor semantics", () => {
         cursor: "42",
       },
     });
-    expect(
-      (
-        await db
-          .prepare("SELECT observation FROM cursor_observations")
-          .all()
-      ).results,
-    ).toEqual([]);
   });
 
   it("still rejects an epoch mismatch after the cursor is in the seq domain", async () => {

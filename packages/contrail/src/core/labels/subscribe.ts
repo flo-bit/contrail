@@ -1,10 +1,114 @@
 import { decodeFirst } from "@atcute/cbor";
+import {
+  CompositeDidDocumentResolver,
+  type DidDocumentResolver,
+  PlcDidDocumentResolver,
+  WebDidDocumentResolver,
+} from "@atcute/identity-resolver";
+import type { Did } from "@atcute/lexicons";
 import type { ContrailConfig, Database, Logger } from "../types";
-import type { LabelerSource } from "./types";
+import type { LabelerSource } from "./index";
 import { applyLabels, type IncomingLabel } from "./apply";
-import { getLabelerState } from "./resolve";
+import { validateExternalUrl } from "../client";
 import { getMeta, setMeta } from "../db/meta";
 import { sleepAbortable } from "../scheduling";
+
+/** Optional network-override knobs accepted by labeler-endpoint resolution. */
+export interface LabelerResolveOverrides {
+  resolver?: DidDocumentResolver;
+  additionalAllowedHosts?: string[];
+  signal?: AbortSignal;
+}
+
+/** Reject endpoint URLs that point to private/internal addresses or non-HTTPS. */
+export const validateEndpointUrl = validateExternalUrl;
+
+const DEFAULT_DID_RESOLVER: DidDocumentResolver = new CompositeDidDocumentResolver({
+  methods: {
+    plc: new PlcDidDocumentResolver(),
+    web: new WebDidDocumentResolver(),
+  },
+});
+
+/** Look up the labeler service endpoint from a DID's `#atproto_labeler` service entry. */
+export async function resolveLabelerEndpoint(
+  did: string,
+  networkOverrides?: LabelerResolveOverrides,
+): Promise<string | null> {
+  if (!did.startsWith("did:plc:") && !did.startsWith("did:web:")) return null;
+  const resolver = networkOverrides?.resolver ?? DEFAULT_DID_RESOLVER;
+  try {
+    const doc = await resolver.resolve(did as Did<"plc"> | Did<"web">, {
+      signal: networkOverrides?.signal ?? AbortSignal.timeout(5_000),
+    });
+    const endpoint = doc.service
+      ?.find((s) => s.id === "#atproto_labeler")
+      ?.serviceEndpoint?.toString();
+    if (!endpoint) return null;
+    if (!validateEndpointUrl(endpoint, networkOverrides?.additionalAllowedHosts ?? [])) {
+      return null;
+    }
+    return endpoint;
+  } catch {
+    return null;
+  }
+}
+
+export interface LabelerState {
+  did: string;
+  cursor: number;
+  endpoint: string | null;
+  resolved_at: number | null;
+}
+
+const ENDPOINT_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Get cached `(endpoint, cursor)` for a labeler, resolving on cache miss or staleness. */
+export async function getLabelerState(
+  db: Database,
+  did: string,
+  endpointOverride: string | undefined,
+  networkOverrides?: LabelerResolveOverrides,
+): Promise<LabelerState | null> {
+  const row = await db
+    .prepare(
+      "SELECT did, cursor, endpoint, resolved_at FROM labeler_cursors WHERE did = ?",
+    )
+    .bind(did)
+    .first<LabelerState>();
+
+  if (row) row.cursor = Number(row.cursor);
+  let endpoint = endpointOverride ?? row?.endpoint ?? null;
+  const stale =
+    !row?.resolved_at || Date.now() - row.resolved_at > ENDPOINT_TTL_MS;
+
+  if (!endpoint || (!endpointOverride && stale)) {
+    endpoint = await resolveLabelerEndpoint(did, networkOverrides);
+    if (!endpoint) return null;
+    const now = Date.now();
+    await db
+      .prepare(
+        `INSERT INTO labeler_cursors (did, cursor, endpoint, resolved_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(did) DO UPDATE SET endpoint = excluded.endpoint, resolved_at = excluded.resolved_at`,
+      )
+      .bind(did, row?.cursor ?? 0, endpoint, now)
+      .run();
+    return {
+      did,
+      cursor: row?.cursor ?? 0,
+      endpoint,
+      resolved_at: now,
+    };
+  }
+
+  return {
+    did,
+    cursor: row?.cursor ?? 0,
+    endpoint,
+    resolved_at: row?.resolved_at ?? null,
+  };
+}
 
 const DEFAULT_CYCLE_TIMEOUT_MS = 25_000;
 const DEFAULT_BATCH_SIZE = 100;

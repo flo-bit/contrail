@@ -14,16 +14,13 @@ import {
   resolveConfig,
 } from "./types";
 import {
-  assertJetstreamServiceCompatibility,
-  assertServingSourceCompatibility,
-  initSchema,
   getLastCursor,
   loadKnownActorDids,
 } from "./db";
 import { ingestRecords } from "./ingest";
 import { refreshStaleIdentities } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
-import { createIngestState, type IngestState } from "./jetstream";
+import { createIngestState } from "./jetstream";
 import {
   FEED_PRUNE_RECOVERY_INTERVAL_MS,
   maybeOptimize,
@@ -34,6 +31,8 @@ import {
   commitToIngestEvent,
   flushIdentityUpdates,
   jetstreamCheckpointStatements,
+  prepareLiveIngestSession,
+  upsertAccountUpdate,
 } from "./live-ingest";
 import {
   accountUpdateStatements,
@@ -87,15 +86,14 @@ export async function runPersistent(
   const flushIntervalMs = options?.flushIntervalMs ?? 5_000;
   const signal = options?.signal;
   const state = createIngestState();
+  const feedState = {
+    lastFeedSweepMs: 0,
+    lastFullFeedPassMs: 0,
+    feedDirty: false,
+  };
   const service = jetstreamService(config.jetstreams ?? []);
 
-  // Init schema once
-  if (!state.schemaInitialized) {
-    await initSchema(db, config);
-    state.schemaInitialized = true;
-  }
-  await assertServingSourceCompatibility(db, config.orderedSource);
-  await assertJetstreamServiceCompatibility(db, service);
+  await prepareLiveIngestSession(db, config, service, state);
 
   // Load known DIDs for dependent collection filtering
   const dependentCollections: Set<string> = new Set(getDependentNsids(config));
@@ -121,7 +119,7 @@ export async function runPersistent(
         collections,
         knownDids,
         newlyKnownDids: new Set<string>(),
-        state,
+        feedState,
         log,
         service,
         createSubscription: options?.createSubscription,
@@ -141,6 +139,12 @@ export async function runPersistent(
   log.log("Persistent ingestion stopped");
 }
 
+interface PersistentFeedState {
+  lastFeedSweepMs: number;
+  lastFullFeedPassMs: number;
+  feedDirty: boolean;
+}
+
 interface StreamOptions {
   batchSize: number;
   flushIntervalMs: number;
@@ -151,7 +155,7 @@ interface StreamOptions {
   /** DIDs that crossed from unknown→known during this stream's lifetime.
    *  Drained on each flush so Constellation reverse-lookups can run for them. */
   newlyKnownDids?: Set<string>;
-  state: IngestState;
+  feedState: PersistentFeedState;
   log: Logger;
   createSubscription?: PersistentIngestOptions["createSubscription"];
 }
@@ -162,7 +166,7 @@ async function streamAndFlush(
   cursor: number | null,
   opts: StreamOptions,
 ): Promise<void> {
-  const { batchSize, flushIntervalMs, signal, collections, knownDids, state, log } = opts;
+  const { batchSize, flushIntervalMs, signal, collections, knownDids, feedState, log } = opts;
 
   const subscription = opts.createSubscription
     ? opts.createSubscription(cursor, signal)
@@ -203,10 +207,7 @@ async function streamAndFlush(
   // Latest handle per actor; flushed in DB batches instead of serially on the stream loop.
   const identityBuffer = new Map<string, string>();
   const bufferAccount = (update: AccountUpdate) => {
-    const prior = accountBuffer.get(update.did);
-    if (prior && prior.cursor >= update.cursor) return;
-    accountBuffer.delete(update.did);
-    accountBuffer.set(update.did, update);
+    upsertAccountUpdate(accountBuffer, update);
   };
   /** Drop network-wide account traffic for actors this instance holds no data
    * for before it costs SQL. Batch authors stay: their records commit first. */
@@ -302,11 +303,11 @@ async function streamAndFlush(
       if (config.feeds) {
         try {
           if (await runGrownFeedPrune(db, config, accepted)) {
-            state.feedDirty = true;
+            feedState.feedDirty = true;
           }
         } catch (err) {
           log.warn(`Grown-feed prune failed: ${err}`);
-          state.feedDirty = true;
+          feedState.feedDirty = true;
         }
       }
 
@@ -373,16 +374,16 @@ async function streamAndFlush(
       if (caps.size > 0) {
         const now = Date.now();
         const dirtyDue =
-          state.feedDirty &&
-          now - state.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS;
+          feedState.feedDirty &&
+          now - feedState.lastFeedSweepMs > FEED_SWEEP_INTERVAL_MS;
         const recoveryDue =
-          now - state.lastFullFeedPassMs > FEED_PRUNE_RECOVERY_INTERVAL_MS;
+          now - feedState.lastFullFeedPassMs > FEED_PRUNE_RECOVERY_INTERVAL_MS;
         if (dirtyDue || recoveryDue) {
           const { pruned, done } = await runFeedPruneSlice(db, config);
-          if (done) state.lastFullFeedPassMs = now;
+          if (done) feedState.lastFullFeedPassMs = now;
           if (dirtyDue) {
-            state.feedDirty = false;
-            state.lastFeedSweepMs = now;
+            feedState.feedDirty = false;
+            feedState.lastFeedSweepMs = now;
           }
           if (pruned > 0) {
             log.log(

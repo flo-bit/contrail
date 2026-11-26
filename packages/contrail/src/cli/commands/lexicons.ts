@@ -5,10 +5,6 @@ import {
   generateLexicons,
   type LexiconSurface,
 } from "../../lexicons/generate.js";
-import {
-  generateLexiconTypesWithAtcute,
-  pullLexiconsWithAtcute,
-} from "../atcute.js";
 import { resolveAndLoadConfig } from "../shared.js";
 
 interface LexiconOptions {
@@ -16,6 +12,7 @@ interface LexiconOptions {
   root: string;
   output: string;
   public?: boolean;
+  /** Accepted as a no-op for backward compatibility with existing scripts. */
   atcuteConfig?: boolean;
 }
 
@@ -23,22 +20,11 @@ function surface(options: LexiconOptions): LexiconSurface {
   return options.public ? "public" : "full";
 }
 
-async function generate(options: LexiconOptions) {
-  const config = await resolveAndLoadConfig(options);
-  return generateLexicons({
-    config,
-    rootDir: resolve(options.root),
-    outputDir: resolve(options.root, options.output),
-    surface: surface(options),
-    writeAtcuteConfig: options.atcuteConfig !== false,
-  });
-}
-
 export function registerLexicons(cli: CAC): void {
   cli
     .command(
       "lexicons <action>",
-      "Generate Contrail Lexicons or delegate pulling/typegen to Atcute",
+      "Generate or check Contrail XRPC Lexicons (actions: generate, check)",
     )
     .option("--config <path>", "Path to Contrail config file")
     .option("--root <path>", "Project root", { default: process.cwd() })
@@ -48,12 +34,19 @@ export function registerLexicons(cli: CAC): void {
     .option("--public", "Generate only methods exposed by public read mode")
     .option(
       "--no-atcute-config",
-      "Do not create or update a generated lex.config.js",
+      "No-op (lex.config.js is user-managed with @atcute/lex-cli)",
     )
     .action(async (action: string, options: LexiconOptions) => {
       const root = resolve(options.root);
+      const outputDir = resolve(root, options.output);
       if (action === "generate") {
-        await generate(options);
+        const config = await resolveAndLoadConfig(options);
+        generateLexicons({
+          config,
+          rootDir: root,
+          outputDir,
+          surface: surface(options),
+        });
         return;
       }
       if (action === "check") {
@@ -61,39 +54,19 @@ export function registerLexicons(cli: CAC): void {
         checkLexicons({
           config,
           rootDir: root,
-          outputDir: resolve(root, options.output),
+          outputDir,
           surface: surface(options),
-          writeAtcuteConfig: options.atcuteConfig !== false,
         });
         console.log("Contrail Lexicons are current.");
         return;
       }
-      if (action === "pull") {
-        pullLexiconsWithAtcute(root);
-        return;
-      }
-      if (action === "types") {
-        generateLexiconTypesWithAtcute(root);
-        return;
-      }
-      if (action === "all") {
-        let previous: string | undefined;
-        for (let pass = 0; pass < 5; pass++) {
-          const result = await generate(options);
-          const current = JSON.stringify(result.pullNsids);
-          pullLexiconsWithAtcute(root);
-          if (current === previous) break;
-          previous = current;
-          if (pass === 4) {
-            throw new Error("Lexicon reference discovery did not converge");
-          }
-        }
-        await generate(options);
-        generateLexiconTypesWithAtcute(root);
-        return;
+      if (action === "pull" || action === "types" || action === "all") {
+        throw new Error(
+          `\`contrail lexicons ${action}\` was removed; run \`contrail lexicons generate\` and invoke \`@atcute/lex-cli\` (\`lex-cli pull\` / \`lex-cli generate\`) directly`,
+        );
       }
       throw new Error(
-        `unknown lexicons action ${JSON.stringify(action)}; expected generate, check, pull, types, or all`,
+        `unknown lexicons action ${JSON.stringify(action)}; expected generate or check`,
       );
     });
 }

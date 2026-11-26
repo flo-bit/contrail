@@ -13,9 +13,6 @@ import {
   jetstreamService,
 } from "./types";
 import {
-  assertJetstreamServiceCompatibility,
-  assertServingSourceCompatibility,
-  initSchema,
   getLastCursor,
   lookupKnownActorDids,
 } from "./db";
@@ -27,10 +24,6 @@ import {
 import { refreshStaleIdentities } from "./identity";
 import { backfillFollowersFromConstellation } from "./constellation";
 import {
-  runtimeCpuUsage,
-  type RuntimeCpuUsageProcess,
-} from "./runtime-telemetry";
-import {
   maybeOptimize,
   runGatedFeedPrune,
 } from "./maintenance";
@@ -38,6 +31,8 @@ import {
   commitToIngestEvent,
   flushIdentityUpdates,
   jetstreamCheckpointStatements,
+  prepareLiveIngestSession,
+  upsertAccountUpdate,
 } from "./live-ingest";
 
 export {
@@ -109,14 +104,40 @@ export interface ScheduledIngestOptions {
   timeoutMs?: number;
 }
 
+export interface RuntimeCpuUsageProcess {
+  cpuUsage?: (previous?: { user: number; system: number }) => {
+    user: number;
+    system: number;
+  };
+}
+
+/** Optional runtime telemetry must never become an ingestion capability gate.
+ * Some edge runtimes expose Node-compatible process methods as throwing stubs. */
+export function runtimeCpuUsage(
+  runtimeProcess: RuntimeCpuUsageProcess | undefined,
+): (() => number | null) | null {
+  if (!runtimeProcess?.cpuUsage) return null;
+  try {
+    const start = runtimeProcess.cpuUsage();
+    return () => {
+      try {
+        const elapsed = runtimeProcess.cpuUsage!(start);
+        return Math.round((elapsed.user + elapsed.system) / 100) / 10;
+      } catch {
+        return null;
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
 export type ScheduledIngestStopReason =
-  | "head"
   | "idle"
   | "count"
   | "bytes"
   | "actor-lookups"
-  | "drain-time"
-  | "cancelled";
+  | "drain-time";
 
 export interface ScheduledIngestCollectionStats {
   observedSourceItems: number;
@@ -130,7 +151,6 @@ export interface ScheduledIngestCollectionStats {
   /** Known-account lookups made for dependent collections. */
   actorLookups: number;
   exactDuplicatesDropped: number;
-  cursorBoundaryDuplicatesDropped: number;
   resumeOverlapDropped: number;
   sourceScopeFiltered: number;
   sourceInconsistencies: number;
@@ -207,31 +227,11 @@ export interface IngestState {
    * ingestion only keeps the actors it has confirmed so far. */
   cachedKnownDids?: Set<string>;
   schemaInitialized: boolean;
-  /** Wall-clock of the last feed sweep slice — used only by the long-lived
-   *  persistent loop to throttle ingest-driven slices; the recycling cron
-   *  isolate persists its clocks in `_contrail_meta` instead. */
-  lastFeedSweepMs: number;
-  /** Wall-clock at which the persistent loop last *completed a full sweep pass*
-   *  over every actor. Drives the recovery interval (a fresh pass becomes due
-   *  {@link FEED_PRUNE_RECOVERY_INTERVAL_MS} after the last one completed, then
-   *  laps one slice per tick), independent of the ingest-driven throttle above.
-   *  The cron isolate persists the equivalent in
-   *  `_contrail_meta`. */
-  lastFullFeedPassMs: number;
-  /** Set by the persistent loop when a flushed batch's fan-out overflowed the
-   *  grown-feed prune's budget, or the grown-feed prune failed, so the next
-   *  sweep window runs a slice. Cleared
-   *  when the sweep runs. The cron path makes the same decision per-tick and
-   *  doesn't need the flag. */
-  feedDirty: boolean;
 }
 
 export function createIngestState(): IngestState {
   return {
     schemaInitialized: false,
-    lastFeedSweepMs: 0,
-    lastFullFeedPassMs: 0,
-    feedDirty: false,
   };
 }
 
@@ -355,7 +355,6 @@ export async function ingestEvents(
 ): Promise<{
   events: IngestEvent[];
   lastCursor: number | null;
-  cursorObservations: Set<string>;
   identityUpdates: Map<string, string>;
   accountUpdates: AccountUpdate[];
   stats: ScheduledIngestCollectionStats;
@@ -388,11 +387,9 @@ export async function ingestEvents(
   // Account events awaiting a batched known-actor lookup.
   const unresolvedAccounts = new Map<string, AccountUpdate>();
   const retainAccount = (update: AccountUpdate) => {
-    const prior = accountUpdates.get(update.did);
-    if (prior && prior.cursor >= update.cursor) return;
-    accountUpdates.delete(update.did);
-    accountUpdates.set(update.did, update);
-    stats.serializedCandidateBytes += SCHEDULED_INGEST_METADATA_BYTES;
+    if (upsertAccountUpdate(accountUpdates, update)) {
+      stats.serializedCandidateBytes += SCHEDULED_INGEST_METADATA_BYTES;
+    }
   };
   const resolveAccounts = async () => {
     if (!unresolvedAccounts.size) return;
@@ -414,7 +411,6 @@ export async function ingestEvents(
     accountUpdatesFiltered: 0,
     actorLookups: 0,
     exactDuplicatesDropped: 0,
-    cursorBoundaryDuplicatesDropped: 0,
     resumeOverlapDropped: 0,
     sourceScopeFiltered: 0,
     sourceInconsistencies: 0,
@@ -454,10 +450,6 @@ export async function ingestEvents(
   // bridge and must be persisted even when the first drain stays empty.
   const effectiveStartCursor = cursor ?? subscription.cursor ?? null;
   stats.safeEndingCursor = effectiveStartCursor;
-  // V2 seqs identify individual events, so there are no equal-cursor siblings
-  // to retain across cycles. Returning an empty set also retires any legacy
-  // timestamp-domain observation hashes when the cursor is next committed.
-  const cursorObservations = new Set<string>();
 
   const iterator = subscription[Symbol.asyncIterator]();
   type Ev = typeof subscription extends AsyncIterable<infer V> ? V : never;
@@ -712,7 +704,6 @@ export async function ingestEvents(
   return {
     events: collected,
     lastCursor,
-    cursorObservations,
     identityUpdates,
     accountUpdates: [...accountUpdates.values()],
     stats,
@@ -769,12 +760,7 @@ export async function runIngestCycle(
   );
   const s = state ?? createIngestState();
 
-  if (!s.schemaInitialized) {
-    await initSchema(db, config);
-    s.schemaInitialized = true;
-  }
-  await assertServingSourceCompatibility(db, config.orderedSource);
-  await assertJetstreamServiceCompatibility(db, service);
+  await prepareLiveIngestSession(db, config, service, s);
 
   const cursor = await getLastCursor(db);
 
@@ -800,7 +786,6 @@ export async function runIngestCycle(
   const {
     events,
     lastCursor,
-    cursorObservations,
     identityUpdates,
     accountUpdates,
     stats,
@@ -834,12 +819,7 @@ export async function runIngestCycle(
         isFinalBatch && lastCursor !== null
           ? [
               ...accountUpdateStatements(db, accountUpdates, config),
-              ...jetstreamCheckpointStatements(
-                db,
-                config,
-                lastCursor,
-                cursorObservations,
-              ),
+              ...jetstreamCheckpointStatements(db, config, lastCursor),
             ]
           : undefined,
     });
@@ -890,12 +870,7 @@ export async function runIngestCycle(
   ) {
     await db.batch([
       ...accountUpdateStatements(db, accountUpdates, config),
-      ...jetstreamCheckpointStatements(
-        db,
-        config,
-        lastCursor,
-        cursorObservations,
-      ),
+      ...jetstreamCheckpointStatements(db, config, lastCursor),
     ]);
     databaseSubBatchesCommitted++;
   }
@@ -989,8 +964,6 @@ export async function runIngestCycle(
     retained_identity_updates: stats.retainedIdentityUpdates,
     identity_updates_omitted: stats.identityUpdatesOmitted,
     exact_duplicates_dropped: stats.exactDuplicatesDropped,
-    cursor_boundary_duplicates_dropped:
-      stats.cursorBoundaryDuplicatesDropped,
     resume_overlap_dropped: stats.resumeOverlapDropped,
     source_scope_filtered: stats.sourceScopeFiltered,
     admission_policy_filtered: admissionFilteredCount(dropped),
